@@ -28,6 +28,18 @@ import {
   shouldUseOpenAICodexAuth,
 } from '../openaiAuth/fetch.js'
 import { isOpenAIResponsesModel } from '../openaiAuth/models.js'
+import {
+  buildUnieAIInferenceFetch,
+  shouldUseUnieAIInference,
+  UNIEAI_INFERENCE_DUMMY_KEY,
+} from '../unieaiAuth/inferenceFetch.js'
+import { getUnieAITokens } from '../unieaiAuth/storage.js'
+
+function isUnieAIStudioModel(model?: string): boolean {
+  if (!model) return false
+  const tokens = getUnieAITokens()
+  return !!tokens?.availableModelIds?.includes(model)
+}
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
 import {
   getAWSRegion,
@@ -157,20 +169,24 @@ export async function getAnthropicClient({
   logForDebugging('[API:auth] OAuth token check complete')
 
   const isOpenAIModel = model ? isOpenAIResponsesModel(model) : false
+  const usingUnieAI = shouldUseUnieAIInference() && isUnieAIStudioModel(model)
   const usingOpenAICodex =
+    !usingUnieAI &&
     shouldUseOpenAICodexAuth() &&
     !isClaudeAISubscriber() &&
     (isOpenAIModel ||
       (!process.env.ANTHROPIC_AUTH_TOKEN &&
         !(apiKey || getAnthropicApiKey())))
 
-  if (!isClaudeAISubscriber() && !usingOpenAICodex) {
+  if (!isClaudeAISubscriber() && !usingOpenAICodex && !usingUnieAI) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
-  const resolvedFetch = usingOpenAICodex
-    ? buildOpenAICodexFetch(fetchOverride, source)
-    : buildFetch(fetchOverride, source)
+  const resolvedFetch = usingUnieAI
+    ? buildUnieAIInferenceFetch(fetchOverride, source)
+    : usingOpenAICodex
+      ? buildOpenAICodexFetch(fetchOverride, source)
+      : buildFetch(fetchOverride, source)
 
   const ARGS = {
     defaultHeaders,
@@ -333,14 +349,17 @@ export async function getAnthropicClient({
 
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber()
-      ? null
-      : usingOpenAICodex
-        ? OPENAI_OAUTH_DUMMY_KEY
-        : resolveAnthropicClientApiKey({ explicitApiKey: apiKey }),
-    authToken: isClaudeAISubscriber()
-      ? getClaudeAIOAuthTokens()?.accessToken
-      : undefined,
+    apiKey: usingUnieAI
+      ? UNIEAI_INFERENCE_DUMMY_KEY
+      : isClaudeAISubscriber()
+        ? null
+        : usingOpenAICodex
+          ? OPENAI_OAUTH_DUMMY_KEY
+          : resolveAnthropicClientApiKey({ explicitApiKey: apiKey }),
+    authToken:
+      !usingUnieAI && isClaudeAISubscriber()
+        ? getClaudeAIOAuthTokens()?.accessToken
+        : undefined,
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)

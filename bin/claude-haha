@@ -5,6 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #Get your current working directory and export it as an environment variable.
 export CALLER_DIR="${CALLER_DIR:-$(pwd -W 2>/dev/null || pwd)}"
 
+# UnieAI Code: keep state (sessions / plugins / skills / MCP / login / theme)
+# isolated from the upstream Claude Code install. Honors a user-set
+# CLAUDE_CONFIG_DIR or an explicit UNIEAI_CONFIG_DIR; otherwise defaults to
+# ~/.unieai. Anyone who wants to share state with ~/.claude can opt in by
+# setting CLAUDE_CONFIG_DIR="$HOME/.claude" before launching.
+if [[ -z "${CLAUDE_CONFIG_DIR:-}" ]]; then
+  export CLAUDE_CONFIG_DIR="${UNIEAI_CONFIG_DIR:-$HOME/.unieai}"
+fi
+mkdir -p "$CLAUDE_CONFIG_DIR"
+
 cd "$ROOT_DIR"
 
 # When spawned by the desktop/web server as a child CLI process,

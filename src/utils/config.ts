@@ -563,6 +563,11 @@ export type GlobalConfig = {
   // Additional model options for the model picker (fetched during bootstrap).
   additionalModelOptionsCache?: ModelOption[]
 
+  // Model options exposed by the user's UnieAI Studio account — synced on login
+  // and refreshed by `unieai models`. Kept separate from
+  // additionalModelOptionsCache so the Anthropic bootstrap fetch can't clobber it.
+  unieaiModelOptionsCache?: ModelOption[]
+
   // Disk cache for /api/claude_code/organizations/metrics_enabled.
   // Org-level settings change rarely; persisting across processes avoids a
   // cold API call on every `claude -p` invocation.

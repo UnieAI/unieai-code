@@ -17,6 +17,7 @@ import { calculateTokenWarningState } from '../../services/compact/autoCompact.j
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import type { Message } from '../../types/message.js';
 import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../utils/auth.js';
+import { getUnieAITokens } from '../../services/unieaiAuth/storage.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../utils/editor.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
@@ -303,7 +304,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {(apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
+      {(apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && !getUnieAITokens()?.refreshToken && <Box>
           <Text color="error" wrap="truncate">
             {isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 'Authentication error · Try again' : 'Not logged in · Run /login'}
           </Text>

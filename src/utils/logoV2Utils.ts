@@ -2,6 +2,7 @@ import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'
 import { getSubscriptionName, isClaudeAISubscriber } from './auth.js'
+import { getUnieAITokens } from '../services/unieaiAuth/storage.js'
 import { getCwd } from './cwd.js'
 import { getDisplayPath } from './file.js'
 import {
@@ -253,9 +254,14 @@ export function getLogoDisplayData(): {
   const cwd = serverUrl
     ? `${displayPath} in ${serverUrl.replace(/^https?:\/\//, '')}`
     : displayPath
-  const billingType = isClaudeAISubscriber()
-    ? getSubscriptionName()
-    : 'API Usage Billing'
+  // UnieAI Code: when signed into UnieAI Studio, advertise that instead of an
+  // Anthropic subscription tier. Anthropic / API-key fallbacks preserved below.
+  const unieaiTokens = getUnieAITokens()
+  const billingType = unieaiTokens?.refreshToken
+    ? 'UnieAI Studio'
+    : isClaudeAISubscriber()
+      ? getSubscriptionName()
+      : 'API Usage Billing'
   const agentName = getInitialSettings().agent
 
   return {

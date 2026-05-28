@@ -169,9 +169,20 @@ export function Clawd(t0) {
   } else {
     t11 = $[22];
   }
+  // UnieAI Code: bunny ears row above the head — column-aligned to the two eyes
+  // (▛ at col 2 of " ▐▛███▜▌", ▜ at col 6). Multi-segment to keep Ink/yoga from
+  // collapsing the 3-space gap between the ears.
+  const earsRow = (
+    <Text>
+      <Text>{'  '}</Text>
+      <Text color="clawd_body">{'█'}</Text>
+      <Text>{'   '}</Text>
+      <Text color="clawd_body">{'█'}</Text>
+    </Text>
+  );
   let t12;
   if ($[23] !== t10 || $[24] !== t6) {
-    t12 = <Box flexDirection="column">{t6}{t10}{t11}</Box>;
+    t12 = <Box flexDirection="column">{earsRow}{t6}{t10}{t11}</Box>;
     $[23] = t10;
     $[24] = t6;
     $[25] = t12;
@@ -227,9 +238,20 @@ function AppleTerminalClawd(t0) {
     t6 = $[6];
     t7 = $[7];
   }
+  // UnieAI Code: bunny ears row for Apple Terminal variant (eyes are at cols 1/5
+  // of the 7-char APPLE_EYES string).
+  const appleEarsRow = (
+    <Text>
+      <Text>{' '}</Text>
+      <Text color="clawd_body">{'█'}</Text>
+      <Text>{'   '}</Text>
+      <Text color="clawd_body">{'█'}</Text>
+      <Text>{' '}</Text>
+    </Text>
+  );
   let t8;
   if ($[8] !== t5) {
-    t8 = <Box flexDirection="column" alignItems="center">{t5}{t6}{t7}</Box>;
+    t8 = <Box flexDirection="column" alignItems="center">{appleEarsRow}{t5}{t6}{t7}</Box>;
     $[8] = t5;
     $[9] = t8;
   } else {

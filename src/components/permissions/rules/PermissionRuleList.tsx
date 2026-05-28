@@ -388,9 +388,9 @@ function PermissionRulesTab(t0) {
     let t8;
     if ($[10] === Symbol.for("react.memo_cache_sentinel")) {
       t8 = {
-        allow: "Claude Code won't ask before using allowed tools.",
-        ask: "Claude Code will always ask for confirmation before using these tools.",
-        deny: "Claude Code will always reject requests to use denied tools."
+        allow: "UnieAI Code won't ask before using allowed tools.",
+        ask: "UnieAI Code will always ask for confirmation before using these tools.",
+        deny: "UnieAI Code will always reject requests to use denied tools."
       };
       $[10] = t8;
     } else {

@@ -1,12 +1,14 @@
 {
-  "name": "claude-code-local",
-  "version": "999.0.0-local",
+  "name": "@unieai/code",
+  "version": "0.0.3",
   "private": true,
   "type": "module",
   "bin": {
+    "unieai": "./bin/claude-haha",
     "claude-haha": "./bin/claude-haha"
   },
   "scripts": {
+    "unieai": "bun run ./bin/claude-haha",
     "claude-haha": "bun run ./bin/claude-haha",
     "start": "bun run ./bin/claude-haha",
     "check:pr": "bun run scripts/pr/check-pr.ts",

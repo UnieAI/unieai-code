@@ -10,6 +10,9 @@ import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getSSLErrorHint } from '../services/api/errorUtils.js';
 import { sendNotification } from '../services/notifier.js';
 import { OAuthService } from '../services/oauth/index.js';
+import { UnieAIAuthService, syncUnieAIModelsToCache } from '../services/unieaiAuth/index.js';
+import { openBrowser } from '../utils/browser.js';
+import { saveGlobalConfig } from '../utils/config.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { logError } from '../utils/log.js';
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js';
@@ -89,7 +92,74 @@ export function ConsoleOAuthFlow({
   // copy the code from the browser and paste it in the terminal
   const [showPastePrompt, setShowPastePrompt] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
+  const [unieaiPrompt, setUnieaiPrompt] = useState<{
+    userCode: string
+    verificationUrl: string
+    studioUrl: string
+  } | null>(null);
+  const [unieaiSuccess, setUnieaiSuccess] = useState<{ email?: string } | null>(null);
   const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
+
+  const startUnieAIFlow = async () => {
+    const trace = (msg: string) => {
+      try {
+        require('fs').appendFileSync('/tmp/uai-trace.log', `[${new Date().toISOString()}] ${msg}\n`);
+      } catch { /* ignore */ }
+    };
+    trace('startUnieAIFlow ENTER');
+    setUnieaiPrompt(null);
+    setUnieaiSuccess(null);
+    setOAuthStatus({ state: 'waiting_for_login', url: '' });
+    trace('state set to waiting_for_login');
+    const service = new UnieAIAuthService();
+    try {
+      trace('calling startDeviceFlow');
+      const result = await service.startDeviceFlow({
+        onPrompt: ({ userCode, verificationUriComplete, studioUrl }) => {
+          setUnieaiPrompt({
+            userCode,
+            verificationUrl: verificationUriComplete,
+            studioUrl,
+          });
+          setOAuthStatus({ state: 'waiting_for_login', url: verificationUriComplete });
+        },
+        openBrowser: async (url) => {
+          await openBrowser(url);
+        },
+      });
+      if (result.kind === 'success') {
+        saveGlobalConfig((current) => ({
+          ...current,
+          hasCompletedOnboarding: true,
+          theme: current.theme ?? 'dark',
+        }));
+        await syncUnieAIModelsToCache().catch(() => 0);
+        setUnieaiSuccess({ email: result.tokens.email });
+        setOAuthStatus({ state: 'success' });
+      } else if (result.kind === 'denied') {
+        setOAuthStatus({
+          state: 'error',
+          message: 'UnieAI Studio login was denied.',
+        });
+      } else if (result.kind === 'expired') {
+        setOAuthStatus({
+          state: 'error',
+          message: 'UnieAI Studio login expired. Please try again.',
+        });
+      } else {
+        setOAuthStatus({
+          state: 'error',
+          message: `UnieAI Studio login failed: ${result.message}`,
+        });
+      }
+    } catch (err) {
+      logError(err);
+      setOAuthStatus({
+        state: 'error',
+        message: `UnieAI Studio login failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
 
   // Log forced login method on mount
   useEffect(() => {
@@ -241,7 +311,7 @@ export function ConsoleOAuthFlow({
           state: 'success'
         });
         void sendNotification({
-          message: 'Claude Code login successful',
+          message: 'UnieAI Code login successful',
           notificationType: 'auth_success'
         }, terminal);
       }
@@ -325,7 +395,21 @@ export function ConsoleOAuthFlow({
             </Box>
           </Box>}
       <Box paddingLeft={1} flexDirection="column" gap={1}>
-        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} textInputColumns={textInputColumns} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithClaudeAi={setLoginWithClaudeAi} />
+        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} textInputColumns={textInputColumns} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithClaudeAi={setLoginWithClaudeAi} startUnieAIFlow={startUnieAIFlow} />
+        {unieaiPrompt && oauthStatus.state === 'waiting_for_login' && (
+          <Box flexDirection="column" gap={1}>
+            <Text>Sign in to UnieAI Studio (<Text color="#006AFF">{unieaiPrompt.studioUrl}</Text>)</Text>
+            <Text>Open in browser: <Link url={unieaiPrompt.verificationUrl}>{unieaiPrompt.verificationUrl}</Link></Text>
+            <Text>Verification code: <Text bold color="#006AFF">{unieaiPrompt.userCode}</Text></Text>
+            <Box><Spinner /><Text> Waiting for authorization…</Text></Box>
+          </Box>
+        )}
+        {unieaiSuccess && oauthStatus.state === 'success' && (
+          <Box flexDirection="column">
+            <Text color="success">UnieAI Studio login successful{unieaiSuccess.email ? ` as ${unieaiSuccess.email}` : ''}.</Text>
+            <Text dimColor>Press <Text bold>Enter</Text> to continue…</Text>
+          </Box>
+        )}
       </Box>
     </Box>;
 }
@@ -343,6 +427,7 @@ type OAuthStatusMessageProps = {
   handleSubmitCode: (value: string, url: string) => void;
   setOAuthStatus: (status: OAuthStatus) => void;
   setLoginWithClaudeAi: (value: boolean) => void;
+  startUnieAIFlow: () => void;
 };
 function OAuthStatusMessage(t0) {
   const $ = _c(51);
@@ -359,12 +444,13 @@ function OAuthStatusMessage(t0) {
     textInputColumns,
     handleSubmitCode,
     setOAuthStatus,
-    setLoginWithClaudeAi
+    setLoginWithClaudeAi,
+    startUnieAIFlow
   } = t0;
   switch (oauthStatus.state) {
     case "idle":
       {
-        const t1 = startingMessage ? startingMessage : "Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.";
+        const t1 = startingMessage ? startingMessage : "Sign in with your UnieAI Studio account to use UnieAI Code.";
         let t2;
         if ($[0] !== t1) {
           t2 = <Text bold={true}>{t1}</Text>;
@@ -402,10 +488,20 @@ function OAuthStatusMessage(t0) {
         }
         let t6;
         if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
-          t6 = [t4, t5, {
-            label: <Text>3rd-party platform ·{" "}<Text dimColor={true}>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>{"\n"}</Text>,
-            value: "platform"
-          }];
+          // UnieAI Code: present UnieAI Studio as the only login option.
+          // Anthropic / Console / Bedrock-Foundry-Vertex flows are kept here in
+          // commented form so they can be reinstated if needed — DO NOT delete.
+          t6 = [{
+            label: <Text>UnieAI Studio ·{" "}<Text dimColor={true}>Sign in with your UnieAI Studio account</Text>{"\n"}</Text>,
+            value: "unieai"
+          }
+          // , t4, t5
+          // (3rd-party Bedrock/Foundry/Vertex option intentionally hidden)
+          // , {
+          //   label: <Text>3rd-party platform ·{" "}<Text dimColor={true}>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>{"\n"}</Text>,
+          //   value: "platform"
+          // }
+          ];
           $[5] = t6;
         } else {
           t6 = $[5];
@@ -413,7 +509,22 @@ function OAuthStatusMessage(t0) {
         let t7;
         if ($[6] !== setLoginWithClaudeAi || $[7] !== setOAuthStatus) {
           t7 = <Box><Select options={t6} onChange={value_0 => {
-              if (value_0 === "platform") {
+              try {
+                require('fs').appendFileSync('/tmp/uai-trace.log', `[${new Date().toISOString()}] Select onChange value=${value_0}\n`);
+              } catch (e) { /* ignore */ }
+              if (value_0 === "unieai") {
+                try {
+                  require('fs').appendFileSync('/tmp/uai-trace.log', `[${new Date().toISOString()}] entering unieai branch, typeof startUnieAIFlow=${typeof startUnieAIFlow}\n`);
+                } catch { /* ignore */ }
+                try { logEvent("tengu_oauth_unieai_selected" as any, {}); } catch { /* schema-unknown event; ignore */ }
+                try {
+                  void startUnieAIFlow();
+                } catch (err) {
+                  try {
+                    require('fs').appendFileSync('/tmp/uai-trace.log', `[${new Date().toISOString()}] startUnieAIFlow THREW: ${String(err)}\n`);
+                  } catch { /* ignore */ }
+                }
+              } else if (value_0 === "platform") {
                 logEvent("tengu_oauth_platform_selected", {});
                 setOAuthStatus({
                   state: "platform_setup"
@@ -460,7 +571,7 @@ function OAuthStatusMessage(t0) {
         let t2;
         let t3;
         if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <Text>Claude Code supports Amazon Bedrock, Microsoft Foundry, and Vertex AI. Set the required environment variables, then restart Claude Code.</Text>;
+          t2 = <Text>UnieAI Code supports Amazon Bedrock, Microsoft Foundry, and Vertex AI. Set the required environment variables, then restart UnieAI Code.</Text>;
           t3 = <Text>If you are part of an enterprise organization, contact your administrator for setup instructions.</Text>;
           $[13] = t2;
           $[14] = t3;
@@ -554,7 +665,7 @@ function OAuthStatusMessage(t0) {
       {
         let t1;
         if ($[37] === Symbol.for("react.memo_cache_sentinel")) {
-          t1 = <Box flexDirection="column" gap={1}><Box><Spinner /><Text>Creating API key for Claude Code…</Text></Box></Box>;
+          t1 = <Box flexDirection="column" gap={1}><Box><Spinner /><Text>Creating API key for UnieAI Code…</Text></Box></Box>;
           $[37] = t1;
         } else {
           t1 = $[37];

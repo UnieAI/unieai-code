@@ -32,6 +32,11 @@ export function selectTipWithLongestTimeSinceShown(
 export async function getTipToShowOnSpinner(
   context?: TipContext,
 ): Promise<Tip | undefined> {
+  // UnieAI Code: Anthropic-product tips (Claude API, GitHub app, Slack app, etc.)
+  // don't belong in a UnieAI-branded CLI. Disable the rotation entirely; flip
+  // this guard if you want to re-enable curated UnieAI tips later.
+  return undefined
+
   // Check if tips are disabled (default to true if not set)
   if (getSettings_DEPRECATED().spinnerTipsEnabled === false) {
     return undefined

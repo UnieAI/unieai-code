@@ -23,6 +23,12 @@ import type { OAuthTokens } from '../../services/oauth/types.js'
 import { OpenAIOAuthService } from '../../services/openaiAuth/index.js'
 import { getOpenAIOAuthTokens } from '../../services/openaiAuth/storage.js'
 import type { OpenAIOAuthTokens } from '../../services/openaiAuth/types.js'
+import { UnieAIAuthService, syncUnieAIModelsToCache } from '../../services/unieaiAuth/index.js'
+import {
+  getUnieAITokens,
+  deleteUnieAITokens,
+} from '../../services/unieaiAuth/storage.js'
+import { openBrowser } from '../../utils/browser.js'
 import {
   clearStoredClaudeAIOAuthTokens,
   clearOAuthTokenCache,
@@ -48,6 +54,37 @@ import {
   buildAccountProperties,
   buildAPIProviderProperties,
 } from '../../utils/status.js'
+
+async function spawnInteractiveSession(): Promise<void> {
+  const { spawn } = await import('child_process')
+  const entrypoint = process.argv[1]
+  if (!entrypoint) {
+    process.stdout.write('Run "unieai" to start a session.\n')
+    process.exit(0)
+  }
+  // Wipe the login flow output (verification code, URL, "Synced N models…" etc.)
+  // before the interactive session takes over the terminal — keeps the post-login
+  // view clean. ANSI: clear scrollback (3J), clear screen (2J), home cursor (H).
+  if (process.stdout.isTTY) {
+    process.stdout.write('\x1b[3J\x1b[2J\x1b[H')
+  }
+  const child = spawn(process.argv[0]!, [entrypoint], {
+    stdio: 'inherit',
+    env: process.env,
+  })
+  await new Promise<void>((resolve) => {
+    child.on('exit', (code) => {
+      process.exit(code ?? 0)
+      resolve()
+    })
+    child.on('error', (err) => {
+      logError(err)
+      process.stdout.write('Run "unieai" to start a session.\n')
+      process.exit(0)
+      resolve()
+    })
+  })
+}
 
 /**
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,
@@ -145,13 +182,82 @@ export async function authLogin({
   console: useConsole,
   claudeai,
   openai,
+  unieai,
 }: {
   email?: string
   sso?: boolean
   console?: boolean
   claudeai?: boolean
   openai?: boolean
+  unieai?: boolean
 }): Promise<void> {
+  const hasExplicitAnthropicFlag = !!(useConsole || claudeai || email || sso)
+  const defaultSettings = getInitialSettings()
+  const useUnieAI =
+    unieai ||
+    (!openai &&
+      !hasExplicitAnthropicFlag &&
+      !defaultSettings.forceLoginMethod)
+
+  if (useUnieAI) {
+    if (openai || hasExplicitAnthropicFlag) {
+      process.stderr.write(
+        'Error: --unieai cannot be combined with --email, --sso, --console, --claudeai, or --openai.\n',
+      )
+      process.exit(1)
+    }
+
+    const service = new UnieAIAuthService()
+    try {
+      const result = await service.startDeviceFlow({
+        onPrompt: ({ userCode, verificationUriComplete, studioUrl }) => {
+          process.stdout.write(
+            `Sign in to UnieAI Studio (${studioUrl}).\n` +
+              `Open this URL in your browser:\n  ${verificationUriComplete}\n` +
+              `Your verification code: ${userCode}\n` +
+              `Waiting for authorization…\n`,
+          )
+        },
+        openBrowser: async (url) => {
+          await openBrowser(url)
+        },
+      })
+
+      if (result.kind === 'success') {
+        const email = result.tokens.email ? ` as ${result.tokens.email}` : ''
+        process.stdout.write(`UnieAI Studio login successful${email}.\n`)
+        if (result.tokens.activeOrgId) {
+          process.stdout.write(`Active organization: ${result.tokens.activeOrgId}\n`)
+        }
+        saveGlobalConfig((current) => ({
+          ...current,
+          hasCompletedOnboarding: true,
+          theme: current.theme ?? 'dark',
+        }))
+        const synced = await syncUnieAIModelsToCache()
+        if (synced > 0) {
+          process.stdout.write(`Synced ${synced} model(s) from UnieAI Studio.\n`)
+        }
+        process.stdout.write('Starting UnieAI Code session…\n')
+        await spawnInteractiveSession()
+        return
+      }
+
+      if (result.kind === 'expired') {
+        process.stderr.write('Login expired before authorization completed. Please retry.\n')
+      } else if (result.kind === 'denied') {
+        process.stderr.write('Login denied.\n')
+      } else {
+        process.stderr.write(`UnieAI Studio login failed: ${result.message}\n`)
+      }
+      process.exit(1)
+    } catch (err) {
+      logError(err)
+      process.stderr.write(`UnieAI Studio login failed: ${errorMessage(err)}\n`)
+      process.exit(1)
+    }
+  }
+
   if (openai) {
     if (email || sso || useConsole || claudeai) {
       process.stderr.write(
@@ -191,7 +297,7 @@ export async function authLogin({
     process.exit(1)
   }
 
-  const settings = getInitialSettings()
+  const settings = defaultSettings
   // forceLoginMethod is a hard constraint (enterprise setting) — matches ConsoleOAuthFlow behavior.
   // Without it, --console selects Console; --claudeai (or no flag) selects claude.ai.
   const loginWithClaudeAi = settings.forceLoginMethod
@@ -297,7 +403,49 @@ export async function authStatus(opts: {
   json?: boolean
   text?: boolean
   openai?: boolean
+  unieai?: boolean
 }): Promise<void> {
+  if (opts.unieai) {
+    const tokens = getUnieAITokens()
+    const loggedIn = !!tokens?.refreshToken
+
+    if (opts.text) {
+      if (!loggedIn) {
+        process.stdout.write(
+          'Not logged in to UnieAI Studio. Run claude auth login --unieai to authenticate.\n',
+        )
+      } else {
+        process.stdout.write('Provider: unieai-studio\n')
+        process.stdout.write(`Studio URL: ${tokens.studioUrl}\n`)
+        if (tokens.email) process.stdout.write(`Email: ${tokens.email}\n`)
+        if (tokens.accountId) process.stdout.write(`Account ID: ${tokens.accountId}\n`)
+        if (tokens.activeOrgId) process.stdout.write(`Active Org: ${tokens.activeOrgId}\n`)
+        process.stdout.write(
+          `Expires At: ${new Date(tokens.expiresAt).toISOString()}\n`,
+        )
+      }
+    } else {
+      process.stdout.write(
+        jsonStringify(
+          {
+            loggedIn,
+            authMethod: loggedIn ? 'unieai_studio' : 'none',
+            provider: 'unieai-studio',
+            studioUrl: tokens?.studioUrl ?? null,
+            email: tokens?.email ?? null,
+            accountId: tokens?.accountId ?? null,
+            activeOrgId: tokens?.activeOrgId ?? null,
+            expiresAt: tokens?.expiresAt ?? null,
+          },
+          null,
+          2,
+        ) + '\n',
+      )
+    }
+
+    process.exit(loggedIn ? 0 : 1)
+  }
+
   if (opts.openai) {
     const openaiTokens = getOpenAIOAuthTokens()
     const loggedIn =
@@ -445,7 +593,26 @@ export async function authStatus(opts: {
   process.exit(loggedIn ? 0 : 1)
 }
 
-export async function authLogout(opts?: { openai?: boolean }): Promise<void> {
+export async function authLogout(opts?: {
+  openai?: boolean
+  unieai?: boolean
+}): Promise<void> {
+  if (opts?.unieai) {
+    const service = new UnieAIAuthService()
+    let ok = false
+    try {
+      ok = await service.logout()
+    } catch {
+      ok = deleteUnieAITokens()
+    }
+    if (!ok) {
+      process.stderr.write('Failed to log out from UnieAI Studio.\n')
+      process.exit(1)
+    }
+    process.stdout.write('Successfully logged out from UnieAI Studio.\n')
+    process.exit(0)
+  }
+
   if (opts?.openai) {
     const openaiOAuthService = new OpenAIOAuthService()
     const success = openaiOAuthService.logout()
@@ -465,4 +632,112 @@ export async function authLogout(opts?: { openai?: boolean }): Promise<void> {
   }
   process.stdout.write('Successfully logged out from your Anthropic account.\n')
   process.exit(0)
+}
+
+export async function authOrgs(opts: {
+  json?: boolean
+  text?: boolean
+  unieai?: boolean
+  use?: string
+}): Promise<void> {
+  if (!opts.unieai) {
+    process.stderr.write(
+      'Error: "claude auth orgs" requires --unieai (other providers do not expose org listings).\n',
+    )
+    process.exit(1)
+  }
+
+  const service = new UnieAIAuthService()
+  try {
+    if (opts.use) {
+      const updated = await service.setActiveOrg(opts.use)
+      process.stdout.write(`Active organization set to ${updated.activeOrgId}.\n`)
+      process.exit(0)
+    }
+
+    const tokens = getUnieAITokens()
+    const orgs = await service.getOrgs()
+
+    if (opts.text) {
+      if (orgs.length === 0) {
+        process.stdout.write('No organizations available.\n')
+      } else {
+        for (const org of orgs) {
+          const marker = org.id === tokens?.activeOrgId ? '* ' : '  '
+          const name = org.name || org.slug || org.id
+          process.stdout.write(`${marker}${org.id}  ${name}\n`)
+        }
+      }
+    } else {
+      process.stdout.write(
+        jsonStringify(
+          {
+            activeOrgId: tokens?.activeOrgId ?? null,
+            orgs,
+          },
+          null,
+          2,
+        ) + '\n',
+      )
+    }
+    process.exit(0)
+  } catch (err) {
+    logError(err)
+    process.stderr.write(`Failed to list organizations: ${errorMessage(err)}\n`)
+    process.exit(1)
+  }
+}
+
+export async function authModels(opts: {
+  json?: boolean
+  text?: boolean
+  unieai?: boolean
+  org?: string
+}): Promise<void> {
+  if (!opts.unieai) {
+    process.stderr.write(
+      'Error: "claude auth models" requires --unieai (use "claude config get model" or your provider tooling otherwise).\n',
+    )
+    process.exit(1)
+  }
+
+  const service = new UnieAIAuthService()
+  try {
+    const config = await service.getConfig(opts.org)
+    const providerConfig = config?.provider?.unieai
+    const modelMap = providerConfig?.models ?? {}
+    const models = Object.entries(modelMap).map(([id, info]) => ({ id, ...info }))
+
+    if (opts.text) {
+      if (models.length === 0) {
+        process.stdout.write('No models available for this organization.\n')
+      } else {
+        if (providerConfig?.baseURL) {
+          process.stdout.write(`Base URL: ${providerConfig.baseURL}\n`)
+        }
+        for (const model of models) {
+          const name = (model as { name?: string }).name || ''
+          process.stdout.write(
+            name && name !== model.id ? `${model.id}  ${name}\n` : `${model.id}\n`,
+          )
+        }
+      }
+    } else {
+      process.stdout.write(
+        jsonStringify(
+          {
+            baseURL: providerConfig?.baseURL ?? null,
+            models,
+          },
+          null,
+          2,
+        ) + '\n',
+      )
+    }
+    process.exit(0)
+  } catch (err) {
+    logError(err)
+    process.stderr.write(`Failed to list models: ${errorMessage(err)}\n`)
+    process.exit(1)
+  }
 }

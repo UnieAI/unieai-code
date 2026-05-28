@@ -1,17 +1,34 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Box, Link, Text } from '../ink.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'
 import { Select } from './CustomSelect/select.js'
 import { OpenAILoginFlow } from './OpenAILoginFlow.js'
+import { Spinner } from './Spinner.js'
+import { UnieAIAuthService, syncUnieAIModelsToCache } from '../services/unieaiAuth/index.js'
+import { openBrowser } from '../utils/browser.js'
+import { saveGlobalConfig } from '../utils/config.js'
+import { logError } from '../utils/log.js'
 
 type Props = {
   onDone(): void
   startingMessage?: string
 }
 
-type LoginSelection = 'claudeai' | 'console' | 'openai' | 'platform' | 'idle'
+type LoginSelection =
+  | 'unieai'
+  | 'claudeai'
+  | 'console'
+  | 'openai'
+  | 'platform'
+  | 'idle'
+
+type UnieAIPhase =
+  | { state: 'idle' }
+  | { state: 'pending'; userCode: string; verificationUrl: string; studioUrl: string }
+  | { state: 'success'; email?: string }
+  | { state: 'error'; message: string }
 
 function PlatformSetupFlow({
   onBack,
@@ -81,45 +98,28 @@ export function SlashLoginFlow({
       {
         label: (
           <Text>
-            Claude account with subscription ·{' '}
-            <Text dimColor>Pro, Max, Team, or Enterprise</Text>
+            UnieAI Studio ·{' '}
+            <Text dimColor>Sign in with your UnieAI Studio account</Text>
             {'\n'}
           </Text>
         ),
-        value: 'claudeai' as const,
+        value: 'unieai' as const,
       },
-      {
-        label: (
-          <Text>
-            Anthropic Console account ·{' '}
-            <Text dimColor>API usage billing</Text>
-            {'\n'}
-          </Text>
-        ),
-        value: 'console' as const,
-      },
-      {
-        label: (
-          <Text>
-            OpenAI account · <Text dimColor>ChatGPT Pro/Plus</Text>
-            {'\n'}
-          </Text>
-        ),
-        value: 'openai' as const,
-      },
-      {
-        label: (
-          <Text>
-            3rd-party platform ·{' '}
-            <Text dimColor>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>
-            {'\n'}
-          </Text>
-        ),
-        value: 'platform' as const,
-      },
+      // UnieAI Code: legacy Anthropic / OpenAI / 3rd-party options removed.
+      // Kept commented for restoration if cross-provider login is ever needed.
+      // { label: <Text>Claude account with subscription · <Text dimColor>Pro, Max, Team, or Enterprise</Text>{'\n'}</Text>, value: 'claudeai' as const },
+      // { label: <Text>Anthropic Console account · <Text dimColor>API usage billing</Text>{'\n'}</Text>, value: 'console' as const },
+      // { label: <Text>OpenAI account · <Text dimColor>ChatGPT Pro/Plus</Text>{'\n'}</Text>, value: 'openai' as const },
+      // { label: <Text>3rd-party platform · <Text dimColor>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>{'\n'}</Text>, value: 'platform' as const },
     ],
     [],
   )
+
+  if (selection === 'unieai') {
+    return (
+      <UnieAILoginFlow onDone={onDone} onBack={() => setSelection('idle')} />
+    )
+  }
 
   if (selection === 'claudeai' || selection === 'console') {
     return (
@@ -142,8 +142,7 @@ export function SlashLoginFlow({
   return (
     <Box flexDirection="column" gap={1} marginTop={1}>
       <Text bold>
-        {startingMessage ??
-          'Claude Code can be used with your Claude subscription, Anthropic Console billing, or your ChatGPT subscription.'}
+        {startingMessage ?? 'Sign in with your UnieAI Studio account to use UnieAI Code.'}
       </Text>
       <Text>Select login method:</Text>
       <Box>
@@ -152,6 +151,128 @@ export function SlashLoginFlow({
           onChange={value => setSelection(value as LoginSelection)}
         />
       </Box>
+    </Box>
+  )
+}
+
+function UnieAILoginFlow({
+  onDone,
+  onBack,
+}: {
+  onDone(): void
+  onBack(): void
+}): React.ReactNode {
+  const [phase, setPhase] = useState<UnieAIPhase>({ state: 'idle' })
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const service = new UnieAIAuthService()
+      try {
+        const result = await service.startDeviceFlow({
+          onPrompt: ({ userCode, verificationUriComplete, studioUrl }) => {
+            if (cancelled) return
+            setPhase({
+              state: 'pending',
+              userCode,
+              verificationUrl: verificationUriComplete,
+              studioUrl,
+            })
+          },
+          openBrowser: async (url) => {
+            await openBrowser(url)
+          },
+        })
+        if (cancelled) return
+        if (result.kind === 'success') {
+          saveGlobalConfig((current) => ({
+            ...current,
+            hasCompletedOnboarding: true,
+            theme: current.theme ?? 'dark',
+          }))
+          await syncUnieAIModelsToCache().catch(() => 0)
+          setPhase({ state: 'success', email: result.tokens.email })
+        } else if (result.kind === 'denied') {
+          setPhase({ state: 'error', message: 'UnieAI Studio login was denied.' })
+        } else if (result.kind === 'expired') {
+          setPhase({
+            state: 'error',
+            message: 'UnieAI Studio login expired. Please try again.',
+          })
+        } else {
+          setPhase({
+            state: 'error',
+            message: `UnieAI Studio login failed: ${result.message}`,
+          })
+        }
+      } catch (err) {
+        logError(err)
+        setPhase({
+          state: 'error',
+          message: `UnieAI Studio login failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useKeybinding(
+    'confirm:yes',
+    () => {
+      if (phase.state === 'success') {
+        onDone()
+      } else if (phase.state === 'error') {
+        onBack()
+      }
+    },
+    {
+      context: 'Confirmation',
+      isActive: phase.state === 'success' || phase.state === 'error',
+    },
+  )
+
+  return (
+    <Box flexDirection="column" gap={1} marginTop={1}>
+      {phase.state === 'idle' && (
+        <Box><Spinner /><Text> Requesting verification code…</Text></Box>
+      )}
+      {phase.state === 'pending' && (
+        <Box flexDirection="column" gap={1}>
+          <Text>
+            Sign in to UnieAI Studio (<Text color="#006AFF">{phase.studioUrl}</Text>)
+          </Text>
+          <Text>
+            Open in browser: <Link url={phase.verificationUrl}>{phase.verificationUrl}</Link>
+          </Text>
+          <Text>
+            Verification code:{' '}
+            <Text bold color="#006AFF">
+              {phase.userCode}
+            </Text>
+          </Text>
+          <Box><Spinner /><Text> Waiting for authorization…</Text></Box>
+        </Box>
+      )}
+      {phase.state === 'success' && (
+        <Box flexDirection="column">
+          <Text color="green">
+            UnieAI Studio login successful{phase.email ? ` as ${phase.email}` : ''}.
+          </Text>
+          <Text dimColor>
+            Press <Text bold>Enter</Text> to continue…
+          </Text>
+        </Box>
+      )}
+      {phase.state === 'error' && (
+        <Box flexDirection="column">
+          <Text color="red">{phase.message}</Text>
+          <Text dimColor>
+            Press <Text bold>Enter</Text> to go back.
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

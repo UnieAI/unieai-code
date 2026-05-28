@@ -40,6 +40,9 @@ export function Opus1mMergeNotice() {
     t1 = $[2];
   }
   useEffect(t0, t1);
+  // UnieAI Code: hide Anthropic product announcement (Opus 1M context promo).
+  // Remove this early-return to restore the original notice.
+  return null;
   if (!show) {
     return null;
   }
