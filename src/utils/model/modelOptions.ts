@@ -593,16 +593,16 @@ export function getModelOptions(fastMode = false): ModelOption[] {
     customModel = initialMainLoopModel
   }
   if (customModel === null || options.some(opt => opt.value === customModel)) {
-    return filterModelOptionsByAllowlist(options)
+    return finalizeModelOptions(options)
   } else if (customModel === 'opusplan') {
-    return filterModelOptionsByAllowlist([...options, getOpusPlanOption()])
+    return finalizeModelOptions([...options, getOpusPlanOption()])
   } else if (customModel === 'opus' && getAPIProvider() === 'firstParty') {
-    return filterModelOptionsByAllowlist([
+    return finalizeModelOptions([
       ...options,
       getMaxOpusOption(fastMode),
     ])
   } else if (customModel === 'opus[1m]' && getAPIProvider() === 'firstParty') {
-    return filterModelOptionsByAllowlist([
+    return finalizeModelOptions([
       ...options,
       getMergedOpus1MOption(fastMode),
     ])
@@ -619,21 +619,40 @@ export function getModelOptions(fastMode = false): ModelOption[] {
         description: 'Custom model',
       })
     }
-    return filterModelOptionsByAllowlist(options)
+    return finalizeModelOptions(options)
   }
 }
 
+// UnieAI Code: the built-in Anthropic Claude picker entries (and their 1M /
+// plan variants) are hidden from /model — only UnieAI Studio, custom, and
+// non-Claude provider models are offered.
+const HIDDEN_BUILTIN_MODEL_VALUES = new Set<string>([
+  'sonnet',
+  'opus',
+  'haiku',
+  'sonnet[1m]',
+  'opus[1m]',
+  'opusplan',
+])
+
 /**
- * Filter model options by the availableModels allowlist.
- * Always preserves the "Default" option (value: null).
+ * Finalize the /model option list: drop the "Default (recommended)" entry
+ * (value: null) and the built-in Claude options, then apply the
+ * availableModels allowlist. UnieAI Code does not surface Anthropic models or
+ * a default in the picker.
  */
-function filterModelOptionsByAllowlist(options: ModelOption[]): ModelOption[] {
-  const settings = getSettings_DEPRECATED() || {}
-  if (!settings.availableModels) {
-    return options // No restrictions
-  }
-  return options.filter(
+function finalizeModelOptions(options: ModelOption[]): ModelOption[] {
+  let filtered = options.filter(
     opt =>
-      opt.value === null || (opt.value !== null && isModelAllowed(opt.value)),
+      opt.value !== null && !HIDDEN_BUILTIN_MODEL_VALUES.has(opt.value),
   )
+
+  const settings = getSettings_DEPRECATED() || {}
+  if (settings.availableModels) {
+    filtered = filtered.filter(
+      opt => opt.value !== null && isModelAllowed(opt.value),
+    )
+  }
+
+  return filtered
 }
