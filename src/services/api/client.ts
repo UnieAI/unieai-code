@@ -10,6 +10,7 @@ import {
   refreshAndGetAwsCredentials,
   refreshGcpCredentialsIfNeeded,
 } from 'src/utils/auth.js'
+import { signClaudeCodeCCHBody } from 'src/utils/claudeCodeCch.js'
 import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
@@ -121,6 +122,31 @@ export function resolveAnthropicClientApiKey({
   return explicitApiKey || getFallbackApiKey()
 }
 
+export function shouldUseOpenAICodexTransport({
+  hasOpenAIAuth,
+  isClaudeSubscriber,
+  forceOpenAICodex,
+  isOpenAIModel,
+  hasAnthropicAuthToken,
+  hasExplicitApiKey,
+  hasFallbackApiKey,
+}: {
+  hasOpenAIAuth: boolean
+  isClaudeSubscriber: boolean
+  forceOpenAICodex: boolean
+  isOpenAIModel: boolean
+  hasAnthropicAuthToken: boolean
+  hasExplicitApiKey: boolean
+  hasFallbackApiKey: boolean
+}): boolean {
+  return (
+    hasOpenAIAuth &&
+    (!isClaudeSubscriber || forceOpenAICodex) &&
+    (isOpenAIModel ||
+      (!hasAnthropicAuthToken && !hasExplicitApiKey && !hasFallbackApiKey))
+  )
+}
+
 export async function getAnthropicClient({
   apiKey,
   maxRetries,
@@ -170,15 +196,26 @@ export async function getAnthropicClient({
 
   const isOpenAIModel = model ? isOpenAIResponsesModel(model) : false
   const usingUnieAI = shouldUseUnieAIInference() && isUnieAIStudioModel(model)
+  const isClaudeSubscriber = isClaudeAISubscriber()
+  const forceOpenAICodex = isEnvTruthy(process.env.CC_HAHA_OPENAI_OAUTH_PROVIDER)
+  const hasOpenAIAuth = shouldUseOpenAICodexAuth()
+  const hasFallbackApiKey = hasOpenAIAuth &&
+    !process.env.ANTHROPIC_AUTH_TOKEN &&
+    !apiKey &&
+    !!getAnthropicApiKey()
   const usingOpenAICodex =
     !usingUnieAI &&
-    shouldUseOpenAICodexAuth() &&
-    !isClaudeAISubscriber() &&
-    (isOpenAIModel ||
-      (!process.env.ANTHROPIC_AUTH_TOKEN &&
-        !(apiKey || getAnthropicApiKey())))
+    shouldUseOpenAICodexTransport({
+      hasOpenAIAuth,
+      isClaudeSubscriber,
+      forceOpenAICodex,
+      isOpenAIModel,
+      hasAnthropicAuthToken: !!process.env.ANTHROPIC_AUTH_TOKEN,
+      hasExplicitApiKey: !!apiKey,
+      hasFallbackApiKey,
+    })
 
-  if (!isClaudeAISubscriber() && !usingOpenAICodex && !usingUnieAI) {
+  if (!isClaudeSubscriber && !usingOpenAICodex && !usingUnieAI) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
@@ -351,13 +388,13 @@ export async function getAnthropicClient({
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
     apiKey: usingUnieAI
       ? UNIEAI_INFERENCE_DUMMY_KEY
-      : isClaudeAISubscriber()
-        ? null
-        : usingOpenAICodex
-          ? OPENAI_OAUTH_DUMMY_KEY
+      : usingOpenAICodex
+        ? OPENAI_OAUTH_DUMMY_KEY
+        : isClaudeSubscriber
+          ? null
           : resolveAnthropicClientApiKey({ explicitApiKey: apiKey }),
     authToken:
-      !usingUnieAI && isClaudeAISubscriber()
+      !usingUnieAI && isClaudeSubscriber && !usingOpenAICodex
         ? getClaudeAIOAuthTokens()?.accessToken
         : undefined,
     // Set baseURL from OAuth config when using staging OAuth
@@ -441,6 +478,6 @@ function buildFetch(
     } catch {
       // never let logging crash the fetch
     }
-    return inner(input, { ...init, headers })
+    return inner(input, { ...init, headers, body: signClaudeCodeCCHBody(init?.body) })
   }
 }

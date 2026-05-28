@@ -35,7 +35,6 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
   const setSessionPermissionMode = useChatStore((s) => s.setSessionPermissionMode)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const sessions = useSessionStore((s) => s.sessions)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const [open, setOpen] = useState(false)
   const [confirmDialog, setConfirmDialog] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -87,7 +86,9 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
     dontAsk: t('permMode.label.dontAsk'),
   }
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId)
+  const activeSession = activeTabId
+    ? sessions.find((s) => s.id === activeTabId)
+    : null
   const workDir = workDirProp || activeSession?.workDir || '~'
   const compactButtonClass = compact
     ? isMobile

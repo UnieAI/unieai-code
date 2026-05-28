@@ -18,11 +18,52 @@ export type WebSearchSettings = {
   braveApiKey?: string
 }
 
+export type UpdateProxyMode = 'system' | 'manual'
+
+export type UpdateProxySettings = {
+  mode: UpdateProxyMode
+  url: string
+}
+
+export type NetworkProxyMode = 'system' | 'manual'
+
+export type NetworkProxySettings = {
+  mode: NetworkProxyMode
+  url: string
+}
+
+export type NetworkSettings = {
+  aiRequestTimeoutMs: number
+  proxy: NetworkProxySettings
+}
+
 export type H5AccessSettings = {
   enabled: boolean
   tokenPreview: string | null
   allowedOrigins: string[]
   publicBaseUrl: string | null
+}
+
+export type H5HostStaleness = 'ok' | 'unreachable' | 'proxy' | 'unset'
+
+export type H5AccessDiagnostics = {
+  storedHostStaleness: H5HostStaleness
+  storedPublicBaseUrl: string | null
+  effectivePublicBaseUrl: string | null
+  suggestedHost: string | null
+  localInterfaceHosts: string[]
+}
+
+export type DesktopTerminalStartupShell =
+  | 'system'
+  | 'pwsh'
+  | 'powershell'
+  | 'cmd'
+  | 'custom'
+
+export type DesktopTerminalSettings = {
+  startupShell: DesktopTerminalStartupShell
+  customShellPath: string
 }
 
 export type ModelInfo = {
@@ -42,7 +83,13 @@ export type UserSettings = {
   skipWebFetchPreflight?: boolean
   desktopNotificationsEnabled?: boolean
   webSearch?: WebSearchSettings
+  updateProxy?: Partial<UpdateProxySettings>
+  network?: {
+    aiRequestTimeoutMs?: number
+    proxy?: Partial<NetworkProxySettings>
+  }
   language?: string
+  desktopTerminal?: Partial<DesktopTerminalSettings>
   [key: string]: unknown
 }
 
@@ -52,4 +99,6 @@ export type AppModeConfig = {
   mode: AppMode
   portableDir: string | null
   defaultPortableDir: string | null
+  activeConfigDir?: string | null
+  configDirSource?: 'system' | 'environment' | 'portable'
 }

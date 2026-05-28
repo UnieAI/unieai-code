@@ -39,17 +39,29 @@ vi.mock('../components/workspace/WorkspacePanel', () => ({
 
 vi.mock('./TerminalSettings', () => ({
   TerminalSettings: ({
+    active,
     cwd,
     onOpenInTab,
     onClose,
+    runtimeId,
+    preserveOnUnmount,
     testId,
   }: {
+    active?: boolean
     cwd?: string
     onOpenInTab?: () => void
     onClose?: () => void
+    runtimeId?: string
+    preserveOnUnmount?: boolean
     testId: string
   }) => (
-    <div data-testid={testId} data-cwd={cwd ?? ''}>
+    <div
+      data-testid={testId}
+      data-active={active ? 'true' : 'false'}
+      data-cwd={cwd ?? ''}
+      data-preserve-on-unmount={preserveOnUnmount ? 'true' : 'false'}
+      data-runtime-id={runtimeId ?? ''}
+    >
       <button type="button" onClick={onOpenInTab}>Open in Tab</button>
       <button type="button" onClick={onClose}>Close terminal panel</button>
     </div>
@@ -135,7 +147,7 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
   })
 
-  it('does not duplicate the current goal as a page-level status panel', () => {
+  it('renders the current goal as a lightweight header strip without a page-level panel', () => {
     const sessionId = 'goal-visible-session'
 
     useSessionStore.setState({
@@ -200,6 +212,72 @@ describe('ActiveSession task polling', () => {
     render(<ActiveSession />)
 
     expect(screen.queryByTestId('active-goal-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('active-goal-strip')).toBeInTheDocument()
+    expect(screen.getByTestId('active-goal-strip')).toHaveTextContent('ship the smoke test')
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+  })
+
+  it('does not keep a completed goal pinned in the header', () => {
+    const sessionId = 'goal-completed-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Goal Completed Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 3,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Goal Completed Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{
+            id: 'goal-completed-event',
+            type: 'goal_event',
+            action: 'completed',
+            status: 'complete',
+            message: 'Goal marked complete.',
+            timestamp: 3,
+          }],
+          activeGoal: {
+            action: 'completed',
+            status: 'complete',
+            message: 'Goal marked complete.',
+            updatedAt: 3,
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByTestId('active-goal-strip')).not.toBeInTheDocument()
     expect(screen.getByTestId('message-list')).toBeInTheDocument()
   })
 
@@ -275,6 +353,68 @@ describe('ActiveSession task polling', () => {
 
     expect(screen.queryByTestId('background-agent-panel')).not.toBeInTheDocument()
     expect(screen.getByTestId('message-list')).toBeInTheDocument()
+  })
+
+  it('keeps the session header active while a background task is still running after the turn completes', () => {
+    const sessionId = 'background-shell-running-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Background Shell Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: new Date().toISOString(),
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Background Shell Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'task started', timestamp: 1 }],
+          backgroundAgentTasks: {
+            'bash-task-1': {
+              taskId: 'bash-task-1',
+              toolUseId: 'bash-tool-1',
+              status: 'running',
+              taskType: 'local_bash',
+              description: 'Run page integration checks',
+              startedAt: 1,
+              updatedAt: 2,
+            },
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByText(/session active|会话活跃中/)).toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
   })
 
   it('refreshes CLI tasks repeatedly while a turn is active', async () => {
@@ -712,6 +852,8 @@ describe('ActiveSession task polling', () => {
 
     expect(panel).toHaveStyle({ height: `${TERMINAL_PANEL_DEFAULT_HEIGHT}px` })
     expect(host).toHaveAttribute('data-cwd', '/tmp/project-root/packages/app')
+    expect(host).toHaveAttribute('data-active', 'true')
+    expect(host).toHaveAttribute('data-preserve-on-unmount', 'true')
     expect(resizeHandle).toHaveAttribute('aria-valuemin', `${TERMINAL_PANEL_MIN_HEIGHT}`)
     expect(resizeHandle).toHaveAttribute('aria-valuemax', `${TERMINAL_PANEL_MAX_HEIGHT}`)
 
@@ -757,7 +899,65 @@ describe('ActiveSession task polling', () => {
 
     const terminalTab = useTabStore.getState().tabs.find((tab) => tab.type === 'terminal')
     expect(useTerminalPanelStore.getState().isPanelOpen(sessionId)).toBe(false)
+    expect(useTerminalPanelStore.getState().getPanelRuntimeId(sessionId)).toBeUndefined()
     expect(terminalTab?.terminalCwd).toBe('/tmp/project-root/packages/app')
+    expect(terminalTab?.terminalRuntimeId).toBe(`__session_terminal__${sessionId}`)
     expect(useTabStore.getState().activeTabId).toBe(terminalTab?.sessionId)
+  })
+
+  it('keeps the docked terminal mounted when the panel is hidden', async () => {
+    const sessionId = 'terminal-hide-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Terminal Hide Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/tmp/project-root',
+        workDir: '/tmp/project-root',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Terminal Hide Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useTerminalPanelStore.getState().openPanel(sessionId)
+
+    render(<ActiveSession />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close terminal panel' }))
+
+    expect(useTerminalPanelStore.getState().isPanelOpen(sessionId)).toBe(false)
+    expect(screen.getByTestId('session-terminal-panel')).toHaveClass('hidden')
+    expect(screen.getByTestId(`session-terminal-host-${sessionId}`)).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId(`session-terminal-host-${sessionId}`)).toHaveAttribute('data-runtime-id', `__session_terminal__${sessionId}`)
   })
 })

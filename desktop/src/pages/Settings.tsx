@@ -9,7 +9,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import type { PermissionMode, EffortLevel, ThemeMode, WebSearchMode, AppMode } from '../types/settings'
+import type { PermissionMode, EffortLevel, ThemeMode, UpdateProxyMode, NetworkProxyMode, WebSearchMode, AppMode } from '../types/settings'
 import type { Locale } from '../i18n'
 import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat, ProviderAuthStrategy } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
@@ -32,6 +32,8 @@ import { ActivitySettings } from './ActivitySettings'
 import { MemorySettings } from './MemorySettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { ClaudeOfficialLogin } from '../components/settings/ClaudeOfficialLogin'
+import { ChatGPTOfficialLogin } from '../components/settings/ChatGPTOfficialLogin'
+import { OPENAI_OFFICIAL_PROVIDER_ID } from '../constants/openaiOfficialProvider'
 import { useUpdateStore } from '../stores/updateStore'
 import { formatBytes } from '../lib/formatBytes'
 import { isTauriRuntime } from '../lib/desktopRuntime'
@@ -50,6 +52,10 @@ import {
 } from '../lib/providerSettingsJson'
 import { copyTextToClipboard } from '../components/chat/clipboard'
 
+const NETWORK_TIMEOUT_MIN_SECONDS = 5
+const NETWORK_TIMEOUT_MAX_SECONDS = 600
+const NETWORK_TIMEOUT_STEP_SECONDS = 30
+
 function buildH5LaunchUrl(baseUrl: string | null, token: string | null): string | null {
   if (!baseUrl) return null
 
@@ -64,6 +70,67 @@ function buildH5LaunchUrl(baseUrl: string | null, token: string | null): string 
     return token
       ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}serverUrl=${encodeURIComponent(baseUrl)}&h5Token=${encodeURIComponent(token)}`
       : baseUrl
+  }
+}
+
+function isLanH5BaseUrl(url: URL): boolean {
+  return url.protocol === 'http:' &&
+    !!url.port &&
+    (
+      url.hostname === 'localhost' ||
+      url.hostname === '127.0.0.1' ||
+      url.hostname.startsWith('10.') ||
+      url.hostname.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(url.hostname) ||
+      url.hostname.startsWith('169.254.')
+    )
+}
+
+function extractH5AccessAddressDraft(baseUrl: string | null): string {
+  if (!baseUrl) return ''
+
+  try {
+    const url = new URL(baseUrl)
+    return isLanH5BaseUrl(url) ? url.hostname : baseUrl
+  } catch {
+    return baseUrl
+  }
+}
+
+function extractHostnameFromUrl(value: string | null): string | null {
+  if (!value) return null
+  try {
+    return new URL(value).hostname || null
+  } catch {
+    return null
+  }
+}
+
+function extractH5AccessPort(baseUrl: string | null): string | null {
+  if (!baseUrl) return null
+
+  try {
+    const url = new URL(baseUrl)
+    return url.port || null
+  } catch {
+    return null
+  }
+}
+
+function buildH5PublicBaseUrlFromHostDraft(draft: string, currentBaseUrl: string | null): string | null {
+  const trimmed = draft.trim()
+  if (!trimmed) return null
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed
+
+  try {
+    const current = currentBaseUrl ? new URL(currentBaseUrl) : null
+    if (!current) return trimmed
+
+    const port = current.port ? `:${current.port}` : ''
+    const path = current.pathname === '/' ? '' : current.pathname.replace(/\/+$/, '')
+    return `${current.protocol}//${trimmed}${port}${path}`
+  } catch {
+    return trimmed
   }
 }
 
@@ -112,7 +179,7 @@ export function Settings() {
           {activeTab === 'general' && <GeneralSettings />}
           {activeTab === 'h5Access' && <H5AccessSettings />}
           {activeTab === 'adapters' && <AdapterSettings />}
-          {activeTab === 'terminal' && <TerminalSettings />}
+          {activeTab === 'terminal' && <TerminalSettings showPreferences />}
           {activeTab === 'mcp' && <McpSettings />}
           {activeTab === 'agents' && <AgentsSettings />}
           {activeTab === 'skills' && <SkillSettings />}
@@ -216,7 +283,8 @@ function ProviderSettings() {
     await fetchSettings()
   }
 
-  const isOfficialActive = hasLoadedProviders && activeId === null
+  const isClaudeOfficialActive = hasLoadedProviders && activeId === null
+  const isOpenAIOfficialActive = hasLoadedProviders && activeId === OPENAI_OFFICIAL_PROVIDER_ID
 
   return (
     <div className="max-w-2xl">
@@ -233,21 +301,22 @@ function ProviderSettings() {
 
       {/* Official provider — always visible at top */}
       <div
+        data-testid="claude-official-provider"
         className={`relative flex flex-col rounded-xl border transition-all mb-2 ${
-          isOfficialActive
+          isClaudeOfficialActive
             ? 'border-[var(--color-brand)] bg-[var(--color-surface-container)] shadow-[var(--shadow-focus-ring)]'
             : 'border-[var(--color-border)] hover:border-[var(--color-border-focus)] cursor-pointer'
         }`}
       >
         <div
           className="flex items-center gap-4 px-4 py-3.5"
-          onClick={() => !isOfficialActive && handleActivateOfficial()}
+          onClick={() => !isClaudeOfficialActive && handleActivateOfficial()}
         >
-          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isOfficialActive ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-tertiary)]'}`} />
+          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isClaudeOfficialActive ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-tertiary)]'}`} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.providers.officialName')}</span>
-              {isOfficialActive && (
+              {isClaudeOfficialActive && (
                 <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('settings.providers.default')}</span>
               )}
             </div>
@@ -255,9 +324,40 @@ function ProviderSettings() {
           </div>
         </div>
 
-        {isOfficialActive && (
+        {isClaudeOfficialActive && (
           <div className="px-4 pb-4 pt-3 border-t border-[var(--color-border-separator)]">
             <ClaudeOfficialLogin />
+          </div>
+        )}
+      </div>
+
+      <div
+        data-testid="openai-official-provider"
+        className={`relative flex flex-col rounded-xl border transition-all mb-2 ${
+          isOpenAIOfficialActive
+            ? 'border-[var(--color-brand)] bg-[var(--color-surface-container)] shadow-[var(--shadow-focus-ring)]'
+            : 'border-[var(--color-border)] hover:border-[var(--color-border-focus)] cursor-pointer'
+        }`}
+      >
+        <div
+          className="flex items-center gap-4 px-4 py-3.5"
+          onClick={() => !isOpenAIOfficialActive && handleActivate(OPENAI_OFFICIAL_PROVIDER_ID)}
+        >
+          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isOpenAIOfficialActive ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-tertiary)]'}`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.providers.openaiOfficialName')}</span>
+              {isOpenAIOfficialActive && (
+                <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('settings.providers.default')}</span>
+              )}
+            </div>
+            <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">{t('settings.providers.openaiOfficialDesc')}</div>
+          </div>
+        </div>
+
+        {isOpenAIOfficialActive && (
+          <div className="px-4 pb-4 pt-3 border-t border-[var(--color-border-separator)]">
+            <ChatGPTOfficialLogin />
           </div>
         )}
       </div>
@@ -513,6 +613,16 @@ function buildModelContextWindows(
   return windows
 }
 
+function normalizeModelMapping(models: ModelMapping): ModelMapping {
+  const main = models.main.trim()
+  return {
+    main,
+    haiku: models.haiku.trim() || main,
+    sonnet: models.sonnet.trim() || main,
+    opus: models.opus.trim() || main,
+  }
+}
+
 function updateSettingsJsonAutoCompactWindow(raw: string, value: string): string {
   try {
     const parsed = JSON.parse(raw || '{}') as { env?: Record<string, unknown> }
@@ -685,6 +795,7 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
         const needsProxy = apiFormat !== 'anthropic'
         const autoCompactWindowEnv = autoCompactWindow.trim()
         const modelContextWindows = buildModelContextWindows(models, modelContextInputs)
+        const normalizedModels = normalizeModelMapping(models)
         const existingEnv = (settings.env as Record<string, string>) || {}
         const cleanedEnv = stripProviderSettingsJsonEnv(existingEnv, presetDefaultEnvKeys)
         const merged = {
@@ -699,10 +810,10 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
               : {}),
             ANTHROPIC_BASE_URL: needsProxy ? 'http://127.0.0.1:3456/proxy' : baseUrl,
             ...buildSettingsJsonAuthEnv(apiFormat, authStrategy, apiKey, selectedPreset),
-            ANTHROPIC_MODEL: models.main,
-            ANTHROPIC_DEFAULT_HAIKU_MODEL: models.haiku,
-            ANTHROPIC_DEFAULT_SONNET_MODEL: models.sonnet,
-            ANTHROPIC_DEFAULT_OPUS_MODEL: models.opus,
+            ANTHROPIC_MODEL: normalizedModels.main,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: normalizedModels.haiku,
+            ANTHROPIC_DEFAULT_SONNET_MODEL: normalizedModels.sonnet,
+            ANTHROPIC_DEFAULT_OPUS_MODEL: normalizedModels.opus,
           },
         }
         setSettingsJson(JSON.stringify(merged, null, 2))
@@ -830,7 +941,7 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
     setModels(nextModels)
     setModelContextInputs(nextInputs)
     setSettingsJson((current) => updateSettingsJsonModelContextWindows(
-      updateSettingsJsonModels(current, nextModels),
+      updateSettingsJsonModels(current, normalizeModelMapping(nextModels)),
       buildModelContextWindows(nextModels, nextInputs),
     ))
   }
@@ -858,6 +969,7 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
 
   const handleSubmit = async () => {
     if (!canSubmit) return
+    const normalizedModels = normalizeModelMapping(models)
     const parsedAutoCompactWindow = parseAutoCompactWindowInput(autoCompactWindow)
     const parsedModelContextWindows = buildModelContextWindows(models, modelContextInputs)
     setIsSubmitting(true)
@@ -882,7 +994,7 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
           authStrategy,
           baseUrl: baseUrl.trim(),
           apiFormat,
-          models,
+          models: normalizedModels,
           ...(parsedAutoCompactWindow !== undefined && { autoCompactWindow: parsedAutoCompactWindow }),
           ...(Object.keys(parsedModelContextWindows).length > 0 && { modelContextWindows: parsedModelContextWindows }),
           notes: notes.trim() || undefined,
@@ -893,7 +1005,7 @@ function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderF
           baseUrl: baseUrl.trim(),
           authStrategy,
           apiFormat,
-          models,
+          models: normalizedModels,
           autoCompactWindow: parsedAutoCompactWindow ?? null,
           modelContextWindows: Object.keys(parsedModelContextWindows).length > 0
             ? parsedModelContextWindows
@@ -1383,6 +1495,8 @@ function GeneralSettings() {
     setDesktopNotificationsEnabled,
     webSearch,
     setWebSearch,
+    network,
+    setNetwork,
     responseLanguage,
     setResponseLanguage,
     appMode,
@@ -1394,20 +1508,38 @@ function GeneralSettings() {
   } = useSettingsStore()
   const t = useTranslation()
   const [webSearchDraft, setWebSearchDraft] = useState(webSearch)
+  const [networkDraft, setNetworkDraft] = useState(network)
+  const [networkTimeoutInput, setNetworkTimeoutInput] = useState(String(Math.round(network.aiRequestTimeoutMs / 1000)))
+  const [networkSaveError, setNetworkSaveError] = useState<string | null>(null)
+  const [isSavingNetwork, setIsSavingNetwork] = useState(false)
   const [notificationPermission, setNotificationPermission] = useState<DesktopNotificationPermission>('default')
   const [notificationActionRunning, setNotificationActionRunning] = useState(false)
   const [modeSwitchConfirmOpen, setModeSwitchConfirmOpen] = useState(false)
   const [pendingMode, setPendingMode] = useState<AppMode | null>(null)
+  const [pendingPortableDir, setPendingPortableDir] = useState<string | null>(null)
+  const [portableDirDraft, setPortableDirDraft] = useState('')
+  const [modeActionRunning, setModeActionRunning] = useState(false)
+  const [modeError, setModeError] = useState<string | null>(null)
   const [uiZoomDraft, setUiZoomDraft] = useState(uiZoom)
   const [isUiZoomDragging, setIsUiZoomDragging] = useState(false)
   const isUiZoomDraggingRef = useRef(false)
+  const addToast = useUIStore((s) => s.addToast)
   const webSearchDirty = JSON.stringify(webSearchDraft) !== JSON.stringify(webSearch)
   const uiZoomPercent = Math.round(uiZoomDraft * 100)
   const uiZoomRangeProgress = `${Math.round(((uiZoomDraft - UI_ZOOM_MIN) / (UI_ZOOM_MAX - UI_ZOOM_MIN)) * 1000) / 10}%`
+  const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
+  const configDirSource = appMode.configDirSource ?? (appMode.mode === 'portable' ? 'portable' : 'system')
+  const isEnvironmentConfigDir = configDirSource === 'environment'
 
   useEffect(() => {
     setWebSearchDraft(webSearch)
   }, [webSearch])
+
+  useEffect(() => {
+    setNetworkDraft(network)
+    setNetworkTimeoutInput(String(Math.round(network.aiRequestTimeoutMs / 1000)))
+    setNetworkSaveError(null)
+  }, [network])
 
   useEffect(() => {
     if (!isUiZoomDragging) {
@@ -1429,6 +1561,10 @@ function GeneralSettings() {
     if (!isTauriRuntime()) return
     void fetchAppMode()
   }, [fetchAppMode])
+
+  useEffect(() => {
+    setPortableDirDraft(appMode.portableDir ?? appMode.defaultPortableDir ?? '')
+  }, [appMode.defaultPortableDir, appMode.portableDir])
 
   const EFFORT_LABELS: Record<EffortLevel, string> = {
     low: t('settings.general.effort.low'),
@@ -1483,6 +1619,19 @@ function GeneralSettings() {
     { value: 'disabled', label: t('settings.general.webSearch.mode.disabled') },
   ]
 
+  const NETWORK_PROXY_MODES: Array<{ value: NetworkProxyMode; label: string; description: string }> = [
+    {
+      value: 'system',
+      label: t('settings.general.networkProxyModeSystem'),
+      description: t('settings.general.networkProxyModeSystemDescription'),
+    },
+    {
+      value: 'manual',
+      label: t('settings.general.networkProxyModeManual'),
+      description: t('settings.general.networkProxyModeManualDescription'),
+    },
+  ]
+
   const notificationStatusLabel: Record<DesktopNotificationPermission, string> = {
     granted: t('settings.general.notificationsStatusGranted'),
     denied: t('settings.general.notificationsStatusDenied'),
@@ -1532,6 +1681,145 @@ function GeneralSettings() {
       }
     } finally {
       setNotificationActionRunning(false)
+    }
+  }
+
+  const networkProxyUrl = networkDraft.proxy.url.trim()
+  const networkProxyError =
+    networkDraft.proxy.mode === 'manual' && !networkProxyUrl
+      ? t('settings.general.networkProxyUrlRequired')
+      : networkDraft.proxy.mode === 'manual' && !isValidHttpProxyUrl(networkProxyUrl)
+        ? t('settings.general.networkProxyUrlInvalid')
+        : null
+  const timeoutSeconds = Math.round(networkDraft.aiRequestTimeoutMs / 1000)
+  const parsedNetworkTimeoutSeconds = (() => {
+    const trimmed = networkTimeoutInput.trim()
+    if (!/^\d+$/.test(trimmed)) return null
+    const seconds = Number(trimmed)
+    if (!Number.isFinite(seconds) || seconds < NETWORK_TIMEOUT_MIN_SECONDS || seconds > NETWORK_TIMEOUT_MAX_SECONDS) return null
+    return seconds
+  })()
+  const networkTimeoutError =
+    networkTimeoutInput.trim().length === 0
+      ? t('settings.general.networkTimeoutRequired')
+      : parsedNetworkTimeoutSeconds === null
+        ? t('settings.general.networkTimeoutRange', {
+            min: String(NETWORK_TIMEOUT_MIN_SECONDS),
+            max: String(NETWORK_TIMEOUT_MAX_SECONDS),
+          })
+        : null
+  const networkDirty =
+    networkDraft.aiRequestTimeoutMs !== network.aiRequestTimeoutMs ||
+    networkDraft.proxy.mode !== network.proxy.mode ||
+    networkDraft.proxy.url.trim() !== network.proxy.url.trim()
+
+  const setNetworkTimeoutSeconds = (seconds: number) => {
+    const nextSeconds = Math.min(Math.max(Math.round(seconds), NETWORK_TIMEOUT_MIN_SECONDS), NETWORK_TIMEOUT_MAX_SECONDS)
+    setNetworkTimeoutInput(String(nextSeconds))
+    setNetworkDraft((current) => ({
+      ...current,
+      aiRequestTimeoutMs: nextSeconds * 1000,
+    }))
+    setNetworkSaveError(null)
+  }
+
+  const saveNetworkSettings = async () => {
+    if (networkProxyError) {
+      setNetworkSaveError(networkProxyError)
+      return
+    }
+    if (networkTimeoutError || parsedNetworkTimeoutSeconds === null) {
+      setNetworkSaveError(networkTimeoutError ?? t('settings.general.networkTimeoutRange', {
+        min: String(NETWORK_TIMEOUT_MIN_SECONDS),
+        max: String(NETWORK_TIMEOUT_MAX_SECONDS),
+      }))
+      return
+    }
+
+    setIsSavingNetwork(true)
+    setNetworkSaveError(null)
+    try {
+      await setNetwork({
+        aiRequestTimeoutMs: parsedNetworkTimeoutSeconds * 1000,
+        proxy: {
+          mode: networkDraft.proxy.mode,
+          url: networkProxyUrl,
+        },
+      })
+      addToast({
+        type: 'success',
+        message: t('settings.general.networkSaved'),
+      })
+    } catch (error) {
+      setNetworkSaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsSavingNetwork(false)
+    }
+  }
+
+  const openPortableDirPicker = async () => {
+    setModeError(null)
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t('settings.general.storageChooseDirTitle'),
+      })
+      if (typeof selected === 'string') {
+        setPortableDirDraft(selected)
+      }
+    } catch {
+      setModeError(t('settings.general.storagePickerError'))
+    }
+  }
+
+  const openModeSwitchConfirm = (mode: AppMode) => {
+    if (isEnvironmentConfigDir) {
+      setModeError(t('settings.general.storageEnvironmentSwitchBlocked'))
+      return
+    }
+
+    const portableDir = portableDirDraft.trim()
+    if (mode === 'portable' && !portableDir) {
+      setModeError(t('settings.general.storageNoDirError'))
+      return
+    }
+
+    setModeError(null)
+    setPendingMode(mode)
+    setPendingPortableDir(mode === 'portable' ? portableDir : null)
+    setModeSwitchConfirmOpen(true)
+  }
+
+  const closeModeSwitchConfirm = () => {
+    if (modeActionRunning) return
+    setModeSwitchConfirmOpen(false)
+    setPendingMode(null)
+    setPendingPortableDir(null)
+  }
+
+  const confirmModeSwitch = async () => {
+    if (!pendingMode) return
+
+    setModeActionRunning(true)
+    setModeError(null)
+    try {
+      await setAppModeAction(pendingMode, pendingPortableDir)
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('prepare_for_app_mode_restart')
+      const { relaunch } = await import('@tauri-apps/plugin-process')
+      await relaunch()
+    } catch (error) {
+      setModeError(
+        error instanceof Error
+          ? error.message
+          : t('settings.general.storageRestartError'),
+      )
+      setModeSwitchConfirmOpen(false)
+      setPendingMode(null)
+      setPendingPortableDir(null)
+      setModeActionRunning(false)
     }
   }
 
@@ -1650,79 +1938,6 @@ function GeneralSettings() {
 
   return (
     <div className="max-w-xl">
-      {/* Mode Section */}
-      {isTauriRuntime() && (
-        <div className="mb-8">
-          <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.modeTitle')}</h2>
-          <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.modeDescription')}</p>
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                if (appMode.mode === 'default') return
-                setPendingMode('default')
-                setModeSwitchConfirmOpen(true)
-              }}
-              aria-pressed={appMode.mode === 'default'}
-              className={`flex-1 py-3 text-sm font-semibold rounded-lg border transition-all ${
-                appMode.mode === 'default'
-                  ? 'bg-[image:var(--gradient-btn-primary)] text-[var(--color-btn-primary-fg)] border-transparent shadow-[var(--shadow-button-primary)]'
-                  : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-              }`}
-            >
-              <div className="flex flex-col items-center gap-1">
-                <span className="material-symbols-outlined text-[22px]">settings_applications</span>
-                <span>{t('settings.general.modeDefault')}</span>
-              </div>
-            </button>
-            <button
-              onClick={() => {
-                if (appMode.mode === 'portable') return
-                setPendingMode('portable')
-                setModeSwitchConfirmOpen(true)
-              }}
-              aria-pressed={appMode.mode === 'portable'}
-              className={`flex-1 py-3 text-sm font-semibold rounded-lg border transition-all ${
-                appMode.mode === 'portable'
-                  ? 'bg-[image:var(--gradient-btn-primary)] text-[var(--color-btn-primary-fg)] border-transparent shadow-[var(--shadow-button-primary)]'
-                  : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-              }`}
-            >
-              <div className="flex flex-col items-center gap-1">
-                <span className="material-symbols-outlined text-[22px]">drive_file_move</span>
-                <span>{t('settings.general.modePortable')}</span>
-              </div>
-            </button>
-          </div>
-          {appMode.mode === 'portable' && appMode.portableDir && (
-            <div className="mt-2 text-xs text-[var(--color-text-tertiary)] font-mono break-all">
-              {t('settings.general.modePortableDir')}: {appMode.portableDir}
-            </div>
-          )}
-          {appMode.mode === 'default' && (
-            <div className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-              {t('settings.general.modeDefaultHint')}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Restart Required Banner */}
-      {appModeRequiresRestart && (
-        <div className="mb-6 rounded-xl border border-[var(--color-warning)] bg-[var(--color-warning)]/10 px-4 py-3 flex items-center gap-3">
-          <span className="material-symbols-outlined text-[20px] text-[var(--color-warning)]" style={{ fontVariationSettings: "'FILL' 1" }}>
-            warning
-          </span>
-          <div>
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">
-              {t('settings.general.modeRestartTitle')}
-            </div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
-              {t('settings.general.modeRestartHint')}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Appearance selector */}
       <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.appearanceTitle')}</h2>
       <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.appearanceDescription')}</p>
@@ -1876,6 +2091,156 @@ function GeneralSettings() {
       {uiZoomSection}
 
       <div className="mt-8">
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.networkTitle')}</h2>
+        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.networkDescription')}</p>
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
+          <div className="grid grid-cols-2 gap-2">
+            {NETWORK_PROXY_MODES.map((mode) => (
+              <button
+                key={mode.value}
+                type="button"
+                onClick={() => {
+                  setNetworkDraft((current) => ({
+                    ...current,
+                    proxy: { ...current.proxy, mode: mode.value },
+                  }))
+                  setNetworkSaveError(null)
+                }}
+                aria-pressed={networkDraft.proxy.mode === mode.value}
+                className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                  networkDraft.proxy.mode === mode.value
+                    ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                    : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+                }`}
+              >
+                <div className="text-xs font-semibold">{mode.label}</div>
+                <div className="mt-1 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+                  {mode.description}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {networkDraft.proxy.mode === 'manual' && (
+            <div className="mt-4">
+              <Input
+                id="network-proxy-url"
+                label={t('settings.general.networkProxyUrl')}
+                value={networkDraft.proxy.url}
+                placeholder="http://127.0.0.1:7890"
+                autoComplete="off"
+                onChange={(event) => {
+                  setNetworkDraft((current) => ({
+                    ...current,
+                    proxy: { ...current.proxy, url: event.target.value },
+                  }))
+                  setNetworkSaveError(null)
+                }}
+              />
+              <p className={`mt-1 text-[11px] leading-4 ${networkProxyError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}>
+                {networkProxyError ?? t('settings.general.networkProxyUrlHint')}
+              </p>
+            </div>
+          )}
+
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <label htmlFor="network-timeout-seconds" className="text-sm font-medium text-[var(--color-text-primary)]">
+                {t('settings.general.networkTimeout')}
+              </label>
+              <span className="rounded-md bg-[var(--color-surface)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)]">
+                {t('settings.general.networkTimeoutValue', { seconds: String(timeoutSeconds) })}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-10 w-10 px-0"
+                aria-label={t('settings.general.networkTimeoutDecrease')}
+                onClick={() => setNetworkTimeoutSeconds((parsedNetworkTimeoutSeconds ?? timeoutSeconds) - NETWORK_TIMEOUT_STEP_SECONDS)}
+              >
+                -30
+              </Button>
+              <div className="relative min-w-0 flex-1">
+                <input
+                  id="network-timeout-seconds"
+                  type="number"
+                  min={NETWORK_TIMEOUT_MIN_SECONDS}
+                  max={NETWORK_TIMEOUT_MAX_SECONDS}
+                  step={1}
+                  inputMode="numeric"
+                  value={networkTimeoutInput}
+                  aria-invalid={networkTimeoutError ? true : undefined}
+                  aria-describedby="network-timeout-help"
+                  onChange={(event) => {
+                    const nextValue = event.currentTarget.value
+                    if (!/^\d*$/.test(nextValue)) return
+                    setNetworkTimeoutInput(nextValue)
+                    const seconds = Number(nextValue)
+                    if (nextValue.length > 0 && seconds >= NETWORK_TIMEOUT_MIN_SECONDS && seconds <= NETWORK_TIMEOUT_MAX_SECONDS) {
+                      setNetworkDraft((current) => ({
+                        ...current,
+                        aiRequestTimeoutMs: seconds * 1000,
+                      }))
+                    }
+                    setNetworkSaveError(null)
+                  }}
+                  className={`h-10 w-full rounded-[var(--radius-md)] border bg-[var(--color-surface)] px-3 pr-12 text-sm text-[var(--color-text-primary)] outline-none transition-colors duration-150 placeholder:text-[var(--color-text-tertiary)] ${
+                    networkTimeoutError
+                      ? 'border-[var(--color-error)] focus:shadow-[var(--shadow-error-ring)]'
+                      : 'border-[var(--color-border)] focus:border-[var(--color-border-focus)] focus:shadow-[var(--shadow-focus-ring)]'
+                  }`}
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--color-text-tertiary)]">
+                  {t('settings.general.networkTimeoutUnit')}
+                </span>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-10 w-10 px-0"
+                aria-label={t('settings.general.networkTimeoutIncrease')}
+                onClick={() => setNetworkTimeoutSeconds((parsedNetworkTimeoutSeconds ?? timeoutSeconds) + NETWORK_TIMEOUT_STEP_SECONDS)}
+              >
+                +30
+              </Button>
+            </div>
+            <p
+              id="network-timeout-help"
+              className={`mt-2 text-xs leading-5 ${networkTimeoutError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}
+            >
+              {networkTimeoutError ?? t('settings.general.networkTimeoutHint')}
+            </p>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="min-w-0 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+              {t('settings.general.networkScopeHint')}
+            </p>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="min-w-[72px] px-4 whitespace-nowrap"
+              disabled={!networkDirty || !!networkProxyError || !!networkTimeoutError || isSavingNetwork}
+              loading={isSavingNetwork}
+              onClick={() => void saveNetworkSettings()}
+            >
+              {t('settings.general.networkSave')}
+            </Button>
+          </div>
+
+          {networkSaveError && (
+            <p className="mt-2 text-[11px] leading-4 text-[var(--color-error)]">
+              {networkSaveError}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-8">
         <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.webFetchPreflightTitle')}</h2>
         <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.webFetchPreflightDescription')}</p>
         <label className="flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
@@ -1990,21 +2355,159 @@ function GeneralSettings() {
           </div>
         </div>
       </div>
+
+      {isTauriRuntime() && (
+        <div className="mt-8 border-t border-[var(--color-border)] pt-8">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.storageTitle')}</h2>
+          <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.storageDescription')}</p>
+
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
+            <div className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isEnvironmentConfigDir) {
+                    setModeError(t('settings.general.storageEnvironmentSwitchBlocked'))
+                    return
+                  }
+                  if (appMode.mode !== 'default') {
+                    openModeSwitchConfirm('default')
+                  }
+                }}
+                aria-pressed={appMode.mode === 'default' && !isEnvironmentConfigDir}
+                className={`flex items-start gap-3 rounded-lg border px-3 py-3 text-left transition-all ${
+                  appMode.mode === 'default' && !isEnvironmentConfigDir
+                    ? 'border-[var(--color-brand)] bg-[var(--color-surface)] shadow-[var(--shadow-focus-ring)]'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-border-focus)]'
+                }`}
+              >
+                <span className="material-symbols-outlined mt-0.5 text-[20px] text-[var(--color-text-secondary)]">settings_applications</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.general.storageSystemTitle')}</span>
+                  <span className="mt-1 block text-xs leading-5 text-[var(--color-text-tertiary)]">{t('settings.general.storageSystemDescription')}</span>
+                </span>
+              </button>
+
+              <div
+                className={`rounded-lg border px-3 py-3 transition-all ${
+                  appMode.mode === 'portable' && !isEnvironmentConfigDir
+                    ? 'border-[var(--color-brand)] bg-[var(--color-surface)] shadow-[var(--shadow-focus-ring)]'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)]'
+                }`}
+              >
+                <div className="mb-3 flex items-start gap-3">
+                  <span className="material-symbols-outlined mt-0.5 text-[20px] text-[var(--color-text-secondary)]">drive_file_move</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.general.storagePortableTitle')}</div>
+                    <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{t('settings.general.storagePortableDescription')}</div>
+                  </div>
+                </div>
+
+                <div className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Input
+                      id="portable-data-dir"
+                      label={t('settings.general.storagePortableDirLabel')}
+                      value={portableDirDraft}
+                      placeholder={t('settings.general.storagePortableDirPlaceholder')}
+                      onChange={(event) => {
+                        setPortableDirDraft(event.target.value)
+                        setModeError(null)
+                      }}
+                      className="w-full font-mono text-xs"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-10 flex-shrink-0 px-3 whitespace-nowrap"
+                    onClick={() => void openPortableDirPicker()}
+                  >
+                    {t('settings.general.storageChooseDir')}
+                  </Button>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-[var(--color-brand)] hover:underline"
+                    onClick={() => {
+                      setPortableDirDraft(appMode.defaultPortableDir ?? '')
+                      setModeError(null)
+                    }}
+                  >
+                    {t('settings.general.storageUseDefaultPortableDir')}
+                  </button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={modeActionRunning || (appMode.mode === 'portable' && portableDirDraft.trim() === (appMode.portableDir ?? ''))}
+                    onClick={() => openModeSwitchConfirm('portable')}
+                  >
+                    {t('settings.general.storageApplyPortable')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {activeConfigDir && (
+              <div className="mt-3 rounded-lg border border-[var(--color-border)]/70 bg-[var(--color-surface)] px-3 py-2">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">{t('settings.general.storageActiveDir')}</div>
+                <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">{activeConfigDir}</div>
+              </div>
+            )}
+
+            {isEnvironmentConfigDir && (
+              <div className="mt-3 rounded-lg border border-[var(--color-warning)] bg-[var(--color-warning)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
+                {t('settings.general.storageEnvironmentHint')}
+              </div>
+            )}
+
+            {appModeRequiresRestart && (
+              <div className="mt-3 rounded-lg border border-[var(--color-warning)] bg-[var(--color-warning)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
+                {t('settings.general.storageRestartHint')}
+              </div>
+            )}
+
+            <div className="mt-3 text-xs leading-5 text-[var(--color-text-tertiary)]">
+              {t('settings.general.storageMoveHint')}
+            </div>
+
+            {modeError && (
+              <div className="mt-3 text-xs text-[var(--color-error)]">
+                {modeError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Confirm dialog for mode switch */}
       <ConfirmDialog
         open={modeSwitchConfirmOpen}
-        onClose={() => { setModeSwitchConfirmOpen(false); setPendingMode(null); }}
-        onConfirm={() => {
-          if (pendingMode) { void setAppModeAction(pendingMode); }
-          setModeSwitchConfirmOpen(false);
-          setPendingMode(null);
-        }}
+        onClose={closeModeSwitchConfirm}
+        onConfirm={() => void confirmModeSwitch()}
         title={t('settings.general.modeSwitchTitle')}
-        body={t('settings.general.modeSwitchBody', {
-          mode: pendingMode === 'portable' ? t('settings.general.modePortable') : t('settings.general.modeDefault'),
-        })}
+        body={(
+          <div className="space-y-3 text-sm leading-6 text-[var(--color-text-secondary)]">
+            <p>
+              {pendingMode === 'portable'
+                ? t('settings.general.storageSwitchPortableBody')
+                : t('settings.general.storageSwitchDefaultBody')}
+            </p>
+            {pendingMode === 'portable' && pendingPortableDir && (
+              <div className="rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2 font-mono text-xs break-all text-[var(--color-text-secondary)]">
+                {pendingPortableDir}
+              </div>
+            )}
+            <p>{t('settings.general.storageSwitchRestartBody')}</p>
+          </div>
+        )}
         confirmLabel={t('settings.general.modeSwitchConfirm')}
         cancelLabel={t('common.cancel')}
+        confirmVariant="primary"
+        loading={modeActionRunning}
       />
     </div>
   )
@@ -2015,6 +2518,7 @@ function GeneralSettings() {
 function H5AccessSettings() {
   const {
     h5Access,
+    h5AccessDiagnostics,
     h5AccessError,
     enableH5Access,
     disableH5Access,
@@ -2023,7 +2527,7 @@ function H5AccessSettings() {
   } = useSettingsStore()
   const t = useTranslation()
   const addToast = useUIStore((s) => s.addToast)
-  const [h5PublicBaseUrlDraft, setH5PublicBaseUrlDraft] = useState(h5Access.publicBaseUrl ?? '')
+  const [h5PublicBaseUrlDraft, setH5PublicBaseUrlDraft] = useState(extractH5AccessAddressDraft(h5Access.publicBaseUrl))
   const [h5GeneratedToken, setH5GeneratedToken] = useState<string | null>(null)
   const [h5TokenVisible, setH5TokenVisible] = useState(false)
   const [h5EnableConfirmOpen, setH5EnableConfirmOpen] = useState(false)
@@ -2034,10 +2538,12 @@ function H5AccessSettings() {
     () => buildH5LaunchUrl(h5AccessUrl, h5GeneratedToken),
     [h5AccessUrl, h5GeneratedToken],
   )
-  const h5AccessDirty = h5PublicBaseUrlDraft.trim() !== (h5Access.publicBaseUrl ?? '')
+  const h5AccessPort = extractH5AccessPort(h5AccessUrl)
+  const h5NextPublicBaseUrl = buildH5PublicBaseUrlFromHostDraft(h5PublicBaseUrlDraft, h5Access.publicBaseUrl)
+  const h5AccessDirty = h5NextPublicBaseUrl !== (h5Access.publicBaseUrl ?? null)
 
   useEffect(() => {
-    setH5PublicBaseUrlDraft(h5Access.publicBaseUrl ?? '')
+    setH5PublicBaseUrlDraft(extractH5AccessAddressDraft(h5Access.publicBaseUrl))
   }, [h5Access])
 
   useEffect(() => {
@@ -2076,8 +2582,19 @@ function H5AccessSettings() {
   const handleH5SettingsSave = async () => {
     await runH5Action(async () => {
       await updateH5AccessSettings({
-        publicBaseUrl: h5PublicBaseUrlDraft.trim() || null,
+        publicBaseUrl: h5NextPublicBaseUrl,
       })
+    })
+  }
+
+  const handleH5SwitchToSuggestedHost = async () => {
+    const suggested = h5AccessDiagnostics?.suggestedHost
+    if (!suggested) return
+    await runH5Action(async () => {
+      // Build URL using current port if available, otherwise let backend pick.
+      const port = extractH5AccessPort(h5Access.publicBaseUrl)
+      const nextUrl = port ? `http://${suggested}:${port}` : `http://${suggested}`
+      await updateH5AccessSettings({ publicBaseUrl: nextUrl })
     })
   }
 
@@ -2181,14 +2698,67 @@ function H5AccessSettings() {
             </span>
           </div>
 
+          {h5AccessDiagnostics?.storedHostStaleness === 'unreachable' && h5AccessDiagnostics.storedPublicBaseUrl ? (
+            <div
+              data-testid="h5-access-stale-host-banner"
+              className="mt-4 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-3 text-xs leading-5 text-[var(--color-text-primary)]"
+            >
+              <div className="font-semibold">
+                {t('settings.general.h5AccessStaleHostTitle')}
+              </div>
+              <div className="mt-1 text-[var(--color-text-secondary)]">
+                {h5AccessDiagnostics.suggestedHost
+                  ? t('settings.general.h5AccessStaleHostBody', {
+                      storedHost: extractHostnameFromUrl(h5AccessDiagnostics.storedPublicBaseUrl) ?? h5AccessDiagnostics.storedPublicBaseUrl,
+                    })
+                  : t('settings.general.h5AccessStaleHostNoSuggestion', {
+                      storedHost: extractHostnameFromUrl(h5AccessDiagnostics.storedPublicBaseUrl) ?? h5AccessDiagnostics.storedPublicBaseUrl,
+                    })}
+              </div>
+              {h5AccessDiagnostics.suggestedHost && (
+                <div className="mt-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={h5ActionRunning}
+                    onClick={() => void handleH5SwitchToSuggestedHost()}
+                    data-testid="h5-access-stale-host-apply"
+                  >
+                    {t('settings.general.h5AccessStaleHostApply', {
+                      suggestedHost: h5AccessDiagnostics.suggestedHost,
+                    })}
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {h5AccessDiagnostics?.storedHostStaleness === 'proxy' ? (
+            <div
+              data-testid="h5-access-proxy-note"
+              className="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs leading-5 text-[var(--color-text-tertiary)]"
+            >
+              {t('settings.general.h5AccessProxyNote')}
+            </div>
+          ) : null}
+
           <div className="mt-4 grid grid-cols-1 gap-3">
-            <Input
-              id="h5-access-public-url"
-              label={t('settings.general.h5AccessPublicUrl')}
-              value={h5PublicBaseUrlDraft}
-              placeholder={t('settings.general.h5AccessPublicUrlPlaceholder')}
-              onChange={(event) => setH5PublicBaseUrlDraft(event.target.value)}
-            />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
+              <Input
+                id="h5-access-public-url"
+                label={t('settings.general.h5AccessPublicHost')}
+                value={h5PublicBaseUrlDraft}
+                placeholder={t('settings.general.h5AccessPublicHostPlaceholder')}
+                onChange={(event) => setH5PublicBaseUrlDraft(event.target.value)}
+              />
+              <Input
+                id="h5-access-current-port"
+                label={t('settings.general.h5AccessCurrentPort')}
+                value={h5AccessPort ?? t('settings.general.h5AccessCurrentPortUnknown')}
+                readOnly
+                className="text-[var(--color-text-tertiary)]"
+              />
+            </div>
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-[var(--color-text-tertiary)]">
                 {t('settings.general.h5AccessOpenHint')}
@@ -2918,9 +3488,20 @@ const SOCIAL_LINKS = [
   { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
 ] as const
 
+function isValidHttpProxyUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function AboutSettings() {
   const t = useTranslation()
   const [version, setVersion] = useState('')
+  const updateProxy = useSettingsStore((s) => s.updateProxy)
+  const setUpdateProxy = useSettingsStore((s) => s.setUpdateProxy)
   const updateStatus = useUpdateStore((s) => s.status)
   const availableVersion = useUpdateStore((s) => s.availableVersion)
   const releaseNotes = useUpdateStore((s) => s.releaseNotes)
@@ -2932,6 +3513,10 @@ function AboutSettings() {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
   const installUpdate = useUpdateStore((s) => s.installUpdate)
   const initialize = useUpdateStore((s) => s.initialize)
+  const [showUpdateProxyAdvanced, setShowUpdateProxyAdvanced] = useState(false)
+  const [updateProxyDraft, setUpdateProxyDraft] = useState(updateProxy)
+  const [updateProxySaveError, setUpdateProxySaveError] = useState<string | null>(null)
+  const [isSavingUpdateProxy, setIsSavingUpdateProxy] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -2954,6 +3539,11 @@ function AboutSettings() {
     void initialize()
   }, [initialize])
 
+  useEffect(() => {
+    setUpdateProxyDraft(updateProxy)
+    setUpdateProxySaveError(null)
+  }, [updateProxy])
+
   const openUrl = (url: string) => {
     import('@tauri-apps/plugin-shell').then((mod) => mod.open(url)).catch(() => window.open(url, '_blank'))
   }
@@ -2967,6 +3557,48 @@ function AboutSettings() {
           day: 'numeric',
         })
       : null
+  const updateProxyModes: Array<{ value: UpdateProxyMode; label: string; description: string }> = [
+    {
+      value: 'system',
+      label: t('update.proxyModeSystem'),
+      description: t('update.proxyModeSystemDescription'),
+    },
+    {
+      value: 'manual',
+      label: t('update.proxyModeManual'),
+      description: t('update.proxyModeManualDescription'),
+    },
+  ]
+  const manualProxyUrl = updateProxyDraft.url.trim()
+  const manualProxyError =
+    updateProxyDraft.mode === 'manual' && !manualProxyUrl
+      ? t('update.proxyUrlRequired')
+      : updateProxyDraft.mode === 'manual' && !isValidHttpProxyUrl(manualProxyUrl)
+        ? t('update.proxyUrlInvalid')
+        : null
+  const updateProxyDirty =
+    updateProxyDraft.mode !== updateProxy.mode ||
+    updateProxyDraft.url.trim() !== updateProxy.url.trim()
+
+  const saveUpdateProxy = async () => {
+    if (manualProxyError) {
+      setUpdateProxySaveError(manualProxyError)
+      return
+    }
+
+    setIsSavingUpdateProxy(true)
+    setUpdateProxySaveError(null)
+    try {
+      await setUpdateProxy({
+        mode: updateProxyDraft.mode,
+        url: manualProxyUrl,
+      })
+    } catch (error) {
+      setUpdateProxySaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsSavingUpdateProxy(false)
+    }
+  }
 
   const hasKnownProgress = typeof totalBytes === 'number' && totalBytes > 0
   const downloadedText = formatBytes(downloadedBytes)
@@ -3069,6 +3701,89 @@ function AboutSettings() {
               {t('update.checkedAt', { time: checkedAtText })}
             </p>
           )}
+
+          <div className="mt-3 border-t border-[var(--color-border)]/60 pt-3">
+            <button
+              type="button"
+              onClick={() => setShowUpdateProxyAdvanced((value) => !value)}
+              className="flex w-full items-center justify-between gap-3 rounded-md text-left text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+              aria-expanded={showUpdateProxyAdvanced}
+            >
+              <span>{t('update.proxyAdvanced')}</span>
+              <span className="material-symbols-outlined text-[18px]">
+                {showUpdateProxyAdvanced ? 'expand_less' : 'expand_more'}
+              </span>
+            </button>
+
+            {showUpdateProxyAdvanced && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  {updateProxyModes.map((mode) => (
+                    <button
+                      key={mode.value}
+                      type="button"
+                      onClick={() => {
+                        setUpdateProxyDraft((current) => ({ ...current, mode: mode.value }))
+                        setUpdateProxySaveError(null)
+                      }}
+                      aria-pressed={updateProxyDraft.mode === mode.value}
+                      className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                        updateProxyDraft.mode === mode.value
+                          ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">{mode.label}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+                        {mode.description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {updateProxyDraft.mode === 'manual' && (
+                  <div>
+                    <Input
+                      id="update-proxy-url"
+                      label={t('update.proxyUrl')}
+                      value={updateProxyDraft.url}
+                      placeholder="http://127.0.0.1:7890"
+                      autoComplete="off"
+                      onChange={(event) => {
+                        setUpdateProxyDraft((current) => ({ ...current, url: event.target.value }))
+                        setUpdateProxySaveError(null)
+                      }}
+                    />
+                    <p className={`mt-1 text-[11px] leading-4 ${manualProxyError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}>
+                      {manualProxyError ?? t('update.proxyUrlHint')}
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+                    {t('update.proxyScopeHint')}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="min-w-[72px] px-4 whitespace-nowrap"
+                    disabled={!updateProxyDirty || !!manualProxyError || isSavingUpdateProxy}
+                    loading={isSavingUpdateProxy}
+                    onClick={() => void saveUpdateProxy()}
+                  >
+                    {t('update.proxySave')}
+                  </Button>
+                </div>
+
+                {updateProxySaveError && (
+                  <p className="text-[11px] leading-4 text-[var(--color-error)]">
+                    {updateProxySaveError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           {(updateStatus === 'downloading' || updateStatus === 'restarting') && (
             <div className="mt-3">

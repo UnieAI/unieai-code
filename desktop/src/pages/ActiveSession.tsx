@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Target } from 'lucide-react'
 import {
   SCHEDULED_TAB_ID,
   SETTINGS_TAB_ID,
@@ -26,6 +27,7 @@ import { WorkspacePanel } from '../components/workspace/WorkspacePanel'
 import { TeamStatusBar } from '../components/teams/TeamStatusBar'
 import { TerminalSettings } from './TerminalSettings'
 import type { SessionListItem } from '../types/session'
+import type { ActiveGoalState } from '../types/chat'
 import { useMobileViewport } from '../hooks/useMobileViewport'
 import { isTauriRuntime } from '../lib/desktopRuntime'
 
@@ -48,6 +50,60 @@ function getSessionTerminalCwd(session: SessionListItem | undefined) {
   if (!session) return undefined
   if (session.workDir && session.workDirExists !== false) return session.workDir
   return session.projectPath || undefined
+}
+
+function ActiveGoalStrip({
+  goal,
+  isRunning,
+  compact,
+}: {
+  goal: ActiveGoalState | null | undefined
+  isRunning: boolean
+  compact: boolean
+}) {
+  const t = useTranslation()
+  if (!goal || goal.action === 'completed') return null
+
+  const objective = goal.objective ?? goal.message
+  if (!objective) return null
+
+  const statusLabel = isRunning
+    ? t('chat.activeGoal.running')
+    : goal.status === 'paused'
+      ? t('chat.activeGoal.paused')
+      : t('chat.activeGoal.active')
+  const meta = [
+    goal.budget ? t('chat.activeGoal.budget', { value: goal.budget }) : null,
+    goal.elapsed ? t('chat.activeGoal.elapsed', { value: goal.elapsed }) : null,
+    goal.continuations ? t('chat.activeGoal.continuations', { value: goal.continuations }) : null,
+  ].filter((value): value is string => value !== null)
+
+  return (
+    <div
+      data-testid="active-goal-strip"
+      className={[
+        'mt-2 flex max-w-full items-center gap-2 rounded-[8px] border border-[var(--color-memory-border)] bg-[var(--color-memory-surface)] px-2.5 py-1.5',
+        compact ? 'text-[11px]' : 'text-[12px]',
+      ].join(' ')}
+    >
+      <Target size={compact ? 13 : 14} className="shrink-0 text-[var(--color-memory-accent)]" strokeWidth={2.25} aria-hidden="true" />
+      <span className="shrink-0 font-semibold text-[var(--color-text-primary)]">
+        {t('chat.activeGoal.title')}
+      </span>
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-memory-accent)]" aria-hidden="true" />
+      <span className="shrink-0 text-[var(--color-text-tertiary)]">{statusLabel}</span>
+      <span className="min-w-0 flex-1 truncate font-medium text-[var(--color-text-primary)]" title={objective}>
+        {objective}
+      </span>
+      {meta.length > 0 ? (
+        <span className="hidden shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-text-tertiary)] lg:flex">
+          {meta.map((item) => (
+            <span key={item} className="max-w-[140px] truncate">{item}</span>
+          ))}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 function WorkspaceResizeHandle() {
@@ -210,8 +266,11 @@ export function ActiveSession() {
   const fetchSessionTasks = useCLITaskStore((s) => s.fetchSessionTasks)
   const trackedTaskSessionId = useCLITaskStore((s) => s.sessionId)
   const hasIncompleteTasks = useCLITaskStore((s) => s.tasks.some((task) => task.status !== 'completed'))
+  const hasRunningTasks = useCLITaskStore((s) => s.tasks.some((task) => task.status === 'in_progress'))
   const chatState = sessionState?.chatState ?? 'idle'
   const tokenUsage = sessionState?.tokenUsage ?? { input_tokens: 0, output_tokens: 0 }
+  const hasRunningBackgroundTasks = Object.values(sessionState?.backgroundAgentTasks ?? {})
+    .some((task) => task.status === 'running')
 
   const session = sessions.find((s) => s.id === activeTabId)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
@@ -226,6 +285,11 @@ export function ActiveSession() {
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
       ? state.isPanelOpen(activeTabId)
       : false,
+  )
+  const terminalPanelRuntimeId = useTerminalPanelStore((state) =>
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+      ? state.panelBySession[activeTabId]?.runtimeId
+      : undefined,
   )
   const terminalPanelHeight = useTerminalPanelStore((state) => state.height)
 
@@ -263,9 +327,13 @@ export function ActiveSession() {
   const t = useTranslation()
   const messages = sessionState?.messages ?? []
   const streamingText = sessionState?.streamingText ?? ''
+  const activeGoal = sessionState?.activeGoal ?? null
   const isEmpty = messages.length === 0 && !streamingText && (session?.messageCount ?? 0) === 0
+  const visibleMessageCount = messages.length > 0 ? messages.length : session?.messageCount ?? 0
 
-  const isActive = chatState !== 'idle'
+  const isActive = chatState !== 'idle' ||
+    (trackedTaskSessionId === activeTabId && hasRunningTasks) ||
+    hasRunningBackgroundTasks
   const totalTokens = tokenUsage.input_tokens + tokenUsage.output_tokens
 
   const lastUpdated = useMemo(() => {
@@ -401,10 +469,10 @@ export function ActiveSession() {
                           <span className="truncate">{t('session.lastUpdated', { time: lastUpdated })}</span>
                         </>
                       )}
-                      {!showWorkspacePanel && session?.messageCount !== undefined && session.messageCount > 0 && (
+                      {!showWorkspacePanel && visibleMessageCount > 0 && (
                         <>
                           <span className="text-[var(--color-outline)]">·</span>
-                          <span>{t('session.messages', { count: session.messageCount })}</span>
+                          <span>{t('session.messages', { count: visibleMessageCount })}</span>
                         </>
                       )}
                     </div>
@@ -416,6 +484,11 @@ export function ActiveSession() {
                         </span>
                       </div>
                     )}
+                    <ActiveGoalStrip
+                      goal={activeGoal}
+                      isRunning={isActive}
+                      compact={showWorkspacePanel}
+                    />
                   </div>
                 </div>
               )}
@@ -433,21 +506,27 @@ export function ActiveSession() {
             compact={showWorkspacePanel}
           />
 
-          {showTerminalPanel && activeTabId ? (
+          {terminalPanelRuntimeId && activeTabId ? (
             <div
               data-testid="session-terminal-panel"
-              className="flex shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]"
-              style={{ height: terminalPanelHeight }}
+              className={[
+                'flex shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
+                showTerminalPanel ? '' : 'hidden',
+              ].join(' ')}
+              style={{ height: showTerminalPanel ? terminalPanelHeight : 0 }}
             >
-              <TerminalResizeHandle />
+              {showTerminalPanel && <TerminalResizeHandle />}
               <TerminalSettings
-                active
+                active={showTerminalPanel}
                 docked
                 cwd={getSessionTerminalCwd(session)}
+                runtimeId={terminalPanelRuntimeId}
+                preserveOnUnmount
                 testId={`session-terminal-host-${activeTabId}`}
                 onOpenInTab={() => {
                   useTerminalPanelStore.getState().closePanel(activeTabId)
-                  useTabStore.getState().openTerminalTab(getSessionTerminalCwd(session))
+                  useTabStore.getState().openTerminalTab(getSessionTerminalCwd(session), terminalPanelRuntimeId)
+                  useTerminalPanelStore.getState().detachRuntime(activeTabId)
                 }}
                 onClose={() => useTerminalPanelStore.getState().closePanel(activeTabId)}
               />

@@ -1,4 +1,5 @@
-import { forwardRef, useRef, useState, useEffect, useCallback } from 'react'
+import { forwardRef, useMemo, useRef, useState, useEffect, useCallback } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import {
   SCHEDULED_TAB_ID,
   SETTINGS_TAB_ID,
@@ -18,6 +19,11 @@ import { Folder, FolderOpen, SquareTerminal } from 'lucide-react'
 const TAB_WIDTH = 180
 const DRAG_START_THRESHOLD = 4
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+
+type PendingCloseRequest = {
+  tabs: Tab[]
+  runningSessionIds: string[]
+}
 
 function isSessionTab(tab: Tab | null) {
   if (!tab) return false
@@ -39,6 +45,13 @@ export function TabBar() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const setActiveTab = useTabStore((s) => s.setActiveTab)
   const closeTab = useTabStore((s) => s.closeTab)
+  const sessionTabIds = useMemo(
+    () => tabs.filter((tab) => isSessionTab(tab)).map((tab) => tab.sessionId),
+    [tabs],
+  )
+  const activeChatSessionIds = useChatStore(useShallow((s) =>
+    sessionTabIds.filter((sessionId) => s.sessions[sessionId]?.chatState !== 'idle')
+  ))
   const disconnectSession = useChatStore((s) => s.disconnectSession)
   const activeTab = tabs.find((tab) => tab.sessionId === activeTabId) ?? null
   const isActiveSessionTab = isSessionTab(activeTab) || isSessionTabId(activeTabId)
@@ -60,7 +73,7 @@ export function TabBar() {
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
-  const [closingTabId, setClosingTabId] = useState<string | null>(null)
+  const [pendingCloseRequest, setPendingCloseRequest] = useState<PendingCloseRequest | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null)
   const [dragOffsetX, setDragOffsetX] = useState(0)
@@ -70,6 +83,16 @@ export function TabBar() {
   const tabRefs = useRef(new Map<string, HTMLDivElement | null>())
   const startDraggingRef = useRef<(() => Promise<void>) | null>(null)
   const t = useTranslation()
+  const runningSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const tab of tabs) {
+      if (isSessionTab(tab) && tab.status === 'running') ids.add(tab.sessionId)
+    }
+    for (const sessionId of activeChatSessionIds) {
+      ids.add(sessionId)
+    }
+    return ids
+  }, [activeChatSessionIds, tabs])
 
   useEffect(() => {
     if (!isTauri) return
@@ -137,25 +160,50 @@ export function TabBar() {
     closeTab(tab.sessionId)
   }, [closeTab])
 
+  const getRunningSessionIds = useCallback((targetTabs: Tab[]) => {
+    const chatSessions = useChatStore.getState().sessions
+    return targetTabs
+      .filter((tab) => isSessionTab(tab))
+      .filter((tab) => {
+        const sessionState = chatSessions[tab.sessionId]
+        return !!sessionState && sessionState.chatState !== 'idle'
+      })
+      .map((tab) => tab.sessionId)
+  }, [])
+
+  const closeTabsWithPolicy = useCallback((targetTabs: Tab[], runningSessionIds: string[], stopRunning: boolean) => {
+    const runningSessionSet = new Set(runningSessionIds)
+
+    for (const tab of targetTabs) {
+      if (isSessionTab(tab)) {
+        const isRunning = runningSessionSet.has(tab.sessionId)
+        if (isRunning && stopRunning) {
+          useChatStore.getState().stopGeneration(tab.sessionId)
+        }
+        if (!isRunning || stopRunning) {
+          disconnectSession(tab.sessionId)
+        }
+      }
+      closeTabWithCleanup(tab)
+    }
+  }, [closeTabWithCleanup, disconnectSession])
+
+  const requestCloseTabs = useCallback((targetTabs: Tab[]) => {
+    if (targetTabs.length === 0) return
+    const runningSessionIds = getRunningSessionIds(targetTabs)
+
+    if (runningSessionIds.length > 0) {
+      setPendingCloseRequest({ tabs: targetTabs, runningSessionIds })
+      return
+    }
+
+    closeTabsWithPolicy(targetTabs, [], false)
+  }, [closeTabsWithPolicy, getRunningSessionIds])
+
   const handleClose = (sessionId: string) => {
-    // Special tabs can always be closed directly
     const tab = tabs.find((t) => t.sessionId === sessionId)
     if (!tab) return
-    if (!isSessionTab(tab)) {
-      closeTabWithCleanup(tab)
-      return
-    }
-
-    const sessionState = useChatStore.getState().sessions[sessionId]
-    const isRunning = sessionState && sessionState.chatState !== 'idle'
-
-    if (isRunning) {
-      setClosingTabId(sessionId)
-      return
-    }
-
-    disconnectSession(sessionId)
-    closeTabWithCleanup(tab)
+    requestCloseTabs([tab])
   }
 
   const handleContextMenu = (e: React.MouseEvent, sessionId: string) => {
@@ -166,38 +214,26 @@ export function TabBar() {
   const handleCloseOthers = (sessionId: string) => {
     setContextMenu(null)
     const otherTabs = tabs.filter((t) => t.sessionId !== sessionId)
-    for (const tab of otherTabs) {
-      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
-      closeTabWithCleanup(tab)
-    }
+    requestCloseTabs(otherTabs)
   }
 
   const handleCloseLeft = (sessionId: string) => {
     setContextMenu(null)
     const idx = tabs.findIndex((t) => t.sessionId === sessionId)
     const leftTabs = tabs.slice(0, idx)
-    for (const tab of leftTabs) {
-      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
-      closeTabWithCleanup(tab)
-    }
+    requestCloseTabs(leftTabs)
   }
 
   const handleCloseRight = (sessionId: string) => {
     setContextMenu(null)
     const idx = tabs.findIndex((t) => t.sessionId === sessionId)
     const rightTabs = tabs.slice(idx + 1)
-    for (const tab of rightTabs) {
-      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
-      closeTabWithCleanup(tab)
-    }
+    requestCloseTabs(rightTabs)
   }
 
   const handleCloseAll = () => {
     setContextMenu(null)
-    for (const tab of tabs) {
-      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
-      closeTabWithCleanup(tab)
-    }
+    requestCloseTabs(tabs)
   }
 
   const getTargetIndexFromClientX = useCallback((clientX: number) => {
@@ -314,10 +350,12 @@ export function TabBar() {
             key={tab.sessionId}
             ref={(node) => { tabRefs.current.set(tab.sessionId, node) }}
             tab={tab}
+            isRunning={runningSessionIds.has(tab.sessionId)}
             isActive={tab.sessionId === activeTabId}
             isDragOver={dragOverIndex === index}
             isDragging={tab.sessionId === draggingSessionId}
             dragOffsetX={tab.sessionId === draggingSessionId ? dragOffsetX : 0}
+            runningLabel={t('tabs.sessionRunning')}
             onClick={() => handleTabClick(tab.sessionId)}
             onClose={() => handleClose(tab.sessionId)}
             onContextMenu={(e) => handleContextMenu(e, tab.sessionId)}
@@ -408,20 +446,27 @@ export function TabBar() {
         </div>
       )}
 
-      {closingTabId && (
+      {pendingCloseRequest && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30">
           <div className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] p-6 max-w-sm w-full mx-4" style={{ boxShadow: 'var(--shadow-dropdown)' }}>
-            <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('tabs.closeConfirmTitle')}</h3>
-            <p className="text-xs text-[var(--color-text-secondary)] mb-4">{t('tabs.closeConfirmMessage')}</p>
+            <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-2">
+              {pendingCloseRequest.runningSessionIds.length > 1
+                ? t('tabs.closeAllConfirmTitle')
+                : t('tabs.closeConfirmTitle')}
+            </h3>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-4">
+              {pendingCloseRequest.runningSessionIds.length > 1
+                ? t('tabs.closeAllConfirmMessage', { count: pendingCloseRequest.runningSessionIds.length })
+                : t('tabs.closeConfirmMessage')}
+            </p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setClosingTabId(null)} className="px-3 py-1.5 text-xs rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">
+              <button onClick={() => setPendingCloseRequest(null)} className="px-3 py-1.5 text-xs rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">
                 {t('common.cancel')}
               </button>
               <button
                 onClick={() => {
-                  const tab = tabs.find((item) => item.sessionId === closingTabId)
-                  if (tab) closeTabWithCleanup(tab)
-                  setClosingTabId(null)
+                  closeTabsWithPolicy(pendingCloseRequest.tabs, pendingCloseRequest.runningSessionIds, false)
+                  setPendingCloseRequest(null)
                 }}
                 className="px-3 py-1.5 text-xs rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
               >
@@ -429,15 +474,14 @@ export function TabBar() {
               </button>
               <button
                 onClick={() => {
-                  useChatStore.getState().stopGeneration(closingTabId)
-                  disconnectSession(closingTabId)
-                  const tab = tabs.find((item) => item.sessionId === closingTabId)
-                  if (tab) closeTabWithCleanup(tab)
-                  setClosingTabId(null)
+                  closeTabsWithPolicy(pendingCloseRequest.tabs, pendingCloseRequest.runningSessionIds, true)
+                  setPendingCloseRequest(null)
                 }}
                 className="px-3 py-1.5 text-xs rounded-lg bg-[var(--color-brand)] text-white hover:opacity-90"
               >
-                {t('tabs.closeConfirmStop')}
+                {pendingCloseRequest.runningSessionIds.length > 1
+                  ? t('tabs.closeAllConfirmStop')
+                  : t('tabs.closeConfirmStop')}
               </button>
             </div>
           </div>
@@ -449,15 +493,17 @@ export function TabBar() {
 
 const TabItem = forwardRef<HTMLDivElement, {
   tab: Tab
+  isRunning: boolean
   isActive: boolean
   isDragOver: boolean
   isDragging: boolean
   dragOffsetX: number
+  runningLabel: string
   onClick: () => void
   onClose: () => void
   onContextMenu: (e: React.MouseEvent) => void
   onMouseDown: (event: React.MouseEvent) => void
-}>(({ tab, isActive, isDragOver, isDragging, dragOffsetX, onClick, onClose, onContextMenu, onMouseDown }, ref) => {
+}>(({ tab, isRunning, isActive, isDragOver, isDragging, dragOffsetX, runningLabel, onClick, onClose, onContextMenu, onMouseDown }, ref) => {
   return (
     <div
       ref={ref}
@@ -482,8 +528,12 @@ const TabItem = forwardRef<HTMLDivElement, {
         transform: isDragging ? `translateX(${dragOffsetX}px) scale(1.02)` : undefined,
       }}
     >
-      {tab.type === 'session' && tab.status === 'running' && (
-        <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse flex-shrink-0" />
+      {tab.type === 'session' && isRunning && (
+        <span
+          className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--color-success)] animate-pulse"
+          aria-label={runningLabel}
+          title={runningLabel}
+        />
       )}
       {tab.type === 'session' && tab.status === 'error' && (
         <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-error)] flex-shrink-0" />

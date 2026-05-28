@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
+import type { PerSessionState } from '../../stores/chatStore'
+import type { ChatState } from '../../types/chat'
 
 const startDraggingMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 const getCurrentWindowMock = vi.hoisted(() => vi.fn(() => ({
@@ -14,12 +16,37 @@ const openProjectMenuMock = vi.hoisted(() => ({
   paths: [] as Array<string | null | undefined>,
 }))
 
+function makeChatSession(chatState: ChatState): PerSessionState {
+  return {
+    messages: [],
+    chatState,
+    connectionState: 'connected',
+    streamingText: '',
+    streamingToolInput: '',
+    activeToolUseId: null,
+    activeToolName: null,
+    activeThinkingId: null,
+    pendingPermission: null,
+    pendingComputerUsePermission: null,
+    tokenUsage: { input_tokens: 0, output_tokens: 0 },
+    elapsedSeconds: 0,
+    statusVerb: '',
+    slashCommands: [],
+    agentTaskNotifications: {},
+    backgroundAgentTasks: {},
+    activeGoal: null,
+    elapsedTimer: null,
+    composerPrefill: null,
+    composerDraft: null,
+  }
+}
+
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: getCurrentWindowMock,
 }))
 
 vi.mock('../../i18n', () => ({
-  useTranslation: () => (key: string) => {
+  useTranslation: () => (key: string, params?: Record<string, string | number>) => {
     const translations: Record<string, string> = {
       'tabs.close': 'Close',
       'tabs.closeOthers': 'Close Others',
@@ -30,6 +57,10 @@ vi.mock('../../i18n', () => ({
       'tabs.closeConfirmMessage': 'Still running',
       'tabs.closeConfirmKeep': 'Keep Running',
       'tabs.closeConfirmStop': 'Stop & Close',
+      'tabs.closeAllConfirmTitle': 'Sessions Running',
+      'tabs.closeAllConfirmMessage': '{count} sessions still running',
+      'tabs.closeAllConfirmStop': 'Stop All & Close',
+      'tabs.sessionRunning': 'Session running',
       'tabs.openTerminal': 'Open Terminal',
       'tabs.showWorkspace': 'Show Workspace',
       'tabs.hideWorkspace': 'Hide Workspace',
@@ -39,7 +70,13 @@ vi.mock('../../i18n', () => ({
       'common.cancel': 'Cancel',
     }
 
-    return translations[key] ?? key
+    let text = translations[key] ?? key
+    if (params) {
+      for (const [paramKey, paramValue] of Object.entries(params)) {
+        text = text.replace(new RegExp(`\\{${paramKey}\\}`, 'g'), String(paramValue))
+      }
+    }
+    return text
   },
 }))
 
@@ -318,6 +355,59 @@ describe('TabBar', () => {
 
     expect(screen.getByTestId('open-project-menu')).toHaveTextContent('/repo/worktree')
     expect(openProjectMenuMock.paths[openProjectMenuMock.paths.length - 1]).toBe('/repo/worktree')
+  })
+
+  it('does not rerender for chat payload changes when tab running state is unchanged', async () => {
+    const { TabBar } = await import('./TabBar')
+    const { useTabStore } = await import('../../stores/tabStore')
+    const { useChatStore } = await import('../../stores/chatStore')
+    const { useSessionStore } = await import('../../stores/sessionStore')
+
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'tab-1', title: 'Workspace Session', type: 'session', status: 'idle' },
+      ],
+      activeTabId: 'tab-1',
+    })
+    useChatStore.setState({
+      sessions: {
+        'tab-1': makeChatSession('idle'),
+      },
+      disconnectSession: vi.fn(),
+    } as Partial<ReturnType<typeof useChatStore.getState>>)
+    useSessionStore.setState({
+      sessions: [{
+        id: 'tab-1',
+        title: 'Workspace Session',
+        createdAt: '2026-05-13T00:00:00.000Z',
+        modifiedAt: '2026-05-13T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/repo',
+        workDir: '/repo/worktree',
+        workDirExists: true,
+      }],
+      activeSessionId: 'tab-1',
+    })
+
+    await act(async () => {
+      render(<TabBar />)
+    })
+    expect(openProjectMenuMock.paths[openProjectMenuMock.paths.length - 1]).toBe('/repo/worktree')
+
+    openProjectMenuMock.paths = []
+    await act(async () => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          'tab-1': {
+            ...state.sessions['tab-1']!,
+            streamingText: 'token churn should not affect tab chrome',
+          },
+        },
+      }))
+    })
+
+    expect(openProjectMenuMock.paths).toEqual([])
   })
 
   it('hides the open-project control when the active session workdir is unavailable', async () => {
@@ -747,5 +837,85 @@ describe('TabBar', () => {
 
     expect(useWorkspacePanelStore.getState().panelBySession['tab-1']).toBeUndefined()
     expect(useTerminalPanelStore.getState().panelBySession['tab-1']).toBeUndefined()
+  })
+
+  it('asks before stopping running sessions when closing all tabs', async () => {
+    const { TabBar } = await import('./TabBar')
+    const { useTabStore } = await import('../../stores/tabStore')
+    const { useChatStore } = await import('../../stores/chatStore')
+
+    const disconnectSession = vi.fn()
+    const stopGeneration = vi.fn()
+
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'tab-running', title: 'Running Session', type: 'session', status: 'running' },
+        { sessionId: 'tab-thinking', title: 'Thinking Session', type: 'session', status: 'running' },
+        { sessionId: 'tab-idle', title: 'Idle Session', type: 'session', status: 'idle' },
+      ],
+      activeTabId: 'tab-running',
+    })
+    useChatStore.setState({
+      sessions: {
+        'tab-running': makeChatSession('streaming'),
+        'tab-thinking': makeChatSession('thinking'),
+        'tab-idle': makeChatSession('idle'),
+      },
+      disconnectSession,
+      stopGeneration,
+    } as Partial<ReturnType<typeof useChatStore.getState>>)
+
+    await act(async () => {
+      render(<TabBar />)
+    })
+
+    fireEvent.contextMenu(screen.getByText('Running Session'))
+    fireEvent.click(screen.getByText('Close All'))
+
+    expect(screen.getByText('Sessions Running')).toBeInTheDocument()
+    expect(screen.getByText('2 sessions still running')).toBeInTheDocument()
+    expect(useTabStore.getState().tabs.map((tab) => tab.sessionId)).toEqual(['tab-running', 'tab-thinking', 'tab-idle'])
+    expect(disconnectSession).not.toHaveBeenCalled()
+    expect(stopGeneration).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('Stop All & Close'))
+
+    expect(stopGeneration).toHaveBeenCalledWith('tab-running')
+    expect(stopGeneration).toHaveBeenCalledWith('tab-thinking')
+    expect(stopGeneration).toHaveBeenCalledTimes(2)
+    expect(disconnectSession).toHaveBeenCalledWith('tab-running')
+    expect(disconnectSession).toHaveBeenCalledWith('tab-thinking')
+    expect(disconnectSession).toHaveBeenCalledWith('tab-idle')
+    expect(useTabStore.getState().tabs).toEqual([])
+  })
+
+  it('shows a running marker on tabs from tab status or live chat state', async () => {
+    const { TabBar } = await import('./TabBar')
+    const { useTabStore } = await import('../../stores/tabStore')
+    const { useChatStore } = await import('../../stores/chatStore')
+
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'tab-status-running', title: 'Status Running', type: 'session', status: 'running' },
+        { sessionId: 'tab-chat-running', title: 'Chat Running', type: 'session', status: 'idle' },
+        { sessionId: 'tab-idle', title: 'Idle', type: 'session', status: 'idle' },
+      ],
+      activeTabId: 'tab-status-running',
+    })
+    useChatStore.setState({
+      sessions: {
+        'tab-status-running': makeChatSession('idle'),
+        'tab-chat-running': makeChatSession('thinking'),
+        'tab-idle': makeChatSession('idle'),
+      },
+      disconnectSession: vi.fn(),
+    } as Partial<ReturnType<typeof useChatStore.getState>>)
+
+    await act(async () => {
+      render(<TabBar />)
+    })
+
+    expect(screen.getAllByLabelText('Session running')).toHaveLength(2)
+    expect(screen.getByText('Idle').closest('[data-dragging]')?.querySelector('[aria-label="Session running"]')).toBeNull()
   })
 })

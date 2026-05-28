@@ -40,6 +40,17 @@ export type CreateSessionRequest = {
   workDir?: string
   repository?: CreateSessionRepositoryOptions
 }
+export type BranchSessionRequest = {
+  targetMessageId: string
+  title?: string
+}
+export type BranchSessionResponse = {
+  sessionId: string
+  title: string
+  workDir: string | null
+  sourceSessionId: string
+  targetMessageId: string
+}
 export type RepositoryBranchInfo = {
   name: string
   current: boolean
@@ -314,6 +325,10 @@ export const sessionsApi = {
     return api.post<CreateSessionResponse>('/api/sessions', body)
   },
 
+  branch(sessionId: string, body: BranchSessionRequest) {
+    return api.post<BranchSessionResponse>(`/api/sessions/${sessionId}/branch`, body)
+  },
+
   delete(sessionId: string) {
     return api.delete<{ ok: true }>(`/api/sessions/${sessionId}`)
   },
@@ -341,7 +356,7 @@ export const sessionsApi = {
   },
 
   getSlashCommands(sessionId: string) {
-    return api.get<{ commands: Array<{ name: string; description: string }> }>(`/api/sessions/${sessionId}/slash-commands`)
+    return api.get<{ commands: Array<{ name: string; description: string; argumentHint?: string }> }>(`/api/sessions/${sessionId}/slash-commands`)
   },
 
   getInspection(sessionId: string, options?: { includeContext?: boolean; timeout?: number; contextOnly?: boolean }) {

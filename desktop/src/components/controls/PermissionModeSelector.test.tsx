@@ -47,7 +47,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
 
-describe('PermissionModeSelector mobile access', () => {
+describe('PermissionModeSelector', () => {
   beforeEach(() => {
     viewportMocks.isMobile = false
     useSettingsStore.setState({ permissionMode: 'default' })
@@ -72,5 +72,47 @@ describe('PermissionModeSelector mobile access', () => {
     expect(screen.getByRole('dialog', { name: 'Execution Permissions' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Auto accept edits/ })).toBeInTheDocument()
+  })
+
+  it('uses the active tab workspace when showing the bypass confirmation path', () => {
+    useSessionStore.setState({
+      activeSessionId: 'previous-session',
+      sessions: [
+        {
+          id: 'previous-session',
+          title: 'Previous',
+          createdAt: '2026-05-24T00:00:00.000Z',
+          modifiedAt: '2026-05-24T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: 'C:\\Users\\LinTan',
+          projectRoot: 'C:\\Users\\LinTan',
+          workDir: 'C:\\Users\\LinTan',
+          workDirExists: true,
+        },
+        {
+          id: 'current-tab',
+          title: 'Current',
+          createdAt: '2026-05-24T00:00:00.000Z',
+          modifiedAt: '2026-05-24T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: 'C:\\Users\\LinTan\\MyScript\\test5',
+          projectRoot: 'C:\\Users\\LinTan\\MyScript\\test5',
+          workDir: 'C:\\Users\\LinTan\\MyScript\\test5',
+          workDirExists: true,
+        },
+      ],
+    })
+    useTabStore.setState({
+      activeTabId: 'current-tab',
+      tabs: [{ sessionId: 'current-tab', title: 'Current', type: 'session', status: 'idle' }],
+    })
+
+    render(<PermissionModeSelector compact />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask permissions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Bypass permissions/ }))
+
+    expect(screen.getByText('C:\\Users\\LinTan\\MyScript\\test5')).toBeInTheDocument()
+    expect(screen.queryByText('C:\\Users\\LinTan')).not.toBeInTheDocument()
   })
 })

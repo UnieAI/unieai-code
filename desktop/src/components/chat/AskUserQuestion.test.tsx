@@ -260,4 +260,139 @@ describe('AskUserQuestion', () => {
       },
     })
   })
+
+  it('keeps custom responses scoped to each question tab', () => {
+    const input = {
+      questions: [
+        {
+          header: 'Q1',
+          question: 'First question?',
+          options: [{ label: 'A1' }, { label: 'B1' }],
+        },
+        {
+          header: 'Q2',
+          question: 'Second question?',
+          options: [{ label: 'A2' }, { label: 'B2' }],
+        },
+      ],
+    }
+
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={input}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer...'), {
+      target: { value: 'transient-q1' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Type your answer...'), {
+      target: { value: '' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^A1$/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer...'), {
+      target: { value: 'custom-q1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Q2$/ }))
+
+    expect((screen.getByPlaceholderText('Type your answer...') as HTMLTextAreaElement).value).toBe('')
+
+    fireEvent.click(screen.getByRole('button', { name: /^A2$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Q1$/ }))
+
+    expect((screen.getByPlaceholderText('Type your answer...') as HTMLTextAreaElement).value).toBe('custom-q1')
+
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, {
+      type: 'permission_response',
+      requestId: 'perm-1',
+      allowed: true,
+      updatedInput: {
+        ...input,
+        answers: {
+          'First question?': 'custom-q1',
+          'Second question?': 'A2',
+        },
+      },
+    })
+  })
+
+  it('uses a multiline custom response box and submits it with Ctrl+Enter', () => {
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [
+            {
+              question: 'What context should we restore?',
+              options: [{ label: 'Skip' }],
+            },
+          ],
+        }}
+      />,
+    )
+
+    const textarea = screen.getByPlaceholderText('Type your answer...')
+    expect(textarea.tagName).toBe('TEXTAREA')
+    expect(textarea.getAttribute('rows')).toBe('3')
+
+    fireEvent.change(textarea, {
+      target: { value: 'First restored context line\nSecond restored context line' },
+    })
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(sendMock).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true })
+
+    expect(sendMock).toHaveBeenCalledWith(ACTIVE_TAB, {
+      type: 'permission_response',
+      requestId: 'perm-1',
+      allowed: true,
+      updatedInput: {
+        questions: [
+          {
+            question: 'What context should we restore?',
+            options: [{ label: 'Skip' }],
+          },
+        ],
+        answers: {
+          'What context should we restore?': 'First restored context line\nSecond restored context line',
+        },
+      },
+    })
+  })
+
+  it('renders aborted permission results as terminal instead of asking again', () => {
+    useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [ACTIVE_TAB]: {
+          ...state.sessions[ACTIVE_TAB]!,
+          pendingPermission: null,
+          chatState: 'idle',
+        },
+      },
+    }))
+
+    render(
+      <AskUserQuestion
+        toolUseId="tool-1"
+        input={{
+          questions: [
+            {
+              question: 'Which scope?',
+              options: [{ label: 'Single page' }, { label: 'Tabs' }],
+            },
+          ],
+        }}
+        result="Tool permission request failed: AbortError"
+      />,
+    )
+
+    expect(screen.queryByPlaceholderText('Type your answer...')).toBeNull()
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull()
+    expect(screen.getByText(/Tool permission request failed: AbortError/)).toBeTruthy()
+  })
 })

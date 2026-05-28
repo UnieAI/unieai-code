@@ -4,6 +4,8 @@ import * as path from 'node:path'
 import { promisify } from 'node:util'
 import { ApiError } from '../middleware/errorHandler.js'
 import { findCanonicalGitRoot, findGitRoot } from '../../utils/git.js'
+import { registerFilesystemAccessRoot } from './filesystemAccessRoots.js'
+import { normalizeDriveRootPathForPlatform } from './windowsDrivePath.js'
 import {
   ensureWorktreesDirExcluded,
   performPostCreationSetup,
@@ -167,10 +169,10 @@ async function runGit(
 }
 
 async function resolveDirectory(workDir: string): Promise<string> {
-  const resolved = path.resolve(workDir)
+  const resolved = path.resolve(normalizeDriveRootPathForPlatform(workDir))
   let realPath: string
   try {
-    realPath = await fs.realpath(resolved)
+    realPath = normalizeDriveRootPathForPlatform(await fs.realpath(resolved))
   } catch {
     throw repositoryBadRequest(
       REPOSITORY_ERROR.workdirMissing,
@@ -326,10 +328,12 @@ export async function getRepositoryContext(workDir: string): Promise<RepositoryC
   let absWorkDir: string
   try {
     absWorkDir = await resolveDirectory(workDir)
+    registerFilesystemAccessRoot(workDir)
+    registerFilesystemAccessRoot(absWorkDir)
   } catch (error) {
     return {
       state: 'missing_workdir',
-      workDir: path.resolve(workDir),
+      workDir: path.resolve(normalizeDriveRootPathForPlatform(workDir)),
       repoRoot: null,
       repoName: null,
       currentBranch: null,
@@ -358,6 +362,7 @@ export async function getRepositoryContext(workDir: string): Promise<RepositoryC
 
   try {
     const repoRoot = findCanonicalGitRoot(gitRoot) ?? gitRoot
+    registerFilesystemAccessRoot(repoRoot)
     const [branchResult, defaultBranch, statusResult, worktreeResult] = await Promise.all([
       runGit(gitRoot, ['branch', '--show-current']),
       getDefaultBranch(gitRoot),

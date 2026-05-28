@@ -21,6 +21,8 @@ import {
   buildClaudeCliArgs,
   resolveClaudeCliLauncher,
 } from '../../utils/desktopBundledCli.js'
+import { getProcessEnvWithTerminalShellEnvironment } from '../../utils/terminalShellEnvironment.js'
+import { attributionHeaderEnvForModel } from './attributionHeaderPolicy.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -640,7 +642,7 @@ export class CronScheduler {
     workDir: string,
     task: CronTask,
   ): Promise<Record<string, string | undefined>> {
-    const cleanEnv = { ...process.env }
+    const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
     delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN
 
     if (this.shouldStripInheritedProviderEnv(task.providerId)) {
@@ -658,6 +660,11 @@ export class CronScheduler {
     if (explicitProviderEnv && task.model?.trim()) {
       explicitProviderEnv.ANTHROPIC_MODEL = task.model.trim()
     }
+    const attributionHeaderEnv = attributionHeaderEnvForModel(
+      task.model?.trim() ||
+        explicitProviderEnv?.ANTHROPIC_MODEL ||
+        cleanEnv.ANTHROPIC_MODEL,
+    )
 
     return {
       ...cleanEnv,
@@ -676,6 +683,7 @@ export class CronScheduler {
       ...(this.shouldMarkManagedOAuth(task.providerId)
         ? await this.buildOfficialOAuthEnv()
         : {}),
+      ...attributionHeaderEnv,
     }
   }
 

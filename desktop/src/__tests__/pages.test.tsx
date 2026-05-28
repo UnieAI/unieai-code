@@ -159,7 +159,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.queryByText('/internal-only')).not.toBeInTheDocument()
   })
 
-  it('EmptySession does not expose the paused /goal command', async () => {
+  it('EmptySession shows /goal as one command with argument hints, not pseudo subcommands', async () => {
     vi.mocked(skillsApi.list).mockResolvedValueOnce({ skills: [] })
 
     render(<EmptySession />)
@@ -168,12 +168,9 @@ describe('Content-only pages render without errors', () => {
       target: { value: '/goal', selectionStart: 5 },
     })
 
-    await waitFor(() => {
-      expect(skillsApi.list).toHaveBeenCalled()
-    })
-    expect(screen.queryByText('/goal', { selector: 'span' })).not.toBeInTheDocument()
-    expect(screen.queryByText('[<condition> | clear]')).not.toBeInTheDocument()
-    expect(screen.queryByText('Set a completion goal')).not.toBeInTheDocument()
+    expect(await screen.findAllByText('/goal')).toHaveLength(2)
+    expect(screen.getByText('[<condition> | clear]')).toBeInTheDocument()
+    expect(screen.getByText('Set a completion goal')).toBeInTheDocument()
     expect(screen.queryByText('/goal status')).not.toBeInTheDocument()
     expect(screen.queryByText('/goal --tokens')).not.toBeInTheDocument()
   })
@@ -628,7 +625,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getByText('Slash commands')).toBeInTheDocument()
     expect(screen.getByText('/clear')).toBeInTheDocument()
     expect(screen.getByText('/cost')).toBeInTheDocument()
-    expect(screen.getByText('13 more commands available. Type / to search the full command list.')).toBeInTheDocument()
+    expect(screen.getByText('14 more commands available. Type / to search the full command list.')).toBeInTheDocument()
 
     resetPageStores()
   })

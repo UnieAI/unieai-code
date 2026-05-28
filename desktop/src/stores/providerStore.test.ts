@@ -7,6 +7,8 @@ const {
   runtimeStoreState,
   setSessionRuntimeMock,
   setSelectionMock,
+  settingsSetModelMock,
+  settingsFetchAllMock,
 } = vi.hoisted(() => ({
   providersApiMock: {
     list: vi.fn(),
@@ -32,6 +34,8 @@ const {
   },
   setSessionRuntimeMock: vi.fn(),
   setSelectionMock: vi.fn(),
+  settingsSetModelMock: vi.fn(),
+  settingsFetchAllMock: vi.fn(),
 }))
 
 vi.mock('../api/providers', () => ({
@@ -59,8 +63,8 @@ vi.mock('./sessionRuntimeStore', () => ({
 vi.mock('./settingsStore', () => ({
   useSettingsStore: {
     getState: () => ({
-      setModel: vi.fn(),
-      fetchAll: vi.fn(),
+      setModel: settingsSetModelMock,
+      fetchAll: settingsFetchAllMock,
     }),
   },
 }))
@@ -146,5 +150,34 @@ describe('providerStore runtime refresh', () => {
 
     expect(setSelectionMock).not.toHaveBeenCalled()
     expect(setSessionRuntimeMock).not.toHaveBeenCalled()
+  })
+
+  it('sets the OpenAI default model when activating built-in ChatGPT Official', async () => {
+    providersApiMock.activate.mockResolvedValue({ ok: true })
+    providersApiMock.list.mockResolvedValue({
+      providers: [],
+      activeId: 'openai-official',
+    })
+
+    const { useProviderStore } = await import('./providerStore')
+    await useProviderStore.getState().activateProvider('openai-official')
+
+    expect(settingsSetModelMock).toHaveBeenCalledWith('gpt-5.3-codex')
+    expect(settingsFetchAllMock).toHaveBeenCalled()
+  })
+
+  it('sets the provider main model when activating a saved provider', async () => {
+    const provider = makeProvider()
+    providersApiMock.activate.mockResolvedValue({ ok: true })
+    providersApiMock.list.mockResolvedValue({
+      providers: [provider],
+      activeId: provider.id,
+    })
+
+    const { useProviderStore } = await import('./providerStore')
+    await useProviderStore.getState().activateProvider(provider.id)
+
+    expect(settingsSetModelMock).toHaveBeenCalledWith('model-main')
+    expect(settingsFetchAllMock).toHaveBeenCalled()
   })
 })

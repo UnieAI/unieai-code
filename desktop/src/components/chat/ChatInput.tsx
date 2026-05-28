@@ -24,7 +24,7 @@ import { FileSearchMenu, type FileSearchMenuHandle } from './FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from './LocalSlashCommandPanel'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import {
-  FALLBACK_SLASH_COMMANDS,
+  getLocalizedFallbackCommands,
   filterSlashCommands,
   findSlashTrigger,
   mergeSlashCommands,
@@ -44,11 +44,6 @@ type GitInfo = SessionGitInfo
 
 type Attachment = ComposerAttachment
 
-type ComposerDraft = {
-  input: string
-  attachments: Attachment[]
-}
-
 type ChatInputProps = {
   variant?: 'default' | 'hero'
   compact?: boolean
@@ -67,6 +62,21 @@ function workspaceReferenceToAttachment(reference: WorkspaceChatReference): Atta
     lineEnd: reference.lineEnd,
     note: reference.note,
     quote: reference.quote,
+  }
+}
+
+function insertComposerTokenAtRange(value: string, start: number, end: number, token: string) {
+  const boundedStart = Math.max(0, Math.min(start, value.length))
+  const boundedEnd = Math.max(boundedStart, Math.min(end, value.length))
+  const before = value.slice(0, boundedStart)
+  const after = value.slice(boundedEnd)
+  const leadingSpace = before.length > 0 && !/\s$/.test(before) ? ' ' : ''
+  const trailingSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : ''
+  const insertion = `${leadingSpace}${token}${trailingSpace}`
+
+  return {
+    value: `${before}${insertion}${after}`,
+    cursorPos: before.length + insertion.length,
   }
 }
 
@@ -96,7 +106,6 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const slashMenuRef = useRef<HTMLDivElement>(null)
   const fileSearchRef = useRef<FileSearchMenuHandle>(null)
   const slashItemRefs = useRef<(HTMLButtonElement | null)[]>([])
-  const composerDraftsRef = useRef<Record<string, ComposerDraft>>({})
   const previousActiveTabIdRef = useRef<string | null>(null)
   const inputRef = useRef(input)
   const attachmentsRef = useRef(attachments)
@@ -111,12 +120,13 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       return next
     })
   }, [])
-  const { sendMessage, stopGeneration } = useChatStore()
+  const { sendMessage, stopGeneration, clearComposerInsertion } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
   const slashCommands = sessionState?.slashCommands ?? []
   const composerPrefill = sessionState?.composerPrefill ?? null
+  const composerInsertion = sessionState?.composerInsertion ?? null
   const runtimeSelection = useSessionRuntimeStore((state) =>
     activeTabId ? state.selections[activeTabId] : undefined,
   )
@@ -136,6 +146,18 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const addWorkspaceReference = useWorkspaceChatContextStore((s) => s.addReference)
   const removeWorkspaceReference = useWorkspaceChatContextStore((s) => s.removeReference)
   const clearWorkspaceReferences = useWorkspaceChatContextStore((s) => s.clearReferences)
+  const saveComposerDraft = useCallback((sessionId: string) => {
+    const draft = {
+      input: inputRef.current,
+      attachments: attachmentsRef.current,
+    }
+    const chatStore = useChatStore.getState()
+    if (draft.input.length === 0 && draft.attachments.length === 0) {
+      chatStore.clearComposerDraft(sessionId)
+      return
+    }
+    chatStore.setComposerDraft(sessionId, draft)
+  }, [])
 
   const isMemberSession = !!memberInfo
   const isActive = chatState !== 'idle'
@@ -178,13 +200,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     if (previousActiveTabId === activeTabId) return
 
     if (previousActiveTabId) {
-      composerDraftsRef.current[previousActiveTabId] = {
-        input: inputRef.current,
-        attachments: attachmentsRef.current,
-      }
+      saveComposerDraft(previousActiveTabId)
     }
 
-    const nextDraft = activeTabId ? composerDraftsRef.current[activeTabId] : undefined
+    const nextDraft = activeTabId ? useChatStore.getState().sessions[activeTabId]?.composerDraft : undefined
     setComposerInput(nextDraft?.input ?? '')
     setComposerAttachments(nextDraft?.attachments ?? [])
     setPlusMenuOpen(false)
@@ -195,7 +214,14 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     setAtFilter('')
     setAtCursorPos(-1)
     previousActiveTabIdRef.current = activeTabId
-  }, [activeTabId, setComposerAttachments, setComposerInput])
+  }, [activeTabId, saveComposerDraft, setComposerAttachments, setComposerInput])
+
+  useEffect(() => {
+    return () => {
+      const currentActiveTabId = previousActiveTabIdRef.current
+      if (currentActiveTabId) saveComposerDraft(currentActiveTabId)
+    }
+  }, [saveComposerDraft])
 
   useEffect(() => {
     textareaRef.current?.focus()
@@ -231,6 +257,38 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       el?.setSelectionRange(cursor, cursor)
     })
   }, [composerPrefill, setComposerAttachments, setComposerInput])
+
+  useEffect(() => {
+    if (!composerInsertion || !activeTabId || isMemberSession) return
+
+    const el = textareaRef.current
+    const currentInput = inputRef.current
+    const start = el?.selectionStart ?? currentInput.length
+    const end = el?.selectionEnd ?? start
+    const next = insertComposerTokenAtRange(currentInput, start, end, composerInsertion.text)
+
+    if (composerInsertion.reference) {
+      addWorkspaceReference(activeTabId, composerInsertion.reference)
+    }
+    setComposerInput(next.value)
+    setFileSearchOpen(false)
+    setSlashMenuOpen(false)
+    setAtFilter('')
+    setAtCursorPos(-1)
+    clearComposerInsertion(activeTabId, composerInsertion.nonce)
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(next.cursorPos, next.cursorPos)
+    })
+  }, [
+    activeTabId,
+    addWorkspaceReference,
+    clearComposerInsertion,
+    composerInsertion,
+    isMemberSession,
+    setComposerInput,
+  ])
 
   const refreshGitInfo = useCallback(() => {
     if (!activeTabId) {
@@ -342,8 +400,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [fileSearchOpen])
 
   const allSlashCommands = useMemo(
-    () => mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS),
-    [slashCommands],
+    () => mergeSlashCommands(slashCommands, getLocalizedFallbackCommands(t)),
+    [slashCommands, t],
   )
 
   const filteredCommands = useMemo(() => {
@@ -582,6 +640,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     })
     setComposerInput('')
     setComposerAttachments([])
+    useChatStore.getState().clearComposerDraft(activeTabId!)
+    if (targetSessionId !== activeTabId) useChatStore.getState().clearComposerDraft(targetSessionId)
     if (!isMemberSession) {
       clearWorkspaceReferences(activeTabId!)
       if (targetSessionId !== activeTabId) clearWorkspaceReferences(targetSessionId)
@@ -971,15 +1031,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               disabled={isWorkspaceMissing}
               rows={1}
               className={`w-full resize-none bg-transparent text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50 ${
-                useCompactControls ? 'py-1.5 pb-14' : 'py-2 pb-12'
+                useCompactControls ? 'py-1.5' : 'py-2'
               }`}
             />
           )}
 
-          <div className={isHeroComposer
+          <div data-testid="chat-input-toolbar" className={isHeroComposer
             ? 'flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3'
-            : `absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-[var(--color-border-separator)] ${
-              useCompactControls ? 'gap-2 px-2.5 py-2' : 'px-3 py-3'
+            : `mt-2 flex items-center justify-between border-t border-[var(--color-border-separator)] ${
+              useCompactControls ? '-mx-3 -mb-3 gap-2 px-2.5 py-2' : '-mx-4 -mb-4 px-3 py-3'
             }`}>
             <div className="flex min-w-0 items-center gap-2">
               {!isMemberSession && (

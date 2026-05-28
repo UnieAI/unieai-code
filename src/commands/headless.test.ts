@@ -3,13 +3,13 @@ import type { Command } from '../types/command.js'
 import { filterCommandsForHeadlessMode } from './headless.js'
 
 describe('filterCommandsForHeadlessMode', () => {
-  test('keeps non-interactive commands without exposing local-jsx UI commands', () => {
+  test('keeps /goal without exposing other local-jsx UI commands', () => {
     const commands = [
       {
         type: 'local-jsx',
         supportsNonInteractive: true,
-        name: 'cost',
-        description: 'Show cost',
+        name: 'goal',
+        description: 'Set a goal',
         load: async () => ({ call: async () => null }),
       },
       {
@@ -40,7 +40,7 @@ describe('filterCommandsForHeadlessMode', () => {
     ] satisfies Command[]
 
     expect(filterCommandsForHeadlessMode(commands).map(command => command.name)).toEqual([
-      'cost',
+      'goal',
       'review',
     ])
   })

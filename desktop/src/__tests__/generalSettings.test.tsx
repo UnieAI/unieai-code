@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -8,7 +8,7 @@ import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
 import type { SavedProvider } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
-import type { ThemeMode } from '../types/settings'
+import type { AppMode, ThemeMode, UpdateProxySettings } from '../types/settings'
 
 const MOCK_DELETE_PROVIDER = vi.fn()
 const MOCK_GET_SETTINGS = vi.fn()
@@ -21,6 +21,15 @@ const desktopNotificationsMock = vi.hoisted(() => ({
 }))
 const clipboardMock = vi.hoisted(() => ({
   copyTextToClipboard: vi.fn(),
+}))
+const tauriCoreMock = vi.hoisted(() => ({
+  invoke: vi.fn(),
+}))
+const tauriDialogMock = vi.hoisted(() => ({
+  open: vi.fn(),
+}))
+const tauriProcessMock = vi.hoisted(() => ({
+  relaunch: vi.fn(),
 }))
 const providerStoreState = {
   providers: [] as SavedProvider[],
@@ -59,6 +68,9 @@ vi.mock('../api/providers', () => ({
 
 vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 vi.mock('../components/chat/clipboard', () => clipboardMock)
+vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
+vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
+vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
 vi.mock('qrcode', () => ({
   default: {
     toDataURL: vi.fn().mockResolvedValue('data:image/png;base64,h5qr'),
@@ -67,6 +79,10 @@ vi.mock('qrcode', () => ({
 
 vi.mock('../components/settings/ClaudeOfficialLogin', () => ({
   ClaudeOfficialLogin: () => <div data-testid="claude-official-login" />,
+}))
+
+vi.mock('../components/settings/ChatGPTOfficialLogin', () => ({
+  ChatGPTOfficialLogin: () => <div data-testid="chatgpt-official-login" />,
 }))
 
 vi.mock('../pages/AdapterSettings', () => ({
@@ -120,6 +136,13 @@ describe('Settings > General tab', () => {
     desktopNotificationsMock.openDesktopNotificationSettings.mockResolvedValue(true)
     clipboardMock.copyTextToClipboard.mockReset()
     clipboardMock.copyTextToClipboard.mockResolvedValue(true)
+    tauriCoreMock.invoke.mockReset()
+    tauriCoreMock.invoke.mockResolvedValue(undefined)
+    tauriDialogMock.open.mockReset()
+    tauriDialogMock.open.mockResolvedValue('/Users/test/cc-haha-data')
+    tauriProcessMock.relaunch.mockReset()
+    tauriProcessMock.relaunch.mockResolvedValue(undefined)
+    delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
     MOCK_GET_SETTINGS.mockResolvedValue({})
     MOCK_UPDATE_SETTINGS.mockResolvedValue({})
     providerStoreState.providers = []
@@ -146,12 +169,17 @@ describe('Settings > General tab', () => {
       responseLanguage: '',
       uiZoom: 1,
       webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
+      network: {
+        aiRequestTimeoutMs: 120_000,
+        proxy: { mode: 'system', url: '' },
+      },
       h5Access: {
         enabled: false,
         tokenPreview: null,
         allowedOrigins: [],
         publicBaseUrl: null,
       },
+      h5AccessDiagnostics: null,
       h5AccessError: null,
       setThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ thinkingEnabled: enabled })
@@ -173,6 +201,30 @@ describe('Settings > General tab', () => {
       }),
       setWebSearch: vi.fn().mockImplementation(async (webSearch) => {
         useSettingsStore.setState({ webSearch })
+      }),
+      setNetwork: vi.fn().mockImplementation(async (network) => {
+        useSettingsStore.setState({ network })
+      }),
+      appMode: {
+        mode: 'default',
+        portableDir: null,
+        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
+        activeConfigDir: null,
+        configDirSource: 'system',
+      },
+      appModeRequiresRestart: false,
+      fetchAppMode: vi.fn().mockResolvedValue(undefined),
+      setAppMode: vi.fn().mockImplementation(async (mode: AppMode, portableDir?: string | null) => {
+        useSettingsStore.setState({
+          appMode: {
+            mode,
+            portableDir: mode === 'portable' ? portableDir ?? '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR' : null,
+            defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
+            activeConfigDir: mode === 'portable' ? portableDir ?? '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR' : null,
+            configDirSource: mode === 'portable' ? 'portable' : 'system',
+          },
+          appModeRequiresRestart: true,
+        })
       }),
       enableH5Access: vi.fn().mockImplementation(async () => {
         const current = useSettingsStore.getState().h5Access
@@ -209,7 +261,7 @@ describe('Settings > General tab', () => {
       updateH5AccessSettings: vi.fn(),
     })
 
-    useUIStore.setState({ pendingSettingsTab: null })
+    useUIStore.setState({ pendingSettingsTab: null, toasts: [] })
     useUpdateStore.setState({
       status: 'idle',
       availableVersion: null,
@@ -268,10 +320,244 @@ describe('Settings > General tab', () => {
 
     const notificationsHeading = screen.getByRole('heading', { name: 'System Notifications' })
     const uiZoomHeading = screen.getByRole('heading', { name: 'UI Zoom' })
+    const networkHeading = screen.getByRole('heading', { name: 'Network' })
     const webFetchHeading = screen.getByRole('heading', { name: 'WebFetch Preflight' })
 
     expect((notificationsHeading.compareDocumentPosition(uiZoomHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect((uiZoomHeading.compareDocumentPosition(webFetchHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect((uiZoomHeading.compareDocumentPosition(networkHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect((networkHeading.compareDocumentPosition(webFetchHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+  })
+
+  it('saves provider network timeout and manual proxy from General settings', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    expect(screen.getByRole('button', { name: /System proxy/i })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual proxy/i }))
+    const proxyInput = screen.getByLabelText('Proxy URL')
+    const saveButton = screen.getAllByRole('button', { name: 'Save' })[0]!
+
+    expect(screen.getByText('Enter a proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: 'socks5://127.0.0.1:7890' } })
+    expect(screen.getByText('Enter an HTTP or HTTPS proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: '  http://127.0.0.1:7890  ' } })
+    const timeoutInput = screen.getByLabelText('AI request timeout')
+    expect(timeoutInput).toHaveAttribute('type', 'number')
+    expect(screen.queryByRole('slider', { name: 'AI request timeout' })).not.toBeInTheDocument()
+
+    fireEvent.change(timeoutInput, { target: { value: '180' } })
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setNetwork).toHaveBeenCalledWith({
+      aiRequestTimeoutMs: 180_000,
+      proxy: {
+        mode: 'manual',
+        url: 'http://127.0.0.1:7890',
+      },
+    })
+    expect(useUIStore.getState().toasts[useUIStore.getState().toasts.length - 1]).toMatchObject({
+      type: 'success',
+      message: 'Network settings saved.',
+    })
+  })
+
+  it('validates typed provider network timeout and supports precise step controls', () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    const timeoutInput = screen.getByLabelText('AI request timeout')
+    const saveButton = screen.getAllByRole('button', { name: 'Save' })[0]!
+
+    fireEvent.change(timeoutInput, { target: { value: '700' } })
+    expect(screen.getByText('Enter a whole number from 5 to 600 seconds.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(timeoutInput, { target: { value: '90' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Increase by 30 seconds' }))
+    expect(timeoutInput).toHaveValue(120)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease by 30 seconds' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease by 30 seconds' }))
+    expect(timeoutInput).toHaveValue(60)
+    expect(saveButton).not.toBeDisabled()
+  })
+
+  it('keeps data storage at the bottom of General settings', () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    const webSearchHeading = screen.getByRole('heading', { name: 'WebSearch' })
+    const storageHeading = screen.getByRole('heading', { name: 'Data Storage Location' })
+
+    expect((webSearchHeading.compareDocumentPosition(storageHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect(screen.getByText(/Switching directories does not migrate existing data/)).toBeInTheDocument()
+  })
+
+  it('lets desktop users choose a portable data directory and relaunch immediately', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Folder' }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Portable data directory')).toHaveValue('/Users/test/cc-haha-data')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    expect(screen.getByText('Switch data storage location?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
+
+    await waitFor(() => {
+      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('portable', '/Users/test/cc-haha-data')
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
+      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('switches back to the system directory without deleting portable data', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+    useSettingsStore.setState({
+      appMode: {
+        mode: 'portable',
+        portableDir: '/Users/test/cc-haha-data',
+        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
+        activeConfigDir: '/Users/test/cc-haha-data',
+        configDirSource: 'portable',
+      },
+    })
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByRole('button', { name: /Use system directory/ }))
+
+    expect(screen.getByText(/Data in the portable directory is not deleted/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
+
+    await waitFor(() => {
+      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('default', null)
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
+      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('validates portable directory input and lets users reset to the app-side folder', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    const input = screen.getByLabelText('Portable data directory')
+
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    expect(screen.getByText('Choose or enter a portable data directory first.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use the default portable folder beside the app' }))
+    expect(input).toHaveValue('/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR')
+    expect(screen.queryByText('Choose or enter a portable data directory first.')).not.toBeInTheDocument()
+  })
+
+  it('shows folder picker failures as an inline storage error', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+    tauriDialogMock.open.mockRejectedValueOnce(new Error('dialog unavailable'))
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByRole('button', { name: 'Choose Folder' }))
+
+    expect(await screen.findByText('Could not open the folder picker. Paste the folder path manually.')).toBeInTheDocument()
+  })
+
+  it('treats external CLAUDE_CONFIG_DIR as the controlling data source', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+    useSettingsStore.setState({
+      appMode: {
+        mode: 'portable',
+        portableDir: '/env/claude-data',
+        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
+        activeConfigDir: '/env/claude-data',
+        configDirSource: 'environment',
+      },
+    })
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    expect(screen.getByText(/The current directory is controlled by the CLAUDE_CONFIG_DIR environment variable/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Use system directory/ }))
+    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Portable data directory'), { target: { value: '/other/data' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    expect(screen.queryByText('Switch data storage location?')).not.toBeInTheDocument()
+    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
+  })
+
+  it('keeps mode switch confirmation cancelable before restart starts', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    expect(screen.getByText('Switch data storage location?')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('Switch data storage location?')).not.toBeInTheDocument()
+    })
+    expect(useSettingsStore.getState().setAppMode).not.toHaveBeenCalled()
+  })
+
+  it('shows restart preparation failures without relaunching', async () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+    tauriCoreMock.invoke.mockRejectedValueOnce(new Error('restart preparation failed'))
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
+
+    expect(await screen.findByText('restart preparation failed')).toBeInTheDocument()
+    expect(tauriProcessMock.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('shows the saved restart-required state inside the storage section', () => {
+    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
+    tauriWindow.__TAURI_INTERNALS__ = {}
+    useSettingsStore.setState({ appModeRequiresRestart: true })
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    expect(screen.getByText('The storage change has been saved. Restart the app for the new data directory to take effect.')).toBeInTheDocument()
   })
 
   it('previews UI zoom while dragging and applies it once on release', async () => {
@@ -572,6 +858,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByText('H5 Access'))
     const section = screen.getByRole('region', { name: 'H5 Access' })
 
+    expect(within(section).getByLabelText('Access host / IP')).toHaveValue('https://phone.example/app')
     await act(async () => {
       fireEvent.click(within(section).getByRole('button', { name: 'Copy H5 URL' }))
     })
@@ -593,7 +880,35 @@ describe('Settings > General tab', () => {
     expect(within(section).getByText('H5 unavailable')).toBeInTheDocument()
   })
 
-  it('updates H5 public URL from General settings', async () => {
+  it('updates H5 host by reusing the current service port', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        tokenPreview: 'h5a1b2c3',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://172.20.16.1:54064',
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    expect(within(section).getByLabelText('Current port')).toHaveValue('54064')
+    fireEvent.change(within(section).getByLabelText('Access host / IP'), {
+      target: { value: '192.168.1.100' },
+    })
+
+    await act(async () => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Save H5 settings' }))
+    })
+
+    expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
+      publicBaseUrl: 'http://192.168.1.100:54064',
+    })
+  })
+
+  it('still accepts a full H5 public URL for reverse proxy setups', async () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: false,
@@ -607,7 +922,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByText('H5 Access'))
 
     const section = screen.getByRole('region', { name: 'H5 Access' })
-    fireEvent.change(within(section).getByLabelText('Public URL'), {
+    fireEvent.change(within(section).getByLabelText('Access host / IP'), {
       target: { value: 'https://phone.example/app' },
     })
 
@@ -620,6 +935,100 @@ describe('Settings > General tab', () => {
     })
   })
 
+  it('shows the stale-host banner and a one-click switch when the saved H5 host is unreachable', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        tokenPreview: 'h5a1b2c3',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.1.207:55379',
+      },
+      h5AccessDiagnostics: {
+        storedHostStaleness: 'unreachable',
+        storedPublicBaseUrl: 'http://192.168.1.207:55379',
+        effectivePublicBaseUrl: 'http://192.168.0.105:55379',
+        suggestedHost: '192.168.0.105',
+        localInterfaceHosts: ['192.168.0.105'],
+      },
+    })
+    render(<Settings />)
+    fireEvent.click(screen.getByText('H5 Access'))
+
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    const banner = within(section).getByTestId('h5-access-stale-host-banner')
+    expect(banner).toBeInTheDocument()
+    expect(banner.textContent).toContain('192.168.1.207')
+    expect(within(section).queryByTestId('h5-access-proxy-note')).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(within(section).getByTestId('h5-access-stale-host-apply'))
+    })
+
+    expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
+      publicBaseUrl: 'http://192.168.0.105:55379',
+    })
+  })
+
+  it('shows the proxy note when the saved H5 URL is a reverse proxy', () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        tokenPreview: 'h5a1b2c3',
+        allowedOrigins: [],
+        publicBaseUrl: 'https://h5.mydomain.com',
+      },
+      h5AccessDiagnostics: {
+        storedHostStaleness: 'proxy',
+        storedPublicBaseUrl: 'https://h5.mydomain.com',
+        effectivePublicBaseUrl: 'https://h5.mydomain.com',
+        suggestedHost: '192.168.0.105',
+        localInterfaceHosts: ['192.168.0.105'],
+      },
+    })
+    render(<Settings />)
+    fireEvent.click(screen.getByText('H5 Access'))
+
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    expect(within(section).getByTestId('h5-access-proxy-note')).toBeInTheDocument()
+    expect(within(section).queryByTestId('h5-access-stale-host-banner')).toBeNull()
+  })
+
+  it('shows the friendly backend reason when saving an H5 host that is not on any local interface', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        tokenPreview: 'h5a1b2c3',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.105:55379',
+      },
+      h5AccessDiagnostics: {
+        storedHostStaleness: 'ok',
+        storedPublicBaseUrl: 'http://192.168.0.105:55379',
+        effectivePublicBaseUrl: 'http://192.168.0.105:55379',
+        suggestedHost: '192.168.0.105',
+        localInterfaceHosts: ['192.168.0.105'],
+      },
+      updateH5AccessSettings: vi.fn().mockImplementation(async () => {
+        useSettingsStore.setState({
+          h5AccessError: 'H5 host 10.255.255.254 is not bound to any local network interface on this machine. Available LAN IPv4: 192.168.0.105',
+        })
+        throw new Error('rejected')
+      }),
+    })
+    render(<Settings />)
+    fireEvent.click(screen.getByText('H5 Access'))
+
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    fireEvent.change(within(section).getByLabelText('Access host / IP'), {
+      target: { value: '10.255.255.254' },
+    })
+    await act(async () => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Save H5 settings' }))
+    })
+
+    expect(within(section).getByText(/10\.255\.255\.254/)).toBeInTheDocument()
+  })
+
   it('saves WebSearch fallback provider settings', () => {
     render(<Settings />)
 
@@ -629,7 +1038,8 @@ describe('Settings > General tab', () => {
     fireEvent.change(screen.getByLabelText('Tavily API key'), {
       target: { value: 'tvly-test-key' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const saveButtons = screen.getAllByRole('button', { name: 'Save' })
+    fireEvent.click(saveButtons[saveButtons.length - 1]!)
 
     expect(useSettingsStore.getState().setWebSearch).toHaveBeenCalledWith({
       mode: 'tavily',
@@ -668,6 +1078,10 @@ describe('Settings > Providers tab', () => {
     MOCK_DELETE_PROVIDER.mockReset()
     MOCK_GET_SETTINGS.mockResolvedValue({})
     MOCK_UPDATE_SETTINGS.mockResolvedValue({})
+    useSettingsStore.setState({
+      locale: 'en',
+      fetchAll: vi.fn().mockResolvedValue(undefined),
+    })
     providerStoreState.providers = [
       {
         id: 'provider-1',
@@ -699,6 +1113,16 @@ describe('Settings > Providers tab', () => {
     expect(screen.queryByTestId('claude-official-login')).not.toBeInTheDocument()
   })
 
+  it('does not query ChatGPT OAuth status before providers finish loading', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = 'openai-official'
+    providerStoreState.hasLoadedProviders = false
+
+    render(<Settings />)
+
+    expect(screen.queryByTestId('chatgpt-official-login')).not.toBeInTheDocument()
+  })
+
   it('shows official OAuth status only after official provider is confirmed active', () => {
     providerStoreState.providers = []
     providerStoreState.activeId = null
@@ -707,6 +1131,20 @@ describe('Settings > Providers tab', () => {
     render(<Settings />)
 
     expect(screen.getByTestId('claude-official-login')).toBeInTheDocument()
+  })
+
+  it('shows ChatGPT Official as the active built-in provider', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = 'openai-official'
+    providerStoreState.hasLoadedProviders = true
+
+    render(<Settings />)
+
+    const openAIProvider = screen.getByTestId('openai-official-provider')
+    expect(within(openAIProvider).getByText('ChatGPT Official')).toBeInTheDocument()
+    expect(within(openAIProvider).getByText('Default')).toBeInTheDocument()
+    expect(screen.getByTestId('chatgpt-official-login')).toBeInTheDocument()
+    expect(screen.queryByTestId('claude-official-login')).not.toBeInTheDocument()
   })
 
   it('requires confirmation before deleting a provider', async () => {
@@ -762,6 +1200,58 @@ describe('Settings > Providers tab', () => {
     expect(within(dialog).getByText('Requests will be translated via the local proxy')).toBeInTheDocument()
   })
 
+  it('normalizes blank model mappings to the main model when saving a provider', async () => {
+    providerStoreState.createProvider = vi.fn().mockResolvedValue({
+      id: 'provider-new',
+      presetId: 'custom',
+      name: 'Custom',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.com/anthropic',
+      apiFormat: 'anthropic',
+      models: {
+        main: 'gpt-5.5',
+        haiku: 'gpt-5.5',
+        sonnet: 'gpt-5.5',
+        opus: 'gpt-5.5',
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: '',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider|添加服务商/i }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.change(within(dialog).getByLabelText(/Main Model|主模型/i), { target: { value: 'gpt-5.5' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: {
+          main: 'gpt-5.5',
+          haiku: 'gpt-5.5',
+          sonnet: 'gpt-5.5',
+          opus: 'gpt-5.5',
+        },
+      }))
+    })
+  })
+
   it('hides the API key by default and reveals it from the eye button', () => {
     providerStoreState.presets = [
       {
@@ -799,6 +1289,13 @@ describe('Settings > Providers tab', () => {
 describe('Settings > About tab', () => {
   beforeEach(() => {
     useUIStore.setState({ pendingSettingsTab: 'about' })
+    useSettingsStore.setState({
+      locale: 'en',
+      updateProxy: { mode: 'system', url: '' },
+      setUpdateProxy: vi.fn().mockImplementation(async (next: UpdateProxySettings) => {
+        useSettingsStore.setState({ updateProxy: next })
+      }),
+    })
     useUpdateStore.setState({
       status: 'available',
       availableVersion: '0.1.5',
@@ -845,5 +1342,58 @@ describe('Settings > About tab', () => {
 
     expect(await screen.findByText('Downloading update... 1.5 KB downloaded')).toBeInTheDocument()
     expect(screen.queryByText('Downloading update... 0%')).not.toBeInTheDocument()
+  })
+
+  it('saves a manual update proxy from the advanced update controls', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /System proxy/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('This only affects app update checks and downloads.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual proxy/i }))
+    const proxyInput = screen.getByLabelText('Proxy URL')
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    expect(screen.getByText('Enter a proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: 'socks5://127.0.0.1:7890' } })
+    expect(screen.getByText('Enter an HTTP or HTTPS proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: '  http://127.0.0.1:7890  ' } })
+    expect(screen.getByText('HTTP and HTTPS proxy URLs are supported, for example http://127.0.0.1:7890.')).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'manual',
+      url: 'http://127.0.0.1:7890',
+    })
+  })
+
+  it('can switch update proxy settings back to system mode', async () => {
+    useSettingsStore.setState({
+      updateProxy: { mode: 'manual', url: 'http://127.0.0.1:7890' },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /Manual proxy/i })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /System proxy/i }))
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'system',
+      url: 'http://127.0.0.1:7890',
+    })
   })
 })

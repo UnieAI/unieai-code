@@ -54,15 +54,17 @@ vi.mock('../../i18n', () => ({
       'sidebar.openInFinder': 'Open in Finder',
       'sidebar.openInFinderFailed': 'Could not open the project in Finder.',
       'sidebar.openInFinderUnavailable': 'No file manager is available.',
-      'sidebar.hideProjectFromSidebar': 'Remove from Sidebar',
+      'sidebar.hideProjectFromSidebar': 'Hide from Sidebar',
       'sidebar.restoreProjectToSidebar': 'Restore to Sidebar',
-      'sidebar.projectHidden': '{project} was removed from the sidebar.',
+      'sidebar.restoreHiddenProjects': 'Restore hidden projects ({count})',
+      'sidebar.projectHidden': '{project} was hidden from the sidebar. Existing sessions were not deleted.',
       'sidebar.newSessionInProject': 'New session in {project}',
       'sidebar.showMoreSessions': 'Expand display',
       'sidebar.showFewerSessions': 'Collapse display',
       'sidebar.expandProject': 'Expand {project}',
       'sidebar.collapseProject': 'Collapse {project}',
       'sidebar.worktree': 'worktree',
+      'sidebar.sessionRunning': 'Session running',
       'common.retry': 'Retry',
       'common.loading': 'Loading...',
       'common.cancel': 'Cancel',
@@ -89,6 +91,11 @@ vi.mock('../../i18n', () => ({
       'sidebar.batchDeleteFailed': '{count} sessions could not be deleted.',
       'sidebar.collapse': 'Collapse sidebar',
       'sidebar.expand': 'Expand sidebar',
+      'session.lastUpdated': 'last updated {time}',
+      'session.timeJustNow': 'just now',
+      'session.timeMinutes': '{n}m ago',
+      'session.timeHours': '{n}h ago',
+      'session.timeDays': '{n}d ago',
     }
 
     let text = translations[key] ?? key
@@ -517,7 +524,7 @@ describe('Sidebar', () => {
 
     expect(screen.getByRole('menuitem', { name: 'Pin Project' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Open in Finder' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: 'Remove from Sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Hide from Sidebar' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Create Permanent Worktree' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Rename Project' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Archive Conversations' })).not.toBeInTheDocument()
@@ -564,7 +571,7 @@ describe('Sidebar', () => {
     render(<Sidebar />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Project actions for beta' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from Sidebar' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide from Sidebar' }))
 
     await waitFor(() => {
       expect(screen.queryByText('beta')).not.toBeInTheDocument()
@@ -575,7 +582,7 @@ describe('Sidebar', () => {
     expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual(['/workspace/beta'])
     expect(addToast).toHaveBeenCalledWith({
       type: 'info',
-      message: 'beta was removed from the sidebar.',
+      message: 'beta was hidden from the sidebar. Existing sessions were not deleted.',
     })
   })
 
@@ -594,6 +601,74 @@ describe('Sidebar', () => {
     expect(screen.getByText('alpha')).toBeInTheDocument()
     expect(screen.queryByText('beta')).not.toBeInTheDocument()
     expect(screen.queryByTestId('project-filter')).not.toBeInTheDocument()
+  })
+
+  it('restores hidden projects from the project header menu', async () => {
+    window.localStorage.setItem(PROJECT_HIDDEN_STORAGE_KEY, JSON.stringify(['/workspace/beta']))
+    const now = new Date().toISOString()
+    useSessionStore.setState({
+      sessions: [
+        makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', now),
+        makeSession('beta-1', 'Beta Session', '/workspace/beta', now),
+      ],
+    })
+
+    render(<Sidebar />)
+
+    expect(screen.getByText('alpha')).toBeInTheDocument()
+    expect(screen.queryByText('beta')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project menu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore hidden projects (1)' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+    expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual([])
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
+      projectOrder: [],
+      pinnedProjects: [],
+      hiddenProjects: [],
+      projectOrganization: 'recentProject',
+      projectSortBy: 'updatedAt',
+    })
+  })
+
+  it('restores a hidden project when a new session is created in that project', async () => {
+    window.localStorage.setItem(PROJECT_HIDDEN_STORAGE_KEY, JSON.stringify(['/workspace/beta']))
+    createSession.mockResolvedValue('beta-new')
+    const now = new Date().toISOString()
+    useSessionStore.setState({
+      sessions: [
+        makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', now),
+        makeSession('beta-1', 'Beta Session', '/workspace/beta', now),
+      ],
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId: 'beta-1', title: 'Beta Session', type: 'session', status: 'idle' }],
+      activeTabId: 'beta-1',
+    })
+
+    render(<Sidebar />)
+
+    expect(screen.queryByText('beta')).not.toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
+    })
+
+    await waitFor(() => {
+      expect(createSession).toHaveBeenCalledWith('/workspace/beta')
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+    expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual([])
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
+      projectOrder: [],
+      pinnedProjects: [],
+      hiddenProjects: [],
+      projectOrganization: 'recentProject',
+      projectSortBy: 'updatedAt',
+    })
   })
 
   it('uses server sidebar preferences across browser and desktop storage contexts', async () => {
@@ -705,6 +780,83 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /Worktree Session/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Subdir Session/ })).toBeInTheDocument()
     expect(screen.getAllByText('worktree')).toHaveLength(1)
+  })
+
+  it('keeps a Windows drive root session separate from sessions in child projects', () => {
+    const now = new Date().toISOString()
+    useSessionStore.setState({
+      sessions: [
+        makeSession('drive-root', 'Drive Root Session', 'D:\\', now),
+        makeSession('drive-project', 'Drive Project Session', 'D:\\SomeProject', now),
+      ],
+    })
+
+    render(<Sidebar />)
+
+    expect(screen.getByText('D:')).toBeInTheDocument()
+    expect(screen.getByText('SomeProject')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Drive Root Session/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Drive Project Session/ })).toBeInTheDocument()
+  })
+
+  it('does not restore a hidden Windows drive root when creating a child project session', async () => {
+    window.localStorage.setItem(PROJECT_HIDDEN_STORAGE_KEY, JSON.stringify(['D:\\']))
+    createSession.mockResolvedValue('child-new')
+    const now = new Date().toISOString()
+    useSessionStore.setState({
+      sessions: [
+        makeSession('child-1', 'Child Session', 'D:\\workspace\\code\\cc-haha', now),
+      ],
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId: 'child-1', title: 'Child Session', type: 'session', status: 'idle' }],
+      activeTabId: 'child-1',
+    })
+
+    render(<Sidebar />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
+    })
+
+    await waitFor(() => {
+      expect(createSession).toHaveBeenCalledWith('D:\\workspace\\code\\cc-haha')
+    })
+    expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual(['D:\\'])
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).not.toHaveBeenCalled()
+  })
+
+  it('right-aligns running status, worktree marker, and update time on session rows', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
+
+    useSessionStore.setState({
+      sessions: [
+        {
+          ...makeSession('running-worktree', 'Running Worktree', '/workspace/repo/.claude/worktrees/desktop-main-12345678', '2026-05-19T07:00:00.000Z'),
+          projectRoot: '/workspace/repo',
+        },
+        makeSession('idle-source', 'Idle Source', '/workspace/repo', '2026-05-19T11:40:00.000Z'),
+      ],
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'running-worktree', title: 'Running Worktree', type: 'session', status: 'running' },
+        { sessionId: 'idle-source', title: 'Idle Source', type: 'session', status: 'idle' },
+      ],
+      activeTabId: 'running-worktree',
+    })
+
+    render(<Sidebar />)
+
+    const runningRow = screen.getByRole('button', { name: /Running Worktree/ })
+    expect(within(runningRow).getByLabelText('Session running')).toBeInTheDocument()
+    expect(within(runningRow).getByText('worktree')).toHaveClass('sr-only')
+    expect(within(runningRow).getByText('5h ago')).toBeInTheDocument()
+
+    const idleRow = screen.getByRole('button', { name: /Idle Source/ })
+    expect(within(idleRow).queryByLabelText('Session running')).not.toBeInTheDocument()
+    expect(within(idleRow).getByText('20m ago')).toBeInTheDocument()
   })
 
   it('shows a toast when session creation fails', async () => {

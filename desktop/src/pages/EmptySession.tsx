@@ -26,7 +26,7 @@ import {
 } from '../lib/composerAttachments'
 import { useComposerFileDrop } from '../components/chat/useComposerFileDrop'
 import {
-  FALLBACK_SLASH_COMMANDS,
+  getLocalizedFallbackCommands,
   filterSlashCommands,
   findSlashToken,
   insertSlashTrigger,
@@ -207,8 +207,8 @@ export function EmptySession() {
   }, [workDir, lastPluginReloadSummary])
 
   const allSlashCommands = useMemo(
-    () => mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS),
-    [slashCommands],
+    () => mergeSlashCommands(slashCommands, getLocalizedFallbackCommands(t)),
+    [slashCommands, t],
   )
 
   const handleWorkDirChange = (newWorkDir: string) => {
