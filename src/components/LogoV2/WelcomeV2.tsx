@@ -9,7 +9,7 @@ export function WelcomeV2() {
   if (env.terminal === "Apple_Terminal") {
     let t0;
     if ($[0] !== theme) {
-      t0 = <AppleTerminalWelcomeV2 theme={theme} welcomeMessage="Welcome to UnieAI Code" />;
+      t0 = <AppleTerminalWelcomeV2 theme={theme} welcomeMessage="Welcome to Claude Code" />;
       $[0] = theme;
       $[1] = t0;
     } else {
@@ -28,7 +28,7 @@ export function WelcomeV2() {
     let t7;
     let t8;
     if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = <Text><Text color="claude">{"Welcome to UnieAI Code"} </Text><Text dimColor={true}>v{MACRO.VERSION} </Text></Text>;
+      t0 = <Text><Text color="claude">{"Welcome to Claude Code"} </Text><Text dimColor={true}>v{MACRO.VERSION} </Text></Text>;
       t1 = <Text>{"\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026"}</Text>;
       t2 = <Text>{"                                                          "}</Text>;
       t3 = <Text>{"                                                          "}</Text>;
@@ -113,11 +113,9 @@ export function WelcomeV2() {
   let t5;
   let t6;
   if ($[18] === Symbol.for("react.memo_cache_sentinel")) {
-    t0 = <Text><Text color="claude">{"Welcome to UnieAI Code"} </Text><Text dimColor={true}>v{MACRO.VERSION} </Text></Text>;
+    t0 = <Text><Text color="claude">{"Welcome to Claude Code"} </Text><Text dimColor={true}>v{MACRO.VERSION} </Text></Text>;
     t1 = <Text>{"\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026\u2026"}</Text>;
     t2 = <Text>{"                                                          "}</Text>;
-    // UnieAI Code: keep upstream moon + cloud art (t3-t11); only the snowman
-    // rows (t12-t15) are replaced with the bunny below.
     t3 = <Text>{"     *                                       \u2588\u2588\u2588\u2588\u2588\u2593\u2593\u2591     "}</Text>;
     t4 = <Text>{"                                 *         \u2588\u2588\u2588\u2593\u2591     \u2591\u2591   "}</Text>;
     t5 = <Text>{"            \u2591\u2591\u2591\u2591\u2591\u2591                        \u2588\u2588\u2588\u2593\u2591           "}</Text>;
@@ -161,33 +159,30 @@ export function WelcomeV2() {
     t8 = $[28];
     t9 = $[29];
   }
-  // UnieAI Code: bunny art in place of the upstream snowman. Kept at the same
-  // column range (cols 6-16) so the rest of the scene (moon, clouds, stars)
-  // doesn't shift.
   let t12;
   if ($[30] === Symbol.for("react.memo_cache_sentinel")) {
-    t12 = <Text><Text>{"        "}</Text><Text color="claude">{"█ █"}</Text><Text>{"                                               "}</Text></Text>;
+    t12 = <Text color="clawd_body"> █████████ </Text>;
     $[30] = t12;
   } else {
     t12 = $[30];
   }
   let t13;
   if ($[31] === Symbol.for("react.memo_cache_sentinel")) {
-    t13 = <Text><Text>{"       "}</Text><Text color="claude">{"█████"}</Text><Text>{"                              "}</Text><Text dimColor={true}>*</Text><Text>{"                  "}</Text></Text>;
+    t13 = <Text>{"      "}{t12}{"                                       "}<Text dimColor={true}>*</Text><Text> </Text></Text>;
     $[31] = t13;
   } else {
     t13 = $[31];
   }
   let t14;
   if ($[32] === Symbol.for("react.memo_cache_sentinel")) {
-    t14 = <Text><Text>{"      "}</Text><Text color="claude">{"█ ● ● █"}</Text><Text>{"                                            "}</Text></Text>;
+    t14 = <Text>{"      "}<Text color="clawd_body">██▄█████▄██</Text><Text>{"                        "}</Text><Text bold={true}>*</Text><Text>{"                "}</Text></Text>;
     $[32] = t14;
   } else {
     t14 = $[32];
   }
   let t15;
   if ($[33] === Symbol.for("react.memo_cache_sentinel")) {
-    t15 = <Text><Text>{"       "}</Text><Text color="claude">{"▀ ▀ ▀ ▀"}</Text><Text>{"     "}</Text><Text bold={true}>*</Text><Text>{"                                   "}</Text></Text>;
+    t15 = <Text>{"      "}<Text color="clawd_body"> █████████ </Text>{"     *                                   "}</Text>;
     $[33] = t15;
   } else {
     t15 = $[33];
