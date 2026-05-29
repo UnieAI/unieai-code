@@ -149,7 +149,7 @@ export function OpenAILoginFlow({
       setStatus({ state: 'success', warning })
       void sendNotification(
         {
-          message: 'Claude Code Haha OpenAI login successful',
+          message: 'UnieAI Code Haha OpenAI login successful',
           notificationType: 'auth_success',
         },
         terminal,
@@ -219,7 +219,7 @@ export function OpenAILoginFlow({
       <Box flexDirection="column" gap={1}>
         <Text bold>
           {startingMessage ??
-            'Claude Code can also run through your ChatGPT subscription via OpenAI auth.'}
+            'UnieAI Code can also run through your ChatGPT subscription via OpenAI auth.'}
         </Text>
 
         {status.state === 'waiting_for_login' && !showPastePrompt && (

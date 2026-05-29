@@ -50,8 +50,8 @@ function PlatformSetupFlow({
     <Box flexDirection="column" gap={1} marginTop={1}>
       <Text bold>Using 3rd-party platforms</Text>
       <Text>
-        Claude Code supports Amazon Bedrock, Microsoft Foundry, and Vertex AI.
-        Set the required environment variables, then restart Claude Code.
+        UnieAI Code supports Amazon Bedrock, Microsoft Foundry, and Vertex AI.
+        Set the required environment variables, then restart UnieAI Code.
       </Text>
       <Text>
         If you are part of an enterprise organization, contact your
