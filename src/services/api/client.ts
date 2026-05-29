@@ -34,13 +34,6 @@ import {
   shouldUseUnieAIInference,
   UNIEAI_INFERENCE_DUMMY_KEY,
 } from '../unieaiAuth/inferenceFetch.js'
-import { getUnieAITokens } from '../unieaiAuth/storage.js'
-
-function isUnieAIStudioModel(model?: string): boolean {
-  if (!model) return false
-  const tokens = getUnieAITokens()
-  return !!tokens?.availableModelIds?.includes(model)
-}
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
 import {
   getAWSRegion,
@@ -195,7 +188,11 @@ export async function getAnthropicClient({
   logForDebugging('[API:auth] OAuth token check complete')
 
   const isOpenAIModel = model ? isOpenAIResponsesModel(model) : false
-  const usingUnieAI = shouldUseUnieAIInference() && isUnieAIStudioModel(model)
+  // UnieAI Code: once signed into UnieAI Studio, route ALL Anthropic-bound
+  // traffic through the gateway — main loop, subagents, and auxiliary/small-fast
+  // calls alike. The per-model gate is gone; model substitution for non-UnieAI
+  // models (e.g. the small/fast Haiku) happens in buildUnieAIInferenceFetch.
+  const usingUnieAI = shouldUseUnieAIInference()
   const isClaudeSubscriber = isClaudeAISubscriber()
   const forceOpenAICodex = isEnvTruthy(process.env.CC_HAHA_OPENAI_OAUTH_PROVIDER)
   const hasOpenAIAuth = shouldUseOpenAICodexAuth()

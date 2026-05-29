@@ -5,6 +5,7 @@ import { openaiChatToAnthropic } from '../../server/proxy/transform/openaiChatTo
 import { openaiChatStreamToAnthropic } from '../../server/proxy/streaming/openaiChatStreamToAnthropic.js'
 import type { AnthropicRequest } from '../../server/proxy/transform/types.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getUserSpecifiedModelSetting } from '../../utils/model/model.js'
 import { getUnieAITokens } from './storage.js'
 
 export const UNIEAI_INFERENCE_DUMMY_KEY = 'unieai-studio-dummy-key'
@@ -38,6 +39,22 @@ export function buildUnieAIInferenceFetch(
     }
 
     const originalBody = await readAnthropicBody(input, init)
+
+    // UnieAI Code: every request must run on a model the Studio gateway knows.
+    // Auxiliary/subagent calls arrive on models that aren't in the user's Studio
+    // catalog (e.g. the small/fast Haiku). Rather than silently picking one, fall
+    // back to the model the user actually selected via /model. Only if that isn't
+    // a known Studio model do we use the first available as a last resort.
+    const available = tokens.availableModelIds ?? []
+    if (!available.includes(originalBody.model)) {
+      const selected = getUserSpecifiedModelSetting()
+      if (typeof selected === 'string' && available.includes(selected)) {
+        originalBody.model = selected
+      } else if (available.length > 0) {
+        originalBody.model = available[0]!
+      }
+    }
+
     const baseURL = (tokens.gatewayBaseURL ?? DEFAULT_GATEWAY_BASE_URL).replace(/\/$/, '')
     const transformedBody = anthropicToOpenaiChat(originalBody)
 
