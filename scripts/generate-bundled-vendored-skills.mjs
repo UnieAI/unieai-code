@@ -38,9 +38,21 @@ const GROUPS = [
   {
     name: 'taste',
     registerFn: 'registerTasteSkills',
-    // Only the flagship taste skill; the repo ships several sibling design
-    // skills but the request was specifically "taste-skill".
-    skillDirs: ['/tmp/taste-skill/skills/taste-skill'],
+    // The flagship taste skill plus its sibling design skills. Excludes the
+    // redundant taste variants (taste-skill-v1, gpt-tasteskill) and the
+    // non-design output-skill (full-output-enforcement).
+    skillDirs: [
+      '/tmp/taste-skill/skills/taste-skill',
+      '/tmp/taste-skill/skills/brandkit',
+      '/tmp/taste-skill/skills/brutalist-skill',
+      '/tmp/taste-skill/skills/minimalist-skill',
+      '/tmp/taste-skill/skills/soft-skill',
+      '/tmp/taste-skill/skills/redesign-skill',
+      '/tmp/taste-skill/skills/stitch-skill',
+      '/tmp/taste-skill/skills/image-to-code-skill',
+      '/tmp/taste-skill/skills/imagegen-frontend-web',
+      '/tmp/taste-skill/skills/imagegen-frontend-mobile',
+    ],
   },
   {
     name: 'finance',
