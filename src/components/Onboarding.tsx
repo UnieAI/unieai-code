@@ -71,9 +71,9 @@ export function Onboarding({
          */}
         <OrderedList>
           <OrderedList.Item>
-            <Text>Claude can make mistakes</Text>
+            <Text>UnieAI Code can make mistakes</Text>
             <Text dimColor wrap="wrap">
-              You should always review Claude&apos;s responses, especially when
+              You should always review UnieAI Code&apos;s responses, especially when
               <Newline />
               running code.
               <Newline />
@@ -86,7 +86,7 @@ export function Onboarding({
             <Text dimColor wrap="wrap">
               For more details see:
               <Newline />
-              <Link url="https://code.claude.com/docs/en/security" />
+              <Link url="https://unieai.com/code/security" />
             </Text>
           </OrderedList.Item>
         </OrderedList>
