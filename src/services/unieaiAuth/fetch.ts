@@ -106,6 +106,27 @@ export async function refreshAccessToken(
   return jsonOrThrow<UnieAITokenResponse>(res, 'token refresh')
 }
 
+// Best-effort: delete this device session's runtime key (the row visible on the
+// Studio Keys page) via the same endpoint the Keys UI uses. Called before
+// revokeRefreshToken so the device access token is still valid. Returns true on
+// 2xx/404 (already gone), false on other errors — caller continues with revoke
+// regardless so logout never blocks on this.
+export async function deleteSessionRuntimeKey(
+  studioUrl: string,
+  accessToken: string,
+  keyId: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${studioUrl}/api/user-api-keys/${encodeURIComponent(keyId)}`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${accessToken}` },
+    })
+    return res.ok || res.status === 404
+  } catch {
+    return false
+  }
+}
+
 export async function revokeRefreshToken(
   studioUrl: string,
   refreshToken: string,

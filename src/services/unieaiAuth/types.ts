@@ -66,5 +66,10 @@ export type UnieAITokens = {
   // extra round trip. Not security-sensitive beyond the OAuth token itself.
   gatewayBaseURL?: string
   gatewayApiKey?: string
+  // user_api_keys row id for the runtime key this session is tied to. Stored
+  // so logout can DELETE its own device-session key (the "[SSTA-FEWY]" entry)
+  // via Studio's /api/user-api-keys/:id, instead of leaving it as a disabled
+  // row in the user's Keys page.
+  gatewayKeyId?: string
   availableModelIds?: string[]
 }

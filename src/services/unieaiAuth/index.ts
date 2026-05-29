@@ -1,4 +1,5 @@
 import {
+  deleteSessionRuntimeKey,
   exchangeDeviceCode,
   fetchConfig,
   fetchOrgs,
@@ -128,6 +129,42 @@ export class UnieAIAuthService {
 
   async logout(): Promise<boolean> {
     const tokens = getUnieAITokens()
+    // Delete this device session's runtime key first while the access token is
+    // still valid — uses Studio's existing /api/user-api-keys/:id endpoint, the
+    // same one the Keys page UI uses, so the "[SSTA-FEWY]" entry disappears on
+    // logout instead of piling up as a disabled row. Best-effort: failures
+    // (network, expired token, already deleted) never block the revoke below.
+    if (tokens?.accessToken) {
+      let keyId = tokens.gatewayKeyId
+      // Fallback for sessions that logged in before gatewayKeyId capture
+      // landed: pull the linked key id from /api/config now, while we still
+      // have a valid access token. If Studio doesn't expose apiKeyId yet
+      // (older deploy) we just skip the delete and fall through to revoke.
+      if (!keyId && tokens.activeOrgId) {
+        try {
+          const config = await fetchConfig(
+            tokens.studioUrl,
+            tokens.accessToken,
+            tokens.activeOrgId,
+          )
+          const opts = (
+            config?.provider?.unieai as
+              | { options?: { apiKeyId?: string } }
+              | undefined
+          )?.options
+          keyId = opts?.apiKeyId
+        } catch {
+          // best-effort
+        }
+      }
+      if (keyId) {
+        await deleteSessionRuntimeKey(
+          tokens.studioUrl,
+          tokens.accessToken,
+          keyId,
+        )
+      }
+    }
     if (tokens?.refreshToken) {
       try {
         await revokeRefreshToken(tokens.studioUrl, tokens.refreshToken)
@@ -304,8 +341,9 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
 
     // Stash the gateway credentials so the inference fetch hook can use them
     // without an extra /api/config round-trip per request.
-    const options_raw = (providerConfig as { options?: { apiKey?: string; baseURL?: string } } | undefined)?.options
+    const options_raw = (providerConfig as { options?: { apiKey?: string; apiKeyId?: string; baseURL?: string } } | undefined)?.options
     const apiKey = options_raw?.apiKey ?? (providerConfig as { apiKey?: string } | undefined)?.apiKey
+    const apiKeyId = options_raw?.apiKeyId ?? (providerConfig as { apiKeyId?: string } | undefined)?.apiKeyId
     const baseURL = options_raw?.baseURL ?? (providerConfig as { baseURL?: string } | undefined)?.baseURL
     const tokens = getUnieAITokens()
     if (tokens && apiKey) {
@@ -318,6 +356,7 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
           baseURL && /^https?:\/\/(?!runtime:|localhost|127\.)/i.test(baseURL)
             ? baseURL
             : 'https://api.unieai.com/v1',
+        ...(apiKeyId ? { gatewayKeyId: apiKeyId } : {}),
         availableModelIds: ids,
       })
     }
