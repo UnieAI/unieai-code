@@ -14,6 +14,7 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { InterruptedByUser } from '../InterruptedByUser.js';
 import { Markdown } from '../Markdown.js';
 import { MessageResponse } from '../MessageResponse.js';
+import { AssistantThinkingMessage } from './AssistantThinkingMessage.js';
 import { MessageActionsSelectedContext } from '../messageActions.js';
 import { RateLimitMessage } from './RateLimitMessage.js';
 const MAX_API_ERROR_CHARS = 1000;
@@ -45,7 +46,7 @@ function InvalidApiKeyMessage() {
   return t1;
 }
 export function AssistantTextMessage(t0) {
-  const $ = _c(34);
+  const $ = _c(35);
   const {
     param: t1,
     addMargin,
@@ -237,9 +238,44 @@ export function AssistantTextMessage(t0) {
           t4 = $[24];
         }
         let t5;
-        if ($[25] !== text) {
-          t5 = <Box flexDirection="column"><Markdown>{text}</Markdown></Box>;
+        // NOTE: keyed on `verbose` as well as `text` because the <think>
+        // branch below renders AssistantThinkingMessage with `verbose`; a
+        // verbose toggle must recompute even when the text is unchanged.
+        if ($[25] !== text || $[34] !== verbose) {
+          // Parse <think>...</think> blocks emitted by open-source reasoning
+          // models and render them using the same thinking UI as Claude.
+          if (text.includes('<think>')) {
+            const thinkParts: React.ReactNode[] = []
+            let remaining = text
+            let idx = 0
+            while (remaining.includes('<think>')) {
+              const start = remaining.indexOf('<think>')
+              const end = remaining.indexOf('</think>', start)
+              if (end === -1) break
+              if (start > 0) {
+                thinkParts.push(<Markdown key={`text-${idx}`}>{remaining.slice(0, start)}</Markdown>)
+              }
+              thinkParts.push(
+                <AssistantThinkingMessage
+                  key={`think-${idx}`}
+                  param={{ type: 'thinking', thinking: remaining.slice(start + 7, end) }}
+                  addMargin={false}
+                  isTranscriptMode={false}
+                  verbose={verbose}
+                />
+              )
+              remaining = remaining.slice(end + 8)
+              idx++
+            }
+            if (remaining.length > 0) {
+              thinkParts.push(<Markdown key={`text-${idx}`}>{remaining}</Markdown>)
+            }
+            t5 = <Box flexDirection="column">{thinkParts}</Box>
+          } else {
+            t5 = <Box flexDirection="column"><Markdown>{text}</Markdown></Box>;
+          }
           $[25] = text;
+          $[34] = verbose;
           $[26] = t5;
         } else {
           t5 = $[26];

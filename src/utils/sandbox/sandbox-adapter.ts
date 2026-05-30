@@ -54,6 +54,7 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { errorMessage } from '../errors.js'
+import { sandboxModeToSandboxEnabled } from '../permissions/codexApprovalCompat.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
@@ -459,7 +460,12 @@ const checkDependencies = memoize((): SandboxDependencyCheck => {
 function getSandboxEnabledSetting(): boolean {
   try {
     const settings = getSettings_DEPRECATED()
-    return settings?.sandbox?.enabled ?? false
+    // Native sandbox.enabled wins; fall back to codex-style sandboxMode.
+    return (
+      settings?.sandbox?.enabled ??
+      sandboxModeToSandboxEnabled(settings?.sandboxMode) ??
+      false
+    )
   } catch (error) {
     logForDebugging(`Failed to get settings for sandbox check: ${error}`)
     return false

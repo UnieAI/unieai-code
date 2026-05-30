@@ -59,6 +59,7 @@ import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
+import { getProviderBasePrompt } from './providerPrompt.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
@@ -172,6 +173,12 @@ export function prependBullets(items: Array<string | string[]>): string[] {
   )
 }
 
+// Safety/behavioral guardrails that must apply to every model, Claude or not.
+// Kept separate so provider-specific base prompts (non-Claude models) can
+// append them rather than dropping them along with the Claude intro persona.
+const COMMON_INTRO_GUARDRAILS = `${CYBER_RISK_INSTRUCTION}
+IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.`
+
 function getSimpleIntroSection(
   outputStyleConfig: OutputStyleConfig | null,
 ): string {
@@ -179,8 +186,7 @@ function getSimpleIntroSection(
   return `
 You are an interactive agent that helps users ${outputStyleConfig !== null ? 'according to your "Output Style" below, which describes how you should respond to user queries.' : 'with software engineering tasks.'} Use the instructions below and the tools available to you to assist the user.
 
-${CYBER_RISK_INSTRUCTION}
-IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.`
+${COMMON_INTRO_GUARDRAILS}`
 }
 
 function getSimpleSystemSection(): string {
@@ -557,9 +563,20 @@ ${CYBER_RISK_INSTRUCTION}`,
   const resolvedDynamicSections =
     await resolveSystemPromptSections(dynamicSections)
 
+  const providerBasePrompt = getProviderBasePrompt(
+    model,
+    settings.providerPromptStyle,
+  )
+
   return [
     // --- Static content (cacheable) ---
-    getSimpleIntroSection(outputStyleConfig),
+    // For non-Claude models, use a provider-specific base prompt instead of
+    // the Claude-specific intro persona. The common safety guardrails (cyber
+    // risk + URL guard) are still appended so non-Claude models keep them.
+    // All other sections are model-agnostic and remain unchanged.
+    providerBasePrompt
+      ? `${providerBasePrompt}\n\n${COMMON_INTRO_GUARDRAILS}`
+      : getSimpleIntroSection(outputStyleConfig),
     getSimpleSystemSection(),
     outputStyleConfig === null ||
     outputStyleConfig.keepCodingInstructions === true

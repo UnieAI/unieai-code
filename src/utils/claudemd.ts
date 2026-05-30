@@ -906,6 +906,29 @@ export const getMemoryFiles = memoize(
           )),
         )
 
+        // Try reading AGENTS.md / .claude/AGENTS.md (Project). AGENTS.md is the
+        // cross-tool instruction file used by codex/opencode; UnieAI Code reads
+        // it as a peer of CLAUDE.md (both are loaded if both exist). Dedup is
+        // handled by processedPaths.
+        const agentsPath = join(dir, 'AGENTS.md')
+        result.push(
+          ...(await processMemoryFile(
+            agentsPath,
+            'Project',
+            processedPaths,
+            includeExternal,
+          )),
+        )
+        const dotClaudeAgentsPath = join(dir, '.claude', 'AGENTS.md')
+        result.push(
+          ...(await processMemoryFile(
+            dotClaudeAgentsPath,
+            'Project',
+            processedPaths,
+            includeExternal,
+          )),
+        )
+
         // Try reading .claude/rules/*.md files (Project)
         const rulesDir = join(dir, '.claude', 'rules')
         result.push(
@@ -956,6 +979,24 @@ export const getMemoryFiles = memoize(
         result.push(
           ...(await processMemoryFile(
             dotClaudePath,
+            'Project',
+            processedPaths,
+            includeExternal,
+          )),
+        )
+
+        // Try reading AGENTS.md / .claude/AGENTS.md from the additional dir
+        result.push(
+          ...(await processMemoryFile(
+            join(dir, 'AGENTS.md'),
+            'Project',
+            processedPaths,
+            includeExternal,
+          )),
+        )
+        result.push(
+          ...(await processMemoryFile(
+            join(dir, '.claude', 'AGENTS.md'),
             'Project',
             processedPaths,
             includeExternal,

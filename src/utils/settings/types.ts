@@ -8,6 +8,11 @@ import {
   PERMISSION_MODES,
 } from '../permissions/PermissionMode.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
+import { PROVIDER_PROMPT_STYLE_VALUES } from '../../constants/providerPromptStyles.js'
+import {
+  CODEX_APPROVAL_POLICIES,
+  CODEX_SANDBOX_MODES,
+} from '../permissions/codexApprovalCompat.js'
 import { CLAUDE_CODE_SETTINGS_SCHEMA_URL } from './constants.js'
 import { PermissionRuleSchema } from './permissionValidation.js'
 
@@ -640,6 +645,27 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Controls the output style for assistant responses'),
+      providerPromptStyle: z
+        .enum(PROVIDER_PROMPT_STYLE_VALUES)
+        .optional()
+        .describe(
+          'Base system prompt style for non-Claude models. One of: ' +
+            PROVIDER_PROMPT_STYLE_VALUES.join(', '),
+        ),
+      approvalPolicy: z
+        .enum(CODEX_APPROVAL_POLICIES)
+        .optional()
+        .describe(
+          'Codex-style approval policy, mapped onto permissions.defaultMode ' +
+            'when that is unset. One of: untrusted, on-request, on-failure, never',
+        ),
+      sandboxMode: z
+        .enum(CODEX_SANDBOX_MODES)
+        .optional()
+        .describe(
+          'Codex-style sandbox mode, mapped onto sandbox.enabled when that is ' +
+            'unset. One of: read-only, workspace-write, danger-full-access',
+        ),
       language: z
         .string()
         .optional()

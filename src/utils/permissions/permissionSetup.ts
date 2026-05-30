@@ -25,6 +25,7 @@ import {
   type PermissionMode,
   permissionModeFromString,
 } from './PermissionMode.js'
+import { approvalPolicyToPermissionMode } from './codexApprovalCompat.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
 
@@ -769,6 +770,15 @@ export function initialPermissionModeFromCLI({
       }
     } else {
       orderedModes.push(settingsMode)
+    }
+  }
+  // Codex-style approvalPolicy fallback (lower priority than an explicit
+  // permissions.defaultMode above). Lets users configure with codex's
+  // vocabulary; maps onto the same PermissionMode engine.
+  else if (settings.approvalPolicy) {
+    const mappedMode = approvalPolicyToPermissionMode(settings.approvalPolicy)
+    if (mappedMode) {
+      orderedModes.push(mappedMode)
     }
   }
 
