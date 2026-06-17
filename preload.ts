@@ -1,4 +1,4 @@
-const version = process.env.CLAUDE_CODE_LOCAL_VERSION ?? '0.0.3';
+const version = process.env.CLAUDE_CODE_LOCAL_VERSION ?? '0.0.6';
 const packageUrl = process.env.CLAUDE_CODE_LOCAL_PACKAGE_URL ?? '@unieai/code';
 const buildTime = process.env.CLAUDE_CODE_LOCAL_BUILD_TIME ?? new Date().toISOString();
 

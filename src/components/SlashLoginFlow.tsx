@@ -6,6 +6,8 @@ import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js'
 import { Select } from './CustomSelect/select.js'
 import { OpenAILoginFlow } from './OpenAILoginFlow.js'
 import { Spinner } from './Spinner.js'
+import { StartupUpdatePrompt } from './StartupUpdatePrompt.js'
+import TextInput from './TextInput.js'
 import { UnieAIAuthService, syncUnieAIModelsToCache } from '../services/unieaiAuth/index.js'
 import { openBrowser } from '../utils/browser.js'
 import { saveGlobalConfig } from '../utils/config.js'
@@ -18,6 +20,7 @@ type Props = {
 
 type LoginSelection =
   | 'unieai'
+  | 'unieai-company'
   | 'claudeai'
   | 'console'
   | 'openai'
@@ -93,6 +96,9 @@ export function SlashLoginFlow({
     return 'idle'
   })
 
+  const [companyStudioUrl, setCompanyStudioUrl] = useState<string | null>(null)
+  const [updateGateDone, setUpdateGateDone] = useState(false)
+
   const options = useMemo(
     () => [
       {
@@ -105,6 +111,16 @@ export function SlashLoginFlow({
         ),
         value: 'unieai' as const,
       },
+      {
+        label: (
+          <Text>
+            Company UnieAI Studio ·{' '}
+            <Text dimColor>Sign in with your company&apos;s Studio URL</Text>
+            {'\n'}
+          </Text>
+        ),
+        value: 'unieai-company' as const,
+      },
       // UnieAI Code: legacy Anthropic / OpenAI / 3rd-party options removed.
       // Kept commented for restoration if cross-provider login is ever needed.
       // { label: <Text>Claude account with subscription · <Text dimColor>Pro, Max, Team, or Enterprise</Text>{'\n'}</Text>, value: 'claudeai' as const },
@@ -115,9 +131,34 @@ export function SlashLoginFlow({
     [],
   )
 
+  if (!updateGateDone) {
+    return <StartupUpdatePrompt onDone={() => setUpdateGateDone(true)} />
+  }
+
   if (selection === 'unieai') {
     return (
       <UnieAILoginFlow onDone={onDone} onBack={() => setSelection('idle')} />
+    )
+  }
+
+  if (selection === 'unieai-company') {
+    if (companyStudioUrl === null) {
+      return (
+        <CompanyStudioUrlPrompt
+          onSubmit={url => setCompanyStudioUrl(url)}
+          onBack={() => setSelection('idle')}
+        />
+      )
+    }
+    return (
+      <UnieAILoginFlow
+        studioUrl={companyStudioUrl}
+        onDone={onDone}
+        onBack={() => {
+          setCompanyStudioUrl(null)
+          setSelection('idle')
+        }}
+      />
     )
   }
 
@@ -155,12 +196,57 @@ export function SlashLoginFlow({
   )
 }
 
+function CompanyStudioUrlPrompt({
+  onSubmit,
+  onBack,
+}: {
+  onSubmit(url: string): void
+  onBack(): void
+}): React.ReactNode {
+  const [url, setUrl] = useState('')
+  const [cursorOffset, setCursorOffset] = useState(0)
+
+  return (
+    <Box flexDirection="column" gap={1} marginTop={1}>
+      <Text bold>Sign in to your company&apos;s UnieAI Studio</Text>
+      <Text dimColor>
+        Paste your company&apos;s UnieAI Studio URL. The login flow and APIs are
+        the same as UnieAI Studio.
+      </Text>
+      <Box>
+        <Text>URL: </Text>
+        <TextInput
+          value={url}
+          onChange={setUrl}
+          onSubmit={value => {
+            const trimmed = value.trim()
+            if (trimmed.length === 0) {
+              onBack()
+              return
+            }
+            onSubmit(trimmed)
+          }}
+          focus={true}
+          showCursor={true}
+          placeholder="https://studio.yourcompany.com"
+          columns={60}
+          cursorOffset={cursorOffset}
+          onChangeCursorOffset={setCursorOffset}
+        />
+      </Box>
+      <Text dimColor>Press Enter to continue · leave empty and press Enter to go back.</Text>
+    </Box>
+  )
+}
+
 function UnieAILoginFlow({
   onDone,
   onBack,
+  studioUrl: studioUrlOverride,
 }: {
   onDone(): void
   onBack(): void
+  studioUrl?: string
 }): React.ReactNode {
   const [phase, setPhase] = useState<UnieAIPhase>({ state: 'idle' })
 
@@ -170,6 +256,7 @@ function UnieAILoginFlow({
       const service = new UnieAIAuthService()
       try {
         const result = await service.startDeviceFlow({
+          studioUrl: studioUrlOverride,
           onPrompt: ({ userCode, verificationUriComplete, studioUrl }) => {
             if (cancelled) return
             setPhase({
@@ -216,7 +303,7 @@ function UnieAILoginFlow({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [studioUrlOverride])
 
   useKeybinding(
     'confirm:yes',

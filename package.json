@@ -1,7 +1,7 @@
 {
   "name": "@unieai/code",
-  "version": "0.0.3",
-  "private": true,
+  "version": "0.0.6",
+  "private": false,
   "type": "module",
   "bin": {
     "unieai": "./bin/claude-haha",
