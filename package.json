@@ -1,11 +1,11 @@
 {
   "name": "@unieai/code",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "private": false,
   "type": "module",
   "bin": {
-    "unieai": "./bin/claude-haha",
-    "claude-haha": "./bin/claude-haha"
+    "unieai": "./bin/cli.mjs",
+    "claude-haha": "./bin/cli.mjs"
   },
   "scripts": {
     "unieai": "bun run ./bin/claude-haha",
