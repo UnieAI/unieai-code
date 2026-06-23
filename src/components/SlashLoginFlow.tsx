@@ -9,6 +9,7 @@ import { Spinner } from './Spinner.js'
 import { StartupUpdatePrompt } from './StartupUpdatePrompt.js'
 import TextInput from './TextInput.js'
 import { UnieAIAuthService, syncUnieAIModelsToCache } from '../services/unieaiAuth/index.js'
+import { deriveGatewayFromStudio } from '../services/unieaiAuth/fetch.js'
 import { openBrowser } from '../utils/browser.js'
 import { saveGlobalConfig } from '../utils/config.js'
 import { logError } from '../utils/log.js'
@@ -97,6 +98,8 @@ export function SlashLoginFlow({
   })
 
   const [companyStudioUrl, setCompanyStudioUrl] = useState<string | null>(null)
+  // null = not asked yet; '' = user skipped (auto-derive); otherwise explicit URL.
+  const [companyGatewayUrl, setCompanyGatewayUrl] = useState<string | null>(null)
   const [updateGateDone, setUpdateGateDone] = useState(false)
 
   const options = useMemo(
@@ -150,11 +153,22 @@ export function SlashLoginFlow({
         />
       )
     }
+    if (companyGatewayUrl === null) {
+      return (
+        <CompanyGatewayUrlPrompt
+          studioUrl={companyStudioUrl}
+          onSubmit={url => setCompanyGatewayUrl(url)}
+          onBack={() => setCompanyStudioUrl(null)}
+        />
+      )
+    }
     return (
       <UnieAILoginFlow
         studioUrl={companyStudioUrl}
+        gatewayUrl={companyGatewayUrl || undefined}
         onDone={onDone}
         onBack={() => {
+          setCompanyGatewayUrl(null)
           setCompanyStudioUrl(null)
           setSelection('idle')
         }}
@@ -239,14 +253,59 @@ function CompanyStudioUrlPrompt({
   )
 }
 
+function CompanyGatewayUrlPrompt({
+  studioUrl,
+  onSubmit,
+}: {
+  studioUrl: string
+  onSubmit(url: string): void
+  onBack(): void
+}): React.ReactNode {
+  const [url, setUrl] = useState('')
+  const [cursorOffset, setCursorOffset] = useState(0)
+  const derived = useMemo(() => deriveGatewayFromStudio(studioUrl), [studioUrl])
+
+  return (
+    <Box flexDirection="column" gap={1} marginTop={1}>
+      <Text bold>Inference gateway URL (optional)</Text>
+      <Text dimColor>
+        On-prem / company Studio often serves model inference from a different
+        host than the Studio login URL. If you know it, paste the gateway base
+        URL (it usually ends in /v1). Leave blank to auto-detect.
+      </Text>
+      <Box>
+        <Text>Gateway: </Text>
+        <TextInput
+          value={url}
+          onChange={setUrl}
+          onSubmit={value => onSubmit(value.trim())}
+          focus={true}
+          showCursor={true}
+          placeholder={derived}
+          columns={60}
+          cursorOffset={cursorOffset}
+          onChangeCursorOffset={setCursorOffset}
+        />
+      </Box>
+      <Text dimColor>
+        Press <Text bold>Enter</Text> to continue (blank ={' '}
+        auto-detect <Text color="#006AFF">{derived}</Text>). You can also set
+        UNIEAI_GATEWAY_URL later to override without logging in again.
+      </Text>
+    </Box>
+  )
+}
+
 function UnieAILoginFlow({
   onDone,
   onBack,
   studioUrl: studioUrlOverride,
+  gatewayUrl: gatewayUrlOverride,
 }: {
   onDone(): void
   onBack(): void
   studioUrl?: string
+  gatewayUrl?: string
 }): React.ReactNode {
   const [phase, setPhase] = useState<UnieAIPhase>({ state: 'idle' })
 
@@ -257,6 +316,7 @@ function UnieAILoginFlow({
       try {
         const result = await service.startDeviceFlow({
           studioUrl: studioUrlOverride,
+          gatewayUrl: gatewayUrlOverride,
           onPrompt: ({ userCode, verificationUriComplete, studioUrl }) => {
             if (cancelled) return
             setPhase({
@@ -303,7 +363,7 @@ function UnieAILoginFlow({
     return () => {
       cancelled = true
     }
-  }, [studioUrlOverride])
+  }, [studioUrlOverride, gatewayUrlOverride])
 
   useKeybinding(
     'confirm:yes',

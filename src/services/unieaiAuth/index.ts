@@ -4,8 +4,10 @@ import {
   fetchConfig,
   fetchOrgs,
   fetchUser,
+  normalizeGatewayUrl,
   refreshAccessToken,
   requestDeviceCode,
+  resolveGatewayBaseURL,
   resolveStudioUrl,
   revokeRefreshToken,
 } from './fetch.js'
@@ -43,6 +45,9 @@ export type DevicePollResult =
 
 export type StartDeviceFlowOptions = {
   studioUrl?: string
+  // Explicit inference gateway URL, typed by the user at company login. Stored
+  // on the tokens (locked) so it survives the post-login model sync.
+  gatewayUrl?: string
   onPrompt?: (info: {
     userCode: string
     verificationUriComplete: string
@@ -72,7 +77,12 @@ export class UnieAIAuthService {
       }
     }
 
-    return await pollUntilFinal(studioUrl, device, options.pollSignal)
+    return await pollUntilFinal(
+      studioUrl,
+      device,
+      options.pollSignal,
+      options.gatewayUrl,
+    )
   }
 
   async ensureFreshTokens(): Promise<UnieAITokens | null> {
@@ -190,6 +200,7 @@ async function pollUntilFinal(
   studioUrl: string,
   device: UnieAIDeviceAuthResponse,
   signal?: AbortSignal,
+  gatewayUrl?: string,
 ): Promise<DevicePollResult> {
   let intervalMs = Math.max(device.interval, 1) * 1000
   const deadline = Date.now() + device.expires_in * 1000
@@ -202,7 +213,7 @@ async function pollUntilFinal(
     const result = await exchangeDeviceCode(studioUrl, device.device_code)
     switch (result.kind) {
       case 'success': {
-        const tokens = await persistInitialTokens(studioUrl, result.tokens)
+        const tokens = await persistInitialTokens(studioUrl, result.tokens, gatewayUrl)
         return { kind: 'success', tokens }
       }
       case 'pending':
@@ -230,6 +241,7 @@ async function pollUntilFinal(
 async function persistInitialTokens(
   studioUrl: string,
   response: { access_token: string; refresh_token: string; expires_in: number },
+  gatewayUrl?: string,
 ): Promise<UnieAITokens> {
   let user: UnieAIUser | undefined
   let orgs: UnieAIOrg[] = []
@@ -244,6 +256,7 @@ async function persistInitialTokens(
     // orgs fetch is informational at login time
   }
 
+  const trimmedGateway = gatewayUrl?.trim()
   const tokens: UnieAITokens = {
     accessToken: response.access_token,
     refreshToken: response.refresh_token,
@@ -252,6 +265,12 @@ async function persistInitialTokens(
     accountId: user?.id,
     email: user?.email,
     activeOrgId: orgs[0]?.id,
+    ...(trimmedGateway
+      ? {
+          gatewayBaseURL: normalizeGatewayUrl(trimmedGateway),
+          gatewayBaseURLLocked: true,
+        }
+      : {}),
   }
   const result = saveUnieAITokens(tokens)
   if (!result.success) {
@@ -347,15 +366,18 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
     const baseURL = options_raw?.baseURL ?? (providerConfig as { baseURL?: string } | undefined)?.baseURL
     const tokens = getUnieAITokens()
     if (tokens && apiKey) {
+      // Keep an explicit user-typed gateway (company/地端 login) intact;
+      // otherwise resolve via env override -> public config baseURL -> derive
+      // from the Studio host. Never silently force the public cloud gateway.
+      const gatewayBaseURL = resolveGatewayBaseURL({
+        studioUrl: tokens.studioUrl,
+        userGatewayUrl: tokens.gatewayBaseURLLocked ? tokens.gatewayBaseURL : undefined,
+        configBaseURL: baseURL,
+      })
       saveUnieAITokens({
         ...tokens,
         gatewayApiKey: apiKey,
-        // Treat any internal `http://runtime:*` URL as a hint, not the real
-        // public host. The CLI defaults to the documented public gateway.
-        gatewayBaseURL:
-          baseURL && /^https?:\/\/(?!runtime:|localhost|127\.)/i.test(baseURL)
-            ? baseURL
-            : 'https://api.unieai.com/v1',
+        gatewayBaseURL,
         ...(apiKeyId ? { gatewayKeyId: apiKeyId } : {}),
         availableModelIds: ids,
       })

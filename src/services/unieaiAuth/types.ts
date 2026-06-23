@@ -65,6 +65,10 @@ export type UnieAITokens = {
   // and `unieai models`. Used by the inference fetch hook so request-time has no
   // extra round trip. Not security-sensitive beyond the OAuth token itself.
   gatewayBaseURL?: string
+  // Set when the user typed an explicit gateway URL at company login. When true,
+  // syncUnieAIModelsToCache keeps gatewayBaseURL as-is instead of re-deriving it
+  // from Studio config (so an on-prem 地端 gateway isn't overwritten).
+  gatewayBaseURLLocked?: boolean
   gatewayApiKey?: string
   // user_api_keys row id for the runtime key this session is tied to. Stored
   // so logout can DELETE its own device-session key (the "[SSTA-FEWY]" entry)

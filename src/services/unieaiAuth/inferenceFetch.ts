@@ -6,11 +6,10 @@ import { openaiChatStreamToAnthropic } from '../../server/proxy/streaming/openai
 import type { AnthropicRequest } from '../../server/proxy/transform/types.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getUserSpecifiedModelSetting } from '../../utils/model/model.js'
+import { DEFAULT_GATEWAY_BASE_URL, normalizeGatewayUrl } from './fetch.js'
 import { getUnieAITokens } from './storage.js'
 
 export const UNIEAI_INFERENCE_DUMMY_KEY = 'unieai-studio-dummy-key'
-
-const DEFAULT_GATEWAY_BASE_URL = 'https://api.unieai.com/v1'
 
 export function shouldUseUnieAIInference(): boolean {
   const tokens = getUnieAITokens()
@@ -55,7 +54,15 @@ export function buildUnieAIInferenceFetch(
       }
     }
 
-    const baseURL = (tokens.gatewayBaseURL ?? DEFAULT_GATEWAY_BASE_URL).replace(/\/$/, '')
+    // UNIEAI_GATEWAY_URL wins at request time so an operator can repoint an
+    // already-logged-in session at the correct on-prem (地端) gateway without
+    // forcing a re-login.
+    const envGateway = process.env.UNIEAI_GATEWAY_URL?.trim()
+    const baseURL = (
+      envGateway
+        ? normalizeGatewayUrl(envGateway)
+        : tokens.gatewayBaseURL ?? DEFAULT_GATEWAY_BASE_URL
+    ).replace(/\/$/, '')
     const transformedBody = anthropicToOpenaiChat(originalBody)
 
     const headers = new Headers()

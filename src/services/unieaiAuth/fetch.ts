@@ -13,6 +13,10 @@ export const UNIEAI_DEVICE_GRANT_TYPE =
 
 export const DEFAULT_STUDIO_URL = 'https://studio.unieai.com'
 
+// Public cloud inference gateway. Used only as the last-resort default when we
+// can't derive an enterprise/on-prem gateway from the Studio URL or config.
+export const DEFAULT_GATEWAY_BASE_URL = 'https://api.unieai.com/v1'
+
 export function normalizeStudioUrl(url: string): string {
   const trimmed = url.trim().replace(/\/$/, '')
   if (!/^https?:\/\//i.test(trimmed)) {
@@ -24,6 +28,65 @@ export function normalizeStudioUrl(url: string): string {
 export function resolveStudioUrl(override?: string): string {
   const candidate = override || process.env.UNIEAI_STUDIO_URL || DEFAULT_STUDIO_URL
   return normalizeStudioUrl(candidate)
+}
+
+// Normalize a user/env supplied gateway URL: add https:// if scheme-less and
+// strip trailing slashes. The path (e.g. /v1) is preserved as given.
+export function normalizeGatewayUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`
+  }
+  return trimmed
+}
+
+// Derive an inference gateway from the Studio host by swapping the leading
+// `studio.` label for `api.`. Covers both cloud (studio.unieai.com ->
+// api.unieai.com) and on-prem (studio.demo.unieai.com -> api.demo.unieai.com)
+// without hardcoding a single host. Falls back to the public cloud gateway if
+// the Studio URL can't be parsed.
+export function deriveGatewayFromStudio(studioUrl: string): string {
+  try {
+    const u = new URL(normalizeGatewayUrl(studioUrl))
+    const host = u.hostname.startsWith('studio.')
+      ? `api.${u.hostname.slice('studio.'.length)}`
+      : u.hostname
+    const port = u.port ? `:${u.port}` : ''
+    return `${u.protocol}//${host}${port}/v1`
+  } catch {
+    return DEFAULT_GATEWAY_BASE_URL
+  }
+}
+
+// Resolve the inference gateway base URL with a clear precedence so on-prem
+// (地端) enterprise deployments stop falling back to the public cloud gateway:
+//   1. UNIEAI_GATEWAY_URL env var — operator escape hatch, fixes already
+//      logged-in sessions without re-login.
+//   2. A gateway URL the user typed at company login (userGatewayUrl).
+//   3. A publicly reachable baseURL from Studio /api/config (internal
+//      runtime:/localhost/127.* URLs are rejected — they aren't reachable from
+//      the user's machine).
+//   4. Derived from the Studio host (studio.* -> api.*).
+export function resolveGatewayBaseURL(opts: {
+  studioUrl: string
+  userGatewayUrl?: string
+  configBaseURL?: string
+}): string {
+  const env = process.env.UNIEAI_GATEWAY_URL?.trim()
+  if (env) return normalizeGatewayUrl(env)
+
+  if (opts.userGatewayUrl && opts.userGatewayUrl.trim()) {
+    return normalizeGatewayUrl(opts.userGatewayUrl)
+  }
+
+  if (
+    opts.configBaseURL &&
+    /^https?:\/\/(?!runtime:|localhost|127\.)/i.test(opts.configBaseURL)
+  ) {
+    return normalizeGatewayUrl(opts.configBaseURL)
+  }
+
+  return deriveGatewayFromStudio(opts.studioUrl)
 }
 
 async function jsonOrThrow<T>(res: Response, label: string): Promise<T> {
