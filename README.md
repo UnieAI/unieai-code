@@ -25,6 +25,13 @@ Claude Code Haha 基于 2026-03-31 从 Anthropic npm registry 泄露的 Claude C
 
 ---
 
+## 近期更新（UnieAI 版）
+
+- **npm 包瘦身 ~98%**：以前发布时会把整个源码树（含 `docs/`、`desktop/`、`packages/`、测试等）一起打包，约 **116 MB / 3200 文件**。现在改为只发布经 `bun build` 打包并压缩后的 `dist/`，约 **2.2 MB / ~340 文件**（运行时仍由 bun 执行）。`dist/` 在 `prepublishOnly` 阶段自动构建、已加入 `.gitignore`，不会提交；本地开发仍直接跑 `src/`，改动即时生效。
+- **企业 / 地端 UnieAI Studio 整合**：支持云端与企业自建 Studio 登录；推理网关（gateway）可自动从 Studio 网址推导、在登录时手动填写，或用 `UNIEAI_GATEWAY_URL` 覆盖，修复了地端登录成功但 API 打不通的问题。详见 [安装命令行（CLI）](#安装命令行cli)。
+
+---
+
 ## 桌面端预览
 
 Claude Code Haha 的桌面端把会话、多项目、分支 / Worktree、右侧代码改动、代码 Diff、权限确认、提供商配置和远程入口集中到一个图形化工作台里，适合不想长期停留在终端里的日常开发工作流。
@@ -58,6 +65,45 @@ Claude Code Haha 的桌面端把会话、多项目、分支 / Worktree、右侧�
 2. 首次启动后，在桌面端设置里配置模型提供商、API Key 和默认模型。
 3. 如果 macOS 提示应用无法打开，请按 [桌面端安装指南](docs/desktop/04-installation.md) 处理 Gatekeeper 权限。
 
+## 安装命令行（CLI）
+
+`@unieai/code` 以 [Bun](https://bun.sh) 为运行时，请先确认本机已安装 bun 并在 PATH 上。
+
+```bash
+# 安装 / 升级到最新版
+npm install -g @unieai/code
+
+# 验证
+unieai --version
+```
+
+安装后用 `unieai` 启动交互式会话。如需重新安装或固定版本：
+
+```bash
+npm uninstall -g @unieai/code
+npm install -g @unieai/code@latest
+```
+
+> npm 包只发布打包后的 `dist/`（体积约 2 MB；运行时仍由 bun 执行 JS），不再附带整个源码树。
+
+### 登录 UnieAI Studio
+
+首次启动会要求登录，可选：
+
+- **UnieAI Studio**：使用云端账号（`https://studio.unieai.com`）。
+- **Company UnieAI Studio**：填入企业 / 地端 Studio 网址（例如 `https://studio.demo.unieai.com`）。
+
+企业 / 地端部署的推理网关（gateway）常与登录网址不同。登录流程会有一个**选填**的 “Inference gateway URL” 步骤：
+
+- 留空 → 自动从 Studio 网址推导（`studio.` → `api.`）。
+- 或手动填写网关地址（通常以 `/v1` 结尾）。
+
+也可以用环境变量覆盖（对已登录的会话同样生效，无需重新登录）：
+
+```bash
+export UNIEAI_GATEWAY_URL="https://api.your-company.com/v1"
+```
+
 ## 从源码启动 CLI
 
 适合想调试底层 CLI、服务端或自行开发的用户：
@@ -67,6 +113,8 @@ bun install
 cp .env.example .env
 ./bin/claude-haha
 ```
+
+> 开发时直接从 `src/` 运行，改动即时生效。npm 发布时会通过 `prepublishOnly` 自动执行 `bun run build` 生成 `dist/`（已在 `.gitignore` 中，不会提交）。
 
 更多配置见 [环境变量](docs/guide/env-vars.md) 和 [全局使用](docs/guide/global-usage.md)。
 
