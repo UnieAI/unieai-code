@@ -24,6 +24,9 @@ if [[ -z "${CLAUDE_CONFIG_DIR:-}" ]]; then
 fi
 mkdir -p "$CLAUDE_CONFIG_DIR"
 
+# Pin the package root for the server's child-CLI spawn (conversationService).
+export CC_HAHA_ROOT_DIR="$ROOT_DIR"
+
 cd "$ROOT_DIR"
 
 # When spawned by the desktop/web server as a child CLI process,
@@ -40,10 +43,17 @@ else
   ENV_FILE_FLAG=""
 fi
 
-# Force recovery CLI (simple readline REPL, no Ink TUI)
+# Prefer the published bundle (dist/) when present; fall back to raw source for
+# local development (no build step needed to hack on src/).
 if [[ "${CLAUDE_CODE_FORCE_RECOVERY_CLI:-0}" == "1" ]]; then
+  if [[ -f ./dist/localRecoveryCli.js ]]; then
+    exec bun $ENV_FILE_FLAG ./dist/localRecoveryCli.js "$@"
+  fi
   exec bun $ENV_FILE_FLAG ./src/localRecoveryCli.ts "$@"
 fi
 
 # Default: full CLI with Ink TUI
+if [[ -f ./dist/cli.js ]]; then
+  exec bun $ENV_FILE_FLAG ./dist/cli.js "$@"
+fi
 exec bun $ENV_FILE_FLAG ./src/entrypoints/cli.tsx "$@"

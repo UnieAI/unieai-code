@@ -1152,16 +1152,28 @@ export class ConversationService {
     })
 
     if (!launcher) {
+      // The package root is pinned by the launcher (CC_HAHA_ROOT_DIR) so this
+      // resolves correctly whether we run from the bundled dist/ or raw src/.
+      // Fall back to source-relative resolution for dev runs that bypass the
+      // launcher (import.meta.dir is src/server/services there).
+      const rootDir = process.env.CC_HAHA_ROOT_DIR
+        ? path.resolve(process.env.CC_HAHA_ROOT_DIR)
+        : path.resolve(import.meta.dir, '../../..')
+
       if (process.platform === 'win32') {
+        const distEntry = path.join(rootDir, 'dist', 'cli.js')
+        const entry = fs.existsSync(distEntry)
+          ? distEntry
+          : path.join(rootDir, 'src', 'entrypoints', 'cli.tsx')
         return [
           process.execPath,
           '--preload',
-          path.resolve(import.meta.dir, '../../../preload.ts'),
-          path.resolve(import.meta.dir, '../../entrypoints/cli.tsx'),
+          path.join(rootDir, 'preload.ts'),
+          entry,
           ...baseArgs,
         ]
       }
-      return [path.resolve(import.meta.dir, '../../../bin/claude-haha'), ...baseArgs]
+      return [path.join(rootDir, 'bin', 'claude-haha'), ...baseArgs]
     }
 
     return buildClaudeCliArgs(launcher, baseArgs, process.env.CLAUDE_APP_ROOT)

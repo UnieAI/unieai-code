@@ -259,11 +259,19 @@ type CronCliResolutionOptions = {
   env?: NodeJS.ProcessEnv
 }
 
+// A usable project root is one we can relaunch the CLI from: it must have the
+// preload and an entry — either the published bundle (dist/cli.js) or raw source
+// (src/entrypoints/cli.tsx) for local development.
+function cronEntryFor(root: string): string | null {
+  const distEntry = path.join(root, 'dist', 'cli.js')
+  if (existsSync(distEntry)) return distEntry
+  const srcEntry = path.join(root, 'src', 'entrypoints', 'cli.tsx')
+  if (existsSync(srcEntry)) return srcEntry
+  return null
+}
+
 function isSourceProjectRoot(root: string): boolean {
-  return (
-    existsSync(path.join(root, 'preload.ts')) &&
-    existsSync(path.join(root, 'src', 'entrypoints', 'cli.tsx'))
-  )
+  return existsSync(path.join(root, 'preload.ts')) && cronEntryFor(root) !== null
 }
 
 function findSourceProjectRoot(startDir: string): string | null {
@@ -322,11 +330,14 @@ export function buildCronCliArgs(
   }
 
   const projectRoot = resolveCronProjectRoot(options)
+  const entry =
+    cronEntryFor(projectRoot) ??
+    path.join(projectRoot, 'src', 'entrypoints', 'cli.tsx')
   return [
     'bun',
     '--preload',
     path.join(projectRoot, 'preload.ts'),
-    path.join(projectRoot, 'src', 'entrypoints', 'cli.tsx'),
+    entry,
     ...baseArgs,
   ]
 }

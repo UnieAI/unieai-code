@@ -23,6 +23,11 @@ const env = { ...process.env }
 // Remember where the user launched from; preload.ts chdir()s back to it.
 if (!env.CALLER_DIR) env.CALLER_DIR = process.cwd()
 
+// Pin the package root so the server's child-CLI spawn (conversationService)
+// resolves the launcher/entry/preload regardless of whether it runs from the
+// bundled `dist/` or raw `src/`.
+env.CC_HAHA_ROOT_DIR = rootDir
+
 // Keep state (sessions / login / theme / MCP) isolated from upstream Claude
 // Code. Honors CLAUDE_CONFIG_DIR or UNIEAI_CONFIG_DIR; defaults to ~/.unieai.
 if (!env.CLAUDE_CONFIG_DIR) {
@@ -40,10 +45,14 @@ if (env.CC_HAHA_SKIP_DOTENV === '1') {
   bunArgs.push(`--env-file=${join(rootDir, '.env')}`)
 }
 
-const entry =
-  env.CLAUDE_CODE_FORCE_RECOVERY_CLI === '1'
-    ? join(rootDir, 'src', 'localRecoveryCli.ts')
-    : join(rootDir, 'src', 'entrypoints', 'cli.tsx')
+// Prefer the published bundle (dist/) when it exists; fall back to raw source
+// for local development (no build step needed to hack on src/).
+const recovery = env.CLAUDE_CODE_FORCE_RECOVERY_CLI === '1'
+const distEntry = join(rootDir, 'dist', recovery ? 'localRecoveryCli.js' : 'cli.js')
+const srcEntry = recovery
+  ? join(rootDir, 'src', 'localRecoveryCli.ts')
+  : join(rootDir, 'src', 'entrypoints', 'cli.tsx')
+const entry = existsSync(distEntry) ? distEntry : srcEntry
 
 // On Windows, `bun` resolves to bun.exe; passing the explicit name lets Node's
 // PATH lookup find it without a shell (so paths with spaces stay intact).

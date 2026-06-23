@@ -1,13 +1,25 @@
 {
   "name": "@unieai/code",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": false,
   "type": "module",
   "bin": {
     "unieai": "./bin/cli.mjs",
     "claude-haha": "./bin/cli.mjs"
   },
+  "files": [
+    "bin",
+    "dist",
+    "preload.ts",
+    "bunfig.toml",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "!package-lock.json"
+  ],
   "scripts": {
+    "build": "bun run scripts/build/bundle.ts",
+    "prepublishOnly": "bun run build",
     "unieai": "bun run ./bin/claude-haha",
     "claude-haha": "bun run ./bin/claude-haha",
     "start": "bun run ./bin/claude-haha",

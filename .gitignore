@@ -61,6 +61,9 @@ credentials*.json
 # TS build cache
 *.tsbuildinfo
 
+# Published bundle — built on prepublishOnly, never committed (dev runs from src/)
+/dist/
+
 # Temp markdown snapshots
 sidebar-snapshot.md
 
