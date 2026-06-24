@@ -1,10 +1,12 @@
 import {
+  DEFAULT_STUDIO_URL,
   deleteSessionRuntimeKey,
   exchangeDeviceCode,
   fetchConfig,
   fetchOrgs,
   fetchUser,
   normalizeGatewayUrl,
+  normalizeStudioUrl,
   refreshAccessToken,
   requestDeviceCode,
   resolveGatewayBaseURL,
@@ -321,10 +323,15 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
     const modelMap = providerConfig?.models ?? {}
     // Show which Studio deployment a model comes from in the `/model` picker, so
     // users on private/on-prem Studios (e.g. studio.demo.unieai.com) can tell at
-    // a glance they aren't pointed at the public cloud. Falls back to the bare
-    // "UnieAI Studio" label if the studio URL isn't available.
+    // a glance they aren't pointed at the public cloud. The public cloud
+    // (studio.unieai.com) is the default, so we keep its label bare ("UnieAI
+    // Studio") and only append the URL for non-default deployments.
     const studioUrl = getUnieAITokens()?.studioUrl
-    const studioLabel = studioUrl ? `UnieAI Studio (${studioUrl})` : 'UnieAI Studio'
+    const isPublicCloud =
+      !studioUrl || normalizeStudioUrl(studioUrl) === DEFAULT_STUDIO_URL
+    const studioLabel = isPublicCloud
+      ? 'UnieAI Studio'
+      : `UnieAI Studio (${studioUrl})`
     const options: Array<{ value: string; label: string; description: string }> = []
     const ids: string[] = []
     for (const [id, info] of Object.entries(modelMap)) {
