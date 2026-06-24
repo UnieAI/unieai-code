@@ -167,10 +167,14 @@ export function AutoUpdater({
 
   // Check every 30 minutes
   useInterval(checkForUpdates, 30 * 60 * 1000);
-  if (!autoUpdaterResult?.version && (!versions.global || !versions.latest)) {
-    return null;
-  }
-  if (!autoUpdaterResult?.version && !isUpdating) {
+
+  // A newer version exists on the registry than what's running. The upstream
+  // updater only auto-installs silently (and shows a brief "restart" line),
+  // which reads as "it never checks". Surface the check result explicitly so
+  // the user always sees that a new version was found.
+  const updateAvailable = !!(versions.global && versions.latest && gt(versions.latest, versions.global));
+
+  if (!autoUpdaterResult?.version && !isUpdating && !updateAvailable) {
     return null;
   }
   return <Box flexDirection="row" gap={1}>
@@ -178,15 +182,15 @@ export function AutoUpdater({
           globalVersion: {versions.global} &middot; latestVersion:{' '}
           {versions.latest}
         </Text>}
-      {isUpdating ? <>
-          <Box>
-            <Text color="text" dimColor wrap="truncate">
-              Auto-updating…
+      {isUpdating ? <Box>
+            <Text color="warning" wrap="truncate">
+              ⬆ New version {versions.latest} available &middot; auto-updating…
             </Text>
-          </Box>
-        </> : autoUpdaterResult?.status === 'success' && showSuccessMessage && updateSemver && <Text color="success" wrap="truncate">
-            ✓ Update installed · Restart to apply
-          </Text>}
+          </Box> : autoUpdaterResult?.status === 'success' && showSuccessMessage && updateSemver ? <Text color="success" wrap="truncate">
+            ✓ Updated to {versions.latest ?? autoUpdaterResult.version} &middot; restart to apply
+          </Text> : updateAvailable ? <Text color="warning" wrap="truncate">
+            ⬆ New version {versions.latest} available &middot; run <Text bold>npm i -g {MACRO.PACKAGE_URL}</Text>
+          </Text> : null}
       {(autoUpdaterResult?.status === 'install_failed' || autoUpdaterResult?.status === 'no_permissions') && <Text color="error" wrap="truncate">
           ✗ Auto-update failed &middot; Try <Text bold>claude doctor</Text> or{' '}
           <Text bold>
