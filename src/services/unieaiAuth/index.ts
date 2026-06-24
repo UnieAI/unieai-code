@@ -319,6 +319,12 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
     const config = await service.getConfig()
     const providerConfig = config?.provider?.unieai
     const modelMap = providerConfig?.models ?? {}
+    // Show which Studio deployment a model comes from in the `/model` picker, so
+    // users on private/on-prem Studios (e.g. studio.demo.unieai.com) can tell at
+    // a glance they aren't pointed at the public cloud. Falls back to the bare
+    // "UnieAI Studio" label if the studio URL isn't available.
+    const studioUrl = getUnieAITokens()?.studioUrl
+    const studioLabel = studioUrl ? `UnieAI Studio (${studioUrl})` : 'UnieAI Studio'
     const options: Array<{ value: string; label: string; description: string }> = []
     const ids: string[] = []
     for (const [id, info] of Object.entries(modelMap)) {
@@ -330,7 +336,7 @@ export async function syncUnieAIModelsToCache(): Promise<number> {
       options.push({
         value: id,
         label: name,
-        description: `UnieAI Studio · ${id}`,
+        description: `${studioLabel} · ${id}`,
       })
     }
     saveGlobalConfig((current) => ({

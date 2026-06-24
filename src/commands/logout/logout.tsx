@@ -26,6 +26,23 @@ export async function performLogout({
   // Wipe all secure storage data on logout
   const secureStorage = getSecureStorage();
   secureStorage.delete();
+
+  // UnieAI Studio sign-out. The slash `/logout` previously only cleared the
+  // Anthropic-side caches, leaving unieai-auth.json (refresh token + gateway
+  // credentials) and the stale model list behind — so switching Studio
+  // deployments kept showing the old platform's models. Revoke + delete the
+  // local UnieAI credentials here. Best-effort: network failures (revoke,
+  // runtime-key delete) must never block logout. Loaded lazily to keep the
+  // unieaiAuth module out of the logout startup path.
+  try {
+    const { UnieAIAuthService } = await import(
+      '../../services/unieaiAuth/index.js'
+    );
+    await new UnieAIAuthService().logout();
+  } catch {
+    // best-effort; local credentials may already be gone
+  }
+
   await clearAuthRelatedCaches();
   saveGlobalConfig(current => {
     const updated = {
@@ -43,6 +60,9 @@ export async function performLogout({
       }
     }
     updated.oauthAccount = undefined;
+    // Drop the cached UnieAI Studio model list so a fresh login (possibly to a
+    // different deployment) repopulates `/model` instead of showing stale models.
+    updated.unieaiModelOptionsCache = undefined;
     return updated;
   });
 }
