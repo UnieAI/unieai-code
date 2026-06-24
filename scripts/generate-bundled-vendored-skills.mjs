@@ -67,6 +67,17 @@ const GROUPS = [
       'private-equity', 'wealth-management', 'fund-admin', 'operations',
     ],
   },
+  {
+    name: 'browser-harness',
+    registerFn: 'registerBrowserHarnessSkills',
+    // browser-use/browser-harness: a CDP-based browser automation skill. We
+    // vendor the prompt-only skills/browser-harness/ pack (SKILL.md +
+    // references/), NOT the Python package — the skill teaches the agent to
+    // drive the `browser-harness` CLI, which the user installs separately
+    // (Python 3.12 + uv + Chrome). Clone first:
+    //   git clone --depth 1 https://github.com/browser-use/browser-harness /tmp/browser-harness
+    skillDirs: ['/tmp/browser-harness/skills/browser-harness'],
+  },
 ]
 
 function walkTextFiles(skillDir) {
@@ -183,9 +194,27 @@ export function ${group.registerFn}(): void {
   return outPath
 }
 
+// Optional `--only <name>` (repeatable) regenerates just those groups, leaving
+// the other committed .generated.ts files untouched — handy when only one
+// pack's source is cloned locally.
+const onlyGroups = new Set()
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i]
+  if (arg === '--only') onlyGroups.add(process.argv[++i])
+  else if (arg.startsWith('--only=')) onlyGroups.add(arg.slice('--only='.length))
+}
+
 let total = 0
 for (const group of GROUPS) {
+  if (onlyGroups.size > 0 && !onlyGroups.has(group.name)) continue
   const skills = collectGroupSkills(group)
+  // Never clobber an existing pack with an empty file: if no source skills were
+  // found (e.g. the source repo/marketplace isn't cloned on this machine), skip
+  // the group so its committed .generated.ts survives.
+  if (skills.length === 0) {
+    console.warn(`[${group.name}] 0 skills found — skipping (existing file kept)`)
+    continue
+  }
   const outPath = emitModule(group, skills)
   total += skills.length
   console.log(`[${group.name}] ${skills.length} skills → ${relative(process.cwd(), outPath)}`)
