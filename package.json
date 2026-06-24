@@ -2,6 +2,9 @@
   "name": "@unieai/code",
   "version": "0.0.11",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "unieai": "./bin/cli.mjs",
