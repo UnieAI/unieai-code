@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/UnieAI/unieai-code/main/install.sh 
 unieai --version
 ```
 
-- 固定版本：`UNIEAI_VERSION=v0.0.14 curl -fsSL .../install.sh | sh`
+- 固定版本：`UNIEAI_VERSION=cli-v0.0.14 curl -fsSL .../install.sh | sh`
 - 自定安装位置：`UNIEAI_INSTALL_DIR=/usr/local/bin`
 - **Windows**：从 Releases 页面下载 `unieai-windows-x64.exe` 直接运行。
 - 也可手动到 Releases 下载对应档案（`unieai-macos-arm64` / `unieai-macos-x64` / `unieai-linux-x64` / `unieai-linux-arm64`），`chmod +x` 后放进 PATH 即可。macOS 若从浏览器手动下载，首次运行被 Gatekeeper 拦截时执行 `xattr -d com.apple.quarantine <文件>`（用上面的 `curl | sh` 安装则不会有此问题）。

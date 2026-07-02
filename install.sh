@@ -7,7 +7,7 @@
 # (or a pinned) GitHub Release and installs it to ~/.local/bin/unieai.
 #
 # Env overrides:
-#   UNIEAI_VERSION   pin a release tag (e.g. v0.0.14). Default: latest.
+#   UNIEAI_VERSION   pin a release tag (e.g. cli-v0.0.14). Default: latest cli-v*.
 #   UNIEAI_INSTALL_DIR  install location. Default: ~/.local/bin
 set -eu
 
@@ -34,13 +34,15 @@ esac
 asset="${BIN_NAME}-${os_tag}-${arch_tag}"
 
 # --- resolve tag
+# The desktop app (v*) and vscode ext (vscode-v*) publish releases too, so
+# `/releases/latest` may not be a CLI release. Pick the newest `cli-v*` tag.
 if [ "${UNIEAI_VERSION:-}" != "" ]; then
   tag="$UNIEAI_VERSION"
 else
-  info "Resolving latest release..."
-  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' | head -1 | cut -d '"' -f 4)"
-  [ -n "$tag" ] || err "could not resolve latest release tag"
+  info "Resolving latest CLI release..."
+  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+    | grep '"tag_name"' | cut -d '"' -f 4 | grep '^cli-v' | head -1)"
+  [ -n "$tag" ] || err "could not resolve latest cli-v* release (is one published yet?)"
 fi
 
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"

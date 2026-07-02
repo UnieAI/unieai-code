@@ -1,18 +1,21 @@
 name: Release CLI
 
 # Builds the standalone single-file CLI binaries (no npm / no bun needed by the
-# end user) and attaches them to the GitHub Release for the tag. Bun's
-# `--compile` cross-compiles every target from one Linux runner, so no matrix.
-# Coexists with release-desktop.yml on the same v*.*.* tag: whichever job reaches
-# the release first creates it, the other uploads its assets.
+# end user) and attaches them to a GitHub Release. Bun's `--compile` cross-
+# compiles every target from one Linux runner, so no matrix.
+#
+# Tag namespace: `cli-v*` (the CLI / npm package). The desktop app owns bare
+# `v*` (release-desktop.yml, versioned separately in tauri.conf.json) and the
+# editor extension owns `vscode-v*`, so the CLI must use its own prefix to avoid
+# cross-firing those workflows. Tag e.g. `cli-v0.0.14` for package.json 0.0.14.
 
 on:
   push:
-    tags: ['v*.*.*']
+    tags: ['cli-v*.*.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build binaries for (e.g. v0.0.14)'
+        description: 'Existing tag to (re)build binaries for (e.g. cli-v0.0.14)'
         required: true
         type: string
 
@@ -46,7 +49,7 @@ jobs:
         shell: bash
         run: |
           VERSION=$(jq -r '.version' package.json)
-          EXPECTED="v${VERSION}"
+          EXPECTED="cli-v${VERSION}"
           if [ "${{ steps.tag.outputs.value }}" != "$EXPECTED" ]; then
             echo "::error::Tag ${{ steps.tag.outputs.value }} does not match package.json version ${EXPECTED}"
             exit 1
@@ -72,14 +75,15 @@ jobs:
           TAG: ${{ steps.tag.outputs.value }}
         shell: bash
         run: |
+          TITLE="UnieAI Code CLI ${TAG#cli-}"   # cli-v0.0.14 -> v0.0.14
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG exists — uploading assets."
             gh release upload "$TAG" dist-bin/* --clobber
           else
             NOTES="release-notes/${TAG}.md"
             if [ -f "$NOTES" ]; then
-              gh release create "$TAG" --title "UnieAI Code $TAG" --notes-file "$NOTES" dist-bin/*
+              gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES" dist-bin/*
             else
-              gh release create "$TAG" --title "UnieAI Code $TAG" --generate-notes dist-bin/*
+              gh release create "$TAG" --title "$TITLE" --generate-notes dist-bin/*
             fi
           fi
