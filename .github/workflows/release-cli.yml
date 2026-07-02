@@ -1,0 +1,85 @@
+name: Release CLI
+
+# Builds the standalone single-file CLI binaries (no npm / no bun needed by the
+# end user) and attaches them to the GitHub Release for the tag. Bun's
+# `--compile` cross-compiles every target from one Linux runner, so no matrix.
+# Coexists with release-desktop.yml on the same v*.*.* tag: whichever job reaches
+# the release first creates it, the other uploads its assets.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build binaries for (e.g. v0.0.14)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate tag matches package.json version
+        shell: bash
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          EXPECTED="v${VERSION}"
+          if [ "${{ steps.tag.outputs.value }}" != "$EXPECTED" ]; then
+            echo "::error::Tag ${{ steps.tag.outputs.value }} does not match package.json version ${EXPECTED}"
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Compile all targets
+        run: bun run compile
+
+      - name: List artifacts
+        run: ls -lh dist-bin
+
+      - name: Publish binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.value }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets."
+            gh release upload "$TAG" dist-bin/* --clobber
+          else
+            NOTES="release-notes/${TAG}.md"
+            if [ -f "$NOTES" ]; then
+              gh release create "$TAG" --title "UnieAI Code $TAG" --notes-file "$NOTES" dist-bin/*
+            else
+              gh release create "$TAG" --title "UnieAI Code $TAG" --generate-notes dist-bin/*
+            fi
+          fi

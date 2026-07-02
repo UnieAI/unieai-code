@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 node_modules
+# Standalone `bun build --compile` binaries (scripts/build/compile.ts) — shipped
+# via GitHub Releases, never committed.
+dist-bin/
 openspec
 .DS_Store
 

@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "build": "bun run scripts/build/bundle.ts",
+    "compile": "bun run scripts/build/compile.ts",
     "prepublishOnly": "bun run build",
     "unieai": "bun run ./bin/claude-haha",
     "claude-haha": "bun run ./bin/claude-haha",

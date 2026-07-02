@@ -50,6 +50,24 @@ npm install -g @unieai/code@latest
 
 > npm 包只发布打包后的 `dist/`（体积约 2 MB；运行时仍由 bun 执行 JS），不再附带整个源码树。
 
+### 免 npm 安装（独立二进制）
+
+不想装 npm / bun 也可以。每个版本的 [GitHub Release](https://github.com/UnieAI/unieai-code/releases) 会附带用 `bun build --compile` 打包的**单文件可执行档**（已内嵌 Bun 运行时与全部依赖，下载即用）：
+
+```bash
+# macOS / Linux：自动识别系统架构、下载最新版到 ~/.local/bin/unieai
+curl -fsSL https://raw.githubusercontent.com/UnieAI/unieai-code/main/install.sh | sh
+
+unieai --version
+```
+
+- 固定版本：`UNIEAI_VERSION=v0.0.14 curl -fsSL .../install.sh | sh`
+- 自定安装位置：`UNIEAI_INSTALL_DIR=/usr/local/bin`
+- **Windows**：从 Releases 页面下载 `unieai-windows-x64.exe` 直接运行。
+- 也可手动到 Releases 下载对应档案（`unieai-macos-arm64` / `unieai-macos-x64` / `unieai-linux-x64` / `unieai-linux-arm64`），`chmod +x` 后放进 PATH 即可。macOS 若从浏览器手动下载，首次运行被 Gatekeeper 拦截时执行 `xattr -d com.apple.quarantine <文件>`（用上面的 `curl | sh` 安装则不会有此问题）。
+
+> 独立二进制不含 `sharp`（图片缩放）、OTLP exporter、第三方供应商 SDK（Bedrock/Vertex 等）等可选依赖；需要时请改用 npm 安装。
+
 ### 登录 UnieAI Studio
 
 首次启动会要求登录，可选：
