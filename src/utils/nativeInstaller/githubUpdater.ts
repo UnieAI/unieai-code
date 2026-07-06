@@ -23,7 +23,7 @@ import { gt } from '../semver.js'
 // Public distribution repo — the source repo is private, so releases + the
 // installer live here. Keep in sync with install.sh's REPO.
 const PUBLISH_REPO = 'UnieAI/Unieai-Code-Publish'
-const RELEASES_API = `https://api.github.com/repos/${PUBLISH_REPO}/releases?per_page=100`
+const LATEST_RELEASE_URL = `https://github.com/${PUBLISH_REPO}/releases/latest`
 const CLI_TAG_PREFIX = 'cli-v'
 
 export type GitHubInstallResult = {
@@ -53,33 +53,33 @@ export function getReleaseAssetName(): string {
 
 /**
  * Newest `cli-v*` version published to the distribution repo, or null on any
- * failure (offline, rate-limited, none published). `stable` excludes GitHub
- * pre-releases; `latest` includes them.
+ * failure (offline, none published).
+ *
+ * Resolves via the `/releases/latest` redirect (the tag is in the Location
+ * header) rather than the api.github.com REST API. The REST API is rate-limited
+ * to 60 req/hr for unauthenticated callers and returns 403 once exhausted; the
+ * redirect endpoint has no such limit. Since this repo holds only cli-v*
+ * releases, "latest" is always the CLI. `channel` is currently ignored — the
+ * fork does not mark pre-releases — but kept for signature stability.
  */
 export async function getLatestVersionFromGitHub(
-  channel: string,
+  _channel: string,
 ): Promise<string | null> {
   try {
-    const response = await axios.get(RELEASES_API, {
+    const response = await axios.get(LATEST_RELEASE_URL, {
       timeout: 5000,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'unieai-code',
-      },
+      maxRedirects: 0,
+      // Resolve (not follow) the 3xx so we can read the redirect target.
+      validateStatus: status => status >= 200 && status < 400,
+      headers: { 'User-Agent': 'unieai-code' },
     })
-    const releases: unknown = response.data
-    if (!Array.isArray(releases)) return null
-
-    let latest: string | null = null
-    for (const release of releases) {
-      const tag = (release as { tag_name?: unknown }).tag_name
-      if (typeof tag !== 'string' || !tag.startsWith(CLI_TAG_PREFIX)) continue
-      if (channel === 'stable' && (release as { prerelease?: boolean }).prerelease)
-        continue
-      const version = tag.slice(CLI_TAG_PREFIX.length)
-      if (!latest || gt(version, latest)) latest = version
-    }
-    return latest
+    const location =
+      (response.headers?.location as string | undefined) ??
+      (response.request?.res?.responseUrl as string | undefined)
+    // e.g. .../releases/tag/cli-v0.0.15
+    const tag = location?.match(/\/releases\/tag\/([^/?#]+)/)?.[1]
+    if (!tag || !tag.startsWith(CLI_TAG_PREFIX)) return null
+    return tag.slice(CLI_TAG_PREFIX.length)
   } catch (error) {
     logForDebugging(`Failed to resolve latest release from GitHub: ${error}`)
     return null

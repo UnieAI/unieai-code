@@ -39,19 +39,25 @@ case "$arch" in
 esac
 asset="${BIN_NAME}-${os_tag}-${arch_tag}"
 
-# --- resolve tag
-# The desktop app (v*) and vscode ext (vscode-v*) publish releases too, so
-# `/releases/latest` may not be a CLI release. Pick the newest `cli-v*` tag.
+# --- resolve download URL
+# Use GitHub's release-asset redirects instead of the api.github.com REST API.
+# The REST API is rate-limited to 60 req/hr for unauthenticated callers and
+# returns 403 once that's hit; the redirect endpoints have no such limit. Since
+# this public repo holds ONLY cli-v* releases, `releases/latest` is always the
+# CLI, so we can point straight at `releases/latest/download/<asset>`.
 if [ "${UNIEAI_VERSION:-}" != "" ]; then
   tag="$UNIEAI_VERSION"
+  url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 else
-  info "Resolving latest CLI release..."
-  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
-    | grep '"tag_name"' | cut -d '"' -f 4 | grep '^cli-v' | head -1)"
-  [ -n "$tag" ] || err "could not resolve latest cli-v* release (is one published yet?)"
+  url="https://github.com/${REPO}/releases/latest/download/${asset}"
+  # Best-effort: read the tag from the /releases/latest redirect, for display
+  # only. Never fatal — the download above does not depend on it.
+  tag="$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+    "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+    | sed -n 's#.*/releases/tag/##p')"
+  [ -n "$tag" ] || tag="latest"
 fi
 
-url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 info "Downloading ${asset} @ ${tag}"
 
 tmp="$(mktemp)"
