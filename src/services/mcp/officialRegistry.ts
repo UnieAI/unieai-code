@@ -30,8 +30,15 @@ function normalizeUrl(url: string): string | undefined {
  * Fire-and-forget fetch of the official MCP registry.
  * Populates officialUrls for isOfficialMcpUrl lookups.
  */
+// UnieAI Code: the official MCP registry lives on api.anthropic.com and is
+// irrelevant for this UnieAI Studio fork. Skip the startup fetch entirely.
+const OFFICIAL_MCP_REGISTRY_DISABLED = true
+
 export async function prefetchOfficialMcpUrls(): Promise<void> {
-  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+  if (
+    OFFICIAL_MCP_REGISTRY_DISABLED ||
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  ) {
     return
   }
 

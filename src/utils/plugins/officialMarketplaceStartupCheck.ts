@@ -45,9 +45,12 @@ export type OfficialMarketplaceSkipReason =
  * Check if official marketplace auto-install is disabled via environment variable.
  */
 export function isOfficialMarketplaceAutoInstallDisabled(): boolean {
-  return isEnvTruthy(
-    process.env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL,
-  )
+  // UnieAI Code: never auto-install Anthropic's official plugin marketplace.
+  // It fetches from downloads.claude.ai / clones anthropics/claude-plugins-official
+  // and shows an "Anthropic marketplace installed" toast — irrelevant for this
+  // UnieAI Studio fork. Also stops the downstream background marketplace
+  // autoupdate, which only runs if this installed something.
+  return true
 }
 
 /**

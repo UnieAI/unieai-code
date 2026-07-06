@@ -10,7 +10,6 @@ import { normalizeApiKeyForConfig } from '../utils/authPortable.js';
 import { getCustomApiKeyStatus } from '../utils/config.js';
 import { env } from '../utils/env.js';
 import { isRunningOnHomespace } from '../utils/envUtils.js';
-import { PreflightStep } from '../utils/preflightChecks.js';
 import type { ThemeSetting } from '../utils/theme.js';
 import { ApproveApiKey } from './ApproveApiKey.js';
 import { SlashLoginFlow } from './SlashLoginFlow.js';
@@ -93,7 +92,6 @@ export function Onboarding({
       </Box>
       <PressEnterToContinue />
     </Box>;
-  const preflightStep = <PreflightStep onSuccess={goToNextStep} />;
   // Create the steps array - determine which steps to include based on reAuth and oauthEnabled
   const apiKeyNeedingApproval = useMemo(() => {
     // Add API key step if needed
@@ -114,12 +112,9 @@ export function Onboarding({
     goToNextStep();
   }
   const steps: OnboardingStep[] = [];
-  if (oauthEnabled) {
-    steps.push({
-      id: 'preflight',
-      component: preflightStep
-    });
-  }
+  // Preflight connectivity check removed: it pinged api.anthropic.com, which is
+  // irrelevant for this UnieAI Studio-integrated build and surfaced a spurious
+  // "Unable to connect to Anthropic services" error on startup.
   steps.push({
     id: 'theme',
     component: themeStep
