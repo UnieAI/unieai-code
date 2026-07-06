@@ -18,10 +18,8 @@ import {
   installOrUpdateClaudePackage,
   localInstallationExists,
 } from 'src/utils/localInstaller.js'
-import {
-  installLatest as installLatestNative,
-  removeInstalledSymlink,
-} from 'src/utils/nativeInstaller/index.js'
+import { installLatestFromGitHub } from 'src/utils/nativeInstaller/githubUpdater.js'
+import { removeInstalledSymlink } from 'src/utils/nativeInstaller/index.js'
 import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
@@ -216,7 +214,7 @@ export async function update() {
       'update: Detected native installation, using native updater',
     )
     try {
-      const result = await installLatestNative(channel, true)
+      const result = await installLatestFromGitHub(channel)
 
       // Handle lock contention gracefully
       if (result.lockFailed) {

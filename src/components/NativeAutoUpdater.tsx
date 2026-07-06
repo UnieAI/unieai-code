@@ -9,7 +9,7 @@ import { Box, Text } from '../ink.js';
 import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
 import { getMaxVersion, getMaxVersionMessage } from '../utils/autoUpdater.js';
 import { isAutoUpdaterDisabled } from '../utils/config.js';
-import { installLatest } from '../utils/nativeInstaller/index.js';
+import { installLatestFromGitHub } from '../utils/nativeInstaller/githubUpdater.js';
 import { gt } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
 
@@ -93,7 +93,7 @@ export function NativeAutoUpdater({
         const msg = await getMaxVersionMessage();
         setMaxVersionIssue(msg ?? 'affects your version');
       }
-      const result = await installLatest(channel);
+      const result = await installLatestFromGitHub(channel);
       const currentVersion = MACRO.VERSION;
       const latencyMs = Date.now() - startTime;
 
