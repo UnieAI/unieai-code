@@ -69,21 +69,54 @@ jobs:
       - name: List artifacts
         run: ls -lh dist-bin
 
-      - name: Publish binaries to release
+      # --- Publish to the PUBLIC distribution repo -------------------------------
+      # The source repo is private, so raw.githubusercontent + release-asset
+      # downloads require auth and the curl installer would fail for outside
+      # users. We publish the binaries (and mirror install.sh + README) to the
+      # public repo UnieAI/Unieai-Code-Publish instead.
+      #
+      # The default GITHUB_TOKEN is scoped to THIS repo only and cannot write to
+      # another repo, so a PAT / fine-grained token with `contents:write` on the
+      # public repo must be stored as the `PUBLISH_REPO_TOKEN` secret.
+      - name: Publish binaries to public repo release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PUBLISH_REPO_TOKEN }}
           TAG: ${{ steps.tag.outputs.value }}
+          PUBLISH_REPO: UnieAI/Unieai-Code-Publish
         shell: bash
         run: |
           TITLE="UnieAI Code CLI ${TAG#cli-}"   # cli-v0.0.14 -> v0.0.14
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists — uploading assets."
-            gh release upload "$TAG" dist-bin/* --clobber
+          if gh release view "$TAG" --repo "$PUBLISH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG exists on $PUBLISH_REPO — uploading assets."
+            gh release upload "$TAG" dist-bin/* --repo "$PUBLISH_REPO" --clobber
           else
             NOTES="release-notes/${TAG}.md"
             if [ -f "$NOTES" ]; then
-              gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES" dist-bin/*
+              gh release create "$TAG" --repo "$PUBLISH_REPO" --title "$TITLE" --notes-file "$NOTES" dist-bin/*
             else
-              gh release create "$TAG" --title "$TITLE" --generate-notes dist-bin/*
+              gh release create "$TAG" --repo "$PUBLISH_REPO" --title "$TITLE" --generate-notes dist-bin/*
             fi
+          fi
+
+      # Keep the public repo's install.sh + README in sync so the curl one-liner
+      # and the "how to install" docs always match the source of truth here.
+      - name: Sync install.sh + README to public repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_REPO_TOKEN }}
+          PUBLISH_REPO: UnieAI/Unieai-Code-Publish
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${PUBLISH_REPO}.git" "$tmp"
+          cp install.sh "$tmp/install.sh"
+          cp scripts/publish/README.md "$tmp/README.md"
+          cd "$tmp"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Public repo install.sh/README already up to date."
+          else
+            git add install.sh README.md
+            git commit -m "chore: sync installer + README from ${{ steps.tag.outputs.value }}"
+            git push
           fi

@@ -1,17 +1,23 @@
 #!/usr/bin/env sh
 # UnieAI Code standalone installer — no npm, no bun required.
 #
-#   curl -fsSL https://raw.githubusercontent.com/UnieAI/unieai-code/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/UnieAI/Unieai-Code-Publish/main/install.sh | sh
 #
 # Downloads the prebuilt single-file binary for your OS/arch from the latest
 # (or a pinned) GitHub Release and installs it to ~/.local/bin/unieai.
+#
+# NOTE: this points at the PUBLIC distribution repo (UnieAI/Unieai-Code-Publish),
+# not the private source repo. The release CI in the source repo builds the
+# binaries and pushes them (plus this script) to the public repo, so the curl
+# one-liner works without any auth. This file is the source of truth; CI mirrors
+# it to the public repo on each release.
 #
 # Env overrides:
 #   UNIEAI_VERSION   pin a release tag (e.g. cli-v0.0.14). Default: latest cli-v*.
 #   UNIEAI_INSTALL_DIR  install location. Default: ~/.local/bin
 set -eu
 
-REPO="UnieAI/unieai-code"
+REPO="UnieAI/Unieai-Code-Publish"
 INSTALL_DIR="${UNIEAI_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_NAME="unieai"
 
