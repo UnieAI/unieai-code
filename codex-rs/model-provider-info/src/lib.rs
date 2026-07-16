@@ -32,6 +32,10 @@ const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
+const UNIEAI_PROVIDER_NAME: &str = "UnieAI";
+pub const UNIEAI_PROVIDER_ID: &str = "unieai";
+pub const UNIEAI_DEFAULT_BASE_URL: &str = "https://api.unieai.com/v1";
+
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
@@ -326,6 +330,44 @@ impl ModelProviderInfo {
             .unwrap_or(Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS))
     }
 
+    pub fn create_unieai_provider(base_url: Option<String>) -> ModelProviderInfo {
+        // UNIEAI_BASE_URL lets a user point at another inference gateway
+        // (e.g. an on-prem or demo deployment) without a config.toml entry.
+        let base_url = base_url
+            .or_else(|| {
+                std::env::var("UNIEAI_BASE_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| Some(UNIEAI_DEFAULT_BASE_URL.to_string()));
+        ModelProviderInfo {
+            name: UNIEAI_PROVIDER_NAME.into(),
+            base_url,
+            env_key: Some("UNIEAI_API_KEY".into()),
+            env_key_instructions: Some(
+                "Create an API key in UnieAI Studio (https://studio.unieai.com) and export it as UNIEAI_API_KEY."
+                    .into(),
+            ),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: Some(
+                [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_openai_provider(base_url: Option<String>) -> ModelProviderInfo {
         ModelProviderInfo {
             name: OPENAI_PROVIDER_NAME.into(),
@@ -431,6 +473,7 @@ pub fn built_in_model_providers(
     openai_base_url: Option<String>,
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
+    let unieai_provider = P::create_unieai_provider(None);
     let openai_provider = P::create_openai_provider(openai_base_url);
     let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
 
@@ -439,6 +482,7 @@ pub fn built_in_model_providers(
     // open source ("oss") providers by default. Users are encouraged to add to
     // `model_providers` in config.toml to add their own providers.
     [
+        (UNIEAI_PROVIDER_ID, unieai_provider),
         (OPENAI_PROVIDER_ID, openai_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (

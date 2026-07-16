@@ -55,12 +55,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-
-#[derive(Deserialize, Debug, Clone)]
-struct ReleaseInfo {
-    tag_name: String,
-}
+// Public distribution repo. Resolved via the html /releases/latest redirect
+// rather than api.github.com: the REST API is limited to 60 unauthenticated
+// requests/hour and returns 403 once exhausted; the redirect has no such cap.
+const LATEST_RELEASE_URL: &str = "https://github.com/UnieAI/Unieai-Code-Publish/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct HomebrewCaskInfo {
@@ -115,15 +113,19 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
 }
 
 async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = create_client()
+    // The client follows the redirect; the tag is the last path segment of the
+    // final URL, e.g. .../releases/tag/cli-v0.1.0.
+    let response = create_client()
         .get(LATEST_RELEASE_URL)
         .send()
         .await?
-        .error_for_status()?
-        .json::<ReleaseInfo>()
-        .await?;
+        .error_for_status()?;
+    let latest_tag_name = response
+        .url()
+        .path_segments()
+        .and_then(|segments| segments.filter(|s| !s.is_empty()).next_back())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Failed to resolve latest release tag from redirect"))?;
     extract_version_from_latest_tag(&latest_tag_name)
 }
 
