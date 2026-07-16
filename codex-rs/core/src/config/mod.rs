@@ -3581,9 +3581,31 @@ impl Config {
             .clone()
             .filter(|value| !value.is_empty());
 
-        let model_providers =
+        let mut model_providers =
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
+
+        // A UnieAI Studio login (`unieai login`) stores the resolved inference
+        // gateway credentials in $CODEX_HOME/unieai.json. Wire them into the
+        // built-in `unieai` provider unless UNIEAI_API_KEY is set — the env
+        // var stays the manual escape hatch and keeps the env_key error path
+        // (with its Studio instructions) for users who never logged in.
+        let unieai_api_key_env_set = std::env::var("UNIEAI_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .is_some();
+        if !unieai_api_key_env_set
+            && let Some(credentials) = codex_login::unieai::load_unieai_credentials(&codex_home)
+            && let Some(provider) =
+                model_providers.get_mut(codex_model_provider_info::UNIEAI_PROVIDER_ID)
+            && provider.env_key.as_deref() == Some("UNIEAI_API_KEY")
+        {
+            provider.base_url = Some(credentials.gateway_base_url);
+            provider.experimental_bearer_token = Some(credentials.gateway_api_key);
+            provider.env_key = None;
+            provider.env_key_instructions = None;
+        }
+        let model_providers = model_providers;
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)

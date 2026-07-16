@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod auth_env_telemetry;
 pub mod token_data;
+pub mod unieai;
 
 mod device_code_auth;
 mod outbound_proxy;

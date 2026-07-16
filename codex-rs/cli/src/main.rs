@@ -17,6 +17,7 @@ use codex_cli::run_login_with_access_token;
 use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
 use codex_cli::run_login_with_device_code;
+use codex_cli::run_login_with_unieai;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_exec::Cli as ExecCli;
@@ -485,6 +486,18 @@ struct LoginCommand {
 
     #[arg(long = "device-auth")]
     use_device_code: bool,
+
+    /// Sign in with ChatGPT (OpenAI) instead of UnieAI Studio.
+    #[arg(long = "chatgpt")]
+    use_chatgpt: bool,
+
+    /// UnieAI Studio URL for company/on-prem deployments (default: https://studio.unieai.com).
+    #[arg(long = "studio-url", value_name = "URL")]
+    studio_url: Option<String>,
+
+    /// Explicit inference gateway URL for on-prem deployments (default: resolved from Studio).
+    #[arg(long = "gateway-url", value_name = "URL")]
+    gateway_url: Option<String>,
 
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
     /// Override the OAuth issuer base URL (advanced)
@@ -1374,8 +1387,16 @@ async fn cli_main(
                     } else if login_cli.with_access_token {
                         let access_token = read_access_token_from_stdin();
                         run_login_with_access_token(login_cli.config_overrides, access_token).await;
-                    } else {
+                    } else if login_cli.use_chatgpt {
                         run_login_with_chatgpt(login_cli.config_overrides).await;
+                    } else {
+                        // Default: sign in to UnieAI Studio via device code.
+                        run_login_with_unieai(
+                            login_cli.config_overrides,
+                            login_cli.studio_url,
+                            login_cli.gateway_url,
+                        )
+                        .await;
                     }
                 }
             }

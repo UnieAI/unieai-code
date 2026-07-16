@@ -421,9 +421,57 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     }
 }
 
+/// Login by signing into UnieAI Studio with the OAuth device-code grant.
+/// Persists the resolved inference gateway credentials for the `unieai`
+/// provider; the ChatGPT/OpenAI auth storage is left untouched.
+pub async fn run_login_with_unieai(
+    cli_config_overrides: CliConfigOverrides,
+    studio_url: Option<String>,
+    gateway_url: Option<String>,
+) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting unieai device login flow");
+
+    let options = codex_login::unieai::UnieAILoginOptions {
+        studio_url,
+        gateway_url,
+        on_prompt: Box::new(|prompt| {
+            eprintln!(
+                "\nTo sign in to UnieAI, open this link and confirm the code:\n\n    {}\n\n    Code: {}\n\nWaiting for confirmation in UnieAI Studio ({})...",
+                prompt.verification_uri, prompt.user_code, prompt.studio_url
+            );
+        }),
+    };
+
+    match codex_login::unieai::run_unieai_device_login(&config.codex_home, options).await {
+        Ok(credentials) => {
+            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
+            if let Some(email) = &credentials.email {
+                eprintln!("Signed in as {email}");
+            }
+            eprintln!("Inference gateway: {}", credentials.gateway_base_url);
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging in to UnieAI: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let auth_route_config = config.auth_route_config();
+
+    if let Some(credentials) = codex_login::unieai::load_unieai_credentials(&config.codex_home) {
+        match &credentials.email {
+            Some(email) => eprintln!("Logged in to UnieAI as {email}"),
+            None => eprintln!("Logged in to UnieAI"),
+        }
+        eprintln!("Inference gateway: {}", credentials.gateway_base_url);
+        std::process::exit(0);
+    }
 
     match CodexAuth::from_auth_storage(
         &config.codex_home,
@@ -480,6 +528,17 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let auth_route_config = config.auth_route_config();
 
+    let unieai_logged_out = match codex_login::unieai::logout_unieai(&config.codex_home).await {
+        Ok(logged_out) => logged_out,
+        Err(e) => {
+            eprintln!("Error logging out of UnieAI: {e}");
+            std::process::exit(1);
+        }
+    };
+    if unieai_logged_out {
+        eprintln!("Successfully logged out of UnieAI");
+    }
+
     match logout_with_revoke(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
@@ -493,7 +552,9 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
             std::process::exit(0);
         }
         Ok(false) => {
-            eprintln!("Not logged in");
+            if !unieai_logged_out {
+                eprintln!("Not logged in");
+            }
             std::process::exit(0);
         }
         Err(e) => {
