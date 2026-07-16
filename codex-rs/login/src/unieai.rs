@@ -219,14 +219,43 @@ struct StudioRemoteConfig {
     provider: HashMap<String, serde_json::Value>,
 }
 
+/// Newer Studio builds nest the gateway credentials under `options`; older
+/// ones put them at the top level. Both shapes are accepted, matching the
+/// original TS client.
+#[derive(Debug, Default, Deserialize)]
+struct StudioProviderOptions {
+    #[serde(rename = "baseURL")]
+    base_url: Option<String>,
+    #[serde(rename = "apiKey")]
+    api_key: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct StudioProviderConfig {
+    #[serde(default)]
+    options: Option<StudioProviderOptions>,
     #[serde(rename = "baseURL")]
     base_url: Option<String>,
     #[serde(rename = "apiKey")]
     api_key: Option<String>,
     #[serde(default)]
     models: HashMap<String, serde_json::Value>,
+}
+
+impl StudioProviderConfig {
+    fn api_key(&self) -> Option<&str> {
+        self.options
+            .as_ref()
+            .and_then(|options| options.api_key.as_deref())
+            .or(self.api_key.as_deref())
+    }
+
+    fn base_url(&self) -> Option<&str> {
+        self.options
+            .as_ref()
+            .and_then(|options| options.base_url.as_deref())
+            .or(self.base_url.as_deref())
+    }
 }
 
 /// Progress callback so the CLI (and later the TUI) can render the user code
@@ -311,7 +340,7 @@ pub async fn run_unieai_device_login(
 
     let gateway_api_key = provider_config
         .as_ref()
-        .and_then(|config| config.api_key.clone())
+        .and_then(|config| config.api_key().map(str::to_string))
         .ok_or_else(|| {
             io::Error::other(
                 "UnieAI Studio did not return a gateway API key; check that your account has \
@@ -324,7 +353,7 @@ inference access (Studio → Keys), then retry `unieai login`",
         options.gateway_url.as_deref(),
         provider_config
             .as_ref()
-            .and_then(|config| config.base_url.as_deref()),
+            .and_then(|config| config.base_url()),
     );
 
     let available_model_ids = provider_config

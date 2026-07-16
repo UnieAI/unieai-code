@@ -16,6 +16,7 @@ const KNOWN_ORIGINATOR_TAG_VALUES: &[&str] = &[
     "codex-app-server",
     "codex_mcp_server",
     "codex_cli_rs",
+    "unieai_code_cli",
     "codex-tui",
     "codex_vscode",
     "none",

@@ -39,7 +39,7 @@ use crate::outbound_proxy::AuthRouteConfig;
 /// The full user agent string is returned from the mcp initialize response.
 /// Parenthesis will be added by Codex. This should only specify what goes inside of the parenthesis.
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
-pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
+pub const DEFAULT_ORIGINATOR: &str = "unieai_code_cli";
 pub const CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 pub const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
 
