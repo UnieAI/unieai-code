@@ -1353,8 +1353,10 @@ async fn run_ratatui_app(
     let should_show_onboarding =
         should_show_onboarding(login_status, &initial_config, should_show_trust_screen_flag);
 
+    let mut login_screen_shown = false;
     let config = if should_show_onboarding {
         let show_login_screen = should_show_login_screen(login_status, &initial_config);
+        login_screen_shown = show_login_screen;
         let onboarding_result = run_onboarding_app(
             OnboardingScreenArgs {
                 show_login_screen,
@@ -1424,6 +1426,45 @@ async fn run_ratatui_app(
     } else {
         initial_config
     };
+
+    // The embedded app-server was started with the pre-login config. A login
+    // during onboarding changes the provider credentials and the model
+    // catalog, and the server's models manager is built at startup — restart
+    // it with the reloaded config so the model list and requests match the
+    // fresh sign-in.
+    if login_screen_shown
+        && !uses_remote_workspace
+        && matches!(app_server_target, AppServerTarget::Embedded)
+    {
+        shutdown_app_server_if_present(app_server.take()).await;
+        match start_app_server(
+            &app_server_target,
+            arg0_paths.clone(),
+            config.clone(),
+            cli_kv_overrides.clone(),
+            loader_overrides.clone(),
+            strict_config,
+            cloud_config_bundle.clone(),
+            feedback.clone(),
+            log_db.clone(),
+            state_db.clone(),
+            environment_manager.clone(),
+        )
+        .await
+        {
+            Ok(restarted) => {
+                app_server = Some(
+                    AppServerSession::new(restarted, app_server_target.thread_params_mode())
+                        .with_remote_cwd_override(remote_cwd_override.clone()),
+                );
+            }
+            Err(err) => {
+                terminal_restore_guard.restore_silently();
+                session_log::log_session_end();
+                return Err(err);
+            }
+        }
+    }
 
     let mut missing_session_exit = |id_str: &str, action: &str| {
         error!("Error finding conversation path: {id_str}");

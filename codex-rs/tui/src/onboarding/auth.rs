@@ -94,8 +94,13 @@ pub(crate) enum SignInState {
 pub(crate) enum SignInOption {
     UnieAI,
     UnieAICompany,
+    // No longer listed by the onboarding picker; the flows stay for tests and
+    // potential re-enablement (`unieai login --chatgpt` covers the CLI path).
+    #[allow(dead_code)]
     ChatGpt,
+    #[allow(dead_code)]
     DeviceCode,
+    #[allow(dead_code)]
     ApiKey,
 }
 
@@ -361,30 +366,14 @@ impl AuthModeWidget {
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
     }
 
-    // UnieAI options lead; the ChatGPT/OpenAI options stay available at the
-    // bottom of the list.
+    // The onboarding picker only offers the two UnieAI Studio flows. The
+    // ChatGPT/OpenAI machinery stays reachable via `unieai login --chatgpt`.
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
-        let mut options = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
-        options.push(SignInOption::ChatGpt);
-        if self.is_chatgpt_login_allowed() {
-            options.push(SignInOption::DeviceCode);
-        }
-        if self.is_api_login_allowed() {
-            options.push(SignInOption::ApiKey);
-        }
-        options
+        vec![SignInOption::UnieAI, SignInOption::UnieAICompany]
     }
 
     fn selectable_sign_in_options(&self) -> Vec<SignInOption> {
-        let mut options = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
-        if self.is_chatgpt_login_allowed() {
-            options.push(SignInOption::ChatGpt);
-            options.push(SignInOption::DeviceCode);
-        }
-        if self.is_api_login_allowed() {
-            options.push(SignInOption::ApiKey);
-        }
-        options
+        self.displayed_sign_in_options()
     }
 
     fn move_highlight(&mut self, delta: isize) {
@@ -679,14 +668,6 @@ impl AuthModeWidget {
             lines.push("".into());
         }
 
-        if !self.is_api_login_allowed() {
-            lines.push(
-                "  API key login is disabled by this workspace. Sign in with ChatGPT to continue."
-                    .dim()
-                    .into(),
-            );
-            lines.push("".into());
-        }
         lines.push(Line::from(vec![
             "  Press ".dim(),
             self.confirm_binding().into(),
