@@ -394,19 +394,32 @@ impl App {
                 }
                 return Ok(self.handle_exit_mode(app_server, mode).await);
             }
-            AppEvent::Logout => match app_server.logout_account().await {
-                Ok(()) => {
-                    self.show_shutdown_feedback(tui)?;
-                    return Ok(self
-                        .handle_exit_mode(app_server, ExitMode::ShutdownFirst)
-                        .await);
+            AppEvent::Logout => {
+                // Sign out of UnieAI Studio (revoke + delete unieai.json);
+                // app_server.logout_account only clears the OpenAI auth store.
+                let unieai_result =
+                    codex_login::unieai::logout_unieai(&self.config.codex_home).await;
+                match (unieai_result, app_server.logout_account().await) {
+                    (Ok(_), Ok(())) => {
+                        self.show_shutdown_feedback(tui)?;
+                        return Ok(self
+                            .handle_exit_mode(app_server, ExitMode::ShutdownFirst)
+                            .await);
+                    }
+                    (unieai_result, openai_result) => {
+                        if let Err(err) = unieai_result {
+                            tracing::error!("failed to log out of UnieAI: {err}");
+                            self.chat_widget
+                                .add_error_message(format!("UnieAI logout failed: {err}"));
+                        }
+                        if let Err(err) = openai_result {
+                            tracing::error!("failed to logout: {err}");
+                            self.chat_widget
+                                .add_error_message(format!("Logout failed: {err}"));
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::error!("failed to logout: {err}");
-                    self.chat_widget
-                        .add_error_message(format!("Logout failed: {err}"));
-                }
-            },
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
