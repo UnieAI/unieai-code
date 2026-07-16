@@ -47,8 +47,44 @@ pub struct UnieAICredentials {
     /// model sync must not overwrite it with a Studio-derived URL.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gateway_base_url_locked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Legacy id-only list written by earlier builds; superseded by
+    /// `available_models` but still read so old logins keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available_model_ids: Option<Vec<String>>,
+    /// Models served by the gateway, in Studio's order — the first one is the
+    /// default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_models: Option<Vec<UnieAIModel>>,
+}
+
+/// Gateway model metadata from Studio's `/api/config`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnieAIModel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Not yet populated by all Studio deployments; honored when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+}
+
+impl UnieAICredentials {
+    /// Gateway models with metadata, falling back to the legacy id-only list.
+    pub fn models(&self) -> Vec<UnieAIModel> {
+        if let Some(models) = &self.available_models {
+            return models.clone();
+        }
+        self.available_model_ids
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|id| UnieAIModel {
+                id: id.clone(),
+                name: None,
+                context_window: None,
+            })
+            .collect()
+    }
 }
 
 pub fn unieai_credentials_path(codex_home: &Path) -> PathBuf {
@@ -238,8 +274,9 @@ struct StudioProviderConfig {
     base_url: Option<String>,
     #[serde(rename = "apiKey")]
     api_key: Option<String>,
+    /// serde_json::Map so Studio's model order survives (preserve_order).
     #[serde(default)]
-    models: HashMap<String, serde_json::Value>,
+    models: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StudioProviderConfig {
@@ -356,13 +393,23 @@ inference access (Studio → Keys), then retry `unieai login`",
             .and_then(|config| config.base_url()),
     );
 
-    let available_model_ids = provider_config
+    let available_models = provider_config
         .as_ref()
         .filter(|config| !config.models.is_empty())
         .map(|config| {
-            let mut ids: Vec<String> = config.models.keys().cloned().collect();
-            ids.sort();
-            ids
+            config
+                .models
+                .iter()
+                .map(|(id, info)| UnieAIModel {
+                    id: id.clone(),
+                    name: info
+                        .get("name")
+                        .and_then(|name| name.as_str())
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string),
+                    context_window: info.get("contextWindow").and_then(|value| value.as_i64()),
+                })
+                .collect::<Vec<UnieAIModel>>()
         });
 
     let credentials = UnieAICredentials {
@@ -375,7 +422,8 @@ inference access (Studio → Keys), then retry `unieai login`",
         gateway_base_url,
         gateway_api_key,
         gateway_base_url_locked: options.gateway_url.is_some(),
-        available_model_ids,
+        available_model_ids: None,
+        available_models,
     };
     save_unieai_credentials(codex_home, &credentials)?;
     Ok(credentials)
@@ -608,9 +656,35 @@ mod tests {
             gateway_base_url: "https://api.unieai.com/v1".to_string(),
             gateway_api_key: "sk-unieai".to_string(),
             gateway_base_url_locked: false,
-            available_model_ids: Some(vec!["m1".to_string()]),
+            available_model_ids: None,
+            available_models: Some(vec![UnieAIModel {
+                id: "m1".to_string(),
+                name: Some("Model One".to_string()),
+                context_window: Some(131_072),
+            }]),
         };
         save_unieai_credentials(dir.path(), &credentials).expect("save");
         assert_eq!(load_unieai_credentials(dir.path()), Some(credentials));
+    }
+
+    #[test]
+    fn legacy_id_only_credentials_still_yield_models() {
+        let json = serde_json::json!({
+            "studio_url": "https://studio.unieai.com",
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_at": 123,
+            "gateway_base_url": "https://api.unieai.com/v1",
+            "gateway_api_key": "sk-unieai",
+            "available_model_ids": ["m1", "m2"],
+        });
+        let credentials: UnieAICredentials =
+            serde_json::from_value(json).expect("parse legacy credentials");
+        let models = credentials.models();
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["m1", "m2"]
+        );
+        assert_eq!(models[0].context_window, None);
     }
 }

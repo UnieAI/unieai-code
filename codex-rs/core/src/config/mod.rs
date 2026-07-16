@@ -3594,14 +3594,15 @@ impl Config {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .is_some();
+        let unieai_credentials = codex_login::unieai::load_unieai_credentials(&codex_home);
         if !unieai_api_key_env_set
-            && let Some(credentials) = codex_login::unieai::load_unieai_credentials(&codex_home)
+            && let Some(credentials) = unieai_credentials.as_ref()
             && let Some(provider) =
                 model_providers.get_mut(codex_model_provider_info::UNIEAI_PROVIDER_ID)
             && provider.env_key.as_deref() == Some("UNIEAI_API_KEY")
         {
-            provider.base_url = Some(credentials.gateway_base_url);
-            provider.experimental_bearer_token = Some(credentials.gateway_api_key);
+            provider.base_url = Some(credentials.gateway_base_url.clone());
+            provider.experimental_bearer_token = Some(credentials.gateway_api_key.clone());
             provider.env_key = None;
             provider.env_key_instructions = None;
         }
@@ -3836,6 +3837,33 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        // With the UnieAI provider selected, serve the gateway models saved at
+        // login as the model catalog (picker list, metadata, and the default
+        // model — Studio's first model wins). An explicit model_catalog_json
+        // still takes precedence.
+        let model_catalog = model_catalog.or_else(|| {
+            if model_provider_id != codex_model_provider_info::UNIEAI_PROVIDER_ID {
+                return None;
+            }
+            let models: Vec<_> = unieai_credentials
+                .as_ref()
+                .map(codex_login::unieai::UnieAICredentials::models)
+                .unwrap_or_default()
+                .iter()
+                .map(|model| {
+                    codex_models_manager::model_info::model_info_for_gateway_model(
+                        &model.id,
+                        model.name.as_deref().unwrap_or(&model.id),
+                        model.context_window,
+                    )
+                })
+                .collect();
+            if models.is_empty() {
+                None
+            } else {
+                Some(ModelsResponse { models })
+            }
+        });
 
         let log_dir = cfg
             .log_dir

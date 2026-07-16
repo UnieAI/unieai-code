@@ -26,7 +26,10 @@ os_info = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "blocking"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+# preserve_order: Studio's /api/config lists models in server-defined order and
+# the first picker-visible one becomes the default model — without this the
+# default would silently become alphabetical.
+serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tiny_http = { workspace = true }

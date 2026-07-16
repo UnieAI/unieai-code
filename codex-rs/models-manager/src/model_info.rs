@@ -124,6 +124,31 @@ fn clear_instruction_messages(model: &mut ModelInfo) {
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    base_model_info(slug)
+}
+
+/// Build a descriptor for a model served by an external OpenAI-compatible
+/// gateway (e.g. a UnieAI inference gateway). Uses the same conservative
+/// defaults as the fallback path, but the model is picker-visible and not
+/// flagged as fallback metadata, and the gateway may supply a display name
+/// and context window.
+pub fn model_info_for_gateway_model(
+    slug: &str,
+    display_name: &str,
+    context_window: Option<i64>,
+) -> ModelInfo {
+    let mut info = base_model_info(slug);
+    info.display_name = display_name.to_string();
+    info.visibility = ModelVisibility::List;
+    info.used_fallback_model_metadata = false;
+    if let Some(context_window) = context_window {
+        info.context_window = Some(context_window);
+        info.max_context_window = Some(context_window);
+    }
+    info
+}
+
+fn base_model_info(slug: &str) -> ModelInfo {
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
