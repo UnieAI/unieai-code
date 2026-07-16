@@ -1955,6 +1955,18 @@ fn should_show_onboarding(
 }
 
 fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool {
+    // The built-in UnieAI provider needs the login screen until credentials
+    // exist: config load clears env_key once unieai.json is present, and a
+    // manual UNIEAI_API_KEY also skips the screen.
+    if config.model_provider.name == "UnieAI"
+        && config.model_provider.env_key.as_deref() == Some("UNIEAI_API_KEY")
+    {
+        return std::env::var("UNIEAI_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .is_none();
+    }
+
     // Only show the login screen for providers that actually require OpenAI auth
     // (OpenAI or equivalents). For OSS/other providers, skip login entirely.
     if !config.model_provider.requires_openai_auth {

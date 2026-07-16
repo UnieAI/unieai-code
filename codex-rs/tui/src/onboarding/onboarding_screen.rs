@@ -121,7 +121,7 @@ impl OnboardingScreen {
         if show_login_screen {
             let highlighted_mode = match forced_login_method {
                 Some(ForcedLoginMethod::Api) => SignInOption::ApiKey,
-                _ => SignInOption::ChatGpt,
+                _ => SignInOption::UnieAI,
             };
             if let Some(app_server_request_handle) = app_server_request_handle {
                 steps.push(Step::Auth(AuthModeWidget {
@@ -134,6 +134,8 @@ impl OnboardingScreen {
                     forced_login_method,
                     animations_enabled: config.animations,
                     animations_suppressed: std::cell::Cell::new(false),
+                    codex_home: config.codex_home.to_path_buf(),
+                    unieai_login_abort: Arc::new(RwLock::new(None)),
                 }));
             } else {
                 tracing::warn!("skipping onboarding login step without app-server request handle");

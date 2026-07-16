@@ -40,6 +40,7 @@ use ratatui::widgets::Wrap;
 
 use codex_protocol::config_types::ForcedLoginMethod;
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 use uuid::Uuid;
@@ -77,6 +78,9 @@ mod headless_chatgpt_login;
 #[derive(Clone)]
 pub(crate) enum SignInState {
     PickMode,
+    UnieAIStudioUrlEntry(UnieAIStudioInputState),
+    UnieAIDeviceCode(UnieAIDeviceState),
+    UnieAISuccess(UnieAISuccessState),
     ChatGptContinueInBrowser(ContinueInBrowserState),
     #[allow(dead_code)]
     ChatGptDeviceCode(ContinueWithDeviceCodeState),
@@ -88,9 +92,31 @@ pub(crate) enum SignInState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SignInOption {
+    UnieAI,
+    UnieAICompany,
     ChatGpt,
     DeviceCode,
     ApiKey,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct UnieAIStudioInputState {
+    value: String,
+}
+
+/// UnieAI Studio device-code login in flight. The prompt fields are empty
+/// until Studio issues the code.
+#[derive(Clone)]
+pub(crate) struct UnieAIDeviceState {
+    studio_url: String,
+    verification_uri: Option<String>,
+    user_code: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct UnieAISuccessState {
+    email: Option<String>,
+    gateway_base_url: String,
 }
 
 const API_KEY_DISABLED_MESSAGE: &str = "API key login is disabled.";
@@ -177,6 +203,9 @@ impl KeyboardHandler for AuthModeWidget {
         if self.handle_api_key_entry_key_event(&key_event) {
             return;
         }
+        if self.handle_unieai_studio_entry_key_event(&key_event) {
+            return;
+        }
 
         if keys::MOVE_UP.is_pressed(key_event) {
             self.move_highlight(/*delta*/ -1);
@@ -218,7 +247,10 @@ impl KeyboardHandler for AuthModeWidget {
     }
 
     fn handle_paste(&mut self, pasted: String) {
-        let _ = self.handle_api_key_entry_paste(pasted);
+        if self.handle_api_key_entry_paste(pasted.clone()) {
+            return;
+        }
+        let _ = self.handle_unieai_studio_entry_paste(pasted);
     }
 }
 
@@ -234,6 +266,10 @@ pub(crate) struct AuthModeWidget {
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub animations_enabled: bool,
     pub animations_suppressed: Cell<bool>,
+    /// Where the UnieAI device login persists unieai.json.
+    pub codex_home: PathBuf,
+    /// Abort handle for an in-flight UnieAI device login task.
+    pub unieai_login_abort: Arc<RwLock<Option<tokio::task::AbortHandle>>>,
 }
 
 impl AuthModeWidget {
@@ -244,13 +280,20 @@ impl AuthModeWidget {
     pub(crate) fn should_suppress_animations(&self) -> bool {
         matches!(
             &*self.sign_in_state.read().unwrap(),
-            SignInState::ChatGptContinueInBrowser(_) | SignInState::ChatGptDeviceCode(_)
+            SignInState::ChatGptContinueInBrowser(_)
+                | SignInState::ChatGptDeviceCode(_)
+                | SignInState::UnieAIDeviceCode(_)
         )
     }
 
     pub(crate) fn cancel_active_attempt(&self) {
         let mut sign_in_state = self.sign_in_state.write().unwrap();
         match &*sign_in_state {
+            SignInState::UnieAIDeviceCode(_) => {
+                if let Some(abort) = self.unieai_login_abort.write().unwrap().take() {
+                    abort.abort();
+                }
+            }
             SignInState::ChatGptContinueInBrowser(state) => {
                 let request_handle = self.app_server_request_handle.clone();
                 let login_id = state.login_id.clone();
@@ -282,18 +325,24 @@ impl AuthModeWidget {
         self.error.read().unwrap().clone()
     }
 
-    /// Returns whether the auth flow is currently in API-key entry mode.
+    /// Returns whether the auth flow is currently in a text-entry mode
+    /// (API key or UnieAI Studio URL).
     pub(crate) fn is_api_key_entry_active(&self) -> bool {
-        self.sign_in_state
-            .read()
-            .is_ok_and(|guard| matches!(&*guard, SignInState::ApiKeyEntry(_)))
+        self.sign_in_state.read().is_ok_and(|guard| {
+            matches!(
+                &*guard,
+                SignInState::ApiKeyEntry(_) | SignInState::UnieAIStudioUrlEntry(_)
+            )
+        })
     }
 
-    /// Returns whether the API-key entry field currently contains any text.
+    /// Returns whether the active text-entry field currently contains any text.
     pub(crate) fn api_key_entry_has_text(&self) -> bool {
-        self.sign_in_state.read().is_ok_and(
-            |guard| matches!(&*guard, SignInState::ApiKeyEntry(state) if !state.value.is_empty()),
-        )
+        self.sign_in_state.read().is_ok_and(|guard| match &*guard {
+            SignInState::ApiKeyEntry(state) => !state.value.is_empty(),
+            SignInState::UnieAIStudioUrlEntry(state) => !state.value.is_empty(),
+            _ => false,
+        })
     }
 
     fn confirm_binding(&self) -> KeyBinding {
@@ -312,8 +361,11 @@ impl AuthModeWidget {
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
     }
 
+    // UnieAI options lead; the ChatGPT/OpenAI options stay available at the
+    // bottom of the list.
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
-        let mut options = vec![SignInOption::ChatGpt];
+        let mut options = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
+        options.push(SignInOption::ChatGpt);
         if self.is_chatgpt_login_allowed() {
             options.push(SignInOption::DeviceCode);
         }
@@ -324,7 +376,7 @@ impl AuthModeWidget {
     }
 
     fn selectable_sign_in_options(&self) -> Vec<SignInOption> {
-        let mut options = Vec::new();
+        let mut options = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
         if self.is_chatgpt_login_allowed() {
             options.push(SignInOption::ChatGpt);
             options.push(SignInOption::DeviceCode);
@@ -359,6 +411,12 @@ impl AuthModeWidget {
 
     fn handle_sign_in_option(&mut self, option: SignInOption) {
         match option {
+            SignInOption::UnieAI => {
+                self.start_unieai_login(/*studio_url*/ None);
+            }
+            SignInOption::UnieAICompany => {
+                self.start_unieai_studio_entry();
+            }
             SignInOption::ChatGpt => {
                 if self.is_chatgpt_login_allowed() {
                     self.start_chatgpt_login();
@@ -380,21 +438,161 @@ impl AuthModeWidget {
     }
 
     fn disallow_api_login(&mut self) {
-        self.highlighted_mode = SignInOption::ChatGpt;
+        self.highlighted_mode = SignInOption::UnieAI;
         self.set_error(Some(API_KEY_DISABLED_MESSAGE.to_string()));
         *self.sign_in_state.write().unwrap() = SignInState::PickMode;
         self.request_frame.schedule_frame();
+    }
+
+    fn start_unieai_studio_entry(&mut self) {
+        self.set_error(/*message*/ None);
+        *self.sign_in_state.write().unwrap() =
+            SignInState::UnieAIStudioUrlEntry(UnieAIStudioInputState::default());
+        self.request_frame.schedule_frame();
+    }
+
+    /// Runs the UnieAI Studio device-code login on a background task, driving
+    /// the UI through UnieAIDeviceCode -> UnieAISuccess/PickMode.
+    fn start_unieai_login(&mut self, studio_url: Option<String>) {
+        self.set_error(/*message*/ None);
+
+        let displayed_studio_url = studio_url
+            .clone()
+            .unwrap_or_else(|| codex_login::unieai::DEFAULT_STUDIO_URL.to_string());
+        *self.sign_in_state.write().unwrap() =
+            SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+                studio_url: displayed_studio_url,
+                verification_uri: None,
+                user_code: None,
+            });
+
+        let codex_home = self.codex_home.clone();
+        let sign_in_state = self.sign_in_state.clone();
+        let error = self.error.clone();
+        let request_frame = self.request_frame.clone();
+        let prompt_state = self.sign_in_state.clone();
+        let prompt_frame = self.request_frame.clone();
+        let prompt_request_handle = self.app_server_request_handle.clone();
+
+        let join_handle = tokio::spawn(async move {
+            let options = codex_login::unieai::UnieAILoginOptions {
+                studio_url,
+                gateway_url: None,
+                on_prompt: Box::new(move |prompt| {
+                    *prompt_state.write().unwrap() =
+                        SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+                            studio_url: prompt.studio_url.clone(),
+                            verification_uri: Some(prompt.verification_uri.clone()),
+                            user_code: Some(prompt.user_code.clone()),
+                        });
+                    maybe_open_auth_url_in_browser(
+                        &prompt_request_handle,
+                        &prompt.verification_uri,
+                    );
+                    prompt_frame.schedule_frame();
+                }),
+            };
+
+            match codex_login::unieai::run_unieai_device_login(&codex_home, options).await {
+                Ok(credentials) => {
+                    *error.write().unwrap() = None;
+                    *sign_in_state.write().unwrap() =
+                        SignInState::UnieAISuccess(UnieAISuccessState {
+                            email: credentials.email.clone(),
+                            gateway_base_url: credentials.gateway_base_url.clone(),
+                        });
+                }
+                Err(err) => {
+                    *error.write().unwrap() = Some(format!("UnieAI login failed: {err}"));
+                    *sign_in_state.write().unwrap() = SignInState::PickMode;
+                }
+            }
+            request_frame.schedule_frame();
+        });
+        *self.unieai_login_abort.write().unwrap() = Some(join_handle.abort_handle());
+        self.request_frame.schedule_frame();
+    }
+
+    fn handle_unieai_studio_entry_key_event(&mut self, key_event: &KeyEvent) -> bool {
+        let mut should_start: Option<String> = None;
+        let mut should_request_frame = false;
+
+        {
+            let mut guard = self.sign_in_state.write().unwrap();
+            if let SignInState::UnieAIStudioUrlEntry(state) = &mut *guard {
+                if keys::CANCEL.is_pressed(*key_event) {
+                    *guard = SignInState::PickMode;
+                    self.set_error(/*message*/ None);
+                    should_request_frame = true;
+                } else if keys::CONFIRM.is_pressed(*key_event) {
+                    let trimmed = state.value.trim().to_string();
+                    if trimmed.is_empty() {
+                        self.set_error(Some("Studio URL cannot be empty".to_string()));
+                        should_request_frame = true;
+                    } else {
+                        should_start = Some(trimmed);
+                    }
+                } else {
+                    match key_event.code {
+                        KeyCode::Backspace => {
+                            state.value.pop();
+                            self.set_error(/*message*/ None);
+                            should_request_frame = true;
+                        }
+                        KeyCode::Char(c)
+                            if key_event.kind == KeyEventKind::Press
+                                && !key_event.modifiers.contains(KeyModifiers::SUPER)
+                                && !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            state.value.push(c);
+                            self.set_error(/*message*/ None);
+                            should_request_frame = true;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                return false;
+            }
+        }
+
+        if let Some(studio_url) = should_start {
+            self.start_unieai_login(Some(studio_url));
+        } else if should_request_frame {
+            self.request_frame.schedule_frame();
+        }
+        true
+    }
+
+    fn handle_unieai_studio_entry_paste(&mut self, pasted: String) -> bool {
+        let trimmed = pasted.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let mut guard = self.sign_in_state.write().unwrap();
+        if let SignInState::UnieAIStudioUrlEntry(state) = &mut *guard {
+            state.value.push_str(trimmed);
+            self.set_error(/*message*/ None);
+        } else {
+            return false;
+        }
+
+        drop(guard);
+        self.request_frame.schedule_frame();
+        true
     }
 
     fn render_pick_mode(&self, area: Rect, buf: &mut Buffer) {
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
                 "  ".into(),
-                "Sign in with ChatGPT to use Codex as part of your paid plan".into(),
+                "Sign in to UnieAI Studio to use UnieAI Code with your".into(),
             ]),
             Line::from(vec![
                 "  ".into(),
-                "or connect an API key for usage-based billing".into(),
+                "organization's models".into(),
             ]),
             "".into(),
         ];
@@ -437,6 +635,22 @@ impl AuthModeWidget {
 
         for (idx, option) in self.displayed_sign_in_options().into_iter().enumerate() {
             match option {
+                SignInOption::UnieAI => {
+                    lines.extend(create_mode_item(
+                        idx,
+                        option,
+                        "Sign in with UnieAI Studio",
+                        "Use your UnieAI account (studio.unieai.com)",
+                    ));
+                }
+                SignInOption::UnieAICompany => {
+                    lines.extend(create_mode_item(
+                        idx,
+                        option,
+                        "Sign in with your company's UnieAI Studio",
+                        "Enter your company or on-prem Studio URL",
+                    ));
+                }
                 SignInOption::ChatGpt => {
                     lines.extend(create_mode_item(
                         idx,
@@ -486,6 +700,142 @@ impl AuthModeWidget {
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .render(area, buf);
+    }
+
+    fn render_unieai_device_code(&self, area: Rect, buf: &mut Buffer, state: &UnieAIDeviceState) {
+        let mut spans = vec!["  ".into()];
+        if self.animations_enabled && !self.animations_suppressed.get() {
+            self.request_frame
+                .schedule_frame_in(std::time::Duration::from_millis(100));
+            spans.extend(shimmer_text(
+                "Confirm the sign-in in UnieAI Studio",
+                MotionMode::Animated,
+            ));
+        } else {
+            spans.push("Confirm the sign-in in UnieAI Studio".into());
+        }
+        let mut lines: Vec<Line> = vec![spans.into(), "".into()];
+
+        let verification_uri = match (&state.verification_uri, &state.user_code) {
+            (Some(verification_uri), Some(user_code)) => {
+                lines.push(
+                    "  Open this link and confirm the code (a browser tab may have opened already):"
+                        .into(),
+                );
+                lines.push("".into());
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    verification_uri.as_str().cyan().underlined(),
+                ]));
+                lines.push("".into());
+                lines.push(Line::from(vec![
+                    "  Code: ".into(),
+                    user_code.as_str().bold(),
+                ]));
+                lines.push("".into());
+                Some(verification_uri.clone())
+            }
+            _ => {
+                lines.push(
+                    Line::from(format!("  Requesting a sign-in code from {}...", state.studio_url))
+                        .dim(),
+                );
+                lines.push("".into());
+                None
+            }
+        };
+
+        lines.push(Line::from(vec![
+            "  Press ".dim(),
+            self.cancel_binding().into(),
+            " to cancel".dim(),
+        ]));
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+
+        if let Some(url) = &verification_uri {
+            mark_url_hyperlink(buf, area, url);
+        }
+    }
+
+    fn render_unieai_success(&self, area: Rect, buf: &mut Buffer, state: &UnieAISuccessState) {
+        let signed_in_line = match &state.email {
+            Some(email) => format!("✓ Signed in to UnieAI Studio as {email}"),
+            None => "✓ Signed in to UnieAI Studio".to_string(),
+        };
+        let lines = vec![
+            signed_in_line.fg(Color::Green).into(),
+            "".into(),
+            Line::from(format!("  Inference gateway: {}", state.gateway_base_url)).dim(),
+        ];
+
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+
+    fn render_unieai_studio_entry(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &UnieAIStudioInputState,
+    ) {
+        let [intro_area, input_area, footer_area] = Layout::vertical([
+            Constraint::Min(4),
+            Constraint::Length(3),
+            Constraint::Min(2),
+        ])
+        .areas(area);
+
+        let intro_lines: Vec<Line> = vec![
+            Line::from(vec![
+                "> ".into(),
+                "Sign in with your company's UnieAI Studio".bold(),
+            ]),
+            "".into(),
+            "  Enter the Studio URL your company uses (e.g. studio.demo.unieai.com).".into(),
+            "".into(),
+        ];
+        Paragraph::new(intro_lines)
+            .wrap(Wrap { trim: false })
+            .render(intro_area, buf);
+
+        let content_line: Line = if state.value.is_empty() {
+            vec!["Paste or type your company's Studio URL".dim()].into()
+        } else {
+            Line::from(state.value.clone())
+        };
+        Paragraph::new(content_line)
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title("Studio URL")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .render(input_area, buf);
+
+        let mut footer_lines: Vec<Line> = vec![
+            Line::from(vec![
+                "  Press ".dim(),
+                self.confirm_binding().into(),
+                " to sign in".dim(),
+            ]),
+            Line::from(vec![
+                "  Press ".dim(),
+                self.cancel_binding().into(),
+                " to go back".dim(),
+            ]),
+        ];
+        if let Some(error) = self.error_message() {
+            footer_lines.push("".into());
+            footer_lines.push(error.red().into());
+        }
+        Paragraph::new(footer_lines)
+            .wrap(Wrap { trim: false })
+            .render(footer_area, buf);
     }
 
     fn render_continue_in_browser(&self, area: Rect, buf: &mut Buffer) {
@@ -968,10 +1318,14 @@ impl StepStateProvider for AuthModeWidget {
         match &*sign_in_state {
             SignInState::PickMode
             | SignInState::ApiKeyEntry(_)
+            | SignInState::UnieAIStudioUrlEntry(_)
+            | SignInState::UnieAIDeviceCode(_)
             | SignInState::ChatGptContinueInBrowser(_)
             | SignInState::ChatGptDeviceCode(_)
             | SignInState::ChatGptSuccessMessage => StepState::InProgress,
-            SignInState::ChatGptSuccess | SignInState::ApiKeyConfigured => StepState::Complete,
+            SignInState::ChatGptSuccess
+            | SignInState::ApiKeyConfigured
+            | SignInState::UnieAISuccess(_) => StepState::Complete,
         }
     }
 }
@@ -982,6 +1336,15 @@ impl WidgetRef for AuthModeWidget {
         match &*sign_in_state {
             SignInState::PickMode => {
                 self.render_pick_mode(area, buf);
+            }
+            SignInState::UnieAIStudioUrlEntry(state) => {
+                self.render_unieai_studio_entry(area, buf, state);
+            }
+            SignInState::UnieAIDeviceCode(state) => {
+                self.render_unieai_device_code(area, buf, state);
+            }
+            SignInState::UnieAISuccess(state) => {
+                self.render_unieai_success(area, buf, state);
             }
             SignInState::ChatGptContinueInBrowser(_) => {
                 self.render_continue_in_browser(area, buf);
@@ -1084,6 +1447,8 @@ mod tests {
             forced_login_method: Some(ForcedLoginMethod::Chatgpt),
             animations_enabled: true,
             animations_suppressed: std::cell::Cell::new(false),
+            codex_home: codex_home.path().to_path_buf(),
+            unieai_login_abort: Arc::new(RwLock::new(None)),
         };
         (widget, codex_home)
     }
