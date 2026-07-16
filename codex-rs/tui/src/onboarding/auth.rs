@@ -882,18 +882,18 @@ impl AuthModeWidget {
             "".into(),
             "  Before you start:".into(),
             "".into(),
-            "  Decide how much autonomy you want to grant Codex".into(),
+            "  Decide how much autonomy you want to grant UnieAI Code".into(),
             Line::from(vec![
                 "  For more details see the ".into(),
                 crate::terminal_hyperlinks::osc8_hyperlink(
                     "https://developers.openai.com/codex/security",
-                    "Codex docs",
+                    "UnieAI Code docs",
                 )
                 .underlined(),
             ])
             .dim(),
             "".into(),
-            "  Codex can make mistakes".into(),
+            "  UnieAI Code can make mistakes".into(),
             "  Review the code it writes and commands it runs"
                 .dim()
                 .into(),
@@ -937,7 +937,7 @@ impl AuthModeWidget {
         let lines = vec![
             "✓ API key configured".fg(Color::Green).into(),
             "".into(),
-            "  Codex will use usage-based billing with your API key.".into(),
+            "  UnieAI Code will use usage-based billing with your API key.".into(),
         ];
 
         Paragraph::new(lines)

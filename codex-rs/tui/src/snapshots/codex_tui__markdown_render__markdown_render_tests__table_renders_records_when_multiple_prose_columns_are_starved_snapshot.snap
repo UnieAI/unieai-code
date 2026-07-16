@@ -15,8 +15,8 @@ expression: "plain_lines(&text).join(\"\\n\")"
  Complexity  Low
  Why start   Standing best quick win; deterministic motion bug.
 ────────────────────────────────────────────────────────────────────────────
- Issue       #23651: Zellij scrollback misses Codex transcript over SSH
-             (https://github.com/openai/codex/issues/23651)
+ Issue       #23651: Zellij scrollback misses UnieAI Code transcript over
+             SSH (https://github.com/openai/codex/issues/23651)
  Activity    +1 3, human comments 2
  Complexity  Medium
  Why start   Clear regression and strong scrollback evidence.

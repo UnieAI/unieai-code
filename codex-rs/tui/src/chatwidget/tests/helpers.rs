@@ -1,6 +1,7 @@
 use super::*;
 use codex_app_server_protocol::ImageGenerationItem;
 use codex_app_server_protocol::PluginAvailability;
+use codex_model_provider_info::built_in_model_providers;
 use pretty_assertions::assert_eq;
 
 pub(super) async fn test_config() -> Config {
@@ -20,6 +21,13 @@ pub(super) async fn test_config() -> Config {
     config.cwd = PathBuf::from(test_path_display("/tmp/project")).abs();
     config.config_layer_stack = ConfigLayerStack::default();
     config.startup_warnings.clear();
+    // These upstream suites exercise ChatGPT-auth behavior; the fork's
+    // default provider is unieai (requires_openai_auth=false), so pin the
+    // provider back to openai.
+    config.model_provider_id = "openai".to_string();
+    config.model_provider = built_in_model_providers(/*openai_base_url*/ None)
+        .remove("openai")
+        .expect("openai provider is built in");
     config
 }
 
@@ -203,7 +211,7 @@ pub(super) async fn make_chatwidget_manual_with_auth(
     let mut widget = ChatWidget::new_with_op_target(common, super::CodexOpTarget::Direct(op_tx));
     widget.transcript.active_cell = None;
     widget.transcript.active_cell_revision = 0;
-    widget.normal_placeholder_text = "Ask Codex to do anything".to_string();
+    widget.normal_placeholder_text = "Ask UnieAI Code to do anything".to_string();
     widget.side_placeholder_text =
         "Check recently modified functions for compatibility".to_string();
     widget

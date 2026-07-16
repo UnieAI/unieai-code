@@ -1,0 +1,181 @@
+name: Release CLI
+
+# Builds the UnieAI Code CLI (codex-rs) for every supported platform and
+# attaches the binaries to a GitHub Release on the PUBLIC distribution repo
+# (UnieAI/Unieai-Code-Publish) so the curl installer and the in-app updater
+# work without auth against the private source repo.
+#
+# Tag namespace: `cli-v*` — same scheme as the previous TS-based CLI, so the
+# existing install.sh, updater redirect resolution, and publish repo keep
+# working unchanged. The workspace Cargo version is stamped from the tag at
+# build time (no per-release version-bump commit needed).
+#
+# Secrets: PUBLISH_REPO_TOKEN — fine-grained token with contents:write on
+# UnieAI/Unieai-Code-Publish (the default GITHUB_TOKEN is scoped to this repo
+# and cannot create releases on the public one).
+
+on:
+  push:
+    tags: ['cli-v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build binaries for (e.g. cli-v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: unieai-macos-arm64
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            asset: unieai-macos-x64
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: unieai-linux-x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: unieai-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag and version
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "$TAG" in
+            cli-v*.*.*) ;;
+            *) echo "::error::Tag '$TAG' does not match cli-vX.Y.Z"; exit 1 ;;
+          esac
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#cli-v}" >> "$GITHUB_OUTPUT"
+
+      # The workspace version stays 0.0.0 in-tree; releases stamp it from the
+      # tag so `unieai --version` and the updater comparison are real.
+      - name: Stamp workspace version
+        shell: bash
+        run: |
+          perl -0pi -e 's/\[workspace\.package\]\nversion = "0\.0\.0"/[workspace.package]\nversion = "${{ steps.tag.outputs.version }}"/' Cargo.toml
+          grep -A1 '^\[workspace.package\]' Cargo.toml | head -2
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }} --bin codex
+
+      - name: Stage asset
+        shell: bash
+        run: |
+          mkdir -p ../dist-bin
+          cp "target/${{ matrix.target }}/release/codex" "../dist-bin/${{ matrix.asset }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist-bin/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-bin
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist-bin
+
+      - name: Publish binaries to public repo release
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_REPO_TOKEN }}
+          TAG: ${{ steps.tag.outputs.value }}
+          PUBLISH_REPO: UnieAI/Unieai-Code-Publish
+        shell: bash
+        run: |
+          TITLE="UnieAI Code CLI ${TAG#cli-}"   # cli-v0.1.0 -> v0.1.0
+          if gh release view "$TAG" --repo "$PUBLISH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG exists on $PUBLISH_REPO — uploading assets."
+            gh release upload "$TAG" dist-bin/* --repo "$PUBLISH_REPO" --clobber
+          else
+            NOTES="release-notes/${TAG}.md"
+            if [ -f "$NOTES" ]; then
+              gh release create "$TAG" --repo "$PUBLISH_REPO" --title "$TITLE" --notes-file "$NOTES" dist-bin/*
+            else
+              gh release create "$TAG" --repo "$PUBLISH_REPO" --title "$TITLE" --generate-notes dist-bin/*
+            fi
+          fi
+
+      # Keep the public repo's install.sh + README in sync so the curl
+      # one-liner and install docs always match the source of truth here.
+      - name: Sync install.sh + README to public repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_REPO_TOKEN }}
+          PUBLISH_REPO: UnieAI/Unieai-Code-Publish
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${PUBLISH_REPO}.git" "$tmp"
+          cp install.sh "$tmp/install.sh"
+          cp scripts/publish/README.md "$tmp/README.md"
+          cd "$tmp"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Public repo install.sh/README already up to date."
+          else
+            git add install.sh README.md
+            git commit -m "chore: sync installer + README from ${{ steps.tag.outputs.value }}"
+            git push
+          fi

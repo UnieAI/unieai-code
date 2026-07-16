@@ -366,6 +366,11 @@ async fn exec_resume_accepts_global_flags_after_subcommand() -> anyhow::Result<(
         .arg("gpt-5.2-codex")
         .arg("--config")
         .arg("reasoning_level=xhigh")
+        // Config flags placed before the resume subcommand are dropped by its
+        // arg parsing, so the fork's openai pin (see test_codex_exec) must be
+        // repeated after the subcommand.
+        .arg("--config")
+        .arg("model_provider=\"openai\"")
         .arg("--dangerously-bypass-approvals-and-sandbox")
         .arg("--skip-git-repo-check")
         .arg("echo resume-with-global-flags-after-subcommand")

@@ -18,6 +18,9 @@ impl TestCodexExecBuilder {
             .env("CODEX_HOME", self.home.path())
             .env("CODEX_SQLITE_HOME", self.home.path())
             .env(CODEX_API_KEY_ENV_VAR, "dummy");
+        // These upstream suites exercise the OpenAI provider against a mock
+        // server; the fork's default provider is unieai, so pin it back.
+        cmd.arg("-c").arg("model_provider=\"openai\"");
         cmd
     }
     pub fn cmd_with_server(&self, server: &MockServer) -> assert_cmd::Command {

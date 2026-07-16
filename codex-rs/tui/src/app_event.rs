@@ -403,7 +403,7 @@ pub(crate) enum AppEvent {
         url: String,
     },
 
-    /// Open the current thread in Codex Desktop.
+    /// Open the current thread in UnieAI Code Desktop.
     OpenDesktopThread {
         thread_id: ThreadId,
     },

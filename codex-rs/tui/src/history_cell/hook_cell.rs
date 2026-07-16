@@ -855,14 +855,14 @@ mod tests {
             HookRunStatus::Completed,
             vec![HookOutputEntry {
                 kind: HookOutputEntryKind::Context,
-                text: "## Working Memory Recall\n\nSource: Codex compaction".to_string(),
+                text: "## Working Memory Recall\n\nSource: UnieAI Code compaction".to_string(),
             }],
         );
         let expected = vec![
             "• SessionStart hook (completed)".to_string(),
             "  hook context: ## Working Memory Recall".to_string(),
             "".to_string(),
-            "    Source: Codex compaction".to_string(),
+            "    Source: UnieAI Code compaction".to_string(),
         ];
 
         assert_eq!(line_texts(&cell.display_lines(/*width*/ 80)), expected);
