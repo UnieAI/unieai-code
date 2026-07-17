@@ -1,0 +1,110 @@
+{
+  "name": "unieai-code",
+  "displayName": "UnieAI Code",
+  "description": "UnieAI Code for VS Code — launch the UnieAI coding agent in your editor terminal",
+  "version": "0.1.0",
+  "publisher": "unieai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/UnieAI/unieai-code"
+  },
+  "license": "Apache-2.0",
+  "galleryBanner": {
+    "color": "#000000",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "unieai-code.openTerminal",
+        "title": "Open UnieAI Code",
+        "icon": {
+          "light": "images/button-dark.svg",
+          "dark": "images/button-light.svg"
+        }
+      },
+      {
+        "command": "unieai-code.openNewTerminal",
+        "title": "Open UnieAI Code in new tab",
+        "icon": {
+          "light": "images/button-dark.svg",
+          "dark": "images/button-light.svg"
+        }
+      },
+      {
+        "command": "unieai-code.addFilepathToTerminal",
+        "title": "UnieAI Code: Insert At-Mentioned"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "unieai-code.openNewTerminal",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "unieai-code.openTerminal",
+        "title": "Run UnieAI Code",
+        "key": "cmd+escape",
+        "mac": "cmd+escape",
+        "win": "ctrl+escape",
+        "linux": "ctrl+escape"
+      },
+      {
+        "command": "unieai-code.openNewTerminal",
+        "title": "Run UnieAI Code in new tab",
+        "key": "cmd+shift+escape",
+        "mac": "cmd+shift+escape",
+        "win": "ctrl+shift+escape",
+        "linux": "ctrl+shift+escape"
+      },
+      {
+        "command": "unieai-code.addFilepathToTerminal",
+        "title": "UnieAI Code: Insert At-Mentioned",
+        "key": "cmd+alt+k",
+        "mac": "cmd+alt+k",
+        "win": "ctrl+alt+K",
+        "linux": "ctrl+alt+K"
+      }
+    ],
+    "configuration": {
+      "title": "UnieAI Code",
+      "properties": {
+        "unieai-code.executablePath": {
+          "type": "string",
+          "default": "unieai",
+          "description": "Path to the unieai CLI executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run package",
+    "compile": "bun run check-types && bun run lint && node esbuild.js",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "bun run check-types && bun run lint && node esbuild.js --production",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.94.0",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "eslint": "^9.25.1",
+    "esbuild": "^0.25.3",
+    "typescript": "^5.8.3"
+  }
+}
