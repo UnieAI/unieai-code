@@ -1,8 +1,8 @@
 {
   "name": "unieai-code",
   "displayName": "UnieAI Code",
-  "description": "UnieAI Code for VS Code — launch the UnieAI coding agent in your editor terminal",
-  "version": "0.1.0",
+  "description": "UnieAI Code for VS Code — chat with the UnieAI coding agent in your editor",
+  "version": "0.2.0",
   "publisher": "unieai",
   "repository": {
     "type": "git",
@@ -17,61 +17,68 @@
     "vscode": "^1.94.0"
   },
   "categories": [
-    "Other"
+    "AI",
+    "Chat"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "unieai-code",
+          "title": "UnieAI Code",
+          "icon": "images/button-light.svg"
+        }
+      ]
+    },
+    "views": {
+      "unieai-code": [
+        {
+          "type": "webview",
+          "id": "unieai-code.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "unieai-code.openTerminal",
-        "title": "Open UnieAI Code",
-        "icon": {
-          "light": "images/button-dark.svg",
-          "dark": "images/button-light.svg"
-        }
+        "command": "unieai-code.focusChat",
+        "title": "UnieAI Code: Open Chat"
       },
       {
-        "command": "unieai-code.openNewTerminal",
-        "title": "Open UnieAI Code in new tab",
-        "icon": {
-          "light": "images/button-dark.svg",
-          "dark": "images/button-light.svg"
-        }
+        "command": "unieai-code.newChat",
+        "title": "UnieAI Code: New Chat",
+        "icon": "$(add)"
       },
       {
-        "command": "unieai-code.addFilepathToTerminal",
+        "command": "unieai-code.addFilepathToChat",
         "title": "UnieAI Code: Insert At-Mentioned"
+      },
+      {
+        "command": "unieai-code.openTerminal",
+        "title": "UnieAI Code: Open in Terminal (TUI)"
       }
     ],
     "menus": {
-      "editor/title": [
+      "view/title": [
         {
-          "command": "unieai-code.openNewTerminal",
+          "command": "unieai-code.newChat",
+          "when": "view == unieai-code.chatView",
           "group": "navigation"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "unieai-code.openTerminal",
-        "title": "Run UnieAI Code",
+        "command": "unieai-code.focusChat",
         "key": "cmd+escape",
         "mac": "cmd+escape",
         "win": "ctrl+escape",
         "linux": "ctrl+escape"
       },
       {
-        "command": "unieai-code.openNewTerminal",
-        "title": "Run UnieAI Code in new tab",
-        "key": "cmd+shift+escape",
-        "mac": "cmd+shift+escape",
-        "win": "ctrl+shift+escape",
-        "linux": "ctrl+shift+escape"
-      },
-      {
-        "command": "unieai-code.addFilepathToTerminal",
-        "title": "UnieAI Code: Insert At-Mentioned",
+        "command": "unieai-code.addFilepathToChat",
         "key": "cmd+alt+k",
         "mac": "cmd+alt+k",
         "win": "ctrl+alt+K",
@@ -85,6 +92,16 @@
           "type": "string",
           "default": "unieai",
           "description": "Path to the unieai CLI executable."
+        },
+        "unieai-code.sandboxMode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "default": "workspace-write",
+          "description": "Sandbox mode for agent turns started from the chat panel."
         }
       }
     }
