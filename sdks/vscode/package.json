@@ -2,7 +2,7 @@
   "name": "unieai-code",
   "displayName": "UnieAI Code",
   "description": "UnieAI Code for VS Code — chat with the UnieAI coding agent in your editor",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "unieai",
   "repository": {
     "type": "git",
@@ -73,17 +73,17 @@
     "keybindings": [
       {
         "command": "unieai-code.focusChat",
-        "key": "cmd+escape",
-        "mac": "cmd+escape",
-        "win": "ctrl+escape",
-        "linux": "ctrl+escape"
+        "key": "cmd+alt+u",
+        "mac": "cmd+alt+u",
+        "win": "ctrl+alt+u",
+        "linux": "ctrl+alt+u"
       },
       {
         "command": "unieai-code.addFilepathToChat",
-        "key": "cmd+alt+k",
-        "mac": "cmd+alt+k",
-        "win": "ctrl+alt+K",
-        "linux": "ctrl+alt+K"
+        "key": "cmd+alt+m",
+        "mac": "cmd+alt+m",
+        "win": "ctrl+alt+M",
+        "linux": "ctrl+alt+M"
       }
     ],
     "configuration": {

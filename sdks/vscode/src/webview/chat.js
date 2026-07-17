@@ -31,8 +31,18 @@ let studioModelsUrl = "https://studio.unieai.com/models"
 
 // ---------- helpers ----------
 
+// Only auto-scroll while the user is already reading the tail; don't yank
+// them down while they're scrolled up reviewing earlier output.
+let stickToBottom = true
+messagesEl.addEventListener("scroll", () => {
+  stickToBottom =
+    messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80
+})
+
 function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight
+  if (stickToBottom) {
+    messagesEl.scrollTop = messagesEl.scrollHeight
+  }
 }
 
 /** Markdown -> sanitized DOM nodes. CSP already blocks script execution;
@@ -260,6 +270,17 @@ function renderItem(item) {
   const key = item.id ? `${turnSeq}:${item.id}` : null
   const existing = key ? itemEls.get(key) : undefined
   if (existing) {
+    // Preserve the user's expand/collapse choices across streamed updates.
+    const oldOutput = existing.querySelector(".tool-output")
+    const newOutput = el.querySelector(".tool-output")
+    if (oldOutput && newOutput) {
+      newOutput.hidden = oldOutput.hidden
+    }
+    const oldReasoning = existing.querySelector("details.reasoning")
+    const newReasoning = el.querySelector("details.reasoning")
+    if (oldReasoning && newReasoning) {
+      newReasoning.open = oldReasoning.open
+    }
     existing.replaceWith(el)
   } else {
     appendLine(el)
@@ -318,6 +339,14 @@ function showChat() {
   loginView.hidden = true
   chatView.hidden = false
   inputEl.focus()
+  if (!messagesEl.childElementCount) {
+    const empty = document.createElement("div")
+    empty.className = "empty-state"
+    empty.textContent = "問我任何事，或輸入 / 使用指令"
+    messagesEl.appendChild(empty)
+    const clear = () => empty.remove()
+    inputEl.addEventListener("keydown", clear, { once: true })
+  }
 }
 
 // ---------- login ----------
@@ -484,6 +513,9 @@ function runSlash(candidate) {
 inputEl.addEventListener("input", () => {
   slashSelected = 0
   renderSlashMenu()
+  // Auto-grow the composer with content (capped by CSS max-height).
+  inputEl.style.height = "auto"
+  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 160)}px`
 })
 
 modelEl.addEventListener("change", () => {
@@ -540,6 +572,16 @@ $("history-btn").addEventListener("click", () => {
 })
 $("history-close").addEventListener("click", () => {
   historyOverlay.hidden = true
+})
+historyOverlay.addEventListener("click", (e) => {
+  if (e.target === historyOverlay) {
+    historyOverlay.hidden = true
+  }
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !historyOverlay.hidden) {
+    historyOverlay.hidden = true
+  }
 })
 $("new-chat-btn").addEventListener("click", () => {
   vscode.postMessage({ type: "newChat" })

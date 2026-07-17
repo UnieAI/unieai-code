@@ -693,3 +693,11 @@ details.reasoning summary:hover { color: var(--fg); }
   text-align: center;
   opacity: 0.8;
 }
+
+.empty-state {
+  color: var(--fg-secondary);
+  text-align: center;
+  margin: auto;
+  font-size: calc(var(--vscode-font-size) - 1px);
+  opacity: 0.7;
+}
