@@ -132,6 +132,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openTerminal":
           vscode.commands.executeCommand("unieai-code.openTerminal")
           break
+        case "setModel":
+          if (typeof message.model === "string") {
+            this.context.globalState.update("unieai-code.model", message.model)
+          }
+          break
         case "cancelLogin":
           this.cancelLogin()
           break
@@ -173,6 +178,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       models,
       signedIn,
       threadId: this.threadId ?? null,
+      currentModel: this.context.globalState.get<string>("unieai-code.model") ?? null,
     })
   }
 

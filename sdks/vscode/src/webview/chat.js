@@ -465,6 +465,10 @@ inputEl.addEventListener("input", () => {
   renderSlashMenu()
 })
 
+modelEl.addEventListener("change", () => {
+  vscode.postMessage({ type: "setModel", model: modelEl.value })
+})
+
 sendEl.addEventListener("click", send)
 inputEl.addEventListener("keydown", (e) => {
   // IME composition: Enter confirms the composition, not the message.
@@ -558,6 +562,12 @@ window.addEventListener("message", (e) => {
         option.value = model.id
         option.textContent = model.name || model.id
         modelEl.appendChild(option)
+      }
+      if (
+        message.currentModel &&
+        [...modelEl.options].some((option) => option.value === message.currentModel)
+      ) {
+        modelEl.value = message.currentModel
       }
       if (!message.signedIn) {
         showLogin()
