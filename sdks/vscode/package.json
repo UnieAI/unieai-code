@@ -2,13 +2,14 @@
   "name": "unieai-code",
   "displayName": "UnieAI Code",
   "description": "UnieAI Code for VS Code — chat with the UnieAI coding agent in your editor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "unieai",
   "repository": {
     "type": "git",
     "url": "https://github.com/UnieAI/unieai-code"
   },
   "license": "Apache-2.0",
+  "icon": "images/icon.png",
   "galleryBanner": {
     "color": "#000000",
     "theme": "dark"

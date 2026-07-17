@@ -1,18 +1,82 @@
-// UnieAI Code chat panel — renders `unieai exec --experimental-json` thread
-// events forwarded by the extension host.
+// UnieAI Code chat panel — sign-in, chat over `unieai exec --experimental-json`
+// events, and session history.
 (function () {
   const vscode = acquireVsCodeApi()
 
-  const messagesEl = document.getElementById("messages")
-  const inputEl = document.getElementById("input")
-  const sendEl = document.getElementById("send")
-  const stopEl = document.getElementById("stop")
-  const modelEl = document.getElementById("model")
+  const $ = (id) => document.getElementById(id)
+  const loginView = $("login-view")
+  const chatView = $("chat-view")
+  const messagesEl = $("messages")
+  const inputEl = $("input")
+  const sendEl = $("send")
+  const modelEl = $("model")
+  const modeEl = $("mode")
+  const permEl = $("perm")
+  const historyOverlay = $("history-overlay")
+  const historyList = $("history-list")
 
-  /** item id -> rendered element, so item.updated/completed replace in place */
+  /** item id -> element so item.updated/completed re-render in place */
   const itemEls = new Map()
   let workingEl = null
+  let running = false
   let studioModelsUrl = "https://studio.unieai.com/models"
+
+  // ---------- view switching ----------
+
+  function showLogin() {
+    loginView.hidden = false
+    chatView.hidden = true
+  }
+
+  function showChat() {
+    loginView.hidden = true
+    chatView.hidden = false
+    inputEl.focus()
+  }
+
+  // ---------- login ----------
+
+  $("login-unieai").addEventListener("click", () => {
+    startLogin(undefined)
+  })
+  $("login-company").addEventListener("click", () => {
+    const url = $("company-url").value.trim()
+    if (!url) {
+      showLoginError("請先輸入公司 Studio 網址")
+      return
+    }
+    startLogin(url)
+  })
+  $("login-cancel").addEventListener("click", () => {
+    vscode.postMessage({ type: "cancelLogin" })
+    $("login-pending").hidden = true
+    setLoginButtonsEnabled(true)
+  })
+  $("login-link").addEventListener("click", (e) => {
+    e.preventDefault()
+    vscode.postMessage({ type: "openUrl", url: $("login-link").dataset.url })
+  })
+
+  function startLogin(studioUrl) {
+    showLoginError("")
+    setLoginButtonsEnabled(false)
+    $("login-pending").hidden = false
+    $("login-code").textContent = "…"
+    vscode.postMessage({ type: "login", studioUrl })
+  }
+
+  function setLoginButtonsEnabled(enabled) {
+    $("login-unieai").disabled = !enabled
+    $("login-company").disabled = !enabled
+  }
+
+  function showLoginError(message) {
+    const el = $("login-error")
+    el.textContent = message
+    el.hidden = !message
+  }
+
+  // ---------- chat rendering ----------
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight
@@ -27,19 +91,20 @@
     return el
   }
 
-  function setWorking(on) {
+  function setRunning(on) {
+    running = on
     if (on && !workingEl) {
       workingEl = document.createElement("div")
       workingEl.className = "working"
-      workingEl.innerHTML = '<span class="dot"></span><span>Working…</span>'
+      workingEl.innerHTML = '<span class="dot"></span><span>思考中…</span>'
       messagesEl.appendChild(workingEl)
       scrollToBottom()
     } else if (!on && workingEl) {
       workingEl.remove()
       workingEl = null
     }
-    stopEl.hidden = !on
-    sendEl.disabled = on
+    sendEl.textContent = on ? "■" : "↑"
+    sendEl.title = on ? "停止" : "送出 (Enter)"
   }
 
   function describeItem(item) {
@@ -50,7 +115,8 @@
         return { className: "reasoning", text: item.text || "" }
       case "command_execution": {
         const status = item.status === "failed" ? " ✗" : item.status === "completed" ? "" : " …"
-        const exit = item.exit_code !== undefined && item.exit_code !== 0 ? ` (exit ${item.exit_code})` : ""
+        const exit =
+          item.exit_code !== undefined && item.exit_code !== 0 ? ` (exit ${item.exit_code})` : ""
         return {
           className: "tool" + (item.status === "failed" ? " failed" : ""),
           text: `$ ${item.command || ""}${status}${exit}`,
@@ -62,16 +128,16 @@
           .join("\n")
         return {
           className: "tool" + (item.status === "failed" ? " failed" : ""),
-          text: `edit\n${changes}`,
+          text: `編輯檔案\n${changes}`,
         }
       }
       case "mcp_tool_call":
         return {
           className: "tool" + (item.status === "failed" ? " failed" : ""),
-          text: `tool ${item.server ? item.server + "/" : ""}${item.tool || ""}`,
+          text: `工具 ${item.server ? item.server + "/" : ""}${item.tool || ""}`,
         }
       case "web_search":
-        return { className: "tool", text: `web search: ${item.query || ""}` }
+        return { className: "tool", text: `網頁搜尋：${item.query || ""}` }
       case "todo_list": {
         const todos = (item.items || [])
           .map((t) => `${t.completed ? "☑" : "☐"} ${t.text}`)
@@ -106,10 +172,8 @@
 
   function handleEvent(event) {
     switch (event.type) {
-      case "thread.started":
-        break
       case "turn.started":
-        setWorking(true)
+        setRunning(true)
         break
       case "item.started":
       case "item.updated":
@@ -117,16 +181,18 @@
         renderItem(event.item)
         break
       case "turn.completed": {
-        setWorking(false)
-        const usage = event.usage
-        if (usage) {
-          addMessage("meta", `${usage.input_tokens + usage.output_tokens} tokens`)
+        setRunning(false)
+        if (event.usage) {
+          addMessage(
+            "meta",
+            `${event.usage.input_tokens + event.usage.output_tokens} tokens`,
+          )
         }
         break
       }
       case "turn.failed":
-        setWorking(false)
-        addMessage("error", (event.error && event.error.message) || "Turn failed")
+        setRunning(false)
+        addMessage("error", (event.error && event.error.message) || "回合失敗")
         break
       case "error":
         addMessage("error", event.message || "error")
@@ -138,45 +204,87 @@
     const el = document.createElement("div")
     el.className = "msg notice"
     const text = document.createElement("span")
-    text.textContent = "No models are available for your UnieAI account yet. "
+    text.textContent = "你的帳戶還沒有可用模型。"
     const link = document.createElement("a")
-    link.textContent = "Add models in UnieAI Studio"
+    link.textContent = "到 UnieAI Studio 新增模型"
     link.addEventListener("click", () => {
       vscode.postMessage({ type: "openStudioModels", url: studioModelsUrl })
     })
     const tail = document.createElement("span")
-    tail.textContent = ", then sign in again with `unieai login`."
+    tail.textContent = "，然後重新執行 unieai login。"
     el.append(text, link, tail)
     messagesEl.appendChild(el)
     scrollToBottom()
   }
 
-  function showSignInNotice() {
-    const el = document.createElement("div")
-    el.className = "msg notice"
-    el.textContent = "Not signed in. Run `unieai login` in a terminal, then start a new chat here."
-    messagesEl.appendChild(el)
-    scrollToBottom()
-  }
+  // ---------- composer ----------
 
   function send() {
+    if (running) {
+      vscode.postMessage({ type: "stop" })
+      return
+    }
     const text = inputEl.value.trim()
     if (!text) {
       return
     }
     addMessage("user", text)
     inputEl.value = ""
-    vscode.postMessage({ type: "send", text, model: modelEl.value || undefined })
+    const sandbox = modeEl.value === "plan" ? "read-only" : permEl.value
+    vscode.postMessage({ type: "send", text, model: modelEl.value || undefined, sandbox })
   }
 
   sendEl.addEventListener("click", send)
-  stopEl.addEventListener("click", () => vscode.postMessage({ type: "stop" }))
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       send()
     }
   })
+
+  // ---------- history ----------
+
+  $("history-btn").addEventListener("click", () => {
+    historyList.innerHTML = '<div class="msg meta">載入中…</div>'
+    historyOverlay.hidden = false
+    vscode.postMessage({ type: "listSessions" })
+  })
+  $("history-close").addEventListener("click", () => {
+    historyOverlay.hidden = true
+  })
+  $("new-chat-btn").addEventListener("click", () => {
+    vscode.postMessage({ type: "newChat" })
+  })
+
+  function renderSessions(sessions) {
+    historyList.innerHTML = ""
+    if (!sessions.length) {
+      historyList.innerHTML = '<div class="msg meta">沒有歷史 session</div>'
+      return
+    }
+    for (const session of sessions) {
+      const el = document.createElement("button")
+      el.className = "history-item"
+      const when = new Date(session.mtime)
+      const timeText = `${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, "0")}:${String(when.getMinutes()).padStart(2, "0")}`
+      const folder = session.cwd ? session.cwd.split("/").pop() : ""
+      el.innerHTML = ""
+      const title = document.createElement("div")
+      title.className = "history-preview"
+      title.textContent = session.preview
+      const sub = document.createElement("div")
+      sub.className = "history-sub"
+      sub.textContent = folder ? `${timeText} · ${folder}` : timeText
+      el.append(title, sub)
+      el.addEventListener("click", () => {
+        historyOverlay.hidden = true
+        vscode.postMessage({ type: "loadSession", path: session.path })
+      })
+      historyList.appendChild(el)
+    }
+  }
+
+  // ---------- extension messages ----------
 
   window.addEventListener("message", (e) => {
     const message = e.data
@@ -190,17 +298,38 @@
           modelEl.appendChild(option)
         }
         if (!message.signedIn) {
-          showSignInNotice()
-        } else if (!(message.models || []).length) {
-          showNoModelsNotice()
+          showLogin()
+        } else {
+          showChat()
+          if (!(message.models || []).length) {
+            showNoModelsNotice()
+          }
         }
         break
       }
+      case "loginPrompt":
+        $("login-pending").hidden = false
+        $("login-code").textContent = message.code || ""
+        {
+          const link = $("login-link")
+          link.textContent = message.url || ""
+          link.dataset.url = message.url || ""
+        }
+        break
+      case "loginDone":
+        $("login-pending").hidden = true
+        setLoginButtonsEnabled(true)
+        break
+      case "loginError":
+        $("login-pending").hidden = true
+        setLoginButtonsEnabled(true)
+        showLoginError(message.message || "登入失敗")
+        break
       case "event":
         handleEvent(message.event)
         break
       case "running":
-        setWorking(Boolean(message.value))
+        setRunning(Boolean(message.value))
         break
       case "insert":
         inputEl.value += message.text
@@ -209,13 +338,26 @@
       case "reset":
         messagesEl.innerHTML = ""
         itemEls.clear()
-        setWorking(false)
+        setRunning(false)
         break
+      case "sessions":
+        renderSessions(message.sessions || [])
+        break
+      case "sessionLoaded": {
+        messagesEl.innerHTML = ""
+        itemEls.clear()
+        setRunning(false)
+        for (const item of message.items || []) {
+          addMessage(item.role === "user" ? "user" : "agent", item.text)
+        }
+        addMessage("meta", "已載入歷史 session — 繼續輸入即可接續此對話")
+        break
+      }
       case "stderr":
         addMessage("meta", message.text)
         break
       case "fatal":
-        setWorking(false)
+        setRunning(false)
         addMessage("error", message.message)
         break
     }
