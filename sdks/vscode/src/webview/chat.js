@@ -172,7 +172,7 @@ function errorLine(text) {
   return appendLine(el)
 }
 
-function agentBlock(text) {
+function agentBlock(text, citations) {
   const el = document.createElement("div")
   el.className = "line agent"
   const segments = splitThinking(text)
@@ -183,6 +183,20 @@ function agentBlock(text) {
     el.appendChild(
       segment.think ? reasoningBlock(segment.text, !hasProse) : renderMarkdown(segment.text),
     )
+  }
+  if (Array.isArray(citations) && citations.length) {
+    const foot = document.createElement("div")
+    foot.className = "citations"
+    for (const c of citations) {
+      if (!c.path) continue
+      const a = document.createElement("a")
+      const range = c.lineStart ? `:${c.lineStart}${c.lineEnd && c.lineEnd !== c.lineStart ? "-" + c.lineEnd : ""}` : ""
+      a.textContent = `↪ ${c.path}${range}`
+      a.title = c.note || "在編輯器中開啟"
+      a.addEventListener("click", () => vscode.postMessage({ type: "openFile", path: c.path }))
+      foot.appendChild(a)
+    }
+    if (foot.childElementCount) el.appendChild(foot)
   }
   return el
 }
@@ -218,7 +232,7 @@ function toolBlock({ summary, body, failed, expanded }) {
 function buildItemEl(item) {
   switch (item.type) {
     case "agent_message":
-      return agentBlock(item.text || "")
+      return agentBlock(item.text || "", item.citations)
     case "reasoning": {
       const el = document.createElement("div")
       el.className = "line"
@@ -248,8 +262,6 @@ function buildItemEl(item) {
     }
     case "web_search":
       return toolBlock({ summary: `網頁搜尋 ${item.query || ""}` })
-    case "image_generation":
-      return toolBlock({ summary: `圖片生成 ${item.status === "failed" ? "✗" : item.status === "completed" ? "✓" : "…"}` })
     case "plan":
       return planBlock(item.text || "")
     case "todo_list": {
@@ -260,6 +272,31 @@ function buildItemEl(item) {
     }
     case "subagent":
       return subagentBlock(item)
+    case "collab_agent": {
+      const who = (item.agents || []).map((a) => `${a.threadId.slice(0, 6)}:${a.status}`).join(", ")
+      return toolBlock({
+        summary: `多代理 ${item.tool}${item.model ? " (" + item.model + ")" : ""}${who ? " — " + who : ""}`,
+        body: (item.agents || []).map((a) => a.message).filter(Boolean).join("\n"),
+      })
+    }
+    case "dynamic_tool":
+      return toolBlock({
+        summary: `工具 ${item.namespace ? item.namespace + "/" : ""}${item.tool}${item.success === false ? " ✗" : ""}`,
+        body: item.arguments ? summarizeArgs(item.arguments) : "",
+        failed: item.success === false,
+      })
+    case "auto_review": {
+      const risk = item.riskLevel ? ` [${item.riskLevel}]` : ""
+      return metaBlockLine(`· 自動審查 ${item.action}${risk}${item.rationale ? " — " + item.rationale : ""}`)
+    }
+    case "image_generation":
+      return imageBlock(item.savedPath, item.revisedPrompt, item.status)
+    case "image_view":
+      return imageBlock(item.path, "", "completed")
+    case "sleep":
+      return metaBlockLine(`· 等待${item.durationMs ? ` ${Math.round(item.durationMs / 1000)}s` : ""}`)
+    case "hook_prompt":
+      return item.text ? metaBlockLine(`· hook: ${item.text.slice(0, 120)}`) : null
     case "context_compaction":
       return metaBlockLine("· 已壓縮較早的對話以節省上下文")
     case "review_mode":
@@ -384,6 +421,29 @@ function planBlock(text) {
   }
   el.appendChild(list)
   return el
+}
+
+/** Inline image (generation result / viewed file) with open-file affordance. */
+function imageBlock(path, caption, status) {
+  const el = document.createElement("div")
+  el.className = "line image-block"
+  if (status && status !== "completed") {
+    return toolBlock({ summary: `圖片 ${status === "failed" ? "✗" : "…"}` })
+  }
+  if (path) {
+    const name = document.createElement("div")
+    name.className = "diff-file-name"
+    name.textContent = "🖼 " + path
+    name.addEventListener("click", () => vscode.postMessage({ type: "openFile", path }))
+    el.appendChild(name)
+  }
+  if (caption) {
+    const cap = document.createElement("div")
+    cap.className = "subagent-header"
+    cap.textContent = caption
+    el.appendChild(cap)
+  }
+  return el.childElementCount ? el : toolBlock({ summary: "圖片" })
 }
 
 /** Subagent card: nested activity from a child thread. */

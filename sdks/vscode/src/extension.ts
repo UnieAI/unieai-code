@@ -610,6 +610,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break
       }
+      case "item/autoApprovalReview/started":
+      case "item/autoApprovalReview/completed": {
+        const item = this.mapV2Item({ ...params, type: "autoApprovalReview", id: params?.itemId })
+        if (item) this.post({ type: "itemUpsert", item, done: method.endsWith("completed") })
+        break
+      }
+      case "item/commandExecution/terminalInteraction":
+        if (typeof params?.stdin === "string" && params.stdin) {
+          this.post({ type: "turnDelta", kind: "cmdOutput", itemKey: params.itemId, text: params.stdin })
+        }
+        break
       case "turn/completed": {
         const status = params?.turn?.status
         this.currentTurn = undefined
@@ -639,8 +650,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       return null
     }
     switch (item.type) {
-      case "agentMessage":
-        return { id: item.id, type: "agent_message", text: item.text ?? "" }
+      case "agentMessage": {
+        // Surface memory citations as footnote links under the message.
+        const entries = item.memoryCitation?.entries ?? []
+        const citations = entries.map((e: Json) => ({
+          path: e.path ?? "",
+          lineStart: e.lineStart,
+          lineEnd: e.lineEnd,
+          note: e.note ?? "",
+        }))
+        return { id: item.id, type: "agent_message", text: item.text ?? "", citations }
+      }
       case "reasoning": {
         // v2 reasoning carries `summary: string[]` and/or `content: string[]`,
         // not `text` — joining avoids rendering "[object Array]".
@@ -707,14 +727,61 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           status: item.status,
           arguments: item.arguments ?? null,
         }
+      case "collabAgentToolCall":
+        return {
+          id: item.id,
+          type: "collab_agent",
+          tool: item.tool ?? "",
+          status: item.status ?? "",
+          model: item.model ?? "",
+          agents: Object.entries(item.agentsStates ?? {}).map(([tid, st]: [string, Json]) => ({
+            threadId: tid,
+            status: st?.status ?? "",
+            message: st?.message ?? "",
+          })),
+        }
+      case "dynamicToolCall":
+        return {
+          id: item.id,
+          type: "dynamic_tool",
+          namespace: item.namespace ?? "",
+          tool: item.tool ?? "",
+          arguments: item.arguments ?? null,
+          success: item.success,
+        }
+      case "autoApprovalReview":
+        return {
+          id: item.id,
+          type: "auto_review",
+          action: item.action ?? "",
+          riskLevel: item.review?.riskLevel ?? "",
+          rationale: item.review?.rationale ?? "",
+          status: item.review?.status ?? "",
+        }
       case "imageGeneration":
-        return { id: item.id, type: "image_generation", status: item.status }
+        return {
+          id: item.id,
+          type: "image_generation",
+          status: item.status,
+          savedPath: item.savedPath ?? "",
+          revisedPrompt: item.revisedPrompt ?? "",
+        }
+      case "imageView":
+        return { id: item.id, type: "image_view", path: item.path ?? "" }
       case "contextCompaction":
         return { id: item.id, type: "context_compaction" }
       case "enteredReviewMode":
-        return { id: item.id, type: "review_mode", entered: true }
+        return { id: item.id, type: "review_mode", entered: true, review: item.review ?? "" }
       case "exitedReviewMode":
-        return { id: item.id, type: "review_mode", entered: false }
+        return { id: item.id, type: "review_mode", entered: false, review: item.review ?? "" }
+      case "sleep":
+        return { id: item.id, type: "sleep", durationMs: item.durationMs ?? null }
+      case "hookPrompt":
+        return {
+          id: item.id,
+          type: "hook_prompt",
+          text: (item.fragments ?? []).map((f: Json) => f.text ?? "").join(""),
+        }
       case "error":
         return { id: item.id, type: "error", message: item.message ?? "error" }
       case "userMessage":
