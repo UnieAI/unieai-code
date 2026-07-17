@@ -435,3 +435,5 @@ section {
 }
 
 #chat-view { position: relative; }
+
+[hidden] { display: none !important; }
