@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
+import { AppServerClient, Json } from "./appServerClient"
 
 const TERMINAL_NAME = "unieai"
 
@@ -13,6 +14,7 @@ export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatViewProvider(context)
 
   context.subscriptions.push(
+    { dispose: () => provider.dispose() },
     vscode.window.registerWebviewViewProvider("unieai-code.chatView", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -95,7 +97,28 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private loginChild: ChildProcessWithoutNullStreams | undefined
   private threadId: string | undefined
 
+  // app-server backend state
+  private appServer: AppServerClient | undefined
+  private appServerBroken = false
+  private appServerCrashes = 0
+  private currentTurn: { threadId: string; turnId: string | undefined } | undefined
+  private threadSettings:
+    | { model: string | undefined; sandbox: string; approvalPolicy: string }
+    | undefined
+  private startedThreads = new Set<string>()
+  private resumedThreads = new Set<string>()
+  private approvalSeq = 0
+  private pendingApprovals = new Map<string, { client: AppServerClient; requestId: Json }>()
+  private lastTurn:
+    | { text: string; model: string | undefined; sandbox: string; webAccess: boolean }
+    | undefined
+
   constructor(private readonly context: vscode.ExtensionContext) {}
+
+  dispose() {
+    this.appServer?.dispose()
+    this.child?.kill("SIGTERM")
+  }
 
   resolveWebviewView(view: vscode.WebviewView) {
     this.view = view
@@ -123,6 +146,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "stop":
           this.stopTurn()
+          break
+        case "approvalReply":
+          this.resolveApproval(String(message.id), String(message.decision))
+          break
+        case "retry":
+          if (this.lastTurn) {
+            const { text, model, sandbox, webAccess } = this.lastTurn
+            this.runTurn(text, model, sandbox, webAccess)
+          }
           break
         case "newChat":
           this.newChat()
@@ -167,6 +199,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   newChat() {
     this.stopTurn()
     this.threadId = undefined
+    this.threadSettings = undefined
+    this.pendingApprovals.clear()
     this.post({ type: "reset" })
     this.sendBootstrap()
   }
@@ -249,6 +283,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Runs `unieai logout` (revokes the Studio session, deletes unieai.json). */
   private runLogout() {
     this.stopTurn()
+    this.appServer?.dispose()
+    this.appServer = undefined
     this.threadId = undefined
     let child: ChildProcessWithoutNullStreams
     try {
@@ -419,30 +455,338 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private stopTurn() {
+    if (this.appServer?.alive && this.currentTurn) {
+      const { threadId, turnId } = this.currentTurn
+      this.appServer.request("turn/interrupt", { threadId, turnId }).catch(() => {})
+      this.currentTurn = undefined
+      this.post({ type: "turnState", state: "interrupted" })
+      this.post({ type: "running", value: false })
+      return
+    }
     if (this.child) {
       this.child.kill("SIGTERM")
       this.child = undefined
+      this.post({ type: "turnState", state: "interrupted" })
       this.post({ type: "running", value: false })
     }
   }
 
-  private runTurn(
+  // ── app-server backend ────────────────────────────────────────────────
+
+  /** Returns a live initialized client, or null → use the exec fallback. */
+  private async ensureAppServer(): Promise<AppServerClient | null> {
+    if (this.appServerBroken) {
+      return null
+    }
+    if (this.appServer?.alive) {
+      return this.appServer
+    }
+    const client = new AppServerClient(executablePath(), {
+      ...process.env,
+      UNIEAI_CALLER: "vscode",
+    })
+    client.onNotification = (method, params) => this.handleNotification(method, params)
+    client.onServerRequest = (method, params, requestId) =>
+      this.handleServerRequest(client, method, params, requestId)
+    client.onExit = () => {
+      this.appServer = undefined
+      this.appServerCrashes += 1
+      if (this.currentTurn) {
+        this.currentTurn = undefined
+        this.post({ type: "turnState", state: "failed", retryable: true })
+        this.post({ type: "running", value: false })
+      }
+      if (this.appServerCrashes >= 3) {
+        this.markAppServerBroken()
+      }
+    }
+    try {
+      await client.start()
+      await client.request("initialize", {
+        clientInfo: { name: "unieai-code-vscode", title: "UnieAI Code", version: "0.9.0" },
+        capabilities: { experimentalApi: true },
+      })
+    } catch {
+      client.dispose()
+      this.markAppServerBroken()
+      return null
+    }
+    this.appServer = client
+    this.resumedThreads.clear()
+    return client
+  }
+
+  private markAppServerBroken() {
+    if (!this.appServerBroken) {
+      this.appServerBroken = true
+      this.post({
+        type: "stderr",
+        text: "進階模式無法啟動，已降級為基本模式（無互動核准與逐字串流）",
+      })
+    }
+  }
+
+  private handleNotification(method: string, params: Json) {
+    switch (method) {
+      case "item/started":
+      case "item/completed": {
+        const item = this.mapV2Item(params?.item)
+        if (item) {
+          this.post({ type: "itemUpsert", item, done: method === "item/completed" })
+        }
+        break
+      }
+      case "item/agentMessage/delta":
+        this.post({ type: "turnDelta", kind: "agent", itemKey: params.itemId, text: params.delta })
+        break
+      case "item/reasoning/textDelta":
+      case "item/reasoning/summaryTextDelta":
+        this.post({
+          type: "turnDelta",
+          kind: "reasoning",
+          itemKey: params.itemId,
+          text: params.delta,
+        })
+        break
+      case "item/commandExecution/outputDelta":
+        this.post({
+          type: "turnDelta",
+          kind: "cmdOutput",
+          itemKey: params.itemId,
+          text: typeof params.delta === "string" ? params.delta : "",
+        })
+        break
+      case "turn/completed": {
+        const status = params?.turn?.status
+        this.currentTurn = undefined
+        if (status === "failed") {
+          this.post({ type: "turnState", state: "failed", retryable: true })
+        } else if (status === "interrupted") {
+          this.post({ type: "turnState", state: "interrupted" })
+        } else {
+          this.post({ type: "turnState", state: "idle" })
+        }
+        this.post({ type: "running", value: false })
+        break
+      }
+      case "error":
+        if (params?.message) {
+          this.post({ type: "stderr", text: String(params.message) })
+        }
+        break
+      default:
+        break
+    }
+  }
+
+  /** Map a v2 camelCase thread item onto the webview's item shape. */
+  private mapV2Item(item: Json): Json | null {
+    if (!item || typeof item !== "object") {
+      return null
+    }
+    switch (item.type) {
+      case "agentMessage":
+        return { id: item.id, type: "agent_message", text: item.text ?? "" }
+      case "reasoning":
+        return {
+          id: item.id,
+          type: "reasoning",
+          text: item.text ?? item.summary ?? "",
+        }
+      case "commandExecution":
+        return {
+          id: item.id,
+          type: "command_execution",
+          command: item.command ?? "",
+          aggregated_output: item.aggregatedOutput ?? "",
+          exit_code: item.exitCode ?? undefined,
+          status:
+            item.status === "failed"
+              ? "failed"
+              : item.status === "completed"
+                ? "completed"
+                : "in_progress",
+        }
+      case "fileChange":
+        return {
+          id: item.id,
+          type: "file_change",
+          changes: (item.changes ?? []).map((c: Json) => ({
+            path: c.path,
+            kind: c.kind,
+          })),
+          status: item.status === "failed" ? "failed" : "completed",
+        }
+      case "plan":
+      case "todoList":
+        return {
+          id: item.id,
+          type: "todo_list",
+          items: (item.items ?? item.steps ?? []).map((t: Json) => ({
+            text: t.text ?? t.step ?? String(t),
+            completed: Boolean(t.completed),
+          })),
+        }
+      case "webSearch":
+        return { id: item.id, type: "web_search", query: item.query ?? "" }
+      case "mcpToolCall":
+        return {
+          id: item.id,
+          type: "mcp_tool_call",
+          server: item.server,
+          tool: item.tool,
+          status: item.status,
+        }
+      case "error":
+        return { id: item.id, type: "error", message: item.message ?? "error" }
+      case "userMessage":
+        return null // already echoed locally
+      default:
+        return null
+    }
+  }
+
+  private handleServerRequest(
+    client: AppServerClient,
+    method: string,
+    params: Json,
+    requestId: Json,
+  ) {
+    if (
+      method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval" ||
+      method === "item/permissions/requestApproval"
+    ) {
+      const approvalId = `approval-${++this.approvalSeq}`
+      this.pendingApprovals.set(approvalId, { client, requestId })
+      const kind = method.includes("commandExecution")
+        ? "command"
+        : method.includes("fileChange")
+          ? "fileChange"
+          : "permissions"
+      this.post({ type: "approvalRequest", id: approvalId, kind, itemKey: params?.itemId })
+      // If the panel is hidden, surface an actionable OS-level prompt too.
+      if (!this.view?.visible) {
+        const label = kind === "command" ? "指令執行" : "檔案修改"
+        vscode.window
+          .showInformationMessage(`UnieAI Code 請求核准：${label}`, "允許", "拒絕")
+          .then((choice) => {
+            if (choice && this.pendingApprovals.has(approvalId)) {
+              this.resolveApproval(approvalId, choice === "允許" ? "accept" : "decline")
+              this.post({ type: "approvalResolved", id: approvalId, decision: choice })
+            }
+          })
+      }
+      return
+    }
+    // Unknown server request: decline politely so the turn can proceed.
+    client.respond(requestId, {})
+  }
+
+  private resolveApproval(approvalId: string, decision: string) {
+    const entry = this.pendingApprovals.get(approvalId)
+    if (!entry) {
+      return
+    }
+    this.pendingApprovals.delete(approvalId)
+    entry.client.respond(entry.requestId, { decision })
+  }
+
+  private async runTurn(
     text: string,
     model: string | undefined,
     sandboxOverride: string | undefined,
     webAccess: boolean,
   ) {
     const prompt = text.trim()
-    if (!prompt || this.child) {
+    if (!prompt || this.child || this.currentTurn) {
       return
     }
-
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
     const allowedSandboxes = ["read-only", "workspace-write", "danger-full-access"]
     const sandbox =
       (sandboxOverride && allowedSandboxes.includes(sandboxOverride) ? sandboxOverride : null) ||
       vscode.workspace.getConfiguration("unieai-code").get<string>("sandboxMode") ||
       "workspace-write"
+    this.lastTurn = { text: prompt, model, sandbox, webAccess }
+
+    const client = await this.ensureAppServer()
+    if (client) {
+      try {
+        await this.runTurnAppServer(client, prompt, model, sandbox, webAccess, workspaceFolder)
+        return
+      } catch (err) {
+        this.post({ type: "stderr", text: `進階模式失敗，改用基本模式：${String(err)}` })
+      }
+    }
+    this.runTurnExec(prompt, model, sandbox, webAccess, workspaceFolder)
+  }
+
+  private async runTurnAppServer(
+    client: AppServerClient,
+    prompt: string,
+    model: string | undefined,
+    sandbox: string,
+    webAccess: boolean,
+    workspaceFolder: string | undefined,
+  ) {
+    // 預設權限 = ask before commands/edits; 唯讀/完全存取 = never ask.
+    const approvalPolicy = sandbox === "workspace-write" ? "on-request" : "never"
+    const config = webAccess ? { "sandbox_workspace_write.network_access": true } : undefined
+
+    if (this.threadId && !this.startedThreads.has(this.threadId)) {
+      // A thread from history (or a previous server instance) must be resumed.
+      await client.request("thread/resume", { threadId: this.threadId })
+      this.startedThreads.add(this.threadId)
+      this.resumedThreads.add(this.threadId)
+    }
+
+    if (!this.threadId) {
+      const started = await client.request("thread/start", {
+        model,
+        cwd: workspaceFolder,
+        approvalPolicy,
+        sandbox,
+        config,
+      })
+      this.threadId = started?.thread?.id
+      if (!this.threadId) {
+        throw new Error("thread/start returned no id")
+      }
+      this.startedThreads.add(this.threadId)
+      this.threadSettings = { model, sandbox, approvalPolicy }
+    } else if (
+      this.threadSettings &&
+      (this.threadSettings.sandbox !== sandbox ||
+        this.threadSettings.approvalPolicy !== approvalPolicy)
+    ) {
+      await client
+        .request("thread/settings/update", {
+          threadId: this.threadId,
+          approvalPolicy,
+          sandbox,
+        })
+        .catch(() => {})
+      this.threadSettings = { model, sandbox, approvalPolicy }
+    }
+
+    this.post({ type: "running", value: true })
+    const turn = await client.request("turn/start", {
+      threadId: this.threadId,
+      input: [{ type: "text", text: prompt }],
+      ...(model ? { model } : {}),
+    })
+    const turnId = turn?.turn?.id
+    this.currentTurn = { threadId: this.threadId!, turnId }
+  }
+
+  private runTurnExec(
+    prompt: string,
+    model: string | undefined,
+    sandbox: string,
+    webAccess: boolean,
+    workspaceFolder: string | undefined,
+  ) {
 
     const args = ["exec", "--experimental-json", "--sandbox", sandbox, "--skip-git-repo-check"]
     if (webAccess) {

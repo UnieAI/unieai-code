@@ -303,6 +303,129 @@ function renderItem(item) {
   scrollToBottom()
 }
 
+// ---------- streaming (app-server deltas) ----------
+
+/** itemKey -> streaming DOM handles */
+const streams = new Map()
+
+function streamKey(itemId) {
+  return `${turnSeq}:${itemId}`
+}
+
+function ensureAgentStream(itemId) {
+  const key = streamKey(itemId)
+  let entry = streams.get(key)
+  if (!entry) {
+    const el = document.createElement("div")
+    el.className = "line agent streaming"
+    const textNode = document.createElement("span")
+    textNode.className = "stream-text"
+    el.appendChild(textNode)
+    appendLine(el)
+    itemEls.set(key, el)
+    entry = { el, textNode }
+    streams.set(key, entry)
+  }
+  return entry
+}
+
+function ensureReasoningStream(itemId) {
+  const key = streamKey(itemId) + ":r"
+  let entry = streams.get(key)
+  if (!entry) {
+    const el = document.createElement("div")
+    el.className = "line"
+    const details = reasoningBlock("", false)
+    el.appendChild(details)
+    appendLine(el)
+    entry = { el, textNode: details.querySelector(".reasoning-body") }
+    streams.set(key, entry)
+  }
+  return entry
+}
+
+function ensureToolOutput(itemId) {
+  const key = streamKey(itemId)
+  const el = itemEls.get(key)
+  if (!el) {
+    return null
+  }
+  let pre = el.querySelector(".tool-output")
+  if (!pre) {
+    pre = document.createElement("pre")
+    pre.className = "tool-output"
+    pre.hidden = true
+    const header = el.querySelector(".tool-header")
+    if (header && !header.classList.contains("expandable")) {
+      header.classList.add("expandable")
+      header.addEventListener("click", () => {
+        pre.hidden = !pre.hidden
+      })
+    }
+    el.appendChild(pre)
+  }
+  return pre
+}
+
+function applyDelta(kind, itemId, text) {
+  if (!text) {
+    return
+  }
+  if (kind === "agent") {
+    ensureAgentStream(itemId).textNode.textContent += text
+  } else if (kind === "reasoning") {
+    ensureReasoningStream(itemId).textNode.textContent += text
+  } else if (kind === "cmdOutput") {
+    const pre = ensureToolOutput(itemId)
+    if (pre) {
+      pre.textContent += text
+    }
+  }
+  pinWorking()
+  scrollToBottom()
+}
+
+// ---------- approvals ----------
+
+function approvalCard({ id, kind }) {
+  const el = document.createElement("div")
+  el.className = "line approval"
+  const title = document.createElement("div")
+  title.className = "approval-title"
+  title.textContent =
+    kind === "command" ? "請求核准：執行指令" : kind === "fileChange" ? "請求核准：修改檔案" : "請求核准：權限提升"
+  const row = document.createElement("div")
+  row.className = "approval-actions"
+  const actions = [
+    { label: "允許一次", decision: "accept", primary: true },
+    { label: "本次對話都允許", decision: "acceptForSession" },
+    { label: "拒絕", decision: "decline", danger: true },
+  ]
+  for (const action of actions) {
+    const button = document.createElement("button")
+    button.className =
+      "approval-btn" + (action.primary ? " primary" : "") + (action.danger ? " danger" : "")
+    button.textContent = action.label
+    button.addEventListener("click", () => {
+      vscode.postMessage({ type: "approvalReply", id, decision: action.decision })
+      settle(action.label)
+    })
+    row.appendChild(button)
+  }
+  const settle = (label) => {
+    row.remove()
+    const done = document.createElement("div")
+    done.className = "approval-done"
+    done.textContent = label
+    el.appendChild(done)
+  }
+  el.append(title, row)
+  el.dataset.approvalId = id
+  el.settle = settle
+  appendLine(el)
+  return el
+}
+
 // ---------- working indicator ----------
 
 function setRunning(on) {
@@ -677,6 +800,53 @@ window.addEventListener("message", (e) => {
       break
     case "event":
       handleEvent(message.event)
+      break
+    case "itemUpsert": {
+      // Completed items re-render fully (markdown, think blocks); drop any
+      // streaming placeholder for the same item first.
+      streams.delete(streamKey(message.item.id))
+      streams.delete(streamKey(message.item.id) + ":r")
+      renderItem(message.item)
+      break
+    }
+    case "turnDelta":
+      applyDelta(message.kind, message.itemKey, message.text)
+      break
+    case "approvalRequest":
+      approvalCard({ id: message.id, kind: message.kind })
+      break
+    case "approvalResolved": {
+      const card = messagesEl.querySelector(`[data-approval-id="${message.id}"]`)
+      if (card && card.settle) {
+        card.settle(message.decision)
+      }
+      break
+    }
+    case "turnState":
+      if (message.state === "interrupted") {
+        setRunning(false)
+        metaLine("已中斷")
+      } else if (message.state === "failed") {
+        setRunning(false)
+        const el = document.createElement("div")
+        el.className = "line error"
+        el.textContent = "回合失敗"
+        if (message.retryable) {
+          const retry = document.createElement("button")
+          retry.className = "approval-btn"
+          retry.textContent = "重試"
+          retry.addEventListener("click", () => {
+            retry.disabled = true
+            setRunning(true)
+            vscode.postMessage({ type: "retry" })
+          })
+          el.appendChild(document.createTextNode(" "))
+          el.appendChild(retry)
+        }
+        appendLine(el)
+      } else if (message.state === "idle") {
+        setRunning(false)
+      }
       break
     case "running":
       setRunning(Boolean(message.value))

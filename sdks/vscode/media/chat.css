@@ -715,3 +715,48 @@ details.reasoning summary:hover { color: var(--fg); }
 .line.agent {
   margin-bottom: 6px;
 }
+
+/* ---------- streaming + approvals ---------- */
+
+.stream-text {
+  white-space: pre-wrap;
+}
+
+.line.approval {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-raised);
+}
+
+.approval-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.approval-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+.approval-btn:hover { border-color: var(--border-strong); background: var(--hover); }
+.approval-btn.primary { background: var(--primary-bg); color: var(--primary-fg); border-color: transparent; }
+.approval-btn.primary:hover { background: var(--primary-hover); }
+.approval-btn.danger { color: var(--error); border-color: var(--error); }
+.approval-btn:disabled { opacity: 0.4; cursor: default; }
+
+.approval-done {
+  color: var(--fg-secondary);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
