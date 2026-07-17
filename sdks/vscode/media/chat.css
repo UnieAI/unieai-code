@@ -332,17 +332,26 @@ button {
   font-size: calc(var(--vscode-font-size) - 1px);
 }
 
-.working .dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--fg-secondary);
-  animation: pulse 1s infinite alternate;
+.working-label {
+  background: linear-gradient(90deg,
+    var(--fg-secondary) 30%,
+    var(--fg) 50%,
+    var(--fg-secondary) 70%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.6s linear infinite;
 }
 
-@keyframes pulse {
-  from { opacity: 0.2; }
-  to { opacity: 1; }
+.working-time {
+  color: var(--fg-secondary);
+  font-size: calc(var(--vscode-font-size) - 2px);
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 
 /* ---------- composer ---------- */

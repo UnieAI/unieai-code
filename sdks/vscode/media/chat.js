@@ -91,20 +91,42 @@
     return el
   }
 
+  let workingTimer = null
+  let workingStart = 0
+
   function setRunning(on) {
     running = on
     if (on && !workingEl) {
+      workingStart = Date.now()
       workingEl = document.createElement("div")
       workingEl.className = "working"
-      workingEl.innerHTML = '<span class="dot"></span><span>思考中…</span>'
+      const label = document.createElement("span")
+      label.className = "working-label"
+      label.textContent = "思考中"
+      const time = document.createElement("span")
+      time.className = "working-time"
+      time.textContent = "0s"
+      workingEl.append(label, time)
       messagesEl.appendChild(workingEl)
       scrollToBottom()
+      workingTimer = setInterval(() => {
+        time.textContent = `${Math.round((Date.now() - workingStart) / 1000)}s`
+      }, 1000)
     } else if (!on && workingEl) {
+      clearInterval(workingTimer)
+      workingTimer = null
       workingEl.remove()
       workingEl = null
     }
     sendEl.textContent = on ? "■" : "↑"
     sendEl.title = on ? "停止" : "送出 (Enter)"
+  }
+
+  /** Keeps the working indicator pinned below the latest content. */
+  function pinWorking() {
+    if (workingEl && workingEl !== messagesEl.lastElementChild) {
+      messagesEl.appendChild(workingEl)
+    }
   }
 
   function describeItem(item) {
@@ -167,6 +189,7 @@
       el.className = "msg " + described.className
       el.textContent = described.text
     }
+    pinWorking()
     scrollToBottom()
   }
 
@@ -230,6 +253,9 @@
     }
     addMessage("user", text)
     inputEl.value = ""
+    // Show the working indicator immediately; the extension confirms via
+    // `running` and the first turn.started event.
+    setRunning(true)
     const sandbox = modeEl.value === "plan" ? "read-only" : permEl.value
     vscode.postMessage({ type: "send", text, model: modelEl.value || undefined, sandbox })
   }
