@@ -5,6 +5,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
@@ -127,6 +128,38 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     base_model_info(slug)
 }
 
+/// Compact system prompt for open models served through a gateway. The
+/// stock BASE_INSTRUCTIONS are tuned for GPT-family models and weigh tens of
+/// thousands of tokens; open models handle a short, explicit contract far
+/// better (OpenCode-style). The most common open-model failure this targets:
+/// announcing an action ("let me apply_patch:") and then stopping without
+/// emitting a tool call.
+const GATEWAY_BASE_INSTRUCTIONS: &str = r#"You are UnieAI Code, a coding agent running in a CLI harness attached to a user's workspace.
+
+Work loop: understand the request, use tools to inspect and change the workspace, verify, then answer.
+
+Critical rules:
+1. ACT — never announce. Do not end a reply with intent ("let me...", "now I will..."). If any work remains, emit the corresponding tool call in this same turn. Only write a final message when the task is complete or you genuinely need the user's input.
+2. Use ONLY the tools provided via function calling, with valid JSON arguments. Never print tool-call syntax, patches, or commands inside your message text as a substitute for calling the tool.
+3. Prefer small, verifiable steps: read before you edit, verify after you change.
+
+Shell:
+- Run commands with the shell tool. Prefer `rg` for searching. Commands execute inside a sandbox; operations needing network access or writes outside the workspace may trigger a user approval — just attempt the command to request it.
+
+Editing files — run `apply_patch` through the shell tool with a heredoc:
+  apply_patch <<'EOF'
+  *** Begin Patch
+  *** Update File: path/to/file.ext
+  @@ nearby context line
+  -old line
+  +new line
+  *** End Patch
+  EOF
+Use "*** Add File:" / "*** Delete File:" for new or removed files. Keep patches minimal; re-read or test after applying.
+
+Answer style: concise and direct, in the user's language, no filler.
+"#;
+
 /// Build a descriptor for a model served by an external OpenAI-compatible
 /// gateway (e.g. a UnieAI inference gateway). Uses the same conservative
 /// defaults as the fallback path, but the model is picker-visible and not
@@ -141,6 +174,12 @@ pub fn model_info_for_gateway_model(
     info.display_name = display_name.to_string();
     info.visibility = ModelVisibility::List;
     info.used_fallback_model_metadata = false;
+    // Open models speak plain function calling best: pin Direct so feature
+    // flags can't switch them into code-mode, and don't send the OpenAI
+    // reasoning-summary parameter their gateways ignore.
+    info.tool_mode = Some(ToolMode::Direct);
+    info.supports_reasoning_summary_parameter = false;
+    info.base_instructions = GATEWAY_BASE_INSTRUCTIONS.to_string();
     if let Some(context_window) = context_window {
         info.context_window = Some(context_window);
         info.max_context_window = Some(context_window);

@@ -360,8 +360,12 @@ impl ModelProviderInfo {
             ),
             env_http_headers: None,
             request_max_retries: None,
-            stream_max_retries: None,
-            stream_idle_timeout_ms: None,
+            // Open-model gateways stall more often than the OpenAI backend;
+            // the 300s default idle timeout reads as a frozen UI. Fail the
+            // stream after 75s of silence and retry, so recovery is visible
+            // within a couple of minutes instead of tens of minutes.
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(75_000),
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
