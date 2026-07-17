@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { AppServerClient, Json } from "./appServerClient"
+import { AgentCoreBackend } from "./agentCoreBackend"
 
 const TERMINAL_NAME = "unieai"
 
@@ -112,8 +113,38 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private lastTurn:
     | { text: string; model: string | undefined; sandbox: string; webAccess: boolean }
     | undefined
+  private agentCore: AgentCoreBackend | undefined
 
   constructor(private readonly context: vscode.ExtensionContext) {}
+
+  /** Which engine the panel runs: codex app-server (default) or agent-core. */
+  private engineChoice(): "app-server" | "agent-core" {
+    return vscode.workspace.getConfiguration("unieai-code").get<string>("engine") === "agent-core"
+      ? "agent-core"
+      : "app-server"
+  }
+
+  private ensureAgentCore(): AgentCoreBackend {
+    if (!this.agentCore) {
+      const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd()
+      this.agentCore = new AgentCoreBackend(workspace, {
+        post: (m) => this.post(m),
+        requestApproval: (d) =>
+          new Promise((resolve) => {
+            const approvalId = `approval-${++this.approvalSeq}`
+            this.agentCoreApprovals.set(approvalId, resolve)
+            this.post({
+              type: "approvalRequest",
+              id: approvalId,
+              kind: "command",
+              detail: { command: d.detail, reason: `${d.tool}: ${d.action}` },
+            })
+          }),
+      })
+    }
+    return this.agentCore
+  }
+  private agentCoreApprovals = new Map<string, (d: Json) => void>()
 
   dispose() {
     this.appServer?.dispose()
@@ -474,6 +505,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private stopTurn() {
+    if (this.engineChoice() === "agent-core" && this.agentCore) {
+      this.agentCore.interrupt()
+      return
+    }
     if (this.appServer?.alive && this.currentTurn) {
       const { threadId, turnId } = this.currentTurn
       this.appServer.request("turn/interrupt", { threadId, turnId }).catch(() => {})
@@ -859,6 +894,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private resolveApproval(approvalId: string, decision: string) {
+    // agent-core approvals resolve a pending promise instead of an RPC reply.
+    const acResolve = this.agentCoreApprovals.get(approvalId)
+    if (acResolve) {
+      this.agentCoreApprovals.delete(approvalId)
+      acResolve(decision)
+      return
+    }
     const entry = this.pendingApprovals.get(approvalId)
     if (!entry) {
       return
@@ -892,6 +934,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.workspace.getConfiguration("unieai-code").get<string>("sandboxMode") ||
       "workspace-write"
     this.lastTurn = { text: prompt, model, sandbox, webAccess }
+
+    if (this.engineChoice() === "agent-core") {
+      try {
+        await this.ensureAgentCore().send(prompt, model)
+      } catch (err) {
+        this.post({ type: "stderr", text: `agent-core 失敗：${String(err)}` })
+        this.post({ type: "running", value: false })
+      }
+      return
+    }
 
     const client = await this.ensureAppServer()
     if (client) {

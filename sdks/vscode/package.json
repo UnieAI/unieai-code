@@ -2,7 +2,7 @@
   "name": "unieai-code",
   "displayName": "UnieAI Code",
   "description": "UnieAI Code for VS Code — chat with the UnieAI coding agent in your editor",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "publisher": "unieai",
   "repository": {
     "type": "git",
@@ -103,6 +103,19 @@
           ],
           "default": "workspace-write",
           "description": "Sandbox mode for agent turns started from the chat panel."
+        },
+        "unieai-code.engine": {
+          "type": "string",
+          "enum": [
+            "app-server",
+            "agent-core"
+          ],
+          "enumDescriptions": [
+            "codex app-server (Rust) — full sandbox, approvals, IDE integration",
+            "unieai-agent-core (in-process JS loop, shared with UnieAI Studio)"
+          ],
+          "default": "app-server",
+          "description": "Which agent engine the chat panel runs."
         }
       }
     }
