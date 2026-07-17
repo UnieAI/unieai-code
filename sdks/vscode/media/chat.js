@@ -255,6 +255,9 @@
   $("new-chat-btn").addEventListener("click", () => {
     vscode.postMessage({ type: "newChat" })
   })
+  $("logout-btn").addEventListener("click", () => {
+    vscode.postMessage({ type: "logout" })
+  })
 
   function renderSessions(sessions) {
     historyList.innerHTML = ""

@@ -126,6 +126,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "login":
           this.runLogin(message.studioUrl ? String(message.studioUrl) : undefined)
           break
+        case "logout":
+          this.runLogout()
+          break
         case "cancelLogin":
           this.cancelLogin()
           break
@@ -227,6 +230,28 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.loginChild.kill("SIGTERM")
       this.loginChild = undefined
     }
+  }
+
+  /** Runs `unieai logout` (revokes the Studio session, deletes unieai.json). */
+  private runLogout() {
+    this.stopTurn()
+    this.threadId = undefined
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = spawn(executablePath(), ["logout"], {
+        env: { ...process.env, UNIEAI_CALLER: "vscode" },
+      })
+    } catch (err) {
+      this.post({ type: "fatal", message: `Logout failed: ${String(err)}` })
+      return
+    }
+    child.once("exit", () => {
+      this.post({ type: "reset" })
+      this.sendBootstrap()
+    })
+    child.once("error", (err) => {
+      this.post({ type: "fatal", message: `Logout failed: ${err.message}` })
+    })
   }
 
   private sessionsDir(): string {
@@ -510,6 +535,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="toolbar">
       <button id="history-btn" class="ghost" title="歷史 session">歷史</button>
       <button id="new-chat-btn" class="ghost" title="開新對話">新對話</button>
+      <button id="logout-btn" class="ghost" title="登出 UnieAI Studio">登出</button>
     </div>
     <main id="messages" aria-live="polite"></main>
     <div id="history-overlay" hidden>
