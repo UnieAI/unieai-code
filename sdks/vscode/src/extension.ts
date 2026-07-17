@@ -527,11 +527,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         <div id="composer-row">
           <div class="composer-left">
             <select id="mode" class="pill" title="模式">
-              <option value="exec">⚒ 執行</option>
-              <option value="plan">🗺 規劃</option>
+              <option value="exec">執行</option>
+              <option value="plan">規劃</option>
             </select>
             <select id="perm" class="pill" title="權限">
-              <option value="workspace-write">✋ 預設權限</option>
+              <option value="workspace-write">預設權限</option>
               <option value="read-only">唯讀</option>
               <option value="danger-full-access">完全存取</option>
             </select>
