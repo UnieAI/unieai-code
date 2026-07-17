@@ -122,6 +122,8 @@ pub(crate) struct UnieAIDeviceState {
 pub(crate) struct UnieAISuccessState {
     email: Option<String>,
     gateway_base_url: String,
+    studio_url: String,
+    has_models: bool,
 }
 
 const API_KEY_DISABLED_MESSAGE: &str = "API key login is disabled.";
@@ -489,6 +491,8 @@ impl AuthModeWidget {
                         SignInState::UnieAISuccess(UnieAISuccessState {
                             email: credentials.email.clone(),
                             gateway_base_url: credentials.gateway_base_url.clone(),
+                            studio_url: credentials.studio_url.clone(),
+                            has_models: !credentials.models().is_empty(),
                         });
                 }
                 Err(err) => {
@@ -745,11 +749,21 @@ impl AuthModeWidget {
             Some(email) => format!("✓ Signed in to UnieAI Studio as {email}"),
             None => "✓ Signed in to UnieAI Studio".to_string(),
         };
-        let lines = vec![
+        let mut lines = vec![
             signed_in_line.fg(Color::Green).into(),
             "".into(),
             Line::from(format!("  Inference gateway: {}", state.gateway_base_url)).dim(),
         ];
+        if !state.has_models {
+            lines.push("".into());
+            lines.push(
+                Line::from(format!(
+                    "  No models are available yet. Add models in UnieAI Studio ({}/models), then sign in again.",
+                    state.studio_url
+                ))
+                .fg(Color::Yellow),
+            );
+        }
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })

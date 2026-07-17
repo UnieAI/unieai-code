@@ -451,6 +451,12 @@ pub async fn run_login_with_unieai(
                 eprintln!("Signed in as {email}");
             }
             eprintln!("Inference gateway: {}", credentials.gateway_base_url);
+            if credentials.models().is_empty() {
+                eprintln!(
+                    "No models are available yet. Add models in UnieAI Studio ({}/models), then run `unieai login` again.",
+                    credentials.studio_url
+                );
+            }
             std::process::exit(0);
         }
         Err(e) => {

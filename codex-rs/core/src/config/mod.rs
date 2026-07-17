@@ -3837,10 +3837,11 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
-        // With the UnieAI provider selected, serve the gateway models saved at
-        // login as the model catalog (picker list, metadata, and the default
-        // model — Studio's first model wins). An explicit model_catalog_json
-        // still takes precedence.
+        // With the UnieAI provider selected, the gateway models saved at login
+        // are the ONLY model catalog (picker list, metadata, and the default
+        // model — Studio's first model wins). The catalog is injected even
+        // when empty so the bundled OpenAI models never leak into the picker;
+        // an explicit model_catalog_json still takes precedence.
         let model_catalog = model_catalog.or_else(|| {
             if model_provider_id != codex_model_provider_info::UNIEAI_PROVIDER_ID {
                 return None;
@@ -3858,11 +3859,18 @@ impl Config {
                     )
                 })
                 .collect();
-            if models.is_empty() {
-                None
-            } else {
-                Some(ModelsResponse { models })
+            if models.is_empty() && unieai_credentials.is_some() {
+                let studio_url = unieai_credentials
+                    .as_ref()
+                    .map(|credentials| credentials.studio_url.clone())
+                    .unwrap_or_else(|| {
+                        codex_login::unieai::DEFAULT_STUDIO_URL.to_string()
+                    });
+                startup_warnings.push(format!(
+                    "No models are available for your UnieAI account. Add models in UnieAI Studio ({studio_url}/models), then sign in again with `unieai login`."
+                ));
             }
+            Some(ModelsResponse { models })
         });
 
         let log_dir = cfg
