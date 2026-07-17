@@ -14,6 +14,7 @@ const sendEl = $("send")
 const modelEl = $("model")
 const modeEl = $("mode")
 const permEl = $("perm")
+const webEl = $("web")
 const historyOverlay = $("history-overlay")
 const historyList = $("history-list")
 
@@ -76,6 +77,15 @@ function renderMarkdown(text) {
 function splitThinking(text) {
   const segments = []
   let rest = text
+
+  // Some gateways strip the opening tag: "reasoning...</think>answer".
+  const firstClose = rest.indexOf("</think>")
+  const firstOpen = rest.indexOf("<think>")
+  if (firstClose !== -1 && (firstOpen === -1 || firstClose < firstOpen)) {
+    segments.push({ think: true, text: rest.slice(0, firstClose) })
+    rest = rest.slice(firstClose + 8)
+  }
+
   while (rest.length) {
     const open = rest.indexOf("<think>")
     if (open === -1) {
@@ -96,9 +106,12 @@ function splitThinking(text) {
   return segments.filter((s) => s.text.trim())
 }
 
-function reasoningBlock(text) {
+function reasoningBlock(text, open = false) {
   const details = document.createElement("details")
   details.className = "reasoning"
+  if (open) {
+    details.open = true
+  }
   const summary = document.createElement("summary")
   summary.textContent = "思考過程"
   const body = document.createElement("div")
@@ -141,8 +154,14 @@ function errorLine(text) {
 function agentBlock(text) {
   const el = document.createElement("div")
   el.className = "line agent"
-  for (const segment of splitThinking(text)) {
-    el.appendChild(segment.think ? reasoningBlock(segment.text) : renderMarkdown(segment.text))
+  const segments = splitThinking(text)
+  // A model may wrap its entire reply in an (unclosed) <think> block; keep it
+  // visible by auto-opening when there is no prose left at all.
+  const hasProse = segments.some((s) => !s.think)
+  for (const segment of segments) {
+    el.appendChild(
+      segment.think ? reasoningBlock(segment.text, !hasProse) : renderMarkdown(segment.text),
+    )
   }
   return el
 }
@@ -371,13 +390,9 @@ function handleEvent(event) {
     case "item.completed":
       renderItem(event.item)
       break
-    case "turn.completed": {
+    case "turn.completed":
       setRunning(false)
-      if (event.usage) {
-        metaLine(`${event.usage.input_tokens + event.usage.output_tokens} tokens`)
-      }
       break
-    }
     case "turn.failed":
       setRunning(false)
       errorLine((event.error && event.error.message) || "回合失敗")
@@ -404,7 +419,13 @@ function send() {
   inputEl.value = ""
   setRunning(true)
   const sandbox = modeEl.value === "plan" ? "read-only" : permEl.value
-  vscode.postMessage({ type: "send", text, model: modelEl.value || undefined, sandbox })
+  vscode.postMessage({
+    type: "send",
+    text,
+    model: modelEl.value || undefined,
+    sandbox,
+    webAccess: webEl.value === "on",
+  })
 }
 
 // ---------- slash commands ----------
@@ -467,6 +488,10 @@ inputEl.addEventListener("input", () => {
 
 modelEl.addEventListener("change", () => {
   vscode.postMessage({ type: "setModel", model: modelEl.value })
+})
+
+webEl.addEventListener("change", () => {
+  vscode.postMessage({ type: "setWebAccess", value: webEl.value === "on" })
 })
 
 sendEl.addEventListener("click", send)
@@ -569,6 +594,7 @@ window.addEventListener("message", (e) => {
       ) {
         modelEl.value = message.currentModel
       }
+      webEl.value = message.webAccess ? "on" : "off"
       if (!message.signedIn) {
         showLogin()
       } else {

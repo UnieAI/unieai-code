@@ -115,7 +115,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             String(message.text ?? ""),
             message.model ? String(message.model) : undefined,
             message.sandbox ? String(message.sandbox) : undefined,
+            Boolean(message.webAccess),
           )
+          break
+        case "setWebAccess":
+          this.context.globalState.update("unieai-code.webAccess", Boolean(message.value))
           break
         case "stop":
           this.stopTurn()
@@ -179,6 +183,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       signedIn,
       threadId: this.threadId ?? null,
       currentModel: this.context.globalState.get<string>("unieai-code.model") ?? null,
+      webAccess: this.context.globalState.get<boolean>("unieai-code.webAccess") ?? false,
     })
   }
 
@@ -421,7 +426,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private runTurn(text: string, model: string | undefined, sandboxOverride: string | undefined) {
+  private runTurn(
+    text: string,
+    model: string | undefined,
+    sandboxOverride: string | undefined,
+    webAccess: boolean,
+  ) {
     const prompt = text.trim()
     if (!prompt || this.child) {
       return
@@ -435,6 +445,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       "workspace-write"
 
     const args = ["exec", "--experimental-json", "--sandbox", sandbox, "--skip-git-repo-check"]
+    if (webAccess) {
+      // Lets the agent curl/fetch from inside the workspace-write sandbox.
+      args.push("--config", "sandbox_workspace_write.network_access=true")
+    }
     if (model) {
       args.push("--model", model)
     }
@@ -590,6 +604,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               <option value="workspace-write">預設權限</option>
               <option value="read-only">唯讀</option>
               <option value="danger-full-access">完全存取</option>
+            </select>
+            <select id="web" class="pill" title="允許 agent 連網（唯讀模式下無效）">
+              <option value="off">上網 關</option>
+              <option value="on">上網 開</option>
             </select>
           </div>
           <div class="composer-right">
