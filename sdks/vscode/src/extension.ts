@@ -699,7 +699,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     webAccess: boolean,
   ) {
     const prompt = text.trim()
-    if (!prompt || this.child || this.currentTurn) {
+    if (!prompt) {
+      return
+    }
+    // Defensive: a dead server can't own a turn.
+    if (this.currentTurn && !this.appServer?.alive) {
+      this.currentTurn = undefined
+    }
+    if (this.child || this.currentTurn) {
+      this.post({ type: "stderr", text: "上一回合仍在進行中——先按停止或稍候" })
       return
     }
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -771,13 +779,27 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.post({ type: "running", value: true })
-    const turn = await client.request("turn/start", {
-      threadId: this.threadId,
-      input: [{ type: "text", text: prompt }],
-      ...(model ? { model } : {}),
-    })
-    const turnId = turn?.turn?.id
-    this.currentTurn = { threadId: this.threadId!, turnId }
+    // Claim the turn BEFORE awaiting: a fast turn can complete (clearing
+    // currentTurn via the turn/completed notification) before the turn/start
+    // response arrives — writing the id afterwards would leave a stale claim
+    // that blocks every subsequent send.
+    const claim = { threadId: this.threadId!, turnId: undefined as string | undefined }
+    this.currentTurn = claim
+    try {
+      const turn = await client.request("turn/start", {
+        threadId: this.threadId,
+        input: [{ type: "text", text: prompt }],
+        ...(model ? { model } : {}),
+      })
+      if (this.currentTurn === claim) {
+        claim.turnId = turn?.turn?.id
+      }
+    } catch (err) {
+      if (this.currentTurn === claim) {
+        this.currentTurn = undefined
+      }
+      throw err
+    }
   }
 
   private runTurnExec(
