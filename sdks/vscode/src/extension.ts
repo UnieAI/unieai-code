@@ -376,6 +376,23 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             items.push({ role: kind === "user_message" ? "user" : "agent", text })
           }
         }
+      } else if (parsed.type === "response_item" && payload["type"] === "function_call") {
+        // Keep tool calls visible when a session is reloaded.
+        const name = String(payload["name"] ?? "tool")
+        let summary = `工具 ${name}`
+        try {
+          const args = JSON.parse(String(payload["arguments"] ?? "{}")) as {
+            command?: string | string[]
+          }
+          if (Array.isArray(args.command)) {
+            summary = `$ ${args.command.join(" ")}`
+          } else if (typeof args.command === "string") {
+            summary = `$ ${args.command}`
+          }
+        } catch {
+          /* keep generic summary */
+        }
+        items.push({ role: "tool", text: summary })
       }
     }
     if (!threadId) {
@@ -553,7 +570,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     <footer id="composer">
       <div id="slash-menu" hidden></div>
       <div id="composer-box">
-        <textarea id="input" rows="2" placeholder="詢問 UnieAI Code 任何事"></textarea>
+        <div id="input-row">
+          <span id="prompt-char">›</span>
+          <textarea id="input" rows="2" placeholder="詢問 UnieAI Code 任何事"></textarea>
+        </div>
         <div id="composer-row">
           <div class="composer-left">
             <select id="mode" class="pill" title="模式">
@@ -572,6 +592,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           </div>
         </div>
       </div>
+      <div id="composer-hint">Enter 送出 · Shift+Enter 換行 · / 指令</div>
     </footer>
   </section>
   <script nonce="${nonce}" src="${scriptUri}"></script>

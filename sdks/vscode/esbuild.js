@@ -40,11 +40,25 @@ async function main() {
       esbuildProblemMatcherPlugin,
     ],
   })
+  // Webview bundle (chat panel) — browser platform, bundles `marked`.
+  const webviewCtx = await esbuild.context({
+    entryPoints: ["src/webview/chat.js"],
+    bundle: true,
+    format: "iife",
+    minify: production,
+    sourcemap: false,
+    platform: "browser",
+    outfile: "media/chat.js",
+    logLevel: "silent",
+    plugins: [esbuildProblemMatcherPlugin],
+  })
   if (watch) {
-    await ctx.watch()
+    await Promise.all([ctx.watch(), webviewCtx.watch()])
   } else {
     await ctx.rebuild()
+    await webviewCtx.rebuild()
     await ctx.dispose()
+    await webviewCtx.dispose()
   }
 }
 

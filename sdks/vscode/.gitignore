@@ -2,3 +2,5 @@ node_modules/
 dist/
 out/
 *.vsix
+media/chat.js
+media/chat.js.map
