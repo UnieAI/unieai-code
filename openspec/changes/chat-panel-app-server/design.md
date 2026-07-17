@@ -41,10 +41,13 @@
 | 完全存取 | danger-full-access | never |
 「上網」膠囊維持 network_access config。「永遠允許」只記在 session（Map<approvalKey>），不落盤。
 
-### D4: webview 訊息協定 v2
-ext→webview：`turnDelta{itemKey,kind,text}`、`itemUpsert{item}`、`approvalRequest{id,kind,summary,detail}`、`turnState{running|interrupted|failed,retryable}`、其餘沿用。
+### D4: webview 訊息協定 v2 — 串流粒度以協定為準
+app-server v2 原生提供 delta 事件（AgentMessageDelta、ReasoningTextDelta、
+CommandExecutionOutputDelta、PlanDelta…）：**協定給什麼粒度就渲染什麼粒度**，
+不自行切分或聚合語意。
+ext→webview：`turnDelta{itemKey,kind,text}`、`itemUpsert{item}`、`approvalRequest{id,kind,summary,detail}`、`turnState{running|interrupted|failed,retryable}`、`subagent{threadId,parentItemKey,state,summary}`、其餘沿用。
 webview→ext：`approvalReply{id,decision}`、`retry`、其餘沿用。
-Delta 緩衝：webview 端以 requestAnimationFrame 批次 append，避免高頻 reflow。
+Delta 緩衝僅為渲染效能（rAF 批次 append），不改變事件語意。
 
 ### D5: diff 渲染
 app-server patch 事件帶 unified diff → webview 以行級著色（+ 綠 / - 紅 / @@ 藍灰），檔名列可點 → `openUrl` 改 `openFile{path,line}` → `vscode.window.showTextDocument`。無 diff 資料時退回現有 +/-/~ 清單。

@@ -147,7 +147,15 @@ function userLine(text) {
   return appendLine(el)
 }
 
+/** Diagnostic noise that must not reach the transcript. */
+function isNoise(text) {
+  return /was recorded with model .* resuming with|Consider switching back/i.test(text)
+}
+
 function metaLine(text) {
+  if (isNoise(text)) {
+    return null
+  }
   const el = document.createElement("div")
   el.className = "line meta"
   el.textContent = text
@@ -155,6 +163,9 @@ function metaLine(text) {
 }
 
 function errorLine(text) {
+  if (isNoise(text)) {
+    return null
+  }
   const el = document.createElement("div")
   el.className = "line error"
   el.textContent = text

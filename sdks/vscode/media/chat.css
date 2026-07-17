@@ -701,3 +701,17 @@ details.reasoning summary:hover { color: var(--fg); }
   font-size: calc(var(--vscode-font-size) - 1px);
   opacity: 0.7;
 }
+
+/* Breathing room between a user prompt and the reply above/below it. */
+.line.user {
+  margin-top: 18px;
+}
+
+.line.user + .line,
+.line.user + details {
+  margin-top: 10px;
+}
+
+.line.agent {
+  margin-bottom: 6px;
+}
