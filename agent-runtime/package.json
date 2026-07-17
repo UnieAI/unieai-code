@@ -1,0 +1,17 @@
+{
+  "name": "@unieai/code-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "UnieAI Code on the unieai-agent-core loop: coding tools, session persistence, slim TUI. agent-core itself is vendored at third_party/unieai-agent-core (git submodule).",
+  "type": "module",
+  "bin": {
+    "unieai-agent": "./bin/tui.mjs"
+  },
+  "scripts": {
+    "tui": "node bin/tui.mjs",
+    "test": "node --test src"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
