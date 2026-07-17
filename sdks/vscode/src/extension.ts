@@ -129,6 +129,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "logout":
           this.runLogout()
           break
+        case "openTerminal":
+          vscode.commands.executeCommand("unieai-code.openTerminal")
+          break
         case "cancelLogin":
           this.cancelLogin()
           break
@@ -548,6 +551,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
     <footer id="composer">
+      <div id="slash-menu" hidden></div>
       <div id="composer-box">
         <textarea id="input" rows="2" placeholder="詢問 UnieAI Code 任何事"></textarea>
         <div id="composer-row">

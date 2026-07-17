@@ -234,8 +234,99 @@
     vscode.postMessage({ type: "send", text, model: modelEl.value || undefined, sandbox })
   }
 
+  // ---------- slash commands ----------
+
+  const slashMenuEl = $("slash-menu")
+  const SLASH_COMMANDS = [
+    { cmd: "/new", desc: "開新對話", run: () => vscode.postMessage({ type: "newChat" }) },
+    {
+      cmd: "/history",
+      desc: "歷史 session",
+      run: () => $("history-btn").click(),
+    },
+    { cmd: "/logout", desc: "登出 UnieAI Studio", run: () => vscode.postMessage({ type: "logout" }) },
+    {
+      cmd: "/terminal",
+      desc: "在終端開啟 TUI",
+      run: () => vscode.postMessage({ type: "openTerminal" }),
+    },
+  ]
+  let slashSelected = 0
+
+  function slashCandidates() {
+    const value = inputEl.value
+    if (!value.startsWith("/") || /\s/.test(value)) {
+      return []
+    }
+    return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(value))
+  }
+
+  function renderSlashMenu() {
+    const candidates = slashCandidates()
+    if (!candidates.length) {
+      slashMenuEl.hidden = true
+      return
+    }
+    slashSelected = Math.min(slashSelected, candidates.length - 1)
+    slashMenuEl.innerHTML = ""
+    candidates.forEach((candidate, index) => {
+      const el = document.createElement("div")
+      el.className = "slash-item" + (index === slashSelected ? " selected" : "")
+      const cmd = document.createElement("span")
+      cmd.className = "slash-cmd"
+      cmd.textContent = candidate.cmd
+      const desc = document.createElement("span")
+      desc.className = "slash-desc"
+      desc.textContent = candidate.desc
+      el.append(cmd, desc)
+      el.addEventListener("mousedown", (e) => {
+        e.preventDefault()
+        runSlash(candidate)
+      })
+      slashMenuEl.appendChild(el)
+    })
+    slashMenuEl.hidden = false
+  }
+
+  function runSlash(candidate) {
+    inputEl.value = ""
+    slashMenuEl.hidden = true
+    slashSelected = 0
+    candidate.run()
+  }
+
+  inputEl.addEventListener("input", () => {
+    slashSelected = 0
+    renderSlashMenu()
+  })
+
   sendEl.addEventListener("click", send)
   inputEl.addEventListener("keydown", (e) => {
+    const candidates = slashCandidates()
+    if (!slashMenuEl.hidden && candidates.length) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        slashSelected = (slashSelected + 1) % candidates.length
+        renderSlashMenu()
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        slashSelected = (slashSelected - 1 + candidates.length) % candidates.length
+        renderSlashMenu()
+        return
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault()
+        runSlash(candidates[slashSelected])
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        slashMenuEl.hidden = true
+        return
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       send()

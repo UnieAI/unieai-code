@@ -524,3 +524,44 @@ button {
   font-size: calc(var(--vscode-font-size) - 2px);
   margin-top: 3px;
 }
+
+/* ---------- slash menu ---------- */
+
+#composer {
+  position: relative;
+}
+
+#slash-menu {
+  position: absolute;
+  bottom: calc(100% - 2px);
+  left: 10px;
+  right: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 20;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.slash-item.selected,
+.slash-item:hover {
+  background: var(--hover);
+}
+
+.slash-cmd {
+  font-family: var(--vscode-editor-font-family);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+.slash-desc {
+  color: var(--fg-secondary);
+  font-size: calc(var(--vscode-font-size) - 2px);
+}
