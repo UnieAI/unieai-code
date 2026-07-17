@@ -150,6 +150,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "approvalReply":
           this.resolveApproval(String(message.id), String(message.decision))
           break
+        case "userInputReply": {
+          const entry = this.pendingApprovals.get(String(message.id))
+          if (entry) {
+            this.pendingApprovals.delete(String(message.id))
+            entry.client.respond(entry.requestId, { answers: message.answers ?? [] })
+          }
+          break
+        }
         case "retry":
           if (this.lastTurn) {
             const { text, model, sandbox, webAccess } = this.lastTurn
@@ -184,6 +192,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openStudioModels": {
           const url = String(message.url || "https://studio.unieai.com/models")
           vscode.env.openExternal(vscode.Uri.parse(url))
+          break
+        }
+        case "openFile": {
+          const rel = String(message.path || "")
+          if (rel) {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri
+            const target = root ? vscode.Uri.joinPath(root, rel) : vscode.Uri.file(rel)
+            vscode.window.showTextDocument(target, { preview: true }).then(undefined, () => {
+              vscode.window.showWarningMessage(`無法開啟 ${rel}`)
+            })
+          }
           break
         }
         case "listSessions":
@@ -556,6 +575,41 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           text: typeof params.delta === "string" ? params.delta : "",
         })
         break
+      case "item/plan/delta":
+        this.post({ type: "turnDelta", kind: "plan", itemKey: params.itemId, text: params.delta })
+        break
+      case "item/fileChange/patchUpdated":
+        // Live diff while apply_patch runs: re-upsert with the updated changes.
+        this.post({
+          type: "itemUpsert",
+          item: {
+            id: params.itemId,
+            type: "file_change",
+            changes: (params.changes ?? []).map((c: Json) => ({
+              path: c.path,
+              kind: c.kind,
+              diff: typeof c.diff === "string" ? c.diff : "",
+            })),
+            status: "in_progress",
+          },
+          done: false,
+        })
+        break
+      case "item/mcpToolCall/progress":
+        this.post({
+          type: "turnDelta",
+          kind: "cmdOutput",
+          itemKey: params.itemId,
+          text: typeof params.message === "string" ? params.message + "\n" : "",
+        })
+        break
+      case "thread/tokenUsage/updated": {
+        const total = params?.tokenUsage?.total?.totalTokens
+        if (typeof total === "number") {
+          this.post({ type: "tokenUsage", total })
+        }
+        break
+      }
       case "turn/completed": {
         const status = params?.turn?.status
         this.currentTurn = undefined
@@ -587,12 +641,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (item.type) {
       case "agentMessage":
         return { id: item.id, type: "agent_message", text: item.text ?? "" }
-      case "reasoning":
+      case "reasoning": {
+        // v2 reasoning carries `summary: string[]` and/or `content: string[]`,
+        // not `text` — joining avoids rendering "[object Array]".
+        const join = (v: Json) => (Array.isArray(v) ? v.join("") : typeof v === "string" ? v : "")
         return {
           id: item.id,
           type: "reasoning",
-          text: item.text ?? item.summary ?? "",
+          text: join(item.text) || join(item.summary) || join(item.content),
         }
+      }
       case "commandExecution":
         return {
           id: item.id,
@@ -614,10 +672,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           changes: (item.changes ?? []).map((c: Json) => ({
             path: c.path,
             kind: c.kind,
+            diff: typeof c.diff === "string" ? c.diff : "",
           })),
           status: item.status === "failed" ? "failed" : "completed",
         }
       case "plan":
+        // v2 Plan carries a markdown checklist string in `text`.
+        return { id: item.id, type: "plan", text: item.text ?? "" }
       case "todoList":
         return {
           id: item.id,
@@ -626,6 +687,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             text: t.text ?? t.step ?? String(t),
             completed: Boolean(t.completed),
           })),
+        }
+      case "subAgentActivity":
+        return {
+          id: item.id,
+          type: "subagent",
+          kind: item.kind ?? "",
+          agentThreadId: item.agentThreadId ?? "",
+          agentPath: item.agentPath ?? "",
         }
       case "webSearch":
         return { id: item.id, type: "web_search", query: item.query ?? "" }
@@ -636,7 +705,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           server: item.server,
           tool: item.tool,
           status: item.status,
+          arguments: item.arguments ?? null,
         }
+      case "imageGeneration":
+        return { id: item.id, type: "image_generation", status: item.status }
+      case "contextCompaction":
+        return { id: item.id, type: "context_compaction" }
+      case "enteredReviewMode":
+        return { id: item.id, type: "review_mode", entered: true }
+      case "exitedReviewMode":
+        return { id: item.id, type: "review_mode", entered: false }
       case "error":
         return { id: item.id, type: "error", message: item.message ?? "error" }
       case "userMessage":
@@ -664,7 +742,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         : method.includes("fileChange")
           ? "fileChange"
           : "permissions"
-      this.post({ type: "approvalRequest", id: approvalId, kind, itemKey: params?.itemId })
+      const detail =
+        kind === "command"
+          ? { command: params?.command ?? "", cwd: params?.cwd ?? "", reason: params?.reason ?? "" }
+          : kind === "fileChange"
+            ? {
+                reason: params?.reason ?? "",
+                files: (params?.changes ?? []).map((c: Json) => ({
+                  path: c.path,
+                  kind: c.kind,
+                  diff: typeof c.diff === "string" ? c.diff : "",
+                })),
+              }
+            : { reason: params?.reason ?? "" }
+      this.post({ type: "approvalRequest", id: approvalId, kind, itemKey: params?.itemId, detail })
       // If the panel is hidden, surface an actionable OS-level prompt too.
       if (!this.view?.visible) {
         const label = kind === "command" ? "指令執行" : "檔案修改"
@@ -677,6 +768,23 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           })
       }
+      return
+    }
+    if (method === "item/tool/requestUserInput") {
+      // The agent is asking the user a question mid-turn — render a card and
+      // reply with { answers }, instead of silently returning an empty answer.
+      const inputId = `userinput-${++this.approvalSeq}`
+      this.pendingApprovals.set(inputId, { client, requestId })
+      this.post({
+        type: "userInputRequest",
+        id: inputId,
+        questions: (params?.questions ?? []).map((q: Json) => ({
+          header: q.header ?? "",
+          question: q.question ?? "",
+          options: (q.options ?? []).map((o: Json) => (typeof o === "string" ? o : o.label ?? "")),
+          isSecret: Boolean(q.isSecret),
+        })),
+      })
       return
     }
     // Unknown server request: decline politely so the turn can proceed.
@@ -939,6 +1047,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   <!-- Chat view -->
   <section id="chat-view" hidden>
     <div id="toolbar">
+      <span id="token-meter" class="meter"></span>
       <button id="history-btn" class="ghost" title="歷史 session">歷史</button>
       <button id="new-chat-btn" class="ghost" title="開新對話">新對話</button>
       <button id="logout-btn" class="ghost" title="登出 UnieAI Studio">登出</button>

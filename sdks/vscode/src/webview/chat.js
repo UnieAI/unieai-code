@@ -237,31 +237,33 @@ function buildItemEl(item) {
         expanded: failed,
       })
     }
-    case "file_change": {
-      const changes = (item.changes || [])
-        .map((c) => `${c.kind === "add" ? "+" : c.kind === "delete" ? "-" : "~"} ${c.path}`)
-        .join("\n")
-      const count = (item.changes || []).length
+    case "file_change":
+      return fileChangeBlock(item)
+    case "mcp_tool_call": {
+      const argPreview = item.arguments ? summarizeArgs(item.arguments) : ""
       return toolBlock({
-        summary: `編輯 ${count} 個檔案`,
-        body: changes,
+        summary: `工具 ${item.server ? item.server + "/" : ""}${item.tool || ""}${argPreview ? " " + argPreview : ""}`,
         failed: item.status === "failed",
-        expanded: true,
       })
     }
-    case "mcp_tool_call":
-      return toolBlock({
-        summary: `工具 ${item.server ? item.server + "/" : ""}${item.tool || ""}`,
-        failed: item.status === "failed",
-      })
     case "web_search":
       return toolBlock({ summary: `網頁搜尋 ${item.query || ""}` })
+    case "image_generation":
+      return toolBlock({ summary: `圖片生成 ${item.status === "failed" ? "✗" : item.status === "completed" ? "✓" : "…"}` })
+    case "plan":
+      return planBlock(item.text || "")
     case "todo_list": {
       const todos = (item.items || [])
         .map((t) => `${t.completed ? "☑" : "☐"} ${t.text}`)
         .join("\n")
-      return toolBlock({ summary: "計畫", body: todos, expanded: true })
+      return planBlock(todos)
     }
+    case "subagent":
+      return subagentBlock(item)
+    case "context_compaction":
+      return metaBlockLine("· 已壓縮較早的對話以節省上下文")
+    case "review_mode":
+      return metaBlockLine(item.entered ? "· 進入審查模式" : "· 離開審查模式")
     case "error": {
       const el = document.createElement("div")
       el.className = "line error"
@@ -271,6 +273,136 @@ function buildItemEl(item) {
     default:
       return null
   }
+}
+
+function metaBlockLine(text) {
+  const el = document.createElement("div")
+  el.className = "line meta"
+  el.textContent = text
+  return el
+}
+
+function summarizeArgs(args) {
+  try {
+    const s = typeof args === "string" ? args : JSON.stringify(args)
+    return s.length > 60 ? s.slice(0, 60) + "…" : s
+  } catch {
+    return ""
+  }
+}
+
+/** Rich diff cell: per-file collapsible unified diff with +/- coloring. */
+function fileChangeBlock(item) {
+  const changes = item.changes || []
+  const totalAdd = changes.reduce((n, c) => n + countDiffLines(c.diff, "+"), 0)
+  const totalDel = changes.reduce((n, c) => n + countDiffLines(c.diff, "-"), 0)
+  const el = document.createElement("div")
+  el.className = "line filechange" + (item.status === "failed" ? " failed" : "")
+
+  const header = document.createElement("div")
+  header.className = "tool-header expandable"
+  const glyph = document.createElement("span")
+  glyph.className = "tool-glyph"
+  glyph.textContent = item.status === "failed" ? "✗" : "◆"
+  const label = document.createElement("span")
+  label.className = "tool-label"
+  const stat = totalAdd || totalDel ? `  +${totalAdd} -${totalDel}` : ""
+  label.textContent = `編輯 ${changes.length} 個檔案${stat}`
+  header.append(glyph, label)
+  el.appendChild(header)
+
+  const body = document.createElement("div")
+  body.className = "diff-body"
+  for (const change of changes) {
+    const fileEl = document.createElement("div")
+    fileEl.className = "diff-file"
+    const name = document.createElement("div")
+    name.className = "diff-file-name"
+    const mark = change.kind === "add" ? "+ " : change.kind === "delete" ? "- " : "~ "
+    name.textContent = mark + change.path
+    name.title = "在編輯器中開啟"
+    name.addEventListener("click", () => {
+      vscode.postMessage({ type: "openFile", path: change.path })
+    })
+    fileEl.appendChild(name)
+    if (change.diff && change.diff.trim()) {
+      fileEl.appendChild(renderDiff(change.diff))
+    }
+    body.appendChild(fileEl)
+  }
+  el.appendChild(body)
+  header.addEventListener("click", () => {
+    body.hidden = !body.hidden
+  })
+  return el
+}
+
+function countDiffLines(diff, sign) {
+  if (!diff) return 0
+  return diff.split("\n").filter((l) => l.startsWith(sign) && !l.startsWith(sign + sign)).length
+}
+
+function renderDiff(diff) {
+  const pre = document.createElement("pre")
+  pre.className = "diff"
+  for (const raw of diff.split("\n")) {
+    const line = document.createElement("span")
+    line.className = "diff-line"
+    if (raw.startsWith("@@")) line.classList.add("hunk")
+    else if (raw.startsWith("+") && !raw.startsWith("+++")) line.classList.add("add")
+    else if (raw.startsWith("-") && !raw.startsWith("---")) line.classList.add("del")
+    line.textContent = raw + "\n"
+    pre.appendChild(line)
+  }
+  return pre
+}
+
+/** Plan / todo checklist: parses "- [ ] / - [x]" markdown into checkable rows. */
+function planBlock(text) {
+  const el = document.createElement("div")
+  el.className = "line plan"
+  const title = document.createElement("div")
+  title.className = "plan-title"
+  title.textContent = "計畫"
+  el.appendChild(title)
+  const list = document.createElement("div")
+  list.className = "plan-list"
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean)
+  for (const raw of lines) {
+    const m = raw.match(/^[-*]?\s*\[([ xX✓☑])\]\s*(.*)$/) || raw.match(/^([☑☐])\s*(.*)$/)
+    const done = m ? /[xX✓☑]/.test(m[1]) : false
+    const label = m ? m[2] : raw.replace(/^[-*]\s*/, "")
+    const row = document.createElement("div")
+    row.className = "plan-row" + (done ? " done" : "")
+    const box = document.createElement("span")
+    box.className = "plan-box"
+    box.textContent = done ? "☑" : "☐"
+    const txt = document.createElement("span")
+    txt.textContent = label
+    row.append(box, txt)
+    list.appendChild(row)
+  }
+  el.appendChild(list)
+  return el
+}
+
+/** Subagent card: nested activity from a child thread. */
+function subagentBlock(item) {
+  const el = document.createElement("div")
+  el.className = "line subagent"
+  const header = document.createElement("div")
+  header.className = "subagent-header"
+  const glyph = document.createElement("span")
+  glyph.className = "subagent-glyph"
+  glyph.textContent = "⟐"
+  const label = document.createElement("span")
+  const name = (item.agentPath || "subagent").split("/").pop()
+  const kindText =
+    item.kind === "started" ? "啟動" : item.kind === "completed" ? "完成" : item.kind || ""
+  label.textContent = `子代理 ${name} ${kindText}`
+  header.append(glyph, label)
+  el.appendChild(header)
+  return el
 }
 
 function renderItem(item) {
@@ -380,6 +512,18 @@ function applyDelta(kind, itemId, text) {
     if (pre) {
       pre.textContent += text
     }
+  } else if (kind === "plan") {
+    const entry = streams.get(streamKey(itemId) + ":plan") || (() => {
+      const line = planBlock("")
+      appendLine(line)
+      const e = { el: line, raw: "" }
+      streams.set(streamKey(itemId) + ":plan", e)
+      return e
+    })()
+    entry.raw += text
+    const replaced = planBlock(entry.raw)
+    entry.el.replaceWith(replaced)
+    entry.el = replaced
   }
   pinWorking()
   scrollToBottom()
@@ -387,19 +531,49 @@ function applyDelta(kind, itemId, text) {
 
 // ---------- approvals ----------
 
-function approvalCard({ id, kind }) {
+function approvalCard({ id, kind, detail }) {
   const el = document.createElement("div")
   el.className = "line approval"
   const title = document.createElement("div")
   title.className = "approval-title"
   title.textContent =
     kind === "command" ? "請求核准：執行指令" : kind === "fileChange" ? "請求核准：修改檔案" : "請求核准：權限提升"
+  el.appendChild(title)
+
+  // Show what is actually being approved.
+  if (detail) {
+    if (kind === "command" && detail.command) {
+      const cmd = document.createElement("pre")
+      cmd.className = "approval-detail"
+      cmd.textContent = `$ ${detail.command}${detail.cwd ? `\n(cwd: ${detail.cwd})` : ""}`
+      el.appendChild(cmd)
+    } else if (kind === "fileChange" && (detail.files || []).length) {
+      const box = document.createElement("div")
+      box.className = "approval-detail"
+      for (const f of detail.files) {
+        const line = document.createElement("div")
+        const mark = f.kind === "add" ? "+ " : f.kind === "delete" ? "- " : "~ "
+        line.textContent = mark + f.path
+        box.appendChild(line)
+        if (f.diff) box.appendChild(renderDiff(f.diff))
+      }
+      el.appendChild(box)
+    }
+    if (detail.reason) {
+      const reason = document.createElement("div")
+      reason.className = "approval-reason"
+      reason.textContent = detail.reason
+      el.appendChild(reason)
+    }
+  }
+
   const row = document.createElement("div")
   row.className = "approval-actions"
   const actions = [
     { label: "允許一次", decision: "accept", primary: true },
     { label: "本次對話都允許", decision: "acceptForSession" },
     { label: "拒絕", decision: "decline", danger: true },
+    { label: "拒絕並中斷", decision: "cancel", danger: true },
   ]
   for (const action of actions) {
     const button = document.createElement("button")
@@ -419,9 +593,66 @@ function approvalCard({ id, kind }) {
     done.textContent = label
     el.appendChild(done)
   }
-  el.append(title, row)
+  el.appendChild(row)
   el.dataset.approvalId = id
   el.settle = settle
+  appendLine(el)
+  return el
+}
+
+/** Interactive question card (item/tool/requestUserInput). */
+function userInputCard({ id, questions }) {
+  const el = document.createElement("div")
+  el.className = "line approval"
+  const answers = []
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i]
+    const title = document.createElement("div")
+    title.className = "approval-title"
+    title.textContent = q.header || q.question || "問題"
+    el.appendChild(title)
+    if (q.question && q.question !== q.header) {
+      const sub = document.createElement("div")
+      sub.className = "approval-reason"
+      sub.textContent = q.question
+      el.appendChild(sub)
+    }
+    answers[i] = ""
+    if ((q.options || []).length) {
+      const row = document.createElement("div")
+      row.className = "approval-actions"
+      for (const opt of q.options) {
+        const b = document.createElement("button")
+        b.className = "approval-btn"
+        b.textContent = opt
+        b.addEventListener("click", () => {
+          answers[i] = opt
+          ;[...row.querySelectorAll("button")].forEach((x) => x.classList.remove("primary"))
+          b.classList.add("primary")
+        })
+        row.appendChild(b)
+      }
+      el.appendChild(row)
+    } else {
+      const input = document.createElement("input")
+      input.className = "approval-input"
+      input.type = q.isSecret ? "password" : "text"
+      input.addEventListener("input", () => (answers[i] = input.value))
+      el.appendChild(input)
+    }
+  }
+  const submit = document.createElement("button")
+  submit.className = "approval-btn primary"
+  submit.textContent = "送出"
+  submit.addEventListener("click", () => {
+    vscode.postMessage({ type: "userInputReply", id, answers })
+    el.querySelectorAll("button, input").forEach((x) => (x.disabled = true))
+    const done = document.createElement("div")
+    done.className = "approval-done"
+    done.textContent = "已回覆"
+    el.appendChild(done)
+  })
+  el.appendChild(submit)
   appendLine(el)
   return el
 }
@@ -813,8 +1044,16 @@ window.addEventListener("message", (e) => {
       applyDelta(message.kind, message.itemKey, message.text)
       break
     case "approvalRequest":
-      approvalCard({ id: message.id, kind: message.kind })
+      approvalCard({ id: message.id, kind: message.kind, detail: message.detail })
       break
+    case "userInputRequest":
+      userInputCard({ id: message.id, questions: message.questions || [] })
+      break
+    case "tokenUsage": {
+      const meter = $("token-meter")
+      if (meter) meter.textContent = `${(message.total / 1000).toFixed(1)}k tokens`
+      break
+    }
     case "approvalResolved": {
       const card = messagesEl.querySelector(`[data-approval-id="${message.id}"]`)
       if (card && card.settle) {
