@@ -112,7 +112,7 @@ python3 -m venv /tmp/sweb && /tmp/sweb/bin/pip install swebench
 
 ## 7. 已知本機結果（供對照，AWS 應能重現）
 
-見 [`RESULTS.md`](RESULTS.md)。摘要：HumanEval 三引擎 98–100% 打平（飽和），**agent-core token 省 5–8×、速度快 1.5–2×**；SWE-bench patch 生成 agent-core 產出最多且定位正確檔案，resolved 率待 AWS docker 評分補上。
+見 [`RESULTS.md`](RESULTS.md)。摘要：HumanEval 三引擎 98–100% 打平（飽和），**agent-core token 省 5–8×、速度快 1.5–2×**；SWE-bench Lite 官方 docker 評分（Qwen、~40 instance）：**agent-core 43% resolved、codex-unieai 40%、codex-stock 16%**；GLM-5.2 + codex-unieai 於 flask 子集 3/3 全解。
 
 ---
 

@@ -22,6 +22,54 @@ import { dirname, resolve } from "node:path";
 
 const SANDBOX_DENIED = /operation not permitted|permission denied|sandbox/i;
 
+// --- fuzzy edit matching (ported from grok-build's seek_sequence 4-tier design) ---
+// Models mangle whitespace and typographic punctuation when echoing file text.
+// Escalating normalization tiers recover the edit instead of bouncing the model
+// through read→retry loops: exact → rstrip → trim → unicode-normalized.
+const UNICODE_MAP = [
+  [/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-"], // dashes
+  [/[\u2018\u2019\u201A\u201B]/g, "'"], // smart single quotes
+  [/[\u201C\u201D\u201E\u201F]/g, '"'], // smart double quotes
+  [/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " "] // exotic spaces (NBSP, en/em, zero-width, ideographic)
+];
+const normUnicode = (s) => UNICODE_MAP.reduce((acc, [re, to]) => acc.replace(re, to), s);
+const TIERS = [
+  { name: "exact", fn: (l) => l },
+  { name: "ignoring trailing whitespace", fn: (l) => l.replace(/[ \t]+$/, "") },
+  { name: "ignoring surrounding whitespace", fn: (l) => l.trim() },
+  { name: "normalizing unicode punctuation", fn: (l) => normUnicode(l.trim()) }
+];
+
+/**
+ * Find `pattern` lines inside `fileLines` under escalating normalization.
+ * Returns { indices, tier } for the FIRST tier that yields any match, so a
+ * stricter match is never shadowed by a looser one.
+ */
+function seekLines(fileLines, patternLines) {
+  for (const tier of TIERS) {
+    const want = patternLines.map(tier.fn);
+    const indices = [];
+    outer: for (let i = 0; i + want.length <= fileLines.length; i++) {
+      for (let j = 0; j < want.length; j++) {
+        if (tier.fn(fileLines[i + j]) !== want[j]) continue outer;
+      }
+      indices.push(i);
+    }
+    if (indices.length > 0) return { indices, tier: tier.name };
+  }
+  return { indices: [], tier: null };
+}
+
+// Middle truncation (codex-rs style): long tool output keeps BOTH the head
+// (what ran, first errors) and the tail (final result, summary line) — the
+// middle is the expendable part. Head-only slicing hides exactly the part the
+// model usually needs (the outcome).
+function truncateMiddle(s, max = 8000) {
+  if (s.length <= max) return s;
+  const half = Math.floor((max - 80) / 2);
+  return `${s.slice(0, half)}\n[... output truncated (${s.length} chars total) ...]\n${s.slice(-half)}`;
+}
+
 function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
   return new Promise((done) => {
     execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -53,7 +101,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const sandboxed = await run(sandboxBin, ["sandbox", "--", "sh", "-c", cmd], { cwd: root });
         const denied = sandboxed.code !== 0 && SANDBOX_DENIED.test(sandboxed.stderr + sandboxed.stdout);
         if (!denied) {
-          return toolResult({ ok: sandboxed.code === 0, modelText: `exit ${sandboxed.code}\n${(sandboxed.stdout + sandboxed.stderr).slice(0, 8000)}` });
+          return toolResult({ ok: sandboxed.code === 0, modelText: `exit ${sandboxed.code}\n${truncateMiddle(sandboxed.stdout + sandboxed.stderr)}` });
         }
         // Sandbox denial → escalate through the host's approval channel.
         const decision = runCtx.requestApproval
@@ -63,7 +111,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           return toolResult({ ok: false, modelText: `exit ${sandboxed.code}\n(blocked by sandbox; escalation ${runCtx.requestApproval ? "declined by user" : "unavailable"})\n${sandboxed.stderr.slice(0, 2000)}` });
         }
         const raw = await run("sh", ["-c", cmd], { cwd: root });
-        return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${(raw.stdout + raw.stderr).slice(0, 8000)}` });
+        return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
       },
       async read(args) {
         try {
@@ -84,11 +132,29 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const abs = inWorkspace(String(args?.filePath || ""));
           const before = await readFile(abs, "utf8");
           const oldString = String(args?.oldString ?? "");
+          const newString = String(args?.newString ?? "");
+          // Fast path: exact substring, must be unique.
           const hits = before.split(oldString).length - 1;
-          if (hits === 0) return toolResult({ ok: false, modelText: "error: oldString not found — read the file and copy the exact text" });
+          if (hits === 1) {
+            await writeFile(abs, before.replace(oldString, newString), "utf8");
+            return toolResult({ modelText: `edited ${args.filePath}` });
+          }
           if (hits > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${hits} times — include more surrounding context` });
-          await writeFile(abs, before.replace(oldString, String(args?.newString ?? "")), "utf8");
-          return toolResult({ modelText: `edited ${args.filePath}` });
+          // Fuzzy path: line-based match under escalating normalization, so
+          // whitespace/punctuation drift in the model's copy still lands.
+          const fileLines = before.split("\n");
+          let patternLines = oldString.split("\n");
+          let found = seekLines(fileLines, patternLines);
+          if (!found.indices.length && patternLines.length > 1 && patternLines[patternLines.length - 1] === "") {
+            patternLines = patternLines.slice(0, -1); // spurious trailing newline retry
+            found = seekLines(fileLines, patternLines);
+          }
+          if (!found.indices.length) return toolResult({ ok: false, modelText: "error: oldString not found — read the file and copy the exact text" });
+          if (found.indices.length > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${found.indices.length} times (${found.tier}) — include more surrounding context` });
+          fileLines.splice(found.indices[0], patternLines.length, ...newString.split("\n"));
+          await writeFile(abs, fileLines.join("\n"), "utf8");
+          const note = found.tier === "exact" ? "" : ` (matched ${found.tier})`;
+          return toolResult({ modelText: `edited ${args.filePath}${note}` });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       }
     }
