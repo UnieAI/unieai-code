@@ -888,6 +888,9 @@ const slashMenuEl = $("slash-menu")
 const SLASH_COMMANDS = [
   { cmd: "/new", desc: "開新對話", run: () => vscode.postMessage({ type: "newChat" }) },
   { cmd: "/history", desc: "歷史 session", run: () => $("history-btn").click() },
+  { cmd: "/model", desc: "切換模型", run: () => modelEl.focus() },
+  { cmd: "/engine", desc: "切換引擎 (app-server / agent-core)", run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
+  { cmd: "/stop", desc: "中斷目前回合", run: () => vscode.postMessage({ type: "stop" }) },
   { cmd: "/logout", desc: "登出 UnieAI Studio", run: () => vscode.postMessage({ type: "logout" }) },
   { cmd: "/terminal", desc: "在終端開啟 TUI", run: () => vscode.postMessage({ type: "openTerminal" }) },
 ]

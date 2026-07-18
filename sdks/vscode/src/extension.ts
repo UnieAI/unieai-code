@@ -207,6 +207,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openTerminal":
           vscode.commands.executeCommand("unieai-code.openTerminal")
           break
+        case "openSetting":
+          vscode.commands.executeCommand("workbench.action.openSettings", String(message.key || "unieai-code"))
+          break
         case "setModel":
           if (typeof message.model === "string") {
             this.context.globalState.update("unieai-code.model", message.model)
@@ -251,6 +254,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.threadId = undefined
     this.threadSettings = undefined
     this.pendingApprovals.clear()
+    if (this.engineChoice() === "agent-core") {
+      this.agentCore?.newChat()
+    }
     this.post({ type: "reset" })
     this.sendBootstrap()
   }
@@ -358,8 +364,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return path.join(unieaiHome(), "sessions")
   }
 
+  private agentSessionsDir(): string {
+    return path.join(unieaiHome(), "agent-sessions")
+  }
+
   /** Lists recorded sessions (rollout-*.jsonl), newest first. */
   private listSessions() {
+    if (this.engineChoice() === "agent-core") {
+      this.listAgentCoreSessions()
+      return
+    }
     const root = this.sessionsDir()
     const files: { file: string; mtime: number }[] = []
     const walk = (dir: string, depth: number) => {
@@ -439,8 +453,64 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return { id, preview: preview || "(no prompt)", cwd }
   }
 
+  /** Lists agent-core sessions ($UNIEAI_HOME/agent-sessions/*.json). */
+  private listAgentCoreSessions() {
+    const dir = this.agentSessionsDir()
+    const sessions: Json[] = []
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"))
+    } catch {
+      names = []
+    }
+    for (const name of names) {
+      try {
+        const full = path.join(dir, name)
+        const parsed = JSON.parse(fs.readFileSync(full, "utf8"))
+        const firstUser = (parsed.messages ?? []).find((m: Json) => m.role === "user")
+        const id = parsed.id ?? name.replace(/\.json$/, "")
+        sessions.push({
+          id,
+          path: id, // agent-core resumes by id, not filesystem path
+          preview: String(firstUser?.content ?? "(empty)").slice(0, 120),
+          cwd: parsed.cwd ?? "",
+          mtime: fs.statSync(full).mtimeMs,
+        })
+      } catch {
+        /* skip */
+      }
+    }
+    sessions.sort((a, b) => b.mtime - a.mtime)
+    this.post({ type: "sessions", sessions: sessions.slice(0, 30) })
+  }
+
+  /** Resumes an agent-core session: replay its messages, point the engine at it. */
+  private loadAgentCoreSession(sessionId: string) {
+    const safe = sessionId.replace(/[^\w.-]/g, "")
+    let parsed: Json
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(this.agentSessionsDir(), `${safe}.json`), "utf8"))
+    } catch (err) {
+      this.post({ type: "fatal", message: `無法讀取 session: ${String(err)}` })
+      return
+    }
+    const items: { role: string; text: string }[] = []
+    for (const m of parsed.messages ?? []) {
+      if (m.role === "user" || m.role === "assistant") {
+        const text = typeof m.content === "string" ? m.content.trim() : ""
+        if (text) items.push({ role: m.role === "user" ? "user" : "agent", text })
+      }
+    }
+    this.ensureAgentCore().resume(safe)
+    this.post({ type: "sessionLoaded", items })
+  }
+
   /** Loads a session transcript and switches the thread to it. */
   private loadSession(file: string) {
+    if (this.engineChoice() === "agent-core") {
+      this.loadAgentCoreSession(String(file))
+      return
+    }
     const resolved = path.resolve(file)
     if (!resolved.startsWith(path.resolve(this.sessionsDir()) + path.sep)) {
       return

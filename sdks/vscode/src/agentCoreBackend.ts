@@ -26,6 +26,7 @@ export interface AgentCoreCallbacks {
 export class AgentCoreBackend {
   private engine: ReturnType<typeof createEngine> | null = null
   private abort: AbortController | null = null
+  private turnText = ""
 
   constructor(
     private readonly workspace: string,
@@ -34,6 +35,10 @@ export class AgentCoreBackend {
 
   get model(): string {
     return this.engine?.model ?? ""
+  }
+
+  get sessionId(): string {
+    return this.engine?.sessionId ?? ""
   }
 
   get models(): Array<{ id: string; name?: string }> {
@@ -49,7 +54,10 @@ export class AgentCoreBackend {
       workspace: this.workspace,
       model,
       resume: resume ?? null,
-      onText: (d: string) => this.cb.post({ type: "turnDelta", kind: "agent", itemKey: "agent", text: d }),
+      onText: (d: string) => {
+        this.turnText += d
+        this.cb.post({ type: "turnDelta", kind: "agent", itemKey: "agent", text: d })
+      },
       onReasoning: (d: string) =>
         this.cb.post({ type: "turnDelta", kind: "reasoning", itemKey: "reasoning", text: d }),
       onToolEvent: (e: Json) => this.mapToolEvent(e),
@@ -84,19 +92,31 @@ export class AgentCoreBackend {
   }
 
   newChat(model?: string): void {
+    this.engine = null
     this.ensureEngine(model)
   }
 
   resume(sessionId: string): void {
+    this.engine = null
     this.ensureEngine(undefined, sessionId)
   }
 
   async send(text: string, model?: string): Promise<void> {
     this.ensureEngine(model)
     this.abort = new AbortController()
+    this.turnText = ""
     this.cb.post({ type: "running", value: true })
     try {
       const result = await this.engine!.send(text, { abortSignal: this.abort.signal })
+      // Replace the plain streamed text with a markdown-rendered final item,
+      // matching the app-server backend's item.completed behaviour.
+      if (this.turnText.trim()) {
+        this.cb.post({
+          type: "itemUpsert",
+          item: { id: "agent", type: "agent_message", text: this.turnText },
+          done: true,
+        })
+      }
       this.cb.post({ type: "turnState", state: result.finishReason === "failed" ? "failed" : "idle", retryable: result.finishReason === "failed" })
     } catch (err) {
       this.cb.post({ type: "turnState", state: "failed", retryable: true })
