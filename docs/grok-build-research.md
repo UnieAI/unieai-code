@@ -90,6 +90,26 @@
   未改檔 → mutation nudge;有改檔 → 獨立 LLM 以 diff+任務嚴格審查,
   非 ACHIEVED 就把缺口(≤5 條可行動 bullet)注入逼修,completionCheckMax=2
 
+## v0.3.0 方向:失敗模式驅動(2026-07-18 軌跡分析)
+
+v0.2.0 把空手率打到 17% 後,最大失分池變成「有 patch 但沒修對」(123/300)。
+對 18 題抽樣的軌跡 + 官方測試輸出分類:
+
+| 失敗模式 | 佔比 | 對策 |
+|---|---|---|
+| (c) 輸出字面細節錯(格式/例外/字串)| 9/18 | 收尾前跑改動入口比對 issue 引用的字面(prompt+skeptic)|
+| (b) 修主幹漏 sibling(下一行/反向分支)| 4/18 | skeptic sibling 檢查表強化 |
+| (d) P2P 回歸(循環 import 一發炸 174 測試)| 2+6/18 | **決定論閘門**:py_compile + import 冒煙(外部缺依賴不誤判)|
+| (f) 測試預期與 issue 字面不同 | 2/18 | 引導讀鄰近測試 |
+| (a) 改錯檔案 | 1/18 | — |
+
+共同主題:**全是「跑一下就會發現」的錯**。v0.3.0 實作(coding 層,agent-core 不變):
+- `deterministicGates`:changed .py → py_compile 語法閘 + import 冒煙閘(PYTHONPATH
+  含 src/;外部 ModuleNotFoundError 視為無法判定,不誤擋)
+- skeptic v2 prompt:LITERALS / SIBLINGS / EXCEPTIONS / REGRESSIONS 四段檢查表
+- guidance:+「任務有引用精確輸出時,收尾前必跑改動入口逐字比對」
+- completionCheckMax 2→3(mutation / 決定論閘門 / skeptic 各一輪)
+
 ## 設計哲學筆記(長期方向)
 
 - **步數上限退位,品質關卡上位**:grok-build 主 agent `max_turns` 預設

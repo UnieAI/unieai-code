@@ -24,6 +24,7 @@ const CODE_TOOL_GUIDANCE = [
   "- Before choosing API names, parameters, or exception types for a change, check how nearby code and tests do it — match the project's existing interface conventions, don't invent your own. Exception: input validation on public APIs must raise a specific exception (ValueError/TypeError), never `assert` — asserts vanish under `python -O` and callers/tests expect a real exception, even if older nearby code still uses assert.",
   "- After fixing an issue, search for sibling code paths that need the same fix (other entry points, overloads, or callers with the same flaw) before finishing.",
   "- Act, don't announce: never end a reply with intent (\"let me…\", \"now I will…\") — if any work remains, emit the corresponding tool call in this same turn. A plain-text reply means you are DONE.",
+  "- When the task quotes an exact expected output (error message, repr, generated code/LaTeX, serialized form), run the changed entry point with a tiny script before finishing and compare your actual output against EVERY quoted literal character-for-character — near-miss formatting is a failure.",
   "- After a tool call that changes state (edits, writes, installs), confirm the result before reporting success — never claim an action worked without evidence.",
   "- When a tool call fails, adapt: don't retry the identical call unchanged, and don't paper over the failure.",
   "- Verify with the project's own checks (tests/lint/typecheck) when they exist. Never commit unless the user explicitly asks."
@@ -40,8 +41,43 @@ const CODE_TOOL_GUIDANCE = [
 // must never be nudged into editing files.
 const MID = (s, max) => (s.length <= max ? s : `${s.slice(0, max / 2)}\n[...truncated...]\n${s.slice(-max / 2)}`);
 
+// Deterministic pre-gates over the changed files (v0.3.0, from SWE-bench
+// failure-mode analysis: most applied-but-failed patches die on errors a single
+// execution would have caught). Best-effort: environments without the repo's
+// deps must never false-positive, so anything that looks like a missing
+// EXTERNAL dependency is treated as "cannot judge" and skipped.
+function deterministicGates(workspace) {
+  const changed = spawnSync("git", ["-C", workspace, "diff", "--name-only"], { encoding: "utf8", timeout: 10000 });
+  if (changed.status !== 0) return null;
+  const pyFiles = String(changed.stdout || "").split("\n").filter((f) => f.endsWith(".py"));
+  const problems = [];
+  for (const f of pyFiles.slice(0, 10)) {
+    // 1. Syntax gate — always valid regardless of deps.
+    const syn = spawnSync("python3", ["-m", "py_compile", f], { cwd: workspace, encoding: "utf8", timeout: 15000 });
+    if (syn.status !== 0) {
+      problems.push(`\`${f}\` fails to compile:\n${MID(String(syn.stderr || ""), 600)}`);
+      continue;
+    }
+    // 2. Import gate — catches circular imports / NameErrors at module level.
+    //    A ModuleNotFoundError for something outside the workspace is an
+    //    environment gap, not a patch bug → ignore.
+    const mod = f.replace(/^src\//, "").replace(/\.py$/, "").replace(/\/__init__$/, "").replace(/\//g, ".");
+    const imp = spawnSync("python3", ["-c", `import ${mod}`], { cwd: workspace, encoding: "utf8", timeout: 20000, env: { ...process.env, PYTHONPATH: `${workspace}/src:${workspace}` } });
+    if (imp.status !== 0) {
+      const err = String(imp.stderr || "");
+      const missing = err.match(/ModuleNotFoundError: No module named '([^']+)'/);
+      const missingIsExternal = missing && !pyFiles.some((p) => p.startsWith(missing[1].split(".")[0]));
+      if (!missingIsExternal && /Error/.test(err)) {
+        problems.push(`\`import ${mod}\` fails:\n${MID(err, 600)}`);
+      }
+    }
+  }
+  return problems.length ? problems : null;
+}
+
 function workspaceCompletionCheck({ workspace, model, callerKey }) {
   let skepticRan = false;
+  let gatesRan = false;
   return async ({ answerText, messages }) => {
     const st = spawnSync("git", ["-C", workspace, "status", "--porcelain"], { encoding: "utf8", timeout: 10000 });
     if (st.status !== 0) return null; // not a git repo / git broken — never block
@@ -51,6 +87,21 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
         "make them now with the edit/write tools and verify them. If you are certain no " +
         "change is needed, state explicitly why."
       );
+    }
+    // Deterministic gates first (cheap, no LLM): syntax + import health of the
+    // touched Python files. One round of feedback, then don't repeat.
+    if (!gatesRan) {
+      gatesRan = true;
+      try {
+        const problems = deterministicGates(workspace);
+        if (problems) {
+          return (
+            "[verification] Automatic checks on your changed files found problems:\n\n" +
+            problems.join("\n\n") +
+            "\n\nFix these now (they will break every test), verify by re-running the failing command, then finish."
+          );
+        }
+      } catch { /* gates are best-effort */ }
     }
     // Skeptic verification: once per turn, only when something was changed.
     if (skepticRan) return null;
@@ -65,10 +116,17 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
         temperature: 0,
         maxTokens: 600,
         system:
-          "You are a skeptical senior reviewer. Judge STRICTLY whether the diff fully addresses the task: " +
-          "sibling code paths needing the same fix (other entry points, overloads, callers), error/exception " +
-          "types callers and tests would expect (input validation must raise a specific exception such as " +
-          "ValueError — `assert` is a gap, it vanishes under `python -O`), and no obviously broken behavior. " +
+          "You are a skeptical senior reviewer. Judge STRICTLY whether the diff fully addresses the task:\n" +
+          "1. LITERALS: if the task quotes an exact expected output/message/format (error string, printed repr, " +
+          "serialized form, LaTeX/code output), verify the diff produces that EXACT literal — case, braces, " +
+          "quoting, spacing. Near-miss output is a gap.\n" +
+          "2. SIBLINGS: other code paths with the same flaw (the next line, the reverse branch, other entry " +
+          "points/overloads/callers, init vs update paths) must be fixed too — an identical unfixed pattern " +
+          "adjacent to the edit is a gap.\n" +
+          "3. EXCEPTIONS: error types callers/tests expect (input validation raises ValueError/TypeError — " +
+          "`assert` is a gap; returning the wrong exception type from a deeper layer is a gap).\n" +
+          "4. REGRESSIONS: module-level imports that could be circular, API signatures changed under existing " +
+          "callers, behavior changes that break the unchanged default path.\n" +
           'Reply with exactly "ACHIEVED" if complete; otherwise list the concrete gaps (max 5 short bullets, each actionable, no preamble).',
         user: `## Task\n${MID(task, 3000)}\n\n## Workspace diff\n${MID(diff.stdout, 6000)}\n\n## Agent's final report\n${MID(String(answerText || ""), 1500)}`
       });
@@ -165,7 +223,7 @@ export function createEngine({
         completionCheck: expectsMutation
           ? workspaceCompletionCheck({ workspace, model: activeModel, callerKey: credentials.gatewayApiKey })
           : null,
-        completionCheckMax: 2, // mutation gate + one skeptic gap-replay round
+        completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
         requestApproval
       };
