@@ -1,4 +1,4 @@
 [submodule "third_party/unieai-agent-core"]
 	path = third_party/unieai-agent-core
 	url = https://github.com/unieai/unieai-agent-core.git
-	branch = responses-and-approval-seam
+	branch = main
