@@ -36,7 +36,8 @@
 
 | 引擎 | resolved | per-patch 修對率 | 空手率 | tokens/題 |
 |---|---|---|---|---|
-| **agent-core v0.3.0** | **131/300 = 43.7%** | 51% | 14% | ~380k |
+| **agent-core v0.3.2** | **138/300 = 46.0%** | **53%** | 13% | ~380k |
+| agent-core v0.3.0 | 131/300 = 43.7% | 51% | 14% | ~380k |
 | agent-core v0.2.0 | 127/300 = 42.3% | 51% | 17% | 368k |
 | agent-core v0.1.0 | 83/300 = 27.7% | 53% | 47% | 123k |
 | codex-unieai | 72/300 = 24.0% | 51% | 53% | — |
@@ -45,7 +46,10 @@
 **跨模型驗證(agent-core v0.2.x,同 300 題):MiniMax-M2 = 141/300 = 47.0%**
 (patch 率 97%、空手僅 8 題)——「harness 能拉小模型,大模型拉更高」成立。
 v0.3.0 增量:+決定論完成閘門(py_compile/import 冒煙)+ skeptic v2 檢查表,
-+1.4pt(邊際);v0.3.1/0.3.2(靜態 diff 檢查、工具內建即時驗證)測試中。
++1.4pt(邊際)。**v0.3.2 增量:同樣的檢查搬進 edit/write 工具、動作當下即時
+回饋(py_compile 判定 + 倖存 sibling 行提示直接附在工具結果),+2.3pt 且
+per-patch 首次提升(51→53%)——「智慧放進工具而非提示詞、回饋在動作當下」
+原則的數據驗證。**
 
 **v0.2.0 = v0.1.0 + 一日優化**(版本對應 agent-core CHANGELOG)（grok-build / codex-rs 逐行研究移植）：progress-aware
 doom streak、completionCheck 完成契約（mutation gate + skeptic 驗證 + 缺口重播）、
