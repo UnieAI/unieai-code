@@ -69,8 +69,10 @@ uc0.4.0 正確率零退化;token 內部變 1.8×(空回應重採 + 加長 prompt
 | MiniMax × uc0.2.0 | 47.0% | 163.4M | 545k | 251s | 1.16M |
 
 > 版本命名 `ucX.Y.Z-acA.B.C`：uc = unieai-code(coding 層自己的版本)，
-> ac = 它依賴的 unieai-agent-core 版本。agent-core 只出到 0.2.0；uc0.3.0 之後
-> 的改動全在 coding 層(agent-runtime)，依賴同一個 ac0.2.0，agent-core 沒有 0.3.x+。
+> ac = 它依賴的 unieai-agent-core 版本。下方所有 SWE-bench 數據是在 **ac0.2.0**
+> 上跑的(標籤即歷史事實)；uc0.3.0 之後的優化全在 coding 層(agent-runtime)。
+> agent-core 之後另出了 **ac0.3.0**(domain-agnostic hooks，供 Studio 分離用，
+> 對 coding 行為向後相容)——現行 submodule 已指向 ac0.3.0,行為與 ac0.2.0 等價。
 > minor(第二位)=有感功能/大動，patch(第三位)=小修。uc 階梯:0.1.0 baseline
 > → 0.2.0 迴圈機制+完成契約(大) → 0.3.0 決定論閘門+skeptic → 0.3.1 靜態 diff
 > 檢查(小補，未單獨評分，併入 0.4.0) → 0.4.0 工具即時驗證(現行)。
