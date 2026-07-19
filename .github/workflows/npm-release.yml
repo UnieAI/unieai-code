@@ -96,8 +96,18 @@ jobs:
           no_jitter_var="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET//-/_}"
           echo "${no_jitter_var}=1" >> "$GITHUB_ENV"
 
+      # openai/codex only publishes custom rusty_v8 artifacts for mac/linux
+      # (musl needs them; denoland ships no musl prebuilts). On Windows the
+      # v8 crate's build.rs downloads the official denoland prebuilt instead.
       - name: Configure rusty_v8 artifact overrides and verify checksums
+        if: ${{ !contains(matrix.target, 'windows') }}
         uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Expose MSVC developer environment
+        if: contains(matrix.target, 'windows')
+        uses: ./.github/actions/setup-msvc-env
         with:
           target: ${{ matrix.target }}
 
