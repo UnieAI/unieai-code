@@ -85,13 +85,24 @@ uc0.4.0 正確率零退化;token 內部變 1.8×(空回應重採 + 加長 prompt
 - 回收槓桿：gateway 目前 `cached_input_tokens=0`，開 prompt caching 可壓 input（agentic
   負載 history 前綴天然可快取），是唯一不犧牲準確率的成本下降手段。
 
-**跨模型驗證(agent-core v0.2.x,同 300 題):MiniMax-M2 × uc0.2.0 = 141/300 = 47.0%**
-(patch 率 97%、空手僅 8 題)——「harness 能拉小模型,大模型拉更高」成立。
-uc0.3.0 增量:+決定論完成閘門(py_compile/import 冒煙)+ skeptic v2 檢查表,
-+1.4pt(邊際)。**uc0.4.0 增量:同樣的檢查搬進 edit/write 工具、動作當下即時
-回饋(py_compile 判定 + 倖存 sibling 行提示直接附在工具結果),+2.3pt 且
-per-patch 首次提升(51→53%)——「智慧放進工具而非提示詞、回饋在動作當下」
-原則的數據驗證。**
+**跨模型(同 300 題,agent-core coding 層):**
+
+| 模型 × 版本 | resolved | 備註 |
+|---|---|---|
+| Qwen × uc0.1.0 → uc0.4.0 | 27.7% → **46.0%** | +18.3pt,精修對弱模型幫助大 |
+| MiniMax × uc0.2.0 | 47.0% | patch 率 97%、空手僅 8 題 |
+| MiniMax × uc0.4.0 | 46.0%（289 完成，1 題 docker 限流）| 與 uc0.2.0 打平 |
+
+兩個發現:
+1. **harness 拉小模型、大模型拉更高** —— 同 harness 下 MiniMax(47%)> Qwen(46%)。
+2. **精修的邊際遞減,且模型越強越小** —— uc0.3.0→uc0.4.0 的決定論閘門/skeptic/工具
+   即時驗證把 Qwen 從 43.7%→46.0%,但對 MiniMax 幾乎中性(47→46,雜訊內)。這些機制
+   補的是空 patch、字面錯、漏 sibling 等短板,**強模型本來就少犯,可補空間小**。harness
+   優化的本質是補模型短板,模型越強、能補的越少。
+
+各版增量(Qwen):uc0.3.0 +決定論閘門+skeptic v2(+1.4pt);**uc0.4.0 把同樣的檢查
+搬進 edit/write 工具、動作當下即時回饋(+2.3pt、per-patch 首升 51→53%)——「智慧放
+進工具而非提示詞、回饋在動作當下」原則的數據驗證。**
 
 **uc0.2.0 = uc0.1.0 + 一日優化(含 agent-core 0.1.0→0.2.0)**（grok-build / codex-rs 逐行研究移植）：progress-aware
 doom streak、completionCheck 完成契約（mutation gate + skeptic 驗證 + 缺口重播）、
