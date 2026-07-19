@@ -6,6 +6,8 @@
  * turn. History persistence and toolset assembly live here.
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { buildToolset } from "../../third_party/unieai-agent-core/src/toolset.mjs";
 import { runAgentLoop } from "../../third_party/unieai-agent-core/src/loop.mjs";
 import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/prompt.mjs";
@@ -46,7 +48,7 @@ const MID = (s, max) => (s.length <= max ? s : `${s.slice(0, max / 2)}\n[...trun
 // execution would have caught). Best-effort: environments without the repo's
 // deps must never false-positive, so anything that looks like a missing
 // EXTERNAL dependency is treated as "cannot judge" and skipped.
-function deterministicGates(workspace) {
+export function deterministicGates(workspace) {
   const changed = spawnSync("git", ["-C", workspace, "diff", "--name-only"], { encoding: "utf8", timeout: 10000 });
   if (changed.status !== 0) return null;
   const pyFiles = String(changed.stdout || "").split("\n").filter((f) => f.endsWith(".py"));
@@ -75,6 +77,54 @@ function deterministicGates(workspace) {
   return problems.length ? problems : null;
 }
 
+// Static diff checks (deterministic, dependency-free — pure text analysis of
+// the diff + task). Each is a high-precision pattern from observed SWE-bench
+// failure modes; all report-style (the model judges applicability).
+export function staticDiffChecks(workspace, task) {
+  const out = [];
+  const d = spawnSync("git", ["-C", workspace, "diff", "-U0"], { encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
+  if (d.status !== 0) return out;
+  const files = {};
+  let cur = null;
+  for (const line of String(d.stdout || "").split("\n")) {
+    if (line.startsWith("+++ b/")) { cur = line.slice(6); files[cur] = { removed: [], added: [] }; }
+    else if (cur && line.startsWith("-") && !line.startsWith("---")) files[cur].removed.push(line.slice(1));
+    else if (cur && line.startsWith("+") && !line.startsWith("+++")) files[cur].added.push(line.slice(1));
+  }
+  // 1. Test files must not be edited (SWE-bench contract; also generally risky).
+  const testFiles = Object.keys(files).filter((f) => /(^|\/)tests?\/|(^|\/)test_[^/]*\.py$|_test\.py$/.test(f));
+  if (testFiles.length) {
+    out.push(`You modified test file(s): ${testFiles.join(", ")} — the task says do NOT edit or add tests. Revert them unless the task explicitly requires it.`);
+  }
+  // 2. Exception-type contract: task names an exception, change adds bare assert.
+  const excs = [...new Set([...String(task).matchAll(/raise[sd]?\s+(?:an?\s+)?`?([A-Z][A-Za-z]*Error)`?/g)].map((m) => m[1]))];
+  for (const [f, ch] of Object.entries(files)) {
+    if (/test/.test(f) || !f.endsWith(".py")) continue;
+    const addsAssert = ch.added.some((l) => /^\s*assert\s/.test(l));
+    const addsExc = ch.added.some((l) => excs.some((e) => l.includes(e)));
+    if (excs.length && addsAssert && !addsExc) {
+      out.push(`The task mentions raising ${excs.join("/")} but your change adds a bare \`assert\` in ${f} — asserts vanish under \`python -O\` and tests check the exception type. Use \`raise ${excs[0]}(...)\`.`);
+    }
+  }
+  // 3. Surviving identical copies of a line you changed (exact match → zero
+  //    false positives; the classic missed-sibling signal).
+  for (const [f, ch] of Object.entries(files)) {
+    let content;
+    try { content = readFileSync(join(workspace, f), "utf8").split("\n"); } catch { continue; }
+    const seen = new Set();
+    for (const r of ch.removed) {
+      const t = r.trim();
+      if (t.length < 12 || t.startsWith("#") || seen.has(t)) continue;
+      seen.add(t);
+      const hits = content.map((l, i) => (l.trim() === t ? i + 1 : 0)).filter(Boolean);
+      if (hits.length) {
+        out.push(`In ${f} you changed \`${t.slice(0, 90)}\` — but an IDENTICAL line still exists at line ${hits.slice(0, 4).join(", ")}. Check whether it needs the same fix (sibling code path).`);
+      }
+    }
+  }
+  return out.slice(0, 6);
+}
+
 function workspaceCompletionCheck({ workspace, model, callerKey }) {
   let skepticRan = false;
   let gatesRan = false;
@@ -93,12 +143,13 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
     if (!gatesRan) {
       gatesRan = true;
       try {
-        const problems = deterministicGates(workspace);
-        if (problems) {
+        const task = String(messages.find((m) => m.role === "user")?.content || "");
+        const problems = [...(deterministicGates(workspace) || []), ...staticDiffChecks(workspace, task)];
+        if (problems.length) {
           return (
-            "[verification] Automatic checks on your changed files found problems:\n\n" +
-            problems.join("\n\n") +
-            "\n\nFix these now (they will break every test), verify by re-running the failing command, then finish."
+            "[verification] Automatic checks on your changes found issues:\n\n- " +
+            problems.join("\n- ") +
+            "\n\nAddress each one now (fix it, or state precisely why it does not apply), then finish."
           );
         }
       } catch { /* gates are best-effort */ }
