@@ -1,0 +1,271 @@
+name: npm-release
+
+# Builds the codex-rs CLI for every npm-supported platform, stages the
+# @unieai/code npm packages, and publishes them to the npm registry.
+#
+# npm layout (see codex-cli/scripts/build_npm_package.py):
+#   @unieai/code@<version>             root launcher (bin/codex.js), takes `latest`
+#   @unieai/code@<version>-<platform>  per-platform binary payloads, referenced by
+#                                      the root package's optionalDependencies via
+#                                      npm aliases (@unieai/code-<platform>)
+#
+# Platform payloads must be published BEFORE the root package so that the
+# aliases resolve the moment `latest` moves.
+#
+# Version semantics: the npm version comes from the tag (npm-v0.0.16 -> 0.0.16)
+# or the workflow_dispatch input. The in-tree Cargo workspace version is the
+# internal build id (e.g. 0.0.16-dev-uc0.4.0-ac0.2.0) and is intentionally NOT
+# overwritten — it is what `unieai --version` reports.
+#
+# Secrets: NPM_TOKEN — npm automation token with publish rights on @unieai.
+# Tag pushes always publish. workflow_dispatch publishes only when the
+# `publish` input is true; otherwise the tarballs are just uploaded as a
+# workflow artifact for inspection or manual `npm publish`.
+
+on:
+  push:
+    tags: ['npm-v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'npm version to stage (e.g. 0.0.16)'
+        required: true
+        type: string
+      publish:
+        description: 'Publish to npm (needs NPM_TOKEN); off = artifacts only'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-14
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install Zig (musl)
+        if: contains(matrix.target, 'musl')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+          # aws-lc's jitter entropy path is problematic on musl builders.
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          no_jitter_var="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET//-/_}"
+          echo "${no_jitter_var}=1" >> "$GITHUB_ENV"
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cargo build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          cargo build --release --target ${{ matrix.target }} --bin codex
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          exe_suffix=""
+          case "${{ matrix.target }}" in
+            *windows*) exe_suffix=".exe" ;;
+          esac
+          mkdir -p "../npm-vendor/${{ matrix.target }}/bin"
+          cp "target/${{ matrix.target }}/release/codex${exe_suffix}" \
+             "../npm-vendor/${{ matrix.target }}/bin/codex${exe_suffix}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-vendor-${{ matrix.target }}
+          path: npm-vendor
+          if-no-files-found: error
+
+  stage:
+    needs: build
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve npm version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            case "$TAG" in
+              npm-v*.*.*) ;;
+              *) echo "::error::Tag '$TAG' does not match npm-vX.Y.Z"; exit 1 ;;
+            esac
+            VERSION="${TAG#npm-v}"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: npm-vendor-*
+          path: npm-vendor
+          merge-multiple: true
+
+      - name: Stage npm tarballs
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          # Artifact zips drop the exec bit; restore it before npm pack
+          # records file modes into the tarballs.
+          find npm-vendor -type f -path '*/bin/codex*' -exec chmod +x {} +
+          find npm-vendor -type f | sort
+          mkdir -p dist/npm
+
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex \
+            --release-version "$VERSION" \
+            --pack-output "dist/npm/codex-npm-${VERSION}.tgz"
+
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            python3 codex-cli/scripts/build_npm_package.py \
+              --package "codex-${platform}" \
+              --release-version "$VERSION" \
+              --vendor-src npm-vendor \
+              --pack-output "dist/npm/codex-npm-${platform}-${VERSION}.tgz"
+          done
+          ls -lh dist/npm
+
+      - name: Smoke test (linux-x64 payload through the launcher)
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          mkdir -p "$smoke/payload"
+          tar -xzf "dist/npm/codex-npm-${VERSION}.tgz" -C "$smoke"
+          tar -xzf "dist/npm/codex-npm-linux-x64-${VERSION}.tgz" -C "$smoke/payload"
+          # The launcher falls back to <package-root>/vendor when the platform
+          # alias package is not installed.
+          cp -R "$smoke/payload/package/vendor" "$smoke/package/vendor"
+          chmod +x "$smoke"/package/vendor/*/bin/codex
+          node "$smoke/package/bin/codex.js" --version
+
+      - name: Upload npm tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarballs-${{ steps.version.outputs.value }}
+          path: dist/npm/*.tgz
+          if-no-files-found: error
+
+  publish:
+    if: ${{ github.event_name == 'push' || inputs.publish }}
+    needs: stage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarballs-${{ needs.stage.outputs.version }}
+          path: dist/npm
+
+      - name: Publish to npm
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN secret is not set"; exit 1
+          fi
+
+          publish_one() {
+            local tarball="$1" tag="$2"
+            local cmd=(npm publish "$tarball" --access public)
+            if [ -n "$tag" ]; then
+              cmd+=(--tag "$tag")
+            fi
+            echo "+ ${cmd[*]}"
+            set +e
+            local output
+            output="$("${cmd[@]}" 2>&1)"
+            local status=$?
+            set -e
+            echo "$output"
+            if [ $status -ne 0 ]; then
+              if grep -qiE "previously published|cannot publish over|version already exists" <<< "$output"; then
+                echo "Skipping already-published version in $tarball"
+              else
+                exit $status
+              fi
+            fi
+          }
+
+          # Platform payloads first: the root package advances `latest` as soon
+          # as it publishes, and its optionalDependencies aliases must already
+          # resolve at that point. Publishing is serial on purpose — every
+          # tarball is a version of the same @unieai/code packument and npm
+          # returns 409 on concurrent packument updates.
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            publish_one "dist/npm/codex-npm-${platform}-${VERSION}.tgz" "$platform"
+          done
+          publish_one "dist/npm/codex-npm-${VERSION}.tgz" ""
+
+          npm view @unieai/code dist-tags
