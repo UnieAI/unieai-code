@@ -15,10 +15,38 @@
  * Works with any consumer that passes `requestApproval` in the loop ctx;
  * without it, escalation is declined by default (fail closed).
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+
+// Smart-tool feedback (tool-level intelligence beats prompt exhortation): after
+// a Python file is written/edited, verify it instantly and attach the verdict
+// to the SAME tool result — the model gets the signal at the moment of action,
+// not at a completion-time gate N steps later.
+function pyInstantChecks(absPath, { oldString = null, fileBody = null } = {}) {
+  if (!absPath.endsWith(".py")) return "";
+  const notes = [];
+  try {
+    execFileSync("python3", ["-m", "py_compile", absPath], { timeout: 15000, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (e) {
+    const err = String(e.stderr || e.message || "").slice(-500);
+    notes.push(`⚠ file no longer compiles:\n${err}\nFix this before anything else.`);
+  }
+  // Sibling signal: a line just replaced still exists verbatim elsewhere.
+  if (oldString && fileBody) {
+    const lines = fileBody.split("\n").map((l) => l.trim());
+    const seen = new Set();
+    for (const raw of String(oldString).split("\n")) {
+      const t = raw.trim();
+      if (t.length < 12 || t.startsWith("#") || seen.has(t)) continue;
+      seen.add(t);
+      const hits = lines.map((l, i) => (l === t ? i + 1 : 0)).filter(Boolean);
+      if (hits.length) notes.push(`note: an identical copy of the line you just changed (\`${t.slice(0, 80)}\`) remains at line ${hits.slice(0, 3).join(", ")} — check if it needs the same fix.`);
+    }
+  }
+  return notes.length ? `\n${notes.join("\n")}` : "";
+}
 
 const SANDBOX_DENIED = /operation not permitted|permission denied|sandbox/i;
 
@@ -124,7 +152,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const abs = inWorkspace(String(args?.filePath || ""));
           await mkdir(dirname(abs), { recursive: true });
           await writeFile(abs, String(args?.content ?? ""), "utf8");
-          return toolResult({ modelText: `wrote ${args.filePath}` });
+          return toolResult({ modelText: `wrote ${args.filePath}${pyInstantChecks(abs)}` });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       async edit(args) {
@@ -136,8 +164,9 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           // Fast path: exact substring, must be unique.
           const hits = before.split(oldString).length - 1;
           if (hits === 1) {
-            await writeFile(abs, before.replace(oldString, newString), "utf8");
-            return toolResult({ modelText: `edited ${args.filePath}` });
+            const after = before.replace(oldString, newString);
+            await writeFile(abs, after, "utf8");
+            return toolResult({ modelText: `edited ${args.filePath}${pyInstantChecks(abs, { oldString, fileBody: after })}` });
           }
           if (hits > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${hits} times — include more surrounding context` });
           // Fuzzy path: line-based match under escalating normalization, so
@@ -152,9 +181,10 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           if (!found.indices.length) return toolResult({ ok: false, modelText: "error: oldString not found — read the file and copy the exact text" });
           if (found.indices.length > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${found.indices.length} times (${found.tier}) — include more surrounding context` });
           fileLines.splice(found.indices[0], patternLines.length, ...newString.split("\n"));
-          await writeFile(abs, fileLines.join("\n"), "utf8");
+          const joined = fileLines.join("\n");
+          await writeFile(abs, joined, "utf8");
           const note = found.tier === "exact" ? "" : ` (matched ${found.tier})`;
-          return toolResult({ modelText: `edited ${args.filePath}${note}` });
+          return toolResult({ modelText: `edited ${args.filePath}${note}${pyInstantChecks(abs, { oldString, fileBody: joined })}` });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       }
     }
