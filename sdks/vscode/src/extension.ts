@@ -117,11 +117,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  /** Which engine the panel runs: codex app-server (default) or agent-core. */
+  /** Which engine the panel runs: agent-core (default) or codex app-server. */
   private engineChoice(): "app-server" | "agent-core" {
-    return vscode.workspace.getConfiguration("unieai-code").get<string>("engine") === "agent-core"
-      ? "agent-core"
-      : "app-server"
+    return vscode.workspace.getConfiguration("unieai-code").get<string>("engine") === "app-server"
+      ? "app-server"
+      : "agent-core"
   }
 
   private ensureAgentCore(): AgentCoreBackend {

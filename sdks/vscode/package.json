@@ -114,7 +114,7 @@
             "codex app-server (Rust) — full sandbox, approvals, IDE integration",
             "unieai-agent-core (in-process JS loop, shared with UnieAI Studio)"
           ],
-          "default": "app-server",
+          "default": "agent-core",
           "description": "Which agent engine the chat panel runs."
         }
       }
