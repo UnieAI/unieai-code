@@ -36,10 +36,10 @@
 
 | 引擎 | resolved | per-patch 修對率 | 空手率 | tokens/題 |
 |---|---|---|---|---|
-| **agent-core v0.3.2** | **138/300 = 46.0%** | **53%** | 13% | ~380k |
-| agent-core v0.3.0 | 131/300 = 43.7% | 51% | 14% | ~380k |
-| agent-core v0.2.0 | 127/300 = 42.3% | 51% | 17% | 368k |
-| agent-core v0.1.0 | 83/300 = 27.7% | 53% | 47% | 123k |
+| **uc0.3.2-ac0.2.0** | **138/300 = 46.0%** | **53%** | 13% | ~380k |
+| uc0.3.0-ac0.2.0 | 131/300 = 43.7% | 51% | 14% | ~380k |
+| uc0.2.0-ac0.2.0 | 127/300 = 42.3% | 51% | 17% | 368k |
+| uc0.1.0-ac0.1.0 | 83/300 = 27.7% | 53% | 47% | 123k |
 | codex-unieai | 72/300 = 24.0% | 51% | 53% | — |
 | codex-stock | 42/300 = 14.0% | 51% | 73% | — |
 
@@ -49,29 +49,33 @@
 |---|---|---|---|---|---|
 | Qwen × codex-stock | 14.0% | 39.4M | 134k | 67s | 0.94M |
 | Qwen × codex-unieai | 24.0% | 57.5M | 207k | 134s | 0.80M |
-| Qwen × v0.1.0 | 27.7% | 36.8M | 123k | 50s | **0.44M（最省）** |
-| Qwen × v0.2.0 | 42.3% | 109.4M | 368k | 161s | 0.86M |
-| Qwen × v0.3.0 | 43.7% | 134.7M | 451k | 137s | 1.03M |
-| Qwen × v0.3.2 | **46.0%** | 143.3M | 478k | 170s | **1.04M（最貴）** |
-| MiniMax × v0.2.x | 47.0% | 163.4M | 545k | 251s | 1.16M |
+| Qwen × uc0.1.0 | 27.7% | 36.8M | 123k | 50s | **0.44M（最省）** |
+| Qwen × uc0.2.0 | 42.3% | 109.4M | 368k | 161s | 0.86M |
+| Qwen × uc0.3.0 | 43.7% | 134.7M | 451k | 137s | 1.03M |
+| Qwen × uc0.3.2 | **46.0%** | 143.3M | 478k | 170s | **1.04M（最貴）** |
+| MiniMax × uc0.2.0 | 47.0% | 163.4M | 545k | 251s | 1.16M |
+
+> 版本命名 `ucX.Y.Z-acA.B.C`：uc = unieai-code(coding 層自己的版本)，
+> ac = 它依賴的 unieai-agent-core 版本。agent-core 只出到 0.2.0；uc0.3.0~0.3.2
+> 的改動全在 coding 層(agent-runtime)，依賴同一個 ac0.2.0，agent-core 沒有 0.3.x。
 
 **兩個指標指向不同贏家，不可混談：**
-- **要「解最多題」→ v0.3.2（46.0%）**。這是「準確率優先」方針下的目標，達標。
-- **要「每塊錢解最多題」→ v0.1.0（0.44M/resolved）**。v0.3.2 的每 resolved 成本
-  是 v0.1.0 的 **2.4 倍**，且是全表最高——換取準確率的代價，就是成為每 resolved
+- **要「解最多題」→ uc0.3.2（46.0%）**。這是「準確率優先」方針下的目標，達標。
+- **要「每塊錢解最多題」→ uc0.1.0（0.44M/resolved）**。uc0.3.2 的每 resolved 成本
+  是 uc0.1.0 的 **2.4 倍**，且是全表最高——換取準確率的代價，就是成為每 resolved
   最貴的配置。在「準確率優先、成本其次」的排序下可接受，但**不能稱它省或不浪費**。
 - 回收槓桿：gateway 目前 `cached_input_tokens=0`，開 prompt caching 可壓 input（agentic
   負載 history 前綴天然可快取），是唯一不犧牲準確率的成本下降手段。
 
-**跨模型驗證(agent-core v0.2.x,同 300 題):MiniMax-M2 = 141/300 = 47.0%**
+**跨模型驗證(agent-core v0.2.x,同 300 題):MiniMax-M2 × uc0.2.0 = 141/300 = 47.0%**
 (patch 率 97%、空手僅 8 題)——「harness 能拉小模型,大模型拉更高」成立。
-v0.3.0 增量:+決定論完成閘門(py_compile/import 冒煙)+ skeptic v2 檢查表,
-+1.4pt(邊際)。**v0.3.2 增量:同樣的檢查搬進 edit/write 工具、動作當下即時
+uc0.3.0 增量:+決定論完成閘門(py_compile/import 冒煙)+ skeptic v2 檢查表,
++1.4pt(邊際)。**uc0.3.2 增量:同樣的檢查搬進 edit/write 工具、動作當下即時
 回饋(py_compile 判定 + 倖存 sibling 行提示直接附在工具結果),+2.3pt 且
 per-patch 首次提升(51→53%)——「智慧放進工具而非提示詞、回饋在動作當下」
 原則的數據驗證。**
 
-**v0.2.0 = v0.1.0 + 一日優化**(版本對應 agent-core CHANGELOG)（grok-build / codex-rs 逐行研究移植）：progress-aware
+**uc0.2.0 = uc0.1.0 + 一日優化(含 agent-core 0.1.0→0.2.0)**（grok-build / codex-rs 逐行研究移植）：progress-aware
 doom streak、completionCheck 完成契約（mutation gate + skeptic 驗證 + 缺口重播）、
 空回應重採樣、內容感知 stall 計時器、孤兒 tool-call 修復、edit 四層模糊匹配、
 act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-research.md`
@@ -89,10 +93,10 @@ act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-re
 1. **四個 arm 的 per-patch 修對率幾乎相同（51–53%）——引擎差異全在空手率**。
    新碼把空手率 47%→17%，resolved 率 +14.6pt（相對 +53%），全 300 題穩定領先。
 2. 成本（見上表）：優化提升絕對解題數，但**每 resolved 成本一路上升**
-   （v0.1.0 0.44M → v0.3.2 1.04M，2.4×）。v0.3.2 解最多題、也最貴/resolved；
-   v0.1.0 最省/resolved。「準確率優先」下選 v0.3.2，但別把它當成省——它不是。
+   （uc0.1.0 0.44M → uc0.3.2 1.04M，2.4×）。uc0.3.2 解最多題、也最貴/resolved；
+   uc0.1.0 最省/resolved。「準確率優先」下選 uc0.3.2，但別把它當成省——它不是。
    gateway prompt caching 是唯一不犧牲準確率的成本回收。
-3. 位置：35B-A3B 開源小模型 + 新 harness = **42.3%**；同期公開榜首 Claude Opus
+3. 位置：35B-A3B 開源小模型 + 新 harness = **46.0%(uc0.3.2)**；同期公開榜首 Claude Opus
    4.6 = 62.7%、MiniMax M2.5 = 56.3%；2024 年 GPT-4 + SWE-agent ≈ 18%。
 4. **GLM-5.2 + codex-unieai 在 flask 子集 3/3 全解**，同模型 codex-stock 只有 1/3。
 5. flask 3 題恰為難題、隨機性大，早期以它調參曾誤導方向——以全量數字為準。
