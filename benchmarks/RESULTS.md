@@ -81,13 +81,10 @@ doom streak、completionCheck 完成契約（mutation gate + skeptic 驗證 + �
 act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-research.md`
 與 agent-core CHANGELOG。
 
-**flask 3-instance 子集 × 三模型（resolved / 3）：**
-
-| 引擎 | Qwen3.6-35B-A3B | GLM-5.2 | MiniMax-M2 |
-|---|---|---|---|
-| codex-stock | 0 | 1 | 0 |
-| codex-unieai | 0 | **3** ✅ | 0 |
-| agent-core | 0 | 0 | 0 |
+> 註:早期曾用 flask 3-instance 子集快速調參,但 n=3 統計上是雜訊,且結論與
+> 全量 300 題相反(該子集恰為難題,agent-core 在上面 0/3,反而 codex-unieai
+> 配 GLM 偶然 3/3)——已棄用,一切以全量數字為準。這是本專案的方法論教訓:
+> 小樣本會誤導方向。
 
 重點：
 1. **四個 arm 的 per-patch 修對率幾乎相同（51–53%）——引擎差異全在空手率**。
@@ -98,8 +95,8 @@ act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-re
    gateway prompt caching 是唯一不犧牲準確率的成本回收。
 3. 位置：35B-A3B 開源小模型 + 新 harness = **46.0%(uc0.3.2)**；同期公開榜首 Claude Opus
    4.6 = 62.7%、MiniMax M2.5 = 56.3%；2024 年 GPT-4 + SWE-agent ≈ 18%。
-4. **GLM-5.2 + codex-unieai 在 flask 子集 3/3 全解**，同模型 codex-stock 只有 1/3。
-5. flask 3 題恰為難題、隨機性大，早期以它調參曾誤導方向——以全量數字為準。
+4. 跨模型:MiniMax-M2 × uc0.2.0 = 47.0%(同 harness、更強模型 → 更高),
+   佐證「harness 拉小模型、大模型拉更高」。
 
 （評分於 AWS 以官方 `swebench==4.1.0` harness、`princeton-nlp/SWE-bench_Lite` dataset 完成，2026-07-18。）
 
