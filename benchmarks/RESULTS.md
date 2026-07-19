@@ -43,6 +43,26 @@
 | codex-unieai | 72/300 = 24.0% | 51% | 53% | — |
 | codex-stock | 42/300 = 14.0% | 51% | 73% | — |
 
+**成本／時間（同 300 題，pass@1，tokens 來自 traj usage、秒數來自 gen log）：**
+
+| 模型 × harness | resolved | 總 tokens | 平均/題 | 平均秒/題 | 每 resolved 成本 |
+|---|---|---|---|---|---|
+| Qwen × codex-stock | 14.0% | 39.4M | 134k | 67s | 0.94M |
+| Qwen × codex-unieai | 24.0% | 57.5M | 207k | 134s | 0.80M |
+| Qwen × v0.1.0 | 27.7% | 36.8M | 123k | 50s | **0.44M（最省）** |
+| Qwen × v0.2.0 | 42.3% | 109.4M | 368k | 161s | 0.86M |
+| Qwen × v0.3.0 | 43.7% | 134.7M | 451k | 137s | 1.03M |
+| Qwen × v0.3.2 | **46.0%** | 143.3M | 478k | 170s | **1.04M（最貴）** |
+| MiniMax × v0.2.x | 47.0% | 163.4M | 545k | 251s | 1.16M |
+
+**兩個指標指向不同贏家，不可混談：**
+- **要「解最多題」→ v0.3.2（46.0%）**。這是「準確率優先」方針下的目標，達標。
+- **要「每塊錢解最多題」→ v0.1.0（0.44M/resolved）**。v0.3.2 的每 resolved 成本
+  是 v0.1.0 的 **2.4 倍**，且是全表最高——換取準確率的代價，就是成為每 resolved
+  最貴的配置。在「準確率優先、成本其次」的排序下可接受，但**不能稱它省或不浪費**。
+- 回收槓桿：gateway 目前 `cached_input_tokens=0`，開 prompt caching 可壓 input（agentic
+  負載 history 前綴天然可快取），是唯一不犧牲準確率的成本下降手段。
+
 **跨模型驗證(agent-core v0.2.x,同 300 題):MiniMax-M2 = 141/300 = 47.0%**
 (patch 率 97%、空手僅 8 題)——「harness 能拉小模型,大模型拉更高」成立。
 v0.3.0 增量:+決定論完成閘門(py_compile/import 冒煙)+ skeptic v2 檢查表,
@@ -68,9 +88,10 @@ act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-re
 重點：
 1. **四個 arm 的 per-patch 修對率幾乎相同（51–53%）——引擎差異全在空手率**。
    新碼把空手率 47%→17%，resolved 率 +14.6pt（相對 +53%），全 300 題穩定領先。
-2. 成本：新碼 3× tokens/題（步數 14→28、每步重送 history、gateway 無 prompt
-   cache），每 resolved 成本 0.4M→0.9M tok。準確率優先方針下可接受；gateway 開
-   prompt caching 是最大的免費回收。
+2. 成本（見上表）：優化提升絕對解題數，但**每 resolved 成本一路上升**
+   （v0.1.0 0.44M → v0.3.2 1.04M，2.4×）。v0.3.2 解最多題、也最貴/resolved；
+   v0.1.0 最省/resolved。「準確率優先」下選 v0.3.2，但別把它當成省——它不是。
+   gateway prompt caching 是唯一不犧牲準確率的成本回收。
 3. 位置：35B-A3B 開源小模型 + 新 harness = **42.3%**；同期公開榜首 Claude Opus
    4.6 = 62.7%、MiniMax M2.5 = 56.3%；2024 年 GPT-4 + SWE-agent ≈ 18%。
 4. **GLM-5.2 + codex-unieai 在 flask 子集 3/3 全解**，同模型 codex-stock 只有 1/3。
