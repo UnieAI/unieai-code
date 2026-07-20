@@ -200,7 +200,11 @@ impl ChatWidget {
             let description =
                 (!preset.description.is_empty()).then_some(preset.description.to_string());
             let is_current = preset.model.as_str() == self.current_model();
-            let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
+            // The reasoning popup only opens a real child view when the model
+            // exposes more than one effort choice. With zero or one choice it
+            // applies the model immediately and never shows a child, so the
+            // picker itself must dismiss on select or it stays stuck open.
+            let opens_child_view = preset.supported_reasoning_efforts.len() > 1;
             let preset_for_action = preset.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 let preset_for_event = preset_for_action.clone();
@@ -214,15 +218,15 @@ impl ChatWidget {
                 is_current,
                 is_default: preset.is_default,
                 actions,
-                dismiss_on_select: single_supported_effort,
-                dismiss_parent_on_child_accept: !single_supported_effort,
+                dismiss_on_select: !opens_child_view,
+                dismiss_parent_on_child_accept: opens_child_view,
                 ..Default::default()
             });
         }
 
         let header = self.model_menu_header(
             "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
+            "Access legacy models by running unieai -m <model_name> or in your config.toml",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),

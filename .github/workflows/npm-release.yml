@@ -73,6 +73,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve npm version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#npm-v}"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # The in-tree workspace version is the internal build id (e.g.
+      # 0.0.17-dev-uc0.4.0-ac0.2.0) for dev builds only. Released binaries
+      # report the clean npm version, so stamp it before building.
+      - name: Stamp workspace version
+        shell: bash
+        run: |
+          perl -0pi -e 's/\[workspace\.package\]\nversion = "[^"]*"/[workspace.package]\nversion = "${{ steps.version.outputs.value }}"/' Cargo.toml
+          grep -A1 '^\[workspace.package\]' Cargo.toml | head -2
+
       - name: Install Rust target
         shell: bash
         run: rustup target add ${{ matrix.target }}
@@ -118,6 +138,25 @@ jobs:
             export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
           fi
           cargo build --release --target ${{ matrix.target }} --bin codex
+
+      # Unstripped linux binaries are ~1.2GB (debug = "line-tables-only") and
+      # their tarballs exceed the npm registry size limit (HTTP 413).
+      - name: Strip binary
+        shell: bash
+        run: |
+          exe="target/${{ matrix.target }}/release/codex"
+          case "${{ matrix.target }}" in
+            *linux*)
+              strip --strip-unneeded "$exe"
+              ;;
+            *darwin*)
+              strip -Sx "$exe"
+              codesign -s - -f "$exe"
+              ;;
+            *windows*)
+              # MSVC debug info lives in the separate PDB; nothing to strip.
+              ;;
+          esac
 
       - name: Stage binary
         shell: bash
