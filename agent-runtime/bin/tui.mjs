@@ -34,11 +34,19 @@ function closeReasoning() {
   }
 }
 
+// Web access (the fetch tool) is off by default; opt in with `--web`, the
+// UNIEAI_WEB_ACCESS/UNIEAI_WEB env var, or `/web` at runtime. New engines from
+// /new, /resume, and /model inherit the current setting via this shared flag.
+const truthy = (v) => ["1", "true", "on", "yes"].includes(String(v ?? "").toLowerCase());
+let webAccess =
+  args.web === true || truthy(args.web) || truthy(process.env.UNIEAI_WEB_ACCESS) || truthy(process.env.UNIEAI_WEB);
+
 function makeEngine(resume = null, model = null) {
   return createEngine({
     workspace: cwd(),
     model,
     resume,
+    webAccess,
     onText: (d) => {
       closeReasoning();
       stdout.write(d);
@@ -72,8 +80,8 @@ try {
   exit(1);
 }
 
-console.log(`${BOLD}UnieAI Code${RESET} ${DIM}(agent-core engine · ${engine.model} · session ${engine.sessionId})${RESET}`);
-console.log(`${DIM}/model /new /sessions /resume <id> /quit${RESET}\n`);
+console.log(`${BOLD}UnieAI Code${RESET} ${DIM}(agent-core engine · ${engine.model} · session ${engine.sessionId}${webAccess ? " · web on" : ""})${RESET}`);
+console.log(`${DIM}/model /new /sessions /resume <id> /web /quit${RESET}\n`);
 
 async function repl() {
   for (;;) {
@@ -94,6 +102,12 @@ async function repl() {
     if (line === "/new") {
       engine = makeEngine();
       console.log(`${DIM}new session ${engine.sessionId}${RESET}`);
+      continue;
+    }
+    if (line === "/web") {
+      webAccess = !webAccess;
+      engine.setWebAccess(webAccess); // keeps the current session; retools next turn
+      console.log(`${DIM}web access ${webAccess ? "on — fetch tool available" : "off"}${RESET}`);
       continue;
     }
     if (line === "/model") {

@@ -239,12 +239,17 @@ export function createEngine({
     emitToolEvent: (e) => onToolEvent(e)
   };
 
+  // Mutable so the web-access toggle can flip mid-session: changing it drops the
+  // cached toolset (rebuilt next turn with/without fetch) without discarding the
+  // engine — messages and session survive. Rebuilding the whole engine would
+  // start a fresh conversation, which is the wrong behaviour for a toggle.
+  let webAccessState = webAccess;
   let toolsetPromise = null;
   function toolset(ctx) {
     toolsetPromise ||= buildToolset({
       runtimeContext: { workspace: {} },
       ctx,
-      domainToolBuilders: [buildCodingTools({ workspace, sandboxBin: sandboxBin(), webAccess })]
+      domainToolBuilders: [buildCodingTools({ workspace, sandboxBin: sandboxBin(), webAccess: webAccessState })]
     });
     return toolsetPromise;
   }
@@ -254,6 +259,19 @@ export function createEngine({
     model: activeModel,
     models: credentials.models,
     messages,
+
+    get webAccess() {
+      return webAccessState;
+    },
+
+    /** Flip the fetch tool on/off for subsequent turns, keeping the session. */
+    setWebAccess(value) {
+      const next = Boolean(value);
+      if (next !== webAccessState) {
+        webAccessState = next;
+        toolsetPromise = null;
+      }
+    },
 
     /** Run one user turn; resolves when the turn ends. */
     async send(text, { abortSignal = null } = {}) {

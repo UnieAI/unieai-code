@@ -137,13 +137,12 @@ export class AgentCoreBackend {
   }
 
   async send(text: string, model?: string, webAccess = false): Promise<void> {
-    // The toolset is fixed at engine-creation time, so a flipped toggle needs a
-    // fresh engine. Do this before ensureEngine so it rebuilds with the new value.
-    if (webAccess !== this.webAccess) {
-      this.webAccess = webAccess
-      this.engine = null
-    }
+    this.webAccess = webAccess
     this.ensureEngine(model)
+    // Apply the toggle without discarding the session: the engine rebuilds only
+    // its toolset next turn. (ensureEngine already used this.webAccess for a
+    // brand-new engine; this covers a flip on an existing one.)
+    this.engine?.setWebAccess(webAccess)
     this.abort = new AbortController()
     // The webview scopes item keys by turn, so blocks restart at 0 each send.
     this.blockIndex = 0
