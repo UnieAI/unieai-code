@@ -162,6 +162,7 @@ pub(super) async fn make_chatwidget_manual(
         model_override,
         /*has_chatgpt_account*/ false,
         /*has_codex_backend_auth*/ false,
+        FrameRequester::test_dummy(),
     )
     .await
 }
@@ -170,6 +171,7 @@ pub(super) async fn make_chatwidget_manual_with_auth(
     model_override: Option<&str>,
     has_chatgpt_account: bool,
     has_codex_backend_auth: bool,
+    frame_requester: FrameRequester,
 ) -> (
     ChatWidget,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
@@ -189,7 +191,7 @@ pub(super) async fn make_chatwidget_manual_with_auth(
     let model_catalog = test_model_catalog(&cfg);
     let common = ChatWidgetInit {
         config: cfg,
-        frame_requester: FrameRequester::test_dummy(),
+        frame_requester,
         app_event_tx,
         workspace_command_runner: None,
         initial_user_message: None,
@@ -383,6 +385,7 @@ fn token_usage_breakdown(usage: TokenUsage) -> codex_app_server_protocol::TokenU
         total_tokens: usage.total_tokens,
         input_tokens: usage.input_tokens,
         cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: 0,
         output_tokens: usage.output_tokens,
         reasoning_output_tokens: usage.reasoning_output_tokens,
     }
@@ -1349,6 +1352,7 @@ pub(super) fn plugins_test_summary(
         enabled,
         install_policy,
         install_policy_source: None,
+        must_show_installation_interstitial: None,
         auth_policy: PluginAuthPolicy::OnInstall,
         availability: PluginAvailability::Available,
         interface: Some(plugins_test_interface(
@@ -1379,6 +1383,7 @@ pub(super) fn plugins_test_remote_summary(
         enabled: true,
         install_policy: PluginInstallPolicy::Available,
         install_policy_source: None,
+        must_show_installation_interstitial: None,
         auth_policy: PluginAuthPolicy::OnInstall,
         availability: PluginAvailability::Available,
         interface: Some(plugins_test_interface(
@@ -1693,6 +1698,7 @@ fn hook_event_label(event_name: codex_app_server_protocol::HookEventName) -> &'s
         codex_app_server_protocol::HookEventName::PreCompact => "PreCompact",
         codex_app_server_protocol::HookEventName::PostCompact => "PostCompact",
         codex_app_server_protocol::HookEventName::SessionStart => "SessionStart",
+        codex_app_server_protocol::HookEventName::SessionEnd => "SessionEnd",
         codex_app_server_protocol::HookEventName::UserPromptSubmit => "UserPromptSubmit",
         codex_app_server_protocol::HookEventName::SubagentStart => "SubagentStart",
         codex_app_server_protocol::HookEventName::SubagentStop => "SubagentStop",

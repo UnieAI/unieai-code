@@ -773,7 +773,6 @@ impl ThreadHistoryBuilder {
                     link_id: payload.link_id.clone(),
                     resource_uri: payload.mcp_app_resource_uri.clone(),
                     app_name: payload.app_name.clone(),
-                    template_id: payload.template_id.clone(),
                     action_name: payload.action_name.clone(),
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
@@ -826,7 +825,6 @@ impl ThreadHistoryBuilder {
                     link_id: payload.link_id.clone(),
                     resource_uri: payload.mcp_app_resource_uri.clone(),
                     app_name: payload.app_name.clone(),
-                    template_id: payload.template_id.clone(),
                     action_name: payload.action_name.clone(),
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
@@ -1500,6 +1498,9 @@ fn convert_dynamic_tool_content_items(
             codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
             } => DynamicToolCallOutputContentItem::InputImage { image_url },
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio {
+                audio_url,
+            } => DynamicToolCallOutputContentItem::InputAudio { audio_url },
         })
         .collect()
 }
@@ -2702,7 +2703,6 @@ mod tests {
                 mcp_app_resource_uri: None,
                 link_id: None,
                 app_name: None,
-                template_id: None,
                 action_name: None,
                 plugin_id: None,
                 duration: Duration::from_millis(8),
@@ -2791,7 +2791,6 @@ mod tests {
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
                 link_id: Some("link_calendar".into()),
                 app_name: Some("Calendar".into()),
-                template_id: Some("calendar_template".into()),
                 action_name: Some("lookup".into()),
                 plugin_id: Some("sample@test".into()),
                 duration: Duration::from_millis(8),
@@ -2828,7 +2827,6 @@ mod tests {
                     link_id: Some("link_calendar".into()),
                     resource_uri: Some("ui://widget/lookup.html".into()),
                     app_name: Some("Calendar".into()),
-                    template_id: Some("calendar_template".into()),
                     action_name: Some("lookup".into()),
                 }),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
@@ -2884,9 +2882,17 @@ mod tests {
                 namespace: Some("codex_app".into()),
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
-                content_items: vec![CoreDynamicToolCallOutputContentItem::InputText {
-                    text: "Ticket is open".into(),
-                }],
+                content_items: vec![
+                    CoreDynamicToolCallOutputContentItem::InputText {
+                        text: "Ticket is open".into(),
+                    },
+                    CoreDynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".into(),
+                    },
+                    CoreDynamicToolCallOutputContentItem::InputAudio {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".into(),
+                    },
+                ],
                 success: true,
                 error: None,
                 duration: Duration::from_millis(42),
@@ -2908,9 +2914,17 @@ mod tests {
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
                 status: DynamicToolCallStatus::Completed,
-                content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
-                    text: "Ticket is open".into(),
-                }]),
+                content_items: Some(vec![
+                    DynamicToolCallOutputContentItem::InputText {
+                        text: "Ticket is open".into(),
+                    },
+                    DynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".into(),
+                    },
+                    DynamicToolCallOutputContentItem::InputAudio {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".into(),
+                    },
+                ]),
                 success: Some(true),
                 duration_ms: Some(42),
             }

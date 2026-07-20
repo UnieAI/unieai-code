@@ -39,10 +39,12 @@ use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
+use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
 use crate::ThreadStore;
@@ -278,6 +280,14 @@ impl LocalThreadStore {
     pub async fn list_items(&self, params: ListItemsParams) -> ThreadStoreResult<ItemPage> {
         thread_history::list_items(self, params).await
     }
+
+    /// Searches projection-backed visible messages within one paginated thread.
+    pub async fn search_thread_occurrences(
+        &self,
+        params: SearchThreadOccurrencesParams,
+    ) -> ThreadStoreResult<ThreadOccurrenceSearchPage> {
+        thread_history::search_thread_occurrences(self, params).await
+    }
 }
 
 impl ThreadStore for LocalThreadStore {
@@ -363,6 +373,13 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { search_threads::search_threads(self, params).await })
     }
 
+    fn search_thread_occurrences(
+        &self,
+        params: SearchThreadOccurrencesParams,
+    ) -> ThreadStoreFuture<'_, ThreadOccurrenceSearchPage> {
+        Box::pin(LocalThreadStore::search_thread_occurrences(self, params))
+    }
+
     fn update_thread_metadata(
         &self,
         params: UpdateThreadMetadataParams,
@@ -388,6 +405,7 @@ mod tests {
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::items::TurnItem;
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::models::BaseInstructions;
@@ -395,13 +413,16 @@ mod tests {
     use codex_protocol::models::MessagePhase;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentMessageEvent;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::ThreadMemoryMode;
     use codex_protocol::protocol::TurnCompleteEvent;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
     use tempfile::TempDir;
@@ -533,6 +554,74 @@ mod tests {
         );
         assert_eq!(metadata.preview.as_deref(), Some("observed append"));
         assert_eq!(metadata.title, "observed append");
+    }
+
+    #[tokio::test]
+    async fn live_thread_does_not_derive_metadata_from_inherited_items() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let thread_id = ThreadId::default();
+        let mut params = create_thread_params(thread_id);
+        params.history_mode = ThreadHistoryMode::Paginated;
+        let cwd = std::env::current_dir().expect("current directory");
+        let turn_context = |model: &str, approval_policy| {
+            RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                cwd: serde_json::from_value(serde_json::json!(cwd)).expect("absolute cwd"),
+                workspace_roots: None,
+                current_date: None,
+                timezone: None,
+                approval_policy,
+                approvals_reviewer: None,
+                sandbox_policy: SandboxPolicy::DangerFullAccess,
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: model.to_string(),
+                comp_hash: None,
+                personality: None,
+                collaboration_mode: None,
+                multi_agent_version: None,
+                multi_agent_mode: None,
+                realtime_active: None,
+                effort: None,
+                summary: ReasoningSummary::Auto,
+            })
+        };
+
+        let live_thread = LiveThread::create_with_inherited_model_context(
+            store,
+            params,
+            &[turn_context("parent-model", AskForApproval::Never)],
+        )
+        .await
+        .expect("create live thread with inherited context");
+        live_thread.persist().await.expect("persist thread");
+        let inherited_metadata = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("sqlite metadata read")
+            .expect("sqlite metadata");
+        assert_eq!(inherited_metadata.model, None);
+
+        live_thread
+            .append_items(&[turn_context("child-model", AskForApproval::OnRequest)])
+            .await
+            .expect("append child context");
+        let child_metadata = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("sqlite metadata read")
+            .expect("sqlite metadata");
+        assert_eq!(child_metadata.model.as_deref(), Some("child-model"));
+        assert_eq!(child_metadata.approval_mode, "on-request");
     }
 
     #[tokio::test]
@@ -1393,6 +1482,7 @@ mod tests {
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
             history_mode: ThreadHistoryMode::Legacy,
+            subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
             metadata: thread_metadata(),
         }

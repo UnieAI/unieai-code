@@ -230,21 +230,36 @@ fn windows_desktop_app_launch_script(url: &str) -> String {
 $ErrorActionPreference = 'Stop'
 $url = {url}
 
-$installLocation = (Get-AppxPackage -Name OpenAI.UnieAI Code -ErrorAction SilentlyContinue).InstallLocation
-if ([string]::IsNullOrWhiteSpace($installLocation)) {{
-    Write-Error 'UnieAI Code Desktop package is not installed'
+$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue
+if ($null -eq $package) {{
+    Write-Error 'Desktop app package is not installed'
     exit 1
 }}
 
-$appDir = Join-Path $installLocation 'app'
-$exe = Join-Path $appDir 'UnieAI Code.exe'
+$manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+$application = $manifest.Package.Applications.Application |
+    Where-Object {{
+        @($_.Extensions.Extension) | Where-Object {{
+            $_.Category -eq 'windows.protocol' -and $_.Protocol.Name -eq 'codex'
+        }}
+    }} |
+    Select-Object -First 1
+if ($null -eq $application -or [string]::IsNullOrWhiteSpace($application.Executable)) {{
+    Write-Error 'Desktop app package does not declare a codex protocol executable'
+    exit 1
+}}
+
+# Launch the package-declared protocol executable rather than an internal Electron shim.
+# Windows can deny direct starts of internal executables under WindowsApps.
+$exe = Join-Path $package.InstallLocation $application.Executable
+$appDir = Split-Path -Parent $exe
 $app = Join-Path $appDir 'resources\app.asar'
 if (-not (Test-Path $exe)) {{
-    Write-Error "UnieAI Code Desktop executable not found at $exe"
+    Write-Error "Desktop app executable not found at $exe"
     exit 1
 }}
 if (-not (Test-Path $app)) {{
-    Write-Error "UnieAI Code Desktop app bundle not found at $app"
+    Write-Error "Desktop app bundle not found at $app"
     exit 1
 }}
 
