@@ -202,7 +202,8 @@ export function createEngine({
   onReasoning = () => {},
   onToolEvent = () => {},
   requestApproval = null,
-  expectsMutation = false
+  expectsMutation = false,
+  webAccess = false
 } = {}) {
   const credentials = loadCredentials();
   if (!credentials.signedIn) {
@@ -224,7 +225,9 @@ export function createEngine({
         runtimeContext: { knowledgeBases: [], workspace: {} },
         identity: CODE_IDENTITY,
         runtime: "UnieAI Code (agent-core loop, sandboxed shell tools)",
-        extraToolGuidance: CODE_TOOL_GUIDANCE
+        extraToolGuidance: webAccess
+          ? [...CODE_TOOL_GUIDANCE, "- fetch — read a web page or HTTP API by URL (returns readable text). Use it to consult docs or fetch data the task references; prefer it over shelling out to curl."]
+          : CODE_TOOL_GUIDANCE
       })
     }
   ];
@@ -241,7 +244,7 @@ export function createEngine({
     toolsetPromise ||= buildToolset({
       runtimeContext: { workspace: {} },
       ctx,
-      domainToolBuilders: [buildCodingTools({ workspace, sandboxBin: sandboxBin() })]
+      domainToolBuilders: [buildCodingTools({ workspace, sandboxBin: sandboxBin(), webAccess })]
     });
     return toolsetPromise;
   }

@@ -101,12 +101,42 @@ function truncateMiddle(s, max = 8000) {
 function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
   return new Promise((done) => {
     execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      done({ code: error ? (error.code ?? 1) : 0, stdout: String(stdout || ""), stderr: String(stderr || "") });
+      // A spawn failure (binary missing / not executable) reports a STRING errno
+      // in error.code and never actually ran, so it has no exit status. Keep it
+      // distinct from a command that ran and exited non-zero, so the caller can
+      // explain the environment problem instead of surfacing a bare "exit ENOENT".
+      const spawnError = error && typeof error.code === "string" ? error.code : null;
+      done({
+        code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
+        stdout: String(stdout || ""),
+        stderr: String(stderr || ""),
+        spawnError,
+      });
     });
   });
 }
 
-export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai" } = {}) {
+/** Reduce an HTML document to readable text for the model. */
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<\/(p|div|h[1-6]|li|tr|section|article|header|footer)\s*>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false } = {}) {
   const root = resolve(workspace || process.cwd());
   const inWorkspace = (p) => {
     const abs = resolve(root, p);
@@ -114,19 +144,30 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     return abs;
   };
 
+  // fetch is an OPTIONAL domain tool gated by the consumer's web-access toggle;
+  // the loop stays unaware of it. Off by default so a plain coding session has
+  // no network reach beyond what bash's sandbox already governs.
+  const fetchSchema = { type: "function", function: { name: "fetch", description: "Fetch an http(s) URL and return its content as readable text (HTML is reduced to text). Use to read documentation pages or HTTP APIs the task references.", parameters: { type: "object", properties: { url: { type: "string", description: "absolute http(s) URL" } }, required: ["url"] } } };
+
+  const schemas = [
+    { type: "function", function: { name: "bash", description: "Run a shell command in the workspace (sandboxed). Prefer `rg` for searching.", parameters: { type: "object", properties: { cmd: { type: "string", description: "the command line to run" } }, required: ["cmd"] } } },
+    { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
+    { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
+    { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
+  ];
+  if (webAccess) schemas.push(fetchSchema);
+
   return async () => ({
     label: "coding",
-    schemas: [
-      { type: "function", function: { name: "bash", description: "Run a shell command in the workspace (sandboxed). Prefer `rg` for searching.", parameters: { type: "object", properties: { cmd: { type: "string", description: "the command line to run" } }, required: ["cmd"] } } },
-      { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
-      { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
-      { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } }
-    ],
+    schemas,
     executors: {
       async bash(args, runCtx = {}) {
         const cmd = String(args?.cmd || "").trim();
         if (!cmd) return toolResult({ ok: false, modelText: "error: cmd is required" });
         const sandboxed = await run(sandboxBin, ["sandbox", "--", "sh", "-c", cmd], { cwd: root });
+        if (sandboxed.spawnError) {
+          return toolResult({ ok: false, modelText: `error: could not launch the UnieAI Code sandbox binary \`${sandboxBin}\` (${sandboxed.spawnError}). It is not on PATH for this process. In VS Code set \`unieai-code.executablePath\` to the absolute path of the \`unieai\` binary (\`which unieai\` in a terminal), or set the UNIEAI_BIN environment variable. Until then, use the read/write/edit tools instead of shell commands.` });
+        }
         const denied = sandboxed.code !== 0 && SANDBOX_DENIED.test(sandboxed.stderr + sandboxed.stdout);
         if (!denied) {
           return toolResult({ ok: sandboxed.code === 0, modelText: `exit ${sandboxed.code}\n${truncateMiddle(sandboxed.stdout + sandboxed.stderr)}` });
@@ -186,6 +227,35 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const note = found.tier === "exact" ? "" : ` (matched ${found.tier})`;
           return toolResult({ modelText: `edited ${args.filePath}${note}${pyInstantChecks(abs, { oldString, fileBody: joined })}` });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
+      },
+      // Registered only when webAccess is on (see schemas above); if the model
+      // somehow calls it while off, fail closed rather than reaching the network.
+      async fetch(args) {
+        if (!webAccess) return toolResult({ ok: false, modelText: "error: web access is disabled — enable the 上網 toggle to fetch URLs" });
+        const raw = String(args?.url || "").trim();
+        let url;
+        try { url = new URL(raw); } catch { return toolResult({ ok: false, modelText: "error: url must be an absolute http(s) URL" }); }
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          return toolResult({ ok: false, modelText: `error: unsupported protocol ${url.protocol} — only http and https` });
+        }
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30_000);
+        try {
+          const res = await globalThis.fetch(raw, {
+            signal: ctrl.signal,
+            redirect: "follow",
+            headers: { "user-agent": "UnieAI-Code/agent-core", accept: "text/html,application/json,text/plain,*/*" },
+          });
+          const contentType = res.headers.get("content-type") || "";
+          const body = await res.text();
+          const text = /html/i.test(contentType) ? htmlToText(body) : body;
+          return toolResult({ ok: res.ok, modelText: `HTTP ${res.status} ${res.statusText} · ${contentType}\n\n${truncateMiddle(text, 24_000)}` });
+        } catch (e) {
+          const msg = e?.name === "AbortError" ? "request timed out after 30s" : (e?.message || String(e));
+          return toolResult({ ok: false, modelText: `error: ${msg}` });
+        } finally {
+          clearTimeout(timer);
+        }
       }
     }
   });

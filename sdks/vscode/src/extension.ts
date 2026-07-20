@@ -1006,8 +1006,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.lastTurn = { text: prompt, model, sandbox, webAccess }
 
     if (this.engineChoice() === "agent-core") {
+      // agent-core runs in-process and resolves the sandbox binary from
+      // UNIEAI_BIN / PATH. A Dock-launched extension host often lacks the CLI on
+      // PATH (e.g. an nvm-managed install), so hand it the configured path here —
+      // otherwise every sandboxed bash call dies with ENOENT and no files change.
+      process.env.UNIEAI_BIN = executablePath()
       try {
-        await this.ensureAgentCore().send(prompt, model)
+        await this.ensureAgentCore().send(prompt, model, webAccess)
       } catch (err) {
         this.post({ type: "stderr", text: `agent-core 失敗：${String(err)}` })
         this.post({ type: "running", value: false })

@@ -32,6 +32,10 @@ export class AgentCoreBackend {
   // turn's first words appeared -- above every tool card that followed.
   private blockIndex = 0
   private blockText = ""
+  // Whether the current engine was built with the fetch tool enabled. A change
+  // to the toggle between turns has to rebuild the engine, because the toolset
+  // is assembled once when the engine is created.
+  private webAccess = false
 
   private get agentItemId(): string {
     return `agent-${this.blockIndex}`
@@ -76,6 +80,7 @@ export class AgentCoreBackend {
       workspace: this.workspace,
       model,
       resume: resume ?? null,
+      webAccess: this.webAccess,
       onText: (d: string) => {
         this.blockText += d
         this.cb.post({ type: "turnDelta", kind: "agent", itemKey: this.agentItemId, text: d })
@@ -131,7 +136,13 @@ export class AgentCoreBackend {
     this.ensureEngine(undefined, sessionId)
   }
 
-  async send(text: string, model?: string): Promise<void> {
+  async send(text: string, model?: string, webAccess = false): Promise<void> {
+    // The toolset is fixed at engine-creation time, so a flipped toggle needs a
+    // fresh engine. Do this before ensureEngine so it rebuilds with the new value.
+    if (webAccess !== this.webAccess) {
+      this.webAccess = webAccess
+      this.engine = null
+    }
     this.ensureEngine(model)
     this.abort = new AbortController()
     // The webview scopes item keys by turn, so blocks restart at 0 each send.
