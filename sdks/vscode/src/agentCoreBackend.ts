@@ -26,7 +26,29 @@ export interface AgentCoreCallbacks {
 export class AgentCoreBackend {
   private engine: ReturnType<typeof createEngine> | null = null
   private abort: AbortController | null = null
-  private turnText = ""
+  // Agent text is emitted in blocks, one per run of text between tool calls.
+  // The webview keys items by id and replaces a repeated id in place, so a
+  // single id for the whole turn would render the closing answer up where the
+  // turn's first words appeared -- above every tool card that followed.
+  private blockIndex = 0
+  private blockText = ""
+
+  private get agentItemId(): string {
+    return `agent-${this.blockIndex}`
+  }
+
+  /** Close the current text block and open the next one. */
+  private flushTextBlock(): void {
+    if (this.blockText.trim()) {
+      this.cb.post({
+        type: "itemUpsert",
+        item: { id: this.agentItemId, type: "agent_message", text: this.blockText },
+        done: true,
+      })
+    }
+    this.blockText = ""
+    this.blockIndex += 1
+  }
 
   constructor(
     private readonly workspace: string,
@@ -55,11 +77,16 @@ export class AgentCoreBackend {
       model,
       resume: resume ?? null,
       onText: (d: string) => {
-        this.turnText += d
-        this.cb.post({ type: "turnDelta", kind: "agent", itemKey: "agent", text: d })
+        this.blockText += d
+        this.cb.post({ type: "turnDelta", kind: "agent", itemKey: this.agentItemId, text: d })
       },
       onReasoning: (d: string) =>
-        this.cb.post({ type: "turnDelta", kind: "reasoning", itemKey: "reasoning", text: d }),
+        this.cb.post({
+          type: "turnDelta",
+          kind: "reasoning",
+          itemKey: `reasoning-${this.blockIndex}`,
+          text: d,
+        }),
       onToolEvent: (e: Json) => this.mapToolEvent(e),
       requestApproval: async ({ tool, action, detail }: Json) => {
         return this.cb.requestApproval({ tool, action, detail })
@@ -72,6 +99,9 @@ export class AgentCoreBackend {
     // per-item the way app-server's are, so use the event's own id.
     const id = e.tool_use_id || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     if (e.type === "tool_use_started") {
+      // Settle the text that led up to this call before the tool card lands,
+      // so anything the model says afterwards starts a block below it.
+      this.flushTextBlock()
       this.cb.post({
         type: "itemUpsert",
         item: { id, type: "command_execution", command: `${e.tool_name} ${e.args_preview ?? ""}`.trim(), aggregated_output: "", status: "in_progress" },
@@ -104,21 +134,20 @@ export class AgentCoreBackend {
   async send(text: string, model?: string): Promise<void> {
     this.ensureEngine(model)
     this.abort = new AbortController()
-    this.turnText = ""
+    // The webview scopes item keys by turn, so blocks restart at 0 each send.
+    this.blockIndex = 0
+    this.blockText = ""
     this.cb.post({ type: "running", value: true })
     try {
       const result = await this.engine!.send(text, { abortSignal: this.abort.signal })
       // Replace the plain streamed text with a markdown-rendered final item,
       // matching the app-server backend's item.completed behaviour.
-      if (this.turnText.trim()) {
-        this.cb.post({
-          type: "itemUpsert",
-          item: { id: "agent", type: "agent_message", text: this.turnText },
-          done: true,
-        })
-      }
+      this.flushTextBlock()
       this.cb.post({ type: "turnState", state: result.finishReason === "failed" ? "failed" : "idle", retryable: result.finishReason === "failed" })
     } catch (err) {
+      // Settle whatever was streamed before the failure or interrupt, so the
+      // partial answer renders as markdown instead of a stranded raw stream.
+      this.flushTextBlock()
       this.cb.post({ type: "turnState", state: "failed", retryable: true })
       this.cb.post({ type: "stderr", text: String((err as Error)?.message ?? err) })
     } finally {
