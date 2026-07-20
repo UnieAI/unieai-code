@@ -3039,7 +3039,7 @@ exec {remote_bash_exec} "$@"
     assert_eq!(
         sandbox_argv.len(),
         9,
-        "expected codex sandbox ... bash -lc CMD"
+        "expected unieai sandbox ... bash -lc CMD"
     );
     assert_eq!(
         sandbox_argv[..8],

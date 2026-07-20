@@ -117,7 +117,7 @@ unieai [OPTIONS] [PROMPT]        # interactive TUI
 
 ## Configuration
 
-CLI config lives in `~/.codex/config.toml` (approval policy, sandbox, models, MCP
+CLI config lives in `~/.unieai/config.toml` (approval policy, sandbox, models, MCP
 servers, skills). See the [Config Reference](./docs/config.md); run `unieai doctor` to
 diagnose issues.
 

@@ -19,7 +19,7 @@ lazy_static! {
             if line.is_empty() || line.starts_with('#') {
                 return false;
             }
-            if !IS_MACOS && !IS_WINDOWS && line.contains("codex app") {
+            if !IS_MACOS && !IS_WINDOWS && line.contains("unieai app") {
                 return false;
             }
             true
