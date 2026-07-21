@@ -116,6 +116,14 @@ mod action_registry;
 mod composer_chip;
 mod composer_ghost;
 mod composer_tip;
+// tui-rewind-diff pure-logic foundations (rewind picker model, /jump width-stable
+// scroll anchor, full-screen diff viewer model). Registered but not wired into
+// the live input/render path and not calling any revert / git diff API — those
+// integrations are a deferred follow-up. Each module opts out of dead-code
+// warnings internally.
+mod diff_viewer_model;
+mod jump_anchor;
+mod rewind_model;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
