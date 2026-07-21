@@ -26,6 +26,7 @@ import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
 import { initShadow, snapshotWorkspace } from "./snapshot.mjs";
+import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
 
 const CODE_IDENTITY =
@@ -281,6 +282,10 @@ export function createEngine({
   // so repeated identical gaps stop the re-nudge loop instead of spinning.
   const goalState = { lastGapFingerprint: "" };
 
+  // Serialize turns for this conversation so a double-send never interleaves and
+  // corrupts the shared `messages` array (see turn-coordinator.mjs).
+  const turnCoordinator = createTurnCoordinator();
+
   // Versioned context sources (see context-sources.mjs): the date (previously
   // never injected) and project AGENTS.md, resolved to a baseline that seeds the
   // prompt and re-emitted as a small delta when they change between turns.
@@ -373,7 +378,18 @@ export function createEngine({
     },
 
     /** Run one user turn; resolves when the turn ends. */
-    async send(text, { abortSignal = null } = {}) {
+    send(text, { abortSignal = null } = {}) {
+      // Turns run one at a time per conversation; a send while another is in
+      // flight waits its turn rather than interleaving.
+      return turnCoordinator.run(sessionId, () => runTurn(text, { abortSignal }));
+    },
+
+    isBusy() {
+      return turnCoordinator.isBusy(sessionId);
+    }
+  };
+
+  async function runTurn(text, { abortSignal = null } = {}) {
       // Re-resolve context sources; if the date rolled over or AGENTS.md changed
       // since last turn, inject a compact delta (not the whole prompt) before the
       // user's message so this turn sees the current state.
@@ -466,6 +482,5 @@ export function createEngine({
         checkpoints,
       });
       return result;
-    }
-  };
+  }
 }

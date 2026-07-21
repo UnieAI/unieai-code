@@ -10,9 +10,9 @@
 - [ ] 2.2 BOM/換行保真
 - [ ] 2.3 外部目錄核准閘
 
-## 3. 工具輸出 spill（易）
-- [ ] 3.1 超限寫磁碟 + 頭尾預覽 + 存檔標記
-- [ ] 3.2 grep 可搜 spill；保留清掃
+## 3. 工具輸出 spill — 完成
+- [x] 3.1 超限寫磁碟 + 頭尾預覽 + 存檔標記（`agent-runtime/src/tool-output-store.mjs` `spillIfLarge`；store 在 UNIEAI_HOME/tool-output；bash 正常退出輸出與 read 都接上；store 失敗 fail-safe 退回截斷）
+- [x] 3.2 `read_output(id, grep?)` 取回工具（跨 workspace 限制、只讀 store）+ grep 過濾行 + 7 天保留清掃。tool-output-store.test.mjs 5 tests
 
 ## 4. LSP 診斷回饋（中，需 LSP runtime）
 - [ ] 4.1 write/apply_patch 後取診斷、severity-1 注回（每檔上限、含他檔）

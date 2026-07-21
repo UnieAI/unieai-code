@@ -6,15 +6,16 @@
 - [ ] 1.3 讀 `runner/max-steps.ts` + `runner/llm.ts:202-213`（卸工具 + toolChoice none + 強制摘要）
 - [ ] 1.4 讀 `question.ts` + `tool/question.ts`（提問原語、不儲存、略過即止）
 
-## 2. 單流協調器（agent-core）
-- [ ] 2.1 per-session key 序列化 + 跨 session 併行
-- [ ] 2.2 run() 併入進行中 run；wake() 合併單一後續；interrupt() 停止並等清理
-- [ ] 2.3 成功且有待 wake → 接續下一次 drain
+## 2. 單流協調器 — 完成（落在 agent-runtime 而非 agent-core）
+> 落點修正：coordinator 是「engine 如何處理並發 send」的 consumer 側邏輯，放 `agent-runtime/src/turn-coordinator.mjs` 讓 agent-core 保持精簡、也不增加 Studio 面。
+- [x] 2.1 per-session key 序列化（同 key 串行、不同 key 併行）；engine `send()` 包進 `turnCoordinator.run(sessionId, …)`，新增 `engine.isBusy()`
+- [x] 2.2 `run()` 串接；`queueNext()` 合併單一後續（後到取代未 drain 的）；失敗的回合不 wedge queue
+- [x] 2.3 成功且有 queued follow-up → afterDrain 以全新 chain 接續（修過 self-deadlock）。turn-coordinator.test.mjs 5 tests
 
 ## 3. steer / queue
-- [ ] 3.1 steer：折進當前回合 + 步數預算重設為 1
-- [ ] 3.2 queue：外層迴圈依序 drain
-- [ ] 3.3 與 completionCheck/goal 續跑互動：轉向後不被完成閘門誤判收工
+- [x] 3.2 queue：`queueNext` 合併後續，回合結束自動 drain（已於 §2）
+- [ ] 3.1 steer：折進當前回合 + 步數預算重設為 1 —— **未做**（需 loop 在回合中接收插話並重設 step budget，較深）
+- [ ] 3.3 與 completionCheck/goal 續跑互動：轉向後不被完成閘門誤判收工 —— 隨 steer 一起
 
 ## 4. 優雅 max-steps 降級 — 已存在（查證後）
 - [x] 4.1 per-agent 步數上限（`ctx.maxSteps`，engine 設 96；無全域硬上限）— 已有

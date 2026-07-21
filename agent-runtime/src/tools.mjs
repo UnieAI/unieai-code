@@ -19,6 +19,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
 
 // Smart-tool feedback (tool-level intelligence beats prompt exhortation): after
 // a Python file is written/edited, verify it instantly and attach the verdict
@@ -159,6 +160,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
     { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
     { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
+    { type: "function", function: { name: "read_output", description: "Retrieve the full text of a large tool output that was spilled to storage (its preview showed an id). Optionally filter to matching lines.", parameters: { type: "object", properties: { id: { type: "string", description: "the output id from the preview marker" }, grep: { type: "string", description: "optional substring or /regex/ to filter lines" } }, required: ["id"] } } },
     askSchema,
   ];
   if (webAccess) schemas.push(fetchSchema);
@@ -178,7 +180,8 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         }
         const denied = sandboxed.code !== 0 && SANDBOX_DENIED.test(sandboxed.stderr + sandboxed.stdout);
         if (!denied) {
-          return toolResult({ ok: sandboxed.code === 0, modelText: `exit ${sandboxed.code}\n${truncateMiddle(sandboxed.stdout + sandboxed.stderr)}` });
+          const out = spillIfLarge(sandboxed.stdout + sandboxed.stderr, { id: "bash", fallbackTruncate: () => truncateMiddle(sandboxed.stdout + sandboxed.stderr) });
+          return toolResult({ ok: sandboxed.code === 0, modelText: `exit ${sandboxed.code}\n${out.modelText}` });
         }
         // Sandbox denial → escalate through the host's approval channel.
         const decision = runCtx.requestApproval
@@ -200,8 +203,13 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       async read(args) {
         try {
           const body = await readFile(inWorkspace(String(args?.filePath || "")), "utf8");
-          return toolResult({ modelText: body.slice(0, 32_000) });
+          const out = spillIfLarge(body, { id: "read", limit: 32_000, fallbackTruncate: () => body.slice(0, 32_000) });
+          return toolResult({ modelText: out.modelText });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
+      },
+      async read_output(args) {
+        const r = readSpilled(String(args?.id || ""), { grep: String(args?.grep || "") });
+        return toolResult({ ok: r.ok, modelText: r.text });
       },
       async write(args) {
         try {
