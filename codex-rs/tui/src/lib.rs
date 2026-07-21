@@ -109,6 +109,13 @@ mod color;
 // JSON theme system (deferred); wired to nothing yet, so allow dead_code.
 #[allow(dead_code)]
 mod color_support;
+// tui-composer pure-logic foundations (registered but not yet wired into the
+// live input/render path — the integration is a deferred follow-up). Each
+// module opts out of dead-code warnings internally.
+mod action_registry;
+mod composer_chip;
+mod composer_ghost;
+mod composer_tip;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
@@ -167,6 +174,7 @@ mod resize_reflow_cap;
 mod resume_picker;
 mod scrollback_verb_group;
 mod selection_list;
+mod which_key;
 mod service_tier_resolution;
 mod session_archive_commands;
 mod session_log;
