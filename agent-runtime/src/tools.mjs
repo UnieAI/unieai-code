@@ -16,10 +16,64 @@
  * without it, escalation is declined by default (fail closed).
  */
 import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
+
+// --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
+// Factored out (and exported) so the guards can be unit-tested without spinning
+// up the engine; the executors below call them.
+
+/** SHA-1 of the exact file text, used to detect on-disk drift since last read. */
+export function hashContent(text) {
+  return createHash("sha1").update(String(text ?? ""), "utf8").digest("hex");
+}
+
+/** True when `text` begins with a UTF-8 BOM (U+FEFF). */
+export function hasBom(text) {
+  return String(text ?? "").charCodeAt(0) === 0xfeff;
+}
+
+/** Drop a leading BOM if present (idempotent). */
+export function stripBom(text) {
+  const s = String(text ?? "");
+  return hasBom(s) ? s.slice(1) : s;
+}
+
+/**
+ * Dominant newline style of `text`: "\r\n" when CRLF outnumbers bare LF,
+ * otherwise "\n". A file with no newlines is treated as LF.
+ */
+export function detectNewline(text) {
+  const s = String(text ?? "");
+  const crlf = (s.match(/\r\n/g) || []).length;
+  const lf = (s.match(/\n/g) || []).length - crlf;
+  return crlf > lf ? "\r\n" : "\n";
+}
+
+/**
+ * Re-encode LF-normalized `lfText` in the original file's style: re-apply the
+ * dominant newline and a leading BOM if the original had one. Guarantees an
+ * edit/overwrite of a CRLF-or-BOM file produces no phantom whole-file diff.
+ */
+export function encodeLike(lfText, { bom = false, newline = "\n" } = {}) {
+  let s = String(lfText ?? "").replace(/\r\n/g, "\n"); // clean LF base
+  if (newline === "\r\n") s = s.replace(/\n/g, "\r\n");
+  return bom ? "﻿" + s : s;
+}
+
+/**
+ * True when `targetPath` (resolved against `workspace`) lands OUTSIDE the
+ * workspace root. Handles `..` escapes and absolute paths; containment is a
+ * simple string check after resolve (symlink-free, which is fine as a gate).
+ */
+export function isExternalPath(workspace, targetPath) {
+  const root = resolve(workspace || process.cwd());
+  const abs = resolve(root, String(targetPath ?? ""));
+  return abs !== root && !abs.startsWith(root + sep);
+}
 
 // Smart-tool feedback (tool-level intelligence beats prompt exhortation): after
 // a Python file is written/edited, verify it instantly and attach the verdict
@@ -137,13 +191,44 @@ function htmlToText(html) {
     .trim();
 }
 
-export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false } = {}) {
+export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false, allowExternal = false, externalAllowlist = [] } = {}) {
   const root = resolve(workspace || process.cwd());
-  const inWorkspace = (p) => {
-    const abs = resolve(root, p);
-    if (abs !== root && !abs.startsWith(root + "/")) throw new Error(`path escapes workspace: ${p}`);
-    return abs;
-  };
+
+  // §2.1 content-hash staleness guard: resolved abs path → SHA-1 of the exact
+  // bytes the model last saw (via `read`, or the last successful write/edit).
+  // A write/edit that finds a different on-disk hash refuses — the model raced
+  // an external change and must re-read before mutating.
+  const readHashes = new Map();
+
+  // §2.3 external-directory gate: an explicit opt-in allowlist of absolute paths
+  // the host has pre-approved outside the workspace root.
+  const externalAllow = new Set((Array.isArray(externalAllowlist) ? externalAllowlist : []).map((p) => resolve(root, p)));
+
+  // Refuse (or, if the host wired an fs approval channel, escalate) any target
+  // that resolves outside the workspace. A distinct `external_directory` kind so
+  // the host can gate it separately from normal in-workspace edits. Returns
+  // { ok:true } when allowed, else { ok:false, message } with a clear refusal.
+  async function gateExternal(abs, filePath, runCtx = {}) {
+    if (!isExternalPath(root, filePath)) return { ok: true };
+    if (allowExternal || externalAllow.has(abs)) return { ok: true };
+    if (typeof runCtx?.requestApproval === "function") {
+      const decision = await runCtx.requestApproval({ tool: "fs", kind: "external_directory", action: "access a path outside the workspace", detail: abs });
+      if (decision === "accept" || decision === "acceptForSession") return { ok: true };
+    }
+    return { ok: false, message: `error: ${filePath} resolves outside the workspace root (${abs}); external-directory access requires a separate approval that was not granted. Work inside the workspace instead.` };
+  }
+
+  // §2.1: compare current on-disk bytes to what the model last saw. Returns a
+  // refusal string when the file drifted since the last read, else null. No
+  // prior read (create-new / first-write flows) is allowed through.
+  function staleGuard(abs, filePath, currentText) {
+    const prev = readHashes.get(abs);
+    if (prev == null) return null;
+    if (hashContent(currentText) !== prev) {
+      return `File ${filePath} changed on disk since you last read it. Re-read it, then edit again.`;
+    }
+    return null;
+  }
 
   // fetch is an OPTIONAL domain tool gated by the consumer's web-access toggle;
   // the loop stays unaware of it. Off by default so a plain coding session has
@@ -200,9 +285,16 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const raw = await run("sh", ["-c", cmd], { cwd: root });
         return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
       },
-      async read(args) {
+      async read(args, runCtx = {}) {
         try {
-          const body = await readFile(inWorkspace(String(args?.filePath || "")), "utf8");
+          const filePath = String(args?.filePath || "");
+          const abs = resolve(root, filePath);
+          const gate = await gateExternal(abs, filePath, runCtx);
+          if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+          const body = await readFile(abs, "utf8");
+          // §2.1: remember exactly what the model saw, so a later edit/write can
+          // detect an intervening on-disk change.
+          readHashes.set(abs, hashContent(body));
           const out = spillIfLarge(body, { id: "read", limit: 32_000, fallbackTruncate: () => body.slice(0, 32_000) });
           return toolResult({ modelText: out.modelText });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
@@ -211,26 +303,57 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const r = readSpilled(String(args?.id || ""), { grep: String(args?.grep || "") });
         return toolResult({ ok: r.ok, modelText: r.text });
       },
-      async write(args) {
+      async write(args, runCtx = {}) {
         try {
-          const abs = inWorkspace(String(args?.filePath || ""));
+          const filePath = String(args?.filePath || "");
+          const abs = resolve(root, filePath);
+          const gate = await gateExternal(abs, filePath, runCtx);
+          if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+          // When OVERWRITING an existing file, apply the same staleness guard and
+          // newline/BOM fidelity as `edit` (a create-new write skips both).
+          let existing = null;
+          try { existing = await readFile(abs, "utf8"); } catch { existing = null; }
+          let content = String(args?.content ?? "");
+          if (existing !== null) {
+            const stale = staleGuard(abs, filePath, existing);
+            if (stale) return toolResult({ ok: false, modelText: stale });
+            // §2.2: re-encode the model's (LF) content in the original's style so
+            // overwriting a CRLF/BOM file doesn't manufacture a whole-file diff.
+            content = encodeLike(stripBom(content), { bom: hasBom(existing), newline: detectNewline(existing) });
+          }
           await mkdir(dirname(abs), { recursive: true });
-          await writeFile(abs, String(args?.content ?? ""), "utf8");
+          await writeFile(abs, content, "utf8");
+          readHashes.set(abs, hashContent(content));
           return toolResult({ modelText: `wrote ${args.filePath}${pyInstantChecks(abs)}` });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
-      async edit(args) {
+      async edit(args, runCtx = {}) {
         try {
-          const abs = inWorkspace(String(args?.filePath || ""));
-          const before = await readFile(abs, "utf8");
-          const oldString = String(args?.oldString ?? "");
-          const newString = String(args?.newString ?? "");
+          const filePath = String(args?.filePath || "");
+          const abs = resolve(root, filePath);
+          const gate = await gateExternal(abs, filePath, runCtx);
+          if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+          const rawBefore = await readFile(abs, "utf8");
+          // §2.1: refuse if the file drifted on disk since the model last read it.
+          const stale = staleGuard(abs, filePath, rawBefore);
+          if (stale) return toolResult({ ok: false, modelText: stale });
+          // §2.2: match/replace on a normalized-LF, BOM-stripped view, then
+          // re-encode the result in the file's original newline/BOM style.
+          const bom = hasBom(rawBefore);
+          const newline = detectNewline(rawBefore);
+          const before = stripBom(rawBefore).replace(/\r\n/g, "\n");
+          const oldString = String(args?.oldString ?? "").replace(/\r\n/g, "\n");
+          const newString = String(args?.newString ?? "").replace(/\r\n/g, "\n");
+          const commit = async (lfResult, extraNote) => {
+            const encoded = encodeLike(lfResult, { bom, newline });
+            await writeFile(abs, encoded, "utf8");
+            readHashes.set(abs, hashContent(encoded)); // keep the snapshot current for the next edit
+            return toolResult({ modelText: `edited ${args.filePath}${extraNote}${pyInstantChecks(abs, { oldString, fileBody: lfResult })}` });
+          };
           // Fast path: exact substring, must be unique.
           const hits = before.split(oldString).length - 1;
           if (hits === 1) {
-            const after = before.replace(oldString, newString);
-            await writeFile(abs, after, "utf8");
-            return toolResult({ modelText: `edited ${args.filePath}${pyInstantChecks(abs, { oldString, fileBody: after })}` });
+            return commit(before.replace(oldString, newString), "");
           }
           if (hits > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${hits} times — include more surrounding context` });
           // Fuzzy path: line-based match under escalating normalization, so
@@ -245,10 +368,8 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           if (!found.indices.length) return toolResult({ ok: false, modelText: "error: oldString not found — read the file and copy the exact text" });
           if (found.indices.length > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${found.indices.length} times (${found.tier}) — include more surrounding context` });
           fileLines.splice(found.indices[0], patternLines.length, ...newString.split("\n"));
-          const joined = fileLines.join("\n");
-          await writeFile(abs, joined, "utf8");
           const note = found.tier === "exact" ? "" : ` (matched ${found.tier})`;
-          return toolResult({ modelText: `edited ${args.filePath}${note}${pyInstantChecks(abs, { oldString, fileBody: joined })}` });
+          return commit(fileLines.join("\n"), note);
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       // Registered only when webAccess is on (see schemas above); if the model
