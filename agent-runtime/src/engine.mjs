@@ -27,6 +27,7 @@ import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
 import { initShadow, snapshotWorkspace } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
+import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
 
 const CODE_IDENTITY =
@@ -286,6 +287,21 @@ export function createEngine({
   // corrupts the shared `messages` array (see turn-coordinator.mjs).
   const turnCoordinator = createTurnCoordinator();
 
+  // Remember bash approvals so the same command shape isn't re-asked. A session
+  // set (populated by "allow for this conversation") plus the durable per-project
+  // store give auto-approval; the host approval prompt is only shown on a miss.
+  const projectApprovals = loadApprovals(workspace);
+  const sessionApprovals = new Set();
+  const requestApprovalWrapped = requestApproval
+    ? async (d) => {
+        const sig = d?.tool === "bash" ? ruleSignature(d.detail) : "";
+        if (sig && (sessionApprovals.has(sig) || projectApprovals.has(sig))) return "accept";
+        const decision = await requestApproval(d);
+        if (sig && decision === "acceptForSession") sessionApprovals.add(sig);
+        return decision;
+      }
+    : null;
+
   // Versioned context sources (see context-sources.mjs): the date (previously
   // never injected) and project AGENTS.md, resolved to a baseline that seeds the
   // prompt and re-emitted as a small delta when they change between turns.
@@ -423,7 +439,7 @@ export function createEngine({
           : null,
         completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
-        requestApproval,
+        requestApproval: requestApprovalWrapped,
         requestQuestion
       };
       const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
