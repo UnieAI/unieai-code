@@ -287,6 +287,12 @@ export function createEngine({
   // corrupts the shared `messages` array (see turn-coordinator.mjs).
   const turnCoordinator = createTurnCoordinator();
 
+  // Steer: mid-turn interjections the running turn folds in (the loop drains
+  // this between steps via ctx.drainSteer). steer() enqueues; if no turn is
+  // running it is delivered on the next send().
+  const steerQueue = [];
+  const drainSteer = () => steerQueue.shift() || null;
+
   // Remember bash approvals so the same command shape isn't re-asked. A session
   // set (populated by "allow for this conversation") plus the durable per-project
   // store give auto-approval; the host approval prompt is only shown on a miss.
@@ -402,6 +408,17 @@ export function createEngine({
 
     isBusy() {
       return turnCoordinator.isBusy(sessionId);
+    },
+
+    /**
+     * Fold a mid-turn interjection into the running turn (drained by the loop
+     * between steps). If no turn is running, it is delivered on the next send().
+     * Returns whether a turn was in flight to receive it.
+     */
+    steer(text) {
+      const t = String(text ?? "").trim();
+      if (t) steerQueue.push(t);
+      return turnCoordinator.isBusy(sessionId);
     }
   };
 
@@ -440,7 +457,8 @@ export function createEngine({
         completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
         requestApproval: requestApprovalWrapped,
-        requestQuestion
+        requestQuestion,
+        drainSteer
       };
       const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
 

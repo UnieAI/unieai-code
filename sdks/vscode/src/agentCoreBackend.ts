@@ -108,20 +108,44 @@ export class AgentCoreBackend {
     // agent-core tool events → webview itemUpsert. Tool ids aren't stable
     // per-item the way app-server's are, so use the event's own id.
     const id = e.tool_use_id || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const tool = String(e.tool_name ?? "tool")
+    // agent-core does not forward tool args on the event (loop.mjs emits only
+    // {tool_use_id, tool_name}), so `args_preview` is usually empty. We still
+    // carry `tool_name` + `status` so the webview can pick a per-tool card
+    // shape (bash vs read/edit/write vs generic) and colour failures.
     if (e.type === "tool_use_started") {
       // Settle the text that led up to this call before the tool card lands,
       // so anything the model says afterwards starts a block below it.
       this.flushTextBlock()
+      const argsPreview = e.args_preview ? String(e.args_preview) : ""
+      // For bash the args preview IS the command line, so don't prefix "bash".
+      // For file/other tools show "<tool> <arg>" (e.g. "read src/foo.ts").
+      const command = tool === "bash" ? argsPreview || tool : `${tool} ${argsPreview}`.trim()
       this.cb.post({
         type: "itemUpsert",
-        item: { id, type: "command_execution", command: `${e.tool_name} ${e.args_preview ?? ""}`.trim(), aggregated_output: "", status: "in_progress" },
+        item: {
+          id,
+          type: "command_execution",
+          tool_name: tool,
+          command,
+          aggregated_output: "",
+          status: "in_progress",
+        },
         done: false,
       })
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {
       const failed = e.type === "tool_use_failed"
+      const output = String(e.output_preview ?? e.result ?? e.error ?? "")
       this.cb.post({
         type: "itemUpsert",
-        item: { id, type: "command_execution", command: e.tool_name ?? "tool", aggregated_output: String(e.result ?? e.error ?? ""), status: failed ? "failed" : "completed" },
+        item: {
+          id,
+          type: "command_execution",
+          tool_name: tool,
+          command: tool,
+          aggregated_output: output,
+          status: failed ? "failed" : "completed",
+        },
         done: true,
       })
     }

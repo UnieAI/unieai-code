@@ -78,7 +78,35 @@ function renderMarkdown(text) {
   const container = document.createElement("div")
   container.className = "md"
   container.appendChild(template.content)
+  // Add a hover "copy" affordance to every fenced code block.
+  for (const pre of container.querySelectorAll("pre")) {
+    const code = pre.querySelector("code") || pre
+    const btn = document.createElement("button")
+    btn.className = "code-copy"
+    btn.type = "button"
+    btn.textContent = "複製"
+    btn.title = "複製程式碼"
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      copyText(code.textContent || "", btn, "複製")
+    })
+    pre.classList.add("has-copy")
+    pre.appendChild(btn)
+  }
   return container
+}
+
+/** Copy via the extension host (vscode.env.clipboard); optimistic label flip. */
+function copyText(text, btn, restore) {
+  vscode.postMessage({ type: "copy", text })
+  if (btn) {
+    btn.textContent = "已複製"
+    btn.classList.add("copied")
+    setTimeout(() => {
+      btn.textContent = restore
+      btn.classList.remove("copied")
+    }, 1200)
+  }
 }
 
 /** Splits agent text into prose / thinking segments. Gateway models emit
@@ -116,14 +144,14 @@ function splitThinking(text) {
   return segments.filter((s) => s.text.trim())
 }
 
-function reasoningBlock(text, open = false) {
+function reasoningBlock(text, open = false, label = "思考過程") {
   const details = document.createElement("details")
   details.className = "reasoning"
   if (open) {
     details.open = true
   }
   const summary = document.createElement("summary")
-  summary.textContent = "思考過程"
+  summary.textContent = label
   const body = document.createElement("div")
   body.className = "reasoning-body"
   body.textContent = text.trim()
@@ -175,6 +203,14 @@ function errorLine(text) {
 function agentBlock(text, citations) {
   const el = document.createElement("div")
   el.className = "line agent"
+  // Hover affordance: copy the message as raw markdown.
+  const copy = document.createElement("button")
+  copy.className = "msg-copy"
+  copy.type = "button"
+  copy.textContent = "複製"
+  copy.title = "複製為 Markdown"
+  copy.addEventListener("click", () => copyText(text, copy, "複製"))
+  el.appendChild(copy)
   const segments = splitThinking(text)
   // A model may wrap its entire reply in an (unclosed) <think> block; keep it
   // visible by auto-opening when there is no prose left at all.
@@ -201,32 +237,129 @@ function agentBlock(text, citations) {
   return el
 }
 
-/** Tool line: "• <summary>" header with optional expandable body. */
-function toolBlock({ summary, body, failed, expanded }) {
+/** Tool line: "• <summary>" header with optional expandable body.
+ * `status` (in_progress|completed|failed) drives the leading glyph/spinner;
+ * `failed` is kept for older callers. `badge` renders a small trailing pill
+ * (e.g. "exit 1"). `mono` renders the label in the editor font (bash). */
+function toolBlock({ summary, body, failed, expanded, status, badge, mono }) {
+  const running = status === "in_progress"
+  const isFailed = failed || status === "failed"
   const el = document.createElement("div")
-  el.className = "line tool" + (failed ? " failed" : "")
+  el.className =
+    "line tool" + (isFailed ? " failed" : "") + (running ? " running" : "")
   const header = document.createElement("div")
   header.className = "tool-header"
   const glyph = document.createElement("span")
   glyph.className = "tool-glyph"
-  glyph.textContent = failed ? "✗" : "•"
+  if (running) {
+    glyph.classList.add("spinner")
+    glyph.textContent = ""
+  } else {
+    glyph.textContent = isFailed ? "✗" : "•"
+  }
   const label = document.createElement("span")
-  label.className = "tool-label"
+  label.className = "tool-label" + (mono ? " mono" : "")
   label.textContent = summary
   header.append(glyph, label)
+  if (badge) {
+    const b = document.createElement("span")
+    b.className = "tool-badge" + (isFailed ? " bad" : "")
+    b.textContent = badge
+    header.appendChild(b)
+  }
   el.appendChild(header)
   if (body && body.trim()) {
+    const chevron = document.createElement("span")
+    chevron.className = "tool-chevron"
+    chevron.textContent = "▸"
+    header.appendChild(chevron)
     const pre = document.createElement("pre")
     pre.className = "tool-output"
     pre.textContent = body.trim()
     pre.hidden = !expanded
+    if (expanded) chevron.classList.add("open")
     header.classList.add("expandable")
     header.addEventListener("click", () => {
       pre.hidden = !pre.hidden
+      chevron.classList.toggle("open", !pre.hidden)
     })
     el.appendChild(pre)
   }
   return el
+}
+
+/** File-path glyphs for read/write/edit tool cards. */
+const FILE_TOOL_GLYPH = { read: "◇", write: "＋", edit: "✎" }
+
+/** Per-tool command_execution card. bash → "$ cmd" + exit badge; read/write/
+ * edit → file verb; otherwise a generic tool line. Output is collapsible. */
+function commandExecutionBlock(item) {
+  const tool = (item.tool_name || "").toLowerCase()
+  const status = item.status
+  const failed = status === "failed"
+  const running = status === "in_progress"
+  const output = item.aggregated_output || ""
+  const hasExit = item.exit_code !== undefined && item.exit_code !== null
+  const nonZero = hasExit && item.exit_code !== 0
+
+  // read/write/edit — show the file verb + any path we can recover.
+  if (tool === "read" || tool === "write" || tool === "edit") {
+    const verb = tool === "read" ? "讀取" : tool === "write" ? "寫入" : "編輯"
+    const path = filePathFromCommand(item.command, tool) || firstLine(output)
+    const el = toolBlock({
+      summary: `${verb}${path ? " " + path : ""}`,
+      body: tool === "read" ? "" : output,
+      status,
+      failed,
+      expanded: failed,
+    })
+    // Prefix the label with a file glyph.
+    const glyph = el.querySelector(".tool-glyph")
+    if (glyph && !running && !failed) glyph.textContent = FILE_TOOL_GLYPH[tool] || "•"
+    return el
+  }
+
+  // bash / shell (and app-server command_execution, which has no tool_name but
+  // carries a real command line) — the classic "$ cmd" card.
+  const isBash = !tool || tool === "bash" || tool === "shell"
+  if (isBash) {
+    return toolBlock({
+      summary: `$ ${item.command || ""}`.trimEnd(),
+      body: output,
+      status,
+      failed,
+      mono: true,
+      badge: nonZero ? `exit ${item.exit_code}` : "",
+      expanded: failed || nonZero,
+    })
+  }
+
+  // Any other named tool.
+  return toolBlock({
+    summary: `工具 ${item.command || tool}`,
+    body: output,
+    status,
+    failed,
+    expanded: failed,
+  })
+}
+
+function firstLine(text) {
+  const line = String(text || "").split("\n").find((l) => l.trim())
+  return line ? (line.length > 80 ? line.slice(0, 80) + "…" : line.trim()) : ""
+}
+
+/** Best-effort file path from a "tool {json}" or "tool path" command string. */
+function filePathFromCommand(command, tool) {
+  if (!command) return ""
+  const rest = command.slice(tool.length).trim()
+  if (!rest) return ""
+  try {
+    const obj = JSON.parse(rest)
+    return obj.filePath || obj.path || obj.file || ""
+  } catch {
+    return rest.length > 80 ? rest.slice(0, 80) + "…" : rest
+  }
 }
 
 function buildItemEl(item) {
@@ -239,18 +372,8 @@ function buildItemEl(item) {
       el.appendChild(reasoningBlock(item.text || ""))
       return el
     }
-    case "command_execution": {
-      const failed = item.status === "failed"
-      const exit =
-        item.exit_code !== undefined && item.exit_code !== 0 ? ` (exit ${item.exit_code})` : ""
-      const pending = item.status === "in_progress" ? " …" : ""
-      return toolBlock({
-        summary: `$ ${item.command || ""}${exit}${pending}`,
-        body: item.aggregated_output || "",
-        failed,
-        expanded: failed,
-      })
-    }
+    case "command_execution":
+      return commandExecutionBlock(item)
     case "file_change":
       return fileChangeBlock(item)
     case "mcp_tool_call": {
@@ -478,6 +601,8 @@ function renderItem(item) {
     const newOutput = el.querySelector(".tool-output")
     if (oldOutput && newOutput) {
       newOutput.hidden = oldOutput.hidden
+      const chevron = el.querySelector(".tool-chevron")
+      if (chevron) chevron.classList.toggle("open", !newOutput.hidden)
     }
     const oldReasoning = existing.querySelector("details.reasoning")
     const newReasoning = el.querySelector("details.reasoning")
@@ -527,7 +652,8 @@ function ensureReasoningStream(itemId) {
   if (!entry) {
     const el = document.createElement("div")
     el.className = "line"
-    const details = reasoningBlock("", false)
+    const details = reasoningBlock("", false, "思考中")
+    details.classList.add("live")
     el.appendChild(details)
     appendLine(el)
     entry = { el, textNode: details.querySelector(".reasoning-body") }
@@ -663,7 +789,11 @@ function approvalCard({ id, kind, detail }) {
 /** Multiple-choice question from the model's `ask` tool (agent-core). */
 function questionCard({ id, question, options }) {
   const el = document.createElement("div")
-  el.className = "line approval"
+  el.className = "line approval question"
+  const eyebrow = document.createElement("div")
+  eyebrow.className = "approval-eyebrow"
+  eyebrow.textContent = "需要你的決定"
+  el.appendChild(eyebrow)
   const title = document.createElement("div")
   title.className = "approval-title"
   title.textContent = question || "請選擇"

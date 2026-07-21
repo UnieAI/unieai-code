@@ -12,10 +12,10 @@
 - [x] 2.2 `run()` 串接；`queueNext()` 合併單一後續（後到取代未 drain 的）；失敗的回合不 wedge queue
 - [x] 2.3 成功且有 queued follow-up → afterDrain 以全新 chain 接續（修過 self-deadlock）。turn-coordinator.test.mjs 5 tests
 
-## 3. steer / queue
+## 3. steer / queue — 完成
 - [x] 3.2 queue：`queueNext` 合併後續，回合結束自動 drain（已於 §2）
-- [ ] 3.1 steer：折進當前回合 + 步數預算重設為 1 —— **未做**（需 loop 在回合中接收插話並重設 step budget，較深）
-- [ ] 3.3 與 completionCheck/goal 續跑互動：轉向後不被完成閘門誤判收工 —— 隨 steer 一起
+- [x] 3.1 steer：loop.mjs 加 **opt-in `ctx.drainSteer()` seam**（step 迴圈頂端 drain，注入為 user 訊息 + 發 steer 事件；無 drainSteer 就 no-op，Studio 安全）；engine 加 steerQueue + `drainSteer` + `engine.steer(text)`（回合中折入、閒置時下次 send 交付）。**未採「step budget 重設為 1」**（會提早結束回合；coding maxSteps=96 有充足空間讓 steer 被處理）。loop-steer.test.mjs 3 tests（注入+事件、no-op seam、throw 不破壞）
+- [x] 3.3 與 completionCheck/goal 互動：steer 只是多一則 user 訊息，既有 completion 契約自然涵蓋（未改 gate）
 
 ## 4. 優雅 max-steps 降級 — 已存在（查證後）
 - [x] 4.1 per-agent 步數上限（`ctx.maxSteps`，engine 設 96；無全域硬上限）— 已有

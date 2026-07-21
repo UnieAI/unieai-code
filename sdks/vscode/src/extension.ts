@@ -243,6 +243,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           vscode.env.openExternal(vscode.Uri.parse(url))
           break
         }
+        case "copy": {
+          const text = String(message.text ?? "")
+          if (text) {
+            vscode.env.clipboard.writeText(text).then(() => {
+              this.post({ type: "copied", id: message.id })
+            }, undefined)
+          }
+          break
+        }
         case "openFile": {
           const rel = String(message.path || "")
           if (rel) {

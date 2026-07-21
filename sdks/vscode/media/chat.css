@@ -347,6 +347,8 @@ button {
 .line.tool.failed .tool-glyph { color: var(--error); }
 
 .tool-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -734,6 +736,16 @@ details.reasoning summary:hover { color: var(--fg); }
   margin-bottom: 8px;
 }
 
+.approval-eyebrow {
+  color: var(--fg-secondary);
+  font-size: calc(var(--vscode-font-size) - 3px);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.line.approval.question { border-color: var(--border); }
+
 .approval-actions {
   display: flex;
   gap: 6px;
@@ -922,4 +934,132 @@ pre.diff {
 .line.image-block .diff-file-name {
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+/* ---------- tool card polish ---------- */
+
+.line.tool.running .tool-label { color: var(--fg); }
+
+.tool-label.mono {
+  font-family: var(--vscode-editor-font-family);
+}
+
+/* Inline spinner for in-progress tools. */
+.tool-glyph.spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  align-self: center;
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@keyframes tool-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Trailing pill (e.g. "exit 1"). */
+.tool-badge {
+  flex: none;
+  font-size: calc(var(--vscode-font-size) - 3px);
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+  line-height: 1.5;
+}
+
+.tool-badge.bad {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Expand/collapse chevron. */
+.tool-chevron {
+  flex: none;
+  color: var(--fg-secondary);
+  font-size: calc(var(--vscode-font-size) - 3px);
+  transition: transform 0.12s ease;
+}
+
+.tool-chevron.open { transform: rotate(90deg); }
+.tool-header.expandable:hover .tool-chevron { color: var(--fg); }
+
+/* A failed tool card gets a faint error rail. */
+.line.tool.failed {
+  border-left: 2px solid var(--error);
+  padding-left: 8px;
+  margin-left: 2px;
+}
+
+/* ---------- copy affordances ---------- */
+
+.line.agent { position: relative; }
+
+.msg-copy {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  opacity: 0;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+  border-radius: var(--radius);
+  padding: 1px 7px;
+  font-size: calc(var(--vscode-font-size) - 3px);
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.line.agent:hover .msg-copy { opacity: 1; }
+.msg-copy:hover { color: var(--fg); border-color: var(--border-strong); }
+.msg-copy.copied { color: var(--fg); }
+
+.md pre.has-copy { position: relative; }
+
+.code-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  opacity: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg-secondary);
+  border-radius: var(--radius);
+  padding: 1px 7px;
+  font-size: calc(var(--vscode-font-size) - 3px);
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.md pre.has-copy:hover .code-copy { opacity: 1; }
+.code-copy:hover { color: var(--fg); border-color: var(--border-strong); }
+.code-copy.copied { color: var(--fg); opacity: 1; }
+
+/* ---------- streaming affordances ---------- */
+
+/* Blinking caret at the tail of streaming agent text. */
+.line.agent.streaming .stream-text::after {
+  content: "\258B";
+  color: var(--fg-secondary);
+  animation: caret-blink 1s step-end infinite;
+  margin-left: 1px;
+}
+
+@keyframes caret-blink {
+  50% { opacity: 0; }
+}
+
+/* Live reasoning summary shimmers while thinking streams in. */
+details.reasoning.live summary {
+  background: linear-gradient(90deg,
+    var(--fg-secondary) 30%,
+    var(--fg) 50%,
+    var(--fg-secondary) 70%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.6s linear infinite;
 }
