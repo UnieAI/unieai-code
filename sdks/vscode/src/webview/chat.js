@@ -660,6 +660,47 @@ function approvalCard({ id, kind, detail }) {
   return el
 }
 
+/** Multiple-choice question from the model's `ask` tool (agent-core). */
+function questionCard({ id, question, options }) {
+  const el = document.createElement("div")
+  el.className = "line approval"
+  const title = document.createElement("div")
+  title.className = "approval-title"
+  title.textContent = question || "請選擇"
+  el.appendChild(title)
+
+  const row = document.createElement("div")
+  row.className = "approval-actions"
+  const settle = (label) => {
+    row.remove()
+    const done = document.createElement("div")
+    done.className = "approval-done"
+    done.textContent = label ? `已選擇：${label}` : "已跳過"
+    el.appendChild(done)
+  }
+  for (const opt of Array.isArray(options) ? options : []) {
+    const button = document.createElement("button")
+    button.className = "approval-btn primary"
+    button.textContent = opt
+    button.addEventListener("click", () => {
+      vscode.postMessage({ type: "questionReply", id, answer: opt })
+      settle(opt)
+    })
+    row.appendChild(button)
+  }
+  const skip = document.createElement("button")
+  skip.className = "approval-btn"
+  skip.textContent = "跳過"
+  skip.addEventListener("click", () => {
+    vscode.postMessage({ type: "questionReply", id, answer: null })
+    settle("")
+  })
+  row.appendChild(skip)
+  el.appendChild(row)
+  appendLine(el)
+  return el
+}
+
 /** Interactive question card (item/tool/requestUserInput). */
 function userInputCard({ id, questions }) {
   const el = document.createElement("div")
@@ -1105,6 +1146,9 @@ window.addEventListener("message", (e) => {
     }
     case "turnDelta":
       applyDelta(message.kind, message.itemKey, message.text)
+      break
+    case "questionRequest":
+      questionCard({ id: message.id, question: message.question, options: message.options })
       break
     case "approvalRequest":
       approvalCard({ id: message.id, kind: message.kind, detail: message.detail })

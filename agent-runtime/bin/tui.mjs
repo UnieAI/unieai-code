@@ -68,6 +68,14 @@ function makeEngine(resume = null, model = null) {
       stdout.write(`\n${YELLOW}⚠ ${tool} 請求${action}:${RESET}\n  ${detail}\n`);
       const answer = (await question(`${YELLOW}允許? [y]一次 [a]本次對話 [N]拒絕: ${RESET}`)).trim().toLowerCase();
       return answer === "y" ? "accept" : answer === "a" ? "acceptForSession" : "decline";
+    },
+    requestQuestion: async ({ question: qText, options }) => {
+      closeReasoning();
+      stdout.write(`\n${CYAN}? ${qText}${RESET}\n`);
+      options.forEach((o, i) => stdout.write(`  ${CYAN}${i + 1}${RESET}. ${o}\n`));
+      const ans = (await question(`${CYAN}選擇 [1-${options.length}]，Enter 跳過: ${RESET}`)).trim();
+      const idx = Number(ans);
+      return Number.isInteger(idx) && idx >= 1 && idx <= options.length ? options[idx - 1] : null;
     }
   });
 }

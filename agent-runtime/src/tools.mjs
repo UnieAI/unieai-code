@@ -149,17 +149,25 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // no network reach beyond what bash's sandbox already governs.
   const fetchSchema = { type: "function", function: { name: "fetch", description: "Fetch an http(s) URL and return its content as readable text (HTML is reduced to text). Use to read documentation pages or HTTP APIs the task references.", parameters: { type: "object", properties: { url: { type: "string", description: "absolute http(s) URL" } }, required: ["url"] } } };
 
+  // `ask` is a structured elicitation primitive, distinct from approval: it lets
+  // the model put a real choice to the user (multiple options) and block on the
+  // answer. The host renders it (TUI menu / VS Code card) via runCtx.requestQuestion.
+  const askSchema = { type: "function", function: { name: "ask", description: "Ask the user a question with a fixed set of options when you genuinely need a decision to proceed. Blocks until they choose. Use sparingly — prefer acting when the answer is inferable.", parameters: { type: "object", properties: { question: { type: "string", description: "the question to ask" }, options: { type: "array", items: { type: "string" }, description: "2–5 concrete options" } }, required: ["question", "options"] } } };
+
   const schemas = [
     { type: "function", function: { name: "bash", description: "Run a shell command in the workspace (sandboxed). Prefer `rg` for searching.", parameters: { type: "object", properties: { cmd: { type: "string", description: "the command line to run" } }, required: ["cmd"] } } },
     { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
     { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
     { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
+    askSchema,
   ];
   if (webAccess) schemas.push(fetchSchema);
 
   return async () => ({
     label: "coding",
     schemas,
+    // `ask` blocks on the user; the loop exempts it from the tool timeout.
+    interactiveTools: ["ask"],
     executors: {
       async bash(args, runCtx = {}) {
         const cmd = String(args?.cmd || "").trim();
@@ -178,6 +186,13 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           : "decline";
         if (decision !== "accept" && decision !== "acceptForSession") {
           return toolResult({ ok: false, modelText: `exit ${sandboxed.code}\n(blocked by sandbox; escalation ${runCtx.requestApproval ? "declined by user" : "unavailable"})\n${sandboxed.stderr.slice(0, 2000)}` });
+        }
+        // The loop aborts this call's signal when the tool call has timed out
+        // (or the turn was interrupted). An approval that arrives AFTER that
+        // must not fire the unsandboxed rerun in the background — the model
+        // already moved on and nobody would see the result.
+        if (runCtx.abortSignal?.aborted) {
+          return toolResult({ ok: false, modelText: "(approval arrived after the tool call was abandoned — command NOT executed; ask again if still needed)" });
         }
         const raw = await run("sh", ["-c", cmd], { cwd: root });
         return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
@@ -256,6 +271,22 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         } finally {
           clearTimeout(timer);
         }
+      },
+      async ask(args, runCtx = {}) {
+        const question = String(args?.question || "").trim();
+        const options = (Array.isArray(args?.options) ? args.options : [])
+          .map((o) => String(o || "").trim())
+          .filter(Boolean);
+        if (!question) return toolResult({ ok: false, modelText: "error: question is required" });
+        if (options.length < 2) return toolResult({ ok: false, modelText: "error: provide at least two options" });
+        if (typeof runCtx.requestQuestion !== "function") {
+          // Fail closed: no host channel to ask through. Tell the model to decide.
+          return toolResult({ ok: false, modelText: "error: interactive questions are unavailable here — make the best decision yourself and proceed, stating your assumption." });
+        }
+        const answer = await runCtx.requestQuestion({ question, options });
+        const chosen = answer == null ? "" : String(answer).trim();
+        if (!chosen) return toolResult({ ok: false, modelText: "The user dismissed the question without choosing. Do not ask again; proceed with a reasonable default and state your assumption." });
+        return toolResult({ ok: true, modelText: `The user chose: ${chosen}` });
       }
     }
   });

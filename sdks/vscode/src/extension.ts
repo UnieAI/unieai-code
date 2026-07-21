@@ -140,11 +140,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               detail: { command: d.detail, reason: `${d.tool}: ${d.action}` },
             })
           }),
+        requestQuestion: (d) =>
+          new Promise((resolve) => {
+            const questionId = `question-${++this.approvalSeq}`
+            this.agentCoreQuestions.set(questionId, resolve)
+            this.post({ type: "questionRequest", id: questionId, question: d.question, options: d.options })
+          }),
       })
     }
     return this.agentCore
   }
   private agentCoreApprovals = new Map<string, (d: Json) => void>()
+  private agentCoreQuestions = new Map<string, (answer: string | null) => void>()
 
   dispose() {
     this.appServer?.dispose()
@@ -181,6 +188,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "approvalReply":
           this.resolveApproval(String(message.id), String(message.decision))
           break
+        case "questionReply": {
+          const resolve = this.agentCoreQuestions.get(String(message.id))
+          if (resolve) {
+            this.agentCoreQuestions.delete(String(message.id))
+            resolve(message.answer == null ? null : String(message.answer))
+          }
+          break
+        }
         case "userInputReply": {
           const entry = this.pendingApprovals.get(String(message.id))
           if (entry) {

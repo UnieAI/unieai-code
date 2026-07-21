@@ -6,15 +6,27 @@
  * turn. History persistence and toolset assembly live here.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildToolset } from "../../third_party/unieai-agent-core/src/toolset.mjs";
 import { runAgentLoop } from "../../third_party/unieai-agent-core/src/loop.mjs";
 import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/prompt.mjs";
 import { callModelJson } from "../../third_party/unieai-agent-core/src/upstream.mjs";
+import { compactWithSummary } from "../../third_party/unieai-agent-core/src/compaction.mjs";
+import { pickSmallModel } from "../../third_party/unieai-agent-core/src/model-picker.mjs";
+import {
+  dateSource,
+  agentsMdSource,
+  resolveSources,
+  applyEpoch,
+  renderContextUpdate,
+} from "../../third_party/unieai-agent-core/src/context-sources.mjs";
 import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
-import { newSessionId, saveSession, loadSession } from "./session.mjs";
+import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
+import { initShadow, snapshotWorkspace } from "./snapshot.mjs";
+import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
 
 const CODE_IDENTITY =
   "You are UnieAI Code, a coding agent running in a CLI harness attached to the user's workspace.";
@@ -29,6 +41,7 @@ const CODE_TOOL_GUIDANCE = [
   "- When the task quotes an exact expected output (error message, repr, generated code/LaTeX, serialized form), run the changed entry point with a tiny script before finishing and compare your actual output against EVERY quoted literal character-for-character — near-miss formatting is a failure.",
   "- After a tool call that changes state (edits, writes, installs), confirm the result before reporting success — never claim an action worked without evidence.",
   "- When a tool call fails, adapt: don't retry the identical call unchanged, and don't paper over the failure.",
+  "- ask — put a real decision to the user as fixed options ONLY when the answer is not inferable from the repo or the task and picking wrong would waste real work. Never ask to confirm something you can verify yourself.",
   "- Verify with the project's own checks (tests/lint/typecheck) when they exist. Never commit unless the user explicitly asks."
 ];
 
@@ -125,7 +138,24 @@ export function staticDiffChecks(workspace, task) {
   return out.slice(0, 6);
 }
 
-function workspaceCompletionCheck({ workspace, model, callerKey }) {
+/**
+ * The user's actual task. The engine injects synthetic `role:"user"` wrappers
+ * (project instructions, context updates, the rolling compaction summary), so
+ * "first user message" no longer means "the task" — skip anything wrapped in a
+ * synthetic tag. Exported for tests.
+ */
+export function realUserTask(messages) {
+  const SYNTHETIC = /^\s*<(project_instructions|context_update|conversation_summary)>/;
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (m?.role !== "user") continue;
+    const text = typeof m.content === "string" ? m.content : "";
+    if (SYNTHETIC.test(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} }) {
   let skepticRan = false;
   let gatesRan = false;
   return async ({ answerText, messages }) => {
@@ -143,7 +173,7 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
     if (!gatesRan) {
       gatesRan = true;
       try {
-        const task = String(messages.find((m) => m.role === "user")?.content || "");
+        const task = realUserTask(messages);
         const problems = [...(deterministicGates(workspace) || []), ...staticDiffChecks(workspace, task)];
         if (problems.length) {
           return (
@@ -160,7 +190,7 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
     try {
       const diff = spawnSync("git", ["-C", workspace, "diff"], { encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
       if (diff.status !== 0 || !String(diff.stdout || "").trim()) return null;
-      const task = String(messages.find((m) => m.role === "user")?.content || "");
+      const task = realUserTask(messages);
       const verdict = await callModelJson({
         baseModelSlug: model,
         callerKey,
@@ -183,6 +213,15 @@ function workspaceCompletionCheck({ workspace, model, callerKey }) {
       });
       const text = String(verdict || "").trim();
       if (!text || /^achieved\b/i.test(text.replace(/^[*#\s]+/, ""))) return null;
+      // Stall exit (grok-build gap-fingerprint): if this turn's gaps match the
+      // previous turn's, re-nudging only spins on the same blocker — accept the
+      // turn and let the user/next turn take over instead of looping.
+      const fp = fingerprintGaps(text);
+      if (isRepeatedStall(goalState.lastGapFingerprint, fp)) {
+        goalState.lastGapFingerprint = fp;
+        return null;
+      }
+      goalState.lastGapFingerprint = fp;
       return (
         "[verification] A skeptical review of your diff found gaps:\n" +
         MID(text, 1500) +
@@ -202,6 +241,7 @@ export function createEngine({
   onReasoning = () => {},
   onToolEvent = () => {},
   requestApproval = null,
+  requestQuestion = null,
   expectsMutation = false,
   webAccess = false
 } = {}) {
@@ -218,6 +258,47 @@ export function createEngine({
     throw new Error(`no models available — add models in UnieAI Studio (${credentials.studioUrl}/models)`);
   }
 
+  // A cheap model for auxiliary calls (summary/compaction) so they don't burn the
+  // main model's budget. Falls back to the active model when the catalog has no
+  // smaller option.
+  const auxModel = pickSmallModel(credentials.models, { excludeId: activeModel }) || activeModel;
+
+  // Rolling structured summary of folded-away turns (see compaction.mjs). Kept
+  // in the engine (stateful) so the summarizer model call happens BETWEEN turns,
+  // off the request critical path; restored on resume.
+  let rollingSummary = resumed?.summary || "";
+
+  // Workspace checkpoints in a shadow git repo (see snapshot.mjs). One per turn,
+  // keyed by the message index at snapshot time, so a future revert can restore
+  // the workspace to any past turn. Best-effort — a git failure never breaks a
+  // turn. The destructive apply is not implemented here (see session-checkpoint-
+  // revert / tui-rewind-diff); this just accumulates the checkpoints.
+  const shadowGitDir = snapshotDir(sessionId);
+  const shadowReady = initShadow(shadowGitDir, workspace);
+  const checkpoints = Array.isArray(resumed?.checkpoints) ? resumed.checkpoints.slice() : [];
+
+  // Cross-turn state for the completion verifier: the last turn's gap fingerprint,
+  // so repeated identical gaps stop the re-nudge loop instead of spinning.
+  const goalState = { lastGapFingerprint: "" };
+
+  // Versioned context sources (see context-sources.mjs): the date (previously
+  // never injected) and project AGENTS.md, resolved to a baseline that seeds the
+  // prompt and re-emitted as a small delta when they change between turns.
+  const contextSources = [
+    dateSource(),
+    agentsMdSource(workspace, {
+      readFile: (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
+      isProjectRoot: (dir) => existsSync(join(dir, ".git")),
+      homeConfigPath: join(homedir(), ".config", "AGENTS.md"),
+    }),
+  ];
+  // Seed against the saved epoch so a change made while a resumed session was
+  // away surfaces as a delta on the next turn.
+  const seed = applyEpoch(resumed?.contextEpoch || {}, resolveSources(contextSources));
+  let contextEpoch = seed.epoch;
+  const dateNow = (contextEpoch.date || "").replace(/^Current date:\s*/, "");
+  const agentsMdText = contextEpoch["agents-md"] || "";
+
   const messages = resumed?.messages || [
     {
       role: "system",
@@ -225,12 +306,25 @@ export function createEngine({
         runtimeContext: { knowledgeBases: [], workspace: {} },
         identity: CODE_IDENTITY,
         runtime: "UnieAI Code (agent-core loop, sandboxed shell tools)",
+        now: dateNow,
         extraToolGuidance: webAccess
           ? [...CODE_TOOL_GUIDANCE, "- fetch — read a web page or HTTP API by URL (returns readable text). Use it to consult docs or fetch data the task references; prefer it over shelling out to curl."]
           : CODE_TOOL_GUIDANCE
       })
-    }
+    },
+    // AGENTS.md rides as a user message (not the system prompt) so compaction
+    // keeps it verbatim, matching how project instructions are meant to persist.
+    ...(agentsMdText
+      ? [{ role: "user", content: `<project_instructions>\n${agentsMdText}\n</project_instructions>` }]
+      : [])
   ];
+
+  // A resumed session already carries its baseline; if a source changed while it
+  // was away, inject that change up front so this turn sees it.
+  if (resumed?.messages) {
+    const awayUpdate = renderContextUpdate(seed.deltas);
+    if (awayUpdate) messages.push({ role: "user", content: awayUpdate });
+  }
 
   const emitter = {
     writeContent: (d) => onText(d),
@@ -264,6 +358,11 @@ export function createEngine({
       return webAccessState;
     },
 
+    /** Workspace checkpoints (message index → shadow-git tree) for revert. */
+    get checkpoints() {
+      return checkpoints.slice();
+    },
+
     /** Flip the fetch tool on/off for subsequent turns, keeping the session. */
     setWebAccess(value) {
       const next = Boolean(value);
@@ -275,6 +374,17 @@ export function createEngine({
 
     /** Run one user turn; resolves when the turn ends. */
     async send(text, { abortSignal = null } = {}) {
+      // Re-resolve context sources; if the date rolled over or AGENTS.md changed
+      // since last turn, inject a compact delta (not the whole prompt) before the
+      // user's message so this turn sees the current state.
+      try {
+        const { epoch, deltas } = applyEpoch(contextEpoch, resolveSources(contextSources));
+        contextEpoch = epoch;
+        const update = renderContextUpdate(deltas);
+        if (update) messages.push({ role: "user", content: update });
+      } catch {
+        // context refresh is best-effort — never block a turn on it
+      }
       messages.push({ role: "user", content: text });
       const ctx = {
         baseModelSlug: activeModel,
@@ -293,14 +403,68 @@ export function createEngine({
         doomStreakWarn: 10,
         doomStreakForce: 14,
         completionCheck: expectsMutation
-          ? workspaceCompletionCheck({ workspace, model: activeModel, callerKey: credentials.gatewayApiKey })
+          ? workspaceCompletionCheck({ workspace, model: activeModel, callerKey: credentials.gatewayApiKey, goalState })
           : null,
         completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
-        requestApproval
+        requestApproval,
+        requestQuestion
       };
       const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
-      saveSession({ id: sessionId, messages, model: activeModel, cwd: workspace });
+
+      // Between-turns semantic compaction (off critical path, fail-open). When
+      // the history grows past budget, fold the older turns into one rolling
+      // structured summary instead of letting the per-request mechanical path
+      // truncate them. A no-op below budget. Never blocks the turn's result.
+      try {
+        const folded = await compactWithSummary({
+          messages,
+          prevSummary: rollingSummary,
+          ctx: { requestId: `${sessionId}-summary` },
+          summarize: ({ system, user }) =>
+            callModelJson({
+              baseModelSlug: auxModel,
+              callerKey: credentials.gatewayApiKey,
+              system,
+              user,
+              maxTokens: 1500,
+            }),
+        });
+        if (folded.changed) {
+          messages.splice(0, messages.length, ...folded.messages);
+          rollingSummary = folded.summary;
+          // The splice renumbered history: [systemCount, systemCount+foldedCount)
+          // became one summary message. Remap checkpoint boundaries (message
+          // counts) so revert planning still lines up with the live array —
+          // checkpoints inside the folded span clamp to just after the summary.
+          const { systemCount, foldedCount } = folded;
+          for (const cp of checkpoints) {
+            if (cp.messageIndex >= systemCount + foldedCount) cp.messageIndex += 1 - foldedCount;
+            else if (cp.messageIndex > systemCount) cp.messageIndex = systemCount + 1;
+          }
+        }
+      } catch {
+        // fail-open: a summarization hiccup must never drop the turn's result;
+        // the mechanical PRUNE→TRIM path still bounds the next request.
+      }
+
+      // Checkpoint the workspace after the turn's edits settle (best-effort).
+      if (shadowReady) {
+        const tree = snapshotWorkspace(shadowGitDir, workspace);
+        if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
+          checkpoints.push({ messageIndex: messages.length, tree });
+        }
+      }
+
+      saveSession({
+        id: sessionId,
+        messages,
+        model: activeModel,
+        cwd: workspace,
+        summary: rollingSummary,
+        contextEpoch,
+        checkpoints,
+      });
       return result;
     }
   };

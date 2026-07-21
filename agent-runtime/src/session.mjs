@@ -15,15 +15,23 @@ function sessionsDir() {
   return dir;
 }
 
+/** The shadow-git dir for a session's workspace checkpoints (see snapshot.mjs). */
+export function snapshotDir(sessionId) {
+  return join(unieaiHome(), "agent-snapshots", `${String(sessionId).replace(/[^\w.-]/g, "")}.git`);
+}
+
 export function newSessionId() {
   const now = new Date();
   const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
   return `${stamp}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function saveSession({ id, messages, model, cwd }) {
+export function saveSession({ id, messages, model, cwd, summary = "", contextEpoch = null, checkpoints = null }) {
   const path = join(sessionsDir(), `${id}.json`);
-  writeFileSync(path, JSON.stringify({ id, model, cwd, updatedAt: Date.now(), messages }, null, 0));
+  writeFileSync(
+    path,
+    JSON.stringify({ id, model, cwd, updatedAt: Date.now(), summary, contextEpoch, checkpoints, messages }, null, 0)
+  );
   return path;
 }
 

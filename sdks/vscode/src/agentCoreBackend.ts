@@ -20,6 +20,8 @@ export interface AgentCoreCallbacks {
   post: (message: Json) => void
   /** Ask the host UI for a decision; resolves with the user's choice. */
   requestApproval: (detail: { tool: string; action: string; detail: string }) => Promise<ApprovalDecision>
+  /** Put a multiple-choice question to the user; resolves with the chosen label, or null if dismissed. */
+  requestQuestion: (detail: { question: string; options: string[] }) => Promise<string | null>
 }
 
 /** One panel conversation backed by the agent-core loop. */
@@ -95,6 +97,9 @@ export class AgentCoreBackend {
       onToolEvent: (e: Json) => this.mapToolEvent(e),
       requestApproval: async ({ tool, action, detail }: Json) => {
         return this.cb.requestApproval({ tool, action, detail })
+      },
+      requestQuestion: async ({ question, options }: Json) => {
+        return this.cb.requestQuestion({ question, options })
       },
     })
   }

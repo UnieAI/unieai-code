@@ -34,6 +34,9 @@ export function loadCredentials() {
 export function applyUpstreamEnv(credentials) {
   if (credentials.gatewayBaseUrl) process.env.AGENT_CORE_UPSTREAM_BASE_URL = credentials.gatewayBaseUrl;
   process.env.AGENT_CORE_WIRE_API = process.env.AGENT_CORE_WIRE_API || "responses";
+  // UnieAI Code opts into the tighter 429 cap here (agent-core's shared default
+  // stays neutral so Studio/KDA are unaffected). This only touches THIS process.
+  if (process.env.AGENT_1_0_RETRY_MAX_429 == null) process.env.AGENT_1_0_RETRY_MAX_429 = "2";
 }
 
 /** The Rust binary that provides `unieai sandbox` (and login). */
