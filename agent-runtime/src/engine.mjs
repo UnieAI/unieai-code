@@ -29,6 +29,7 @@ import { initShadow, snapshotWorkspace } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
+import { buildNudge } from "./completion-escalation.mjs";
 
 const CODE_IDENTITY =
   "You are UnieAI Code, a coding agent running in a CLI harness attached to the user's workspace.";
@@ -214,7 +215,10 @@ function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} 
         user: `## Task\n${MID(task, 3000)}\n\n## Workspace diff\n${MID(diff.stdout, 6000)}\n\n## Agent's final report\n${MID(String(answerText || ""), 1500)}`
       });
       const text = String(verdict || "").trim();
-      if (!text || /^achieved\b/i.test(text.replace(/^[*#\s]+/, ""))) return null;
+      if (!text || /^achieved\b/i.test(text.replace(/^[*#\s]+/, ""))) {
+        goalState.consecutiveNotAchieved = 0; // achieved → reset the escalation ladder
+        return null;
+      }
       // Stall exit (grok-build gap-fingerprint): if this turn's gaps match the
       // previous turn's, re-nudging only spins on the same blocker — accept the
       // turn and let the user/next turn take over instead of looping.
@@ -224,11 +228,11 @@ function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} 
         return null;
       }
       goalState.lastGapFingerprint = fp;
-      return (
-        "[verification] A skeptical review of your diff found gaps:\n" +
-        MID(text, 1500) +
-        "\nAddress each gap now by editing the code (or state precisely why a gap does not apply), then finish."
-      );
+      // Strategist escalation (grok-build stop-drift): the gaps DIFFER from last
+      // turn but the task keeps failing review — after enough rounds, stop asking
+      // for small fixes and tell the model to rethink its whole approach.
+      goalState.consecutiveNotAchieved = (goalState.consecutiveNotAchieved || 0) + 1;
+      return buildNudge({ consecutiveNotAchieved: goalState.consecutiveNotAchieved, gapText: MID(text, 1500) });
     } catch {
       return null; // verifier unavailable — never block completion on infrastructure
     }

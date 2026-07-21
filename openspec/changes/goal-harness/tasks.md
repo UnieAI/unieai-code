@@ -13,8 +13,8 @@
 - [ ] 3.1 plan.md 契約產出/更新；失敗 → PAUSE goal（區分暫時性錯誤，不誤 PAUSE）
 
 ## 4. strategist（fail-open）+ summarizer（once）
-- [ ] 4.1 連續 N 次 NotAchieved 觸發 strategist；PlanGuard 快照＋還原
-- [ ] 4.2 ACHIEVED 時 summarizer 跑一次寫結案摘要
+- [x] 4.1 連續 N 次 NotAchieved 觸發 strategist **升級 nudge**（輕量版）：`agent-runtime/src/completion-escalation.mjs` `buildNudge`（`STRATEGIST_THRESHOLD=3`；達門檻改「停止小修、重新思考整體 approach」訊息）；engine `goalState.consecutiveNotAchieved` 跨回合、ACHIEVED 重置。5 tests。**未做**完整 strategist subagent + PlanGuard/plan.md（需 subagent spawn，較重）
+- [ ] 4.2 ACHIEVED 時 summarizer 跑一次寫結案摘要 — 未做（subagent）
 
 ## 5. 兩層續跑 + 停滯早退
 - [ ] 5.1 goal round-end 續跑決策
