@@ -185,6 +185,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "stop":
           this.stopTurn()
           break
+        case "steer": {
+          // Mid-turn interjection: fold it into the running turn instead of
+          // queuing a fresh turn. Only the in-process agent-core engine can
+          // steer; the app-server path has no such seam, so report undelivered
+          // and let the webview fall back.
+          const text = String(message.text ?? "")
+          const delivered =
+            this.engineChoice() === "agent-core" && this.agentCore
+              ? this.agentCore.steer(text)
+              : false
+          this.post({ type: "steerAck", id: message.id, delivered })
+          break
+        }
         case "approvalReply":
           this.resolveApproval(String(message.id), String(message.decision))
           break
@@ -1305,6 +1318,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           </div>
           <div class="composer-right">
             <select id="model" class="pill model-pill" title="模型"></select>
+            <button id="stop" class="send-btn stop-btn" title="停止目前回合" hidden>■</button>
             <button id="send" class="send-btn" title="送出 (Enter)">↑</button>
           </div>
         </div>

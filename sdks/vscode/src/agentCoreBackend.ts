@@ -200,4 +200,23 @@ export class AgentCoreBackend {
     this.cb.post({ type: "turnState", state: "interrupted" })
     this.cb.post({ type: "running", value: false })
   }
+
+  /** Whether a turn is currently in flight for this conversation. */
+  isBusy(): boolean {
+    return this.engine?.isBusy() ?? false
+  }
+
+  /**
+   * Fold a mid-turn interjection into the RUNNING turn (the loop drains it
+   * between steps). Does NOT start a new turn. Returns true if a turn was in
+   * flight to receive it; false if there is no engine / no turn running (in
+   * which case the caller should fall back to a normal `send`).
+   */
+  steer(text: string): boolean {
+    const t = text.trim()
+    if (!t) {
+      return false
+    }
+    return this.engine?.steer(t) ?? false
+  }
 }

@@ -11,6 +11,7 @@ const chatView = $("chat-view")
 const messagesEl = $("messages")
 const inputEl = $("input")
 const sendEl = $("send")
+const stopEl = $("stop")
 const modelEl = $("model")
 const modeEl = $("mode")
 const permEl = $("perm")
@@ -172,6 +173,21 @@ function userLine(text) {
   const el = document.createElement("div")
   el.className = "line user"
   el.textContent = text
+  return appendLine(el)
+}
+
+/** A mid-turn interjection (steer): a distinct user line that reads as folded
+ * into the running turn, e.g. "↳ 插話  <text>". */
+function steerLine(text) {
+  const el = document.createElement("div")
+  el.className = "line user steer"
+  const tag = document.createElement("span")
+  tag.className = "steer-tag"
+  tag.textContent = "↳ 插話"
+  const body = document.createElement("span")
+  body.className = "steer-text"
+  body.textContent = text
+  el.append(tag, body)
   return appendLine(el)
 }
 
@@ -914,8 +930,24 @@ function setRunning(on) {
     workingEl.remove()
     workingEl = null
   }
-  sendEl.textContent = on ? "■" : "↑"
-  sendEl.title = on ? "停止" : "送出 (Enter)"
+  // While a turn runs, Enter / this button STEERS (folds text into the running
+  // turn); the separate stop button interrupts.
+  sendEl.textContent = on ? "插話" : "↑"
+  sendEl.title = on ? "插話：把訊息折入目前回合 (Enter)" : "送出 (Enter)"
+  sendEl.classList.toggle("steer-mode", on)
+  if (stopEl) {
+    stopEl.hidden = !on
+  }
+  updateComposerHint(on)
+}
+
+function updateComposerHint(on) {
+  const hint = $("composer-hint")
+  if (hint) {
+    hint.textContent = on
+      ? "Enter 插話 · Shift+Enter 換行 · ■ 停止"
+      : "Enter 送出 · Shift+Enter 換行 · / 指令"
+  }
 }
 
 function pinWorking() {
@@ -1030,18 +1062,32 @@ function handleEvent(event) {
 
 // ---------- composer ----------
 
+let steerSeq = 0
+
 function send() {
+  const text = inputEl.value.trim()
+  // Mid-turn: fold the text into the RUNNING turn as a steer, rather than
+  // queuing a brand-new turn. The dedicated stop button handles interrupts.
   if (running) {
-    vscode.postMessage({ type: "stop" })
+    if (!text) {
+      return
+    }
+    const id = `steer-${++steerSeq}`
+    const el = steerLine(text)
+    el.dataset.steerId = id
+    inputEl.value = ""
+    inputEl.style.height = "auto"
+    slashMenuEl.hidden = true
+    vscode.postMessage({ type: "steer", text, id })
     return
   }
-  const text = inputEl.value.trim()
   if (!text) {
     return
   }
   turnSeq += 1
   userLine(text)
   inputEl.value = ""
+  inputEl.style.height = "auto"
   setRunning(true)
   const sandbox = modeEl.value === "plan" ? "read-only" : permEl.value
   vscode.postMessage({
@@ -1126,6 +1172,13 @@ webEl.addEventListener("change", () => {
 })
 
 sendEl.addEventListener("click", send)
+if (stopEl) {
+  stopEl.addEventListener("click", () => {
+    if (running) {
+      vscode.postMessage({ type: "stop" })
+    }
+  })
+}
 inputEl.addEventListener("keydown", (e) => {
   // IME composition: Enter confirms the composition, not the message.
   if (e.isComposing || e.keyCode === 229) {
@@ -1277,6 +1330,26 @@ window.addEventListener("message", (e) => {
     case "turnDelta":
       applyDelta(message.kind, message.itemKey, message.text)
       break
+    case "steerAck": {
+      // The host reports whether the running turn actually received the steer.
+      const el = message.id
+        ? messagesEl.querySelector(`[data-steer-id="${message.id}"]`)
+        : null
+      if (el) {
+        if (message.delivered) {
+          el.classList.add("delivered")
+        } else {
+          // No turn was in flight (it just finished, or app-server engine has
+          // no steer seam) — mark the line so the user knows it didn't land.
+          el.classList.add("undelivered")
+          const note = document.createElement("span")
+          note.className = "steer-note"
+          note.textContent = "（未送達：沒有進行中的回合）"
+          el.appendChild(note)
+        }
+      }
+      break
+    }
     case "questionRequest":
       questionCard({ id: message.id, question: message.question, options: message.options })
       break

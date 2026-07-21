@@ -16,6 +16,7 @@
 - [x] 3.2 queue：`queueNext` 合併後續，回合結束自動 drain（已於 §2）
 - [x] 3.1 steer：loop.mjs 加 **opt-in `ctx.drainSteer()` seam**（step 迴圈頂端 drain，注入為 user 訊息 + 發 steer 事件；無 drainSteer 就 no-op，Studio 安全）；engine 加 steerQueue + `drainSteer` + `engine.steer(text)`（回合中折入、閒置時下次 send 交付）。**未採「step budget 重設為 1」**（會提早結束回合；coding maxSteps=96 有充足空間讓 steer 被處理）。loop-steer.test.mjs 3 tests（注入+事件、no-op seam、throw 不破壞）
 - [x] 3.3 與 completionCheck/goal 互動：steer 只是多一則 user 訊息，既有 completion 契約自然涵蓋（未改 gate）
+- [x] 3.4 前端接線（VS Code）：`AgentCoreBackend.steer(text)→engine.steer` + `isBusy()`；extension `steer` 訊息 → `agentCore.steer` 並回 `steerAck{delivered}`；webview 回合進行中 Enter/送出鈕改為「插話」（送 steer、transcript 以「↳ 插話」distinct user line 呈現），另加獨立停止鈕保留中斷。CLI TUI steer 尚未接（TODO）
 
 ## 4. 優雅 max-steps 降級 — 已存在（查證後）
 - [x] 4.1 per-agent 步數上限（`ctx.maxSteps`，engine 設 96；無全域硬上限）— 已有
