@@ -26,11 +26,11 @@ export function newSessionId() {
   return `${stamp}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function saveSession({ id, messages, model, cwd, summary = "", contextEpoch = null, checkpoints = null }) {
+export function saveSession({ id, messages, model, cwd, summary = "", contextEpoch = null, checkpoints = null, plan = null }) {
   const path = join(sessionsDir(), `${id}.json`);
   writeFileSync(
     path,
-    JSON.stringify({ id, model, cwd, updatedAt: Date.now(), summary, contextEpoch, checkpoints, messages }, null, 0)
+    JSON.stringify({ id, model, cwd, updatedAt: Date.now(), summary, contextEpoch, checkpoints, plan, messages }, null, 0)
   );
   return path;
 }

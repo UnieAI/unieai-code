@@ -30,6 +30,8 @@ import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
 import { buildNudge } from "./completion-escalation.mjs";
+import { buildPlanRequest, parsePlan, reconcilePlan, planNudgeBlock } from "./goal-plan.mjs";
+import { changedFilesFromStatus, buildSummaryRequest, clampSummary } from "./goal-summarizer.mjs";
 
 const CODE_IDENTITY =
   "You are UnieAI Code, a coding agent running in a CLI harness attached to the user's workspace.";
@@ -158,9 +160,27 @@ export function realUserTask(messages) {
   return "";
 }
 
-function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} }) {
+function workspaceCompletionCheck({ workspace, model, auxModel, callerKey, goalState = {}, onSummary = () => {} }) {
   let skepticRan = false;
   let gatesRan = false;
+  // Fire the closing summarizer exactly once, off the hot path: on the ACHIEVED
+  // verdict we kick a single small aux-model call and surface its result via
+  // onSummary without ever awaiting it, so completion is never blocked. Fail-open
+  // — any error just skips the summary (goal-harness §4.2).
+  const maybeSummarize = ({ task, files, diff }) => {
+    if (goalState.summaryFired) return;
+    goalState.summaryFired = true;
+    const { system, user } = buildSummaryRequest({ task, files, diff });
+    Promise.resolve()
+      .then(() =>
+        callModelJson({ baseModelSlug: auxModel || model, callerKey, system, user, temperature: 0, maxTokens: 400 })
+      )
+      .then((raw) => {
+        const summary = clampSummary(raw);
+        if (summary) onSummary(summary);
+      })
+      .catch(() => {}); // fail-open: a summary hiccup never affects completion
+  };
   return async ({ answerText, messages }) => {
     const st = spawnSync("git", ["-C", workspace, "status", "--porcelain"], { encoding: "utf8", timeout: 10000 });
     if (st.status !== 0) return null; // not a git repo / git broken — never block
@@ -217,8 +237,13 @@ function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} 
       const text = String(verdict || "").trim();
       if (!text || /^achieved\b/i.test(text.replace(/^[*#\s]+/, ""))) {
         goalState.consecutiveNotAchieved = 0; // achieved → reset the escalation ladder
+        // ACHIEVED: kick the one-shot closing summarizer (non-blocking, fail-open).
+        maybeSummarize({ task, files: changedFilesFromStatus(st.stdout), diff: diff.stdout });
         return null;
       }
+      // NotAchieved: check off any plan steps the diff now covers, so the nudge
+      // only surfaces items that are genuinely still open (goal-harness §3).
+      reconcilePlan(goalState.plan, `${changedFilesFromStatus(st.stdout).join(" ")}\n${diff.stdout}`);
       // Stall exit (grok-build gap-fingerprint): if this turn's gaps match the
       // previous turn's, re-nudging only spins on the same blocker — accept the
       // turn and let the user/next turn take over instead of looping.
@@ -232,7 +257,10 @@ function workspaceCompletionCheck({ workspace, model, callerKey, goalState = {} 
       // turn but the task keeps failing review — after enough rounds, stop asking
       // for small fixes and tell the model to rethink its whole approach.
       goalState.consecutiveNotAchieved = (goalState.consecutiveNotAchieved || 0) + 1;
-      return buildNudge({ consecutiveNotAchieved: goalState.consecutiveNotAchieved, gapText: MID(text, 1500) });
+      return (
+        buildNudge({ consecutiveNotAchieved: goalState.consecutiveNotAchieved, gapText: MID(text, 1500) }) +
+        planNudgeBlock(goalState.plan)
+      );
     } catch {
       return null; // verifier unavailable — never block completion on infrastructure
     }
@@ -248,6 +276,7 @@ export function createEngine({
   onToolEvent = () => {},
   requestApproval = null,
   requestQuestion = null,
+  onSummary = () => {},
   expectsMutation = false,
   webAccess = false
 } = {}) {
@@ -283,9 +312,11 @@ export function createEngine({
   const shadowReady = initShadow(shadowGitDir, workspace);
   const checkpoints = Array.isArray(resumed?.checkpoints) ? resumed.checkpoints.slice() : [];
 
-  // Cross-turn state for the completion verifier: the last turn's gap fingerprint,
-  // so repeated identical gaps stop the re-nudge loop instead of spinning.
-  const goalState = { lastGapFingerprint: "" };
+  // Cross-turn state for the completion verifier (persisted like rollingSummary /
+  // contextEpoch): the last turn's gap fingerprint (so repeated identical gaps
+  // stop the re-nudge loop), the escalation counter, the lightweight task plan
+  // (goal-harness §3), and one-shot latches for plan derivation + summarizer.
+  const goalState = { lastGapFingerprint: "", plan: resumed?.plan || null, planAttempted: Boolean(resumed?.plan) };
 
   // Serialize turns for this conversation so a double-send never interleaves and
   // corrupts the shared `messages` array (see turn-coordinator.mjs).
@@ -439,6 +470,21 @@ export function createEngine({
         // context refresh is best-effort — never block a turn on it
       }
       messages.push({ role: "user", content: text });
+      // Lightweight planner (goal-harness §3): once per mutation session, derive a
+      // small task checklist from the task with ONE small aux-model call. Kicked
+      // fire-and-forget (never awaited) so it stays off the turn's critical path;
+      // the verifier references whatever is ready via planNudgeBlock. fail-closed
+      // on a malformed plan = leave goalState.plan null and simply skip planning.
+      if (expectsMutation && !goalState.planAttempted) {
+        goalState.planAttempted = true;
+        const { system, user } = buildPlanRequest(realUserTask(messages));
+        Promise.resolve()
+          .then(() =>
+            callModelJson({ baseModelSlug: auxModel, callerKey: credentials.gatewayApiKey, system, user, temperature: 0, maxTokens: 400 })
+          )
+          .then((raw) => { const p = parsePlan(raw); if (p) goalState.plan = p; })
+          .catch(() => {}); // fail-open: no plan → verifier omits the plan block
+      }
       const ctx = {
         baseModelSlug: activeModel,
         callerKey: credentials.gatewayApiKey,
@@ -456,7 +502,7 @@ export function createEngine({
         doomStreakWarn: 10,
         doomStreakForce: 14,
         completionCheck: expectsMutation
-          ? workspaceCompletionCheck({ workspace, model: activeModel, callerKey: credentials.gatewayApiKey, goalState })
+          ? workspaceCompletionCheck({ workspace, model: activeModel, auxModel, callerKey: credentials.gatewayApiKey, goalState, onSummary })
           : null,
         completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
@@ -518,6 +564,7 @@ export function createEngine({
         summary: rollingSummary,
         contextEpoch,
         checkpoints,
+        plan: goalState.plan,
       });
       return result;
   }
