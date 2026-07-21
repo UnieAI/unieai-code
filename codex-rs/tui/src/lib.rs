@@ -105,6 +105,10 @@ mod clipboard_copy;
 mod clipboard_paste;
 mod collaboration_modes;
 mod color;
+// Terminal color-level detection + RGB quantization. Infrastructure for the
+// JSON theme system (deferred); wired to nothing yet, so allow dead_code.
+#[allow(dead_code)]
+mod color_support;
 mod config_update;
 pub(crate) mod custom_terminal;
 mod pets;
