@@ -1,0 +1,247 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "UnieAI Code Unified Transport API",
+    "version": "0.1.0-draft",
+    "description": "ONE API surface for client<->agent-backend. Derived from the union of (a) Rust `unieai app-server` JSON-RPC methods used by the VS Code panel and (b) the in-process JS agent-core engine surface, reconciled against opencode's v2 `/api/session/*` router. A single definition generates `openapi.json` and a typed SDK; the same assembled router runs either over an HTTP listener (remote) or in-memory via a synthetic fetch (embedded). NOT hand-implemented per client. See design.md."
+  },
+  "servers": [
+    { "url": "http://unieai.local", "description": "embedded (in-memory web handler, no port)" },
+    { "url": "http://127.0.0.1:{port}", "description": "remote (app-server HTTP listener)" }
+  ],
+  "x-capabilities": {
+    "description": "Capability flags reconcile the two backends. A client reads GET /capabilities and hides/disables operations the active backend does not implement. Engine-specific gaps are expressed here, NOT by forking the client.",
+    "flags": {
+      "steer": "mid-turn interjection folded into the running turn (JS engine: yes; Rust app-server: no seam today)",
+      "queue": "queue a follow-up prompt drained after the current turn",
+      "revert.stage_commit_clear": "three-phase reversible workspace revert (JS engine: snapshot exists, restore not yet wired; Rust: n/a)",
+      "question": "structured multiple-choice ask, separate from permissions",
+      "compact": "explicit context compaction trigger (JS: implicit between turns; expose explicit op)",
+      "web_access": "per-session web/fetch tool toggle (JS engine only)",
+      "checkpoints": "shadow-git per-step checkpoints addressable by tree hash",
+      "share": "read-only web share link (built by session-render-web-share on this surface)"
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "global.health",
+        "summary": "Liveness/readiness of the backend + protocol version.",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "operationId": "global.capabilities",
+        "summary": "Which optional operations the active backend implements (see x-capabilities).",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Capabilities" } } } } }
+      }
+    },
+    "/config": {
+      "get": {
+        "operationId": "config.get",
+        "summary": "Resolved config: models list, active model, sandbox/approval defaults, auth state.",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Config" } } } } }
+      }
+    },
+    "/session": {
+      "get": {
+        "operationId": "session.list",
+        "summary": "List sessions (rollout scan). Replaces VS Code `listSessions`.",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/SessionInfo" } } } } } }
+      },
+      "post": {
+        "operationId": "session.create",
+        "summary": "Create/start a session (thread/start). Replaces VS Code `newChat` + app-server thread start.",
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionCreateInput" } } } },
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionInfo" } } } } }
+      }
+    },
+    "/session/{sessionID}": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "get": {
+        "operationId": "session.get",
+        "summary": "Session metadata. Replaces VS Code `loadSession` (resume).",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionInfo" } } } } }
+      }
+    },
+    "/session/{sessionID}/history": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "get": {
+        "operationId": "session.history",
+        "summary": "Projected message history (paginated). Feeds transcript render on resume.",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "after", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Message" } } } } } }
+      }
+    },
+    "/session/{sessionID}/prompt": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": {
+        "operationId": "session.prompt",
+        "summary": "Submit a user turn. delivery=default new turn; steer=fold into running turn; queue=drain after. Replaces VS Code `send` + `steer`, app-server user-turn.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PromptInput" } } } },
+        "responses": { "200": { "description": "admitted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InputAdmitted" } } } } }
+      }
+    },
+    "/session/{sessionID}/interrupt": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": {
+        "operationId": "session.interrupt",
+        "summary": "Stop the running turn. Replaces VS Code `stop` + app-server interrupt.",
+        "responses": { "200": { "description": "interrupted" } }
+      }
+    },
+    "/session/{sessionID}/compact": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": {
+        "operationId": "session.compact",
+        "summary": "Explicit context compaction (rolling summary). x-capability: compact.",
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/session/{sessionID}/web-access": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": {
+        "operationId": "session.setWebAccess",
+        "summary": "Toggle the per-session web/fetch tool. x-capability: web_access.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "value": { "type": "boolean" } }, "required": ["value"] } } } },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/session/{sessionID}/revert/stage": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": {
+        "operationId": "session.revert.stage",
+        "summary": "Phase 1 of reversible revert: restore files to before messageID + compute diff preview. x-capability: revert.stage_commit_clear.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevertStageInput" } } } },
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevertState" } } } } }
+      }
+    },
+    "/session/{sessionID}/revert/clear": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": { "operationId": "session.revert.clear", "summary": "Phase 2a: undo a staged revert.", "responses": { "200": { "description": "ok" } } }
+    },
+    "/session/{sessionID}/revert/commit": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "post": { "operationId": "session.revert.commit", "summary": "Phase 2b: finalize revert, drop reverted messages.", "responses": { "200": { "description": "ok" } } }
+    },
+    "/session/{sessionID}/permission/{requestID}/reply": {
+      "parameters": [
+        { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "requestID", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "operationId": "session.permission.reply",
+        "summary": "Reply to an approval elicitation (once|always|reject). Replaces VS Code `approvalReply` + app-server approval response.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PermissionReply" } } } },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/session/{sessionID}/question/{requestID}/reply": {
+      "parameters": [
+        { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "requestID", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "operationId": "session.question.reply",
+        "summary": "Reply to a structured question. Replaces VS Code `questionReply`/`userInputReply`. x-capability: question.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuestionReply" } } } },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/session/{sessionID}/question/{requestID}/reject": {
+      "parameters": [
+        { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "requestID", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": { "operationId": "session.question.reject", "summary": "Reject/skip a question (== aborting deny).", "responses": { "200": { "description": "ok" } } }
+    },
+    "/session/{sessionID}/event": {
+      "parameters": [ { "name": "sessionID", "in": "path", "required": true, "schema": { "type": "string" } } ],
+      "get": {
+        "operationId": "session.events",
+        "summary": "Per-session SSE stream. Replays durable events after `after` seq, then live events. THE event union both backends emit (deltas, item upserts, turn state, elicitations).",
+        "parameters": [ { "name": "after", "in": "query", "schema": { "type": "integer" } } ],
+        "responses": { "200": { "description": "SSE", "content": { "text/event-stream": { "schema": { "$ref": "#/components/schemas/SessionEvent" } } } } }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": { "type": "object", "properties": { "ok": { "type": "boolean" }, "protocolVersion": { "type": "string" }, "backend": { "type": "string", "enum": ["rust-app-server", "js-agent-core"] } }, "required": ["ok", "protocolVersion", "backend"] },
+      "Capabilities": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "Keys are x-capabilities.flags names; value = supported by the active backend." },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "models": { "type": "array", "items": { "$ref": "#/components/schemas/ModelInfo" } },
+          "activeModel": { "type": "string" },
+          "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
+          "approvalPolicy": { "type": "string", "enum": ["never", "on-request", "on-failure"] },
+          "signedIn": { "type": "boolean" }
+        }
+      },
+      "ModelInfo": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": "string" } }, "required": ["id"] },
+      "SessionInfo": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "cwd": { "type": "string" }, "model": { "type": "string" }, "createdAt": { "type": "number" }, "updatedAt": { "type": "number" } }, "required": ["id"] },
+      "SessionCreateInput": { "type": "object", "properties": { "cwd": { "type": "string" }, "model": { "type": "string" }, "resume": { "type": "string", "description": "session id or rollout path to resume" } } },
+      "PromptInput": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "optional client-assigned message id (idempotency)" },
+          "text": { "type": "string" },
+          "files": { "type": "array", "items": { "$ref": "#/components/schemas/FileAttachment" } },
+          "delivery": { "type": "string", "enum": ["default", "steer", "queue"], "default": "default" },
+          "model": { "type": "string" },
+          "webAccess": { "type": "boolean" }
+        },
+        "required": ["text"]
+      },
+      "FileAttachment": { "type": "object", "properties": { "path": { "type": "string" }, "mime": { "type": "string" }, "dataBase64": { "type": "string" } } },
+      "InputAdmitted": { "type": "object", "properties": { "id": { "type": "string" }, "sessionID": { "type": "string" }, "delivery": { "type": "string", "enum": ["default", "steer", "queue"] }, "admittedSeq": { "type": "integer" }, "delivered": { "type": "boolean", "description": "false when backend lacks the steer/queue seam (capability gap)" } }, "required": ["id", "sessionID", "delivery"] },
+      "RevertStageInput": { "type": "object", "properties": { "messageID": { "type": "string" }, "files": { "type": "boolean", "description": "restore files (true) or only rewind conversation (false)" } }, "required": ["messageID"] },
+      "RevertState": { "type": "object", "properties": { "messageID": { "type": "string" }, "snapshot": { "type": "string", "description": "shadow-git tree hash" }, "diff": { "type": "string" }, "files": { "type": "array", "items": { "$ref": "#/components/schemas/FileDiff" } } }, "required": ["messageID"] },
+      "FileDiff": { "type": "object", "properties": { "path": { "type": "string" }, "status": { "type": "string", "enum": ["reverted", "clean", "conflict"] }, "diff": { "type": "string" } } },
+      "PermissionReply": { "type": "object", "properties": { "reply": { "type": "string", "enum": ["once", "always", "reject"] }, "message": { "type": "string" } }, "required": ["reply"] },
+      "QuestionReply": { "type": "object", "properties": { "answers": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "answers in order of questions; each answer is the list of selected labels" } }, "required": ["answers"] },
+      "Message": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "role": { "type": "string", "enum": ["user", "assistant"] }, "seq": { "type": "integer" }, "parts": { "type": "array", "items": { "$ref": "#/components/schemas/Part" } } },
+        "required": ["id", "role"]
+      },
+      "Part": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/TextPart" },
+          { "$ref": "#/components/schemas/ReasoningPart" },
+          { "$ref": "#/components/schemas/ToolPart" }
+        ]
+      },
+      "TextPart": { "type": "object", "properties": { "type": { "const": "text" }, "text": { "type": "string" } }, "required": ["type", "text"] },
+      "ReasoningPart": { "type": "object", "properties": { "type": { "const": "reasoning" }, "text": { "type": "string" } }, "required": ["type", "text"] },
+      "ToolPart": { "type": "object", "properties": { "type": { "const": "tool" }, "toolCallId": { "type": "string" }, "toolName": { "type": "string" }, "args": {}, "status": { "type": "string", "enum": ["in_progress", "completed", "failed"] }, "output": { "type": "string" } }, "required": ["type", "toolCallId", "toolName", "status"] },
+      "SessionEvent": {
+        "description": "Union of everything both backends stream over SSE. `event` names below.",
+        "oneOf": [
+          { "$ref": "#/components/schemas/EvtMessageDelta" },
+          { "$ref": "#/components/schemas/EvtReasoningDelta" },
+          { "$ref": "#/components/schemas/EvtItemUpsert" },
+          { "$ref": "#/components/schemas/EvtTurnState" },
+          { "$ref": "#/components/schemas/EvtPermissionRequest" },
+          { "$ref": "#/components/schemas/EvtQuestionRequest" },
+          { "$ref": "#/components/schemas/EvtContextCompacted" },
+          { "$ref": "#/components/schemas/EvtSteerApplied" }
+        ]
+      },
+      "EvtMessageDelta": { "type": "object", "properties": { "event": { "const": "message.delta" }, "seq": { "type": "integer" }, "itemKey": { "type": "string" }, "text": { "type": "string" } }, "required": ["event", "itemKey", "text"] },
+      "EvtReasoningDelta": { "type": "object", "properties": { "event": { "const": "reasoning.delta" }, "seq": { "type": "integer" }, "itemKey": { "type": "string" }, "text": { "type": "string" } }, "required": ["event", "itemKey", "text"] },
+      "EvtItemUpsert": { "type": "object", "properties": { "event": { "const": "item.upsert" }, "seq": { "type": "integer" }, "item": { "$ref": "#/components/schemas/Part" }, "done": { "type": "boolean" } }, "required": ["event", "item"] },
+      "EvtTurnState": { "type": "object", "properties": { "event": { "const": "turn.state" }, "seq": { "type": "integer" }, "state": { "type": "string", "enum": ["running", "idle", "interrupted", "failed"] }, "retryable": { "type": "boolean" } }, "required": ["event", "state"] },
+      "EvtPermissionRequest": { "type": "object", "properties": { "event": { "const": "permission.request" }, "seq": { "type": "integer" }, "requestID": { "type": "string" }, "kind": { "type": "string" }, "summary": { "type": "string" }, "detail": {} }, "required": ["event", "requestID"] },
+      "EvtQuestionRequest": { "type": "object", "properties": { "event": { "const": "question.request" }, "seq": { "type": "integer" }, "requestID": { "type": "string" }, "questions": { "type": "array", "items": { "$ref": "#/components/schemas/QuestionSpec" } } }, "required": ["event", "requestID", "questions"] },
+      "QuestionSpec": { "type": "object", "properties": { "question": { "type": "string" }, "options": { "type": "array", "items": { "type": "string" } }, "multiple": { "type": "boolean" }, "allowCustom": { "type": "boolean" } }, "required": ["question", "options"] },
+      "EvtContextCompacted": { "type": "object", "properties": { "event": { "const": "context.compacted" }, "seq": { "type": "integer" }, "freedChars": { "type": "integer" } }, "required": ["event"] },
+      "EvtSteerApplied": { "type": "object", "properties": { "event": { "const": "steer.applied" }, "seq": { "type": "integer" }, "text": { "type": "string" } }, "required": ["event", "text"] }
+    }
+  }
+}
