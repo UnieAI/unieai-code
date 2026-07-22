@@ -3770,3 +3770,46 @@ async fn reasoning_popup_escape_returns_to_model_popup() {
     assert!(after_escape.contains("Select Model"));
     assert!(!after_escape.contains("Select Reasoning Level"));
 }
+
+#[tokio::test]
+async fn question_mark_types_into_non_empty_composer_instead_of_which_key() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane
+        .set_composer_text("draft".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+    // No which-key overlay: '?' stays ordinary typing in a non-empty draft.
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    // The paste-burst heuristic may hold the first typed char briefly; flush it
+    // the same way the frame tick does before asserting on the draft text.
+    std::thread::sleep(crate::bottom_pane::ChatComposer::recommended_paste_flush_delay());
+    let _ = chat.bottom_pane.flush_paste_burst_if_due();
+    assert_eq!(chat.composer_text_with_pending(), "draft?");
+}
+
+#[tokio::test]
+async fn question_mark_on_empty_composer_opens_which_key_and_second_press_types_it() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    assert!(chat.bottom_pane.composer_is_empty());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(
+        !chat.bottom_pane.no_modal_or_popup_active(),
+        "which-key overlay should be open"
+    );
+
+    // A second '?' closes the overlay and re-types a literal '?'.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    let inserted = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertComposerText(text)) => break text,
+            Ok(_) => continue,
+            Err(err) => panic!("expected InsertComposerText event: {err:?}"),
+        }
+    };
+    // In production the App event loop dispatches this back into the widget.
+    chat.insert_str(&inserted);
+    assert_eq!(chat.composer_text_with_pending(), "?");
+}

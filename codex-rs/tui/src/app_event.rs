@@ -269,6 +269,13 @@ pub(crate) enum AppEvent {
     /// into the composer instead, mirroring popup completion.
     CommandPaletteSelection(CommandItem),
 
+    /// Insert literal text into the composer input.
+    ///
+    /// Emitted by the `?` which-key overlay when a printable key closes it, so
+    /// the keystroke is re-typed into the composer instead of being swallowed
+    /// (pressing `?` twice therefore types a literal `?`).
+    InsertComposerText(String),
+
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
 

@@ -153,6 +153,7 @@ mod selection_popup_common;
 mod selection_tabs;
 mod textarea;
 mod unified_exec_footer;
+mod which_key_view;
 pub(crate) use feedback_view::FeedbackNoteView;
 pub(crate) use hooks_browser_view::HooksBrowserView;
 pub(crate) use selection_tabs::SelectionTab;
@@ -1381,6 +1382,15 @@ impl BottomPane {
             self.composer.palette_command_items(),
             self.app_event_tx.clone(),
         );
+        self.push_view(Box::new(view));
+        self.request_redraw();
+    }
+
+    /// Open the `?` which-key overlay listing the bindings reachable from the
+    /// plain composer, grouped and paged, built from the resolved keymap.
+    pub(crate) fn open_which_key(&mut self) {
+        let groups = which_key_view::composer_which_key_groups(&self.keymap);
+        let view = which_key_view::WhichKeyView::new(groups, self.app_event_tx.clone());
         self.push_view(Box::new(view));
         self.request_redraw();
     }

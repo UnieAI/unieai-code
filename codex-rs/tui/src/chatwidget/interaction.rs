@@ -117,6 +117,25 @@ impl ChatWidget {
             return;
         }
 
+        // '?' on an EMPTY plain composer opens the which-key overlay
+        // (lazygit/k9s convention). With draft text present, '?' stays ordinary
+        // typing; inside the overlay, pressing '?' again closes it and types a
+        // literal '?' instead. The paste-burst guard mirrors the composer's own
+        // shortcut-overlay toggle so pasted '?' characters never open help.
+        if key_event.kind == KeyEventKind::Press
+            && matches!(key_event.code, KeyCode::Char('?'))
+            && !key_event
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.bottom_pane.composer_is_empty()
+            && !self.bottom_pane.is_in_paste_burst()
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.bottom_pane.open_which_key();
+            self.request_redraw();
+            return;
+        }
+
         if key_event.kind == KeyEventKind::Press
             && self.chat_keymap.edit_queued_message.is_pressed(key_event)
             && self.has_queued_follow_up_messages()

@@ -24,7 +24,7 @@ pub(crate) struct WhichKeyRow {
 }
 
 impl WhichKeyRow {
-    fn new(chord: KeyChord, label: impl Into<String>) -> Self {
+    pub(crate) fn new(chord: KeyChord, label: impl Into<String>) -> Self {
         Self {
             chord,
             label: label.into(),

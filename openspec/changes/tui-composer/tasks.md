@@ -44,17 +44,37 @@
 - [x] 3.3 TTL 教學提示（打字不消、seen-count 上限）
       → `composer_tip.rs`：`Tip{id,seen_count,max_seen,ttl}`、`should_show`/`show`/`tick`（注入式時鐘）/
         `on_submit`/`is_visible`。打字不呼叫任何 hide（只有 tick=時間 與 submit 清除）、每 session seen 上限後不再出現。5 tests。
-- [x] 3.4 which-key 疊層 + mode-stack
-      → `which_key.rs`：`Mode`/`ModeStack{push,pop,current,depth}`、`rows()`（bottom→top union，內層 mode
-        覆寫外層同鍵，確定性排序）、`pages(per_page)` 分頁。6 tests。**未做**：疊層 render（純資料，延後）。
+- [x] 3.4 which-key 疊層 + mode-stack — **live-wired（'?' overlay）**
+      → 純模型 `which_key.rs`：`Mode`/`ModeStack{push,pop,current,depth}`、`rows()`（bottom→top union，內層 mode
+        覆寫外層同鍵，確定性排序）、`pages(per_page)` 分頁。6 tests。
+        **Live wiring**：空 composer 按 `?`（lazygit/k9s 慣例；無 modal/popup、非 paste-burst 時，
+        `chatwidget/interaction.rs` 攔截）→ `BottomPane::open_which_key()` 推入
+        `bottom_pane/which_key_view.rs`（BottomPaneView）。綁定表 `composer_which_key_groups`
+        由真實來源建構：resolved `RuntimeKeymap`（composer/editor/chat/app 各 context 的
+        primary binding，user rebind 自動反映、unbind 自動消行）+ interaction.rs 硬編碼攔截
+        （Ctrl+P palette、Ctrl+C/Ctrl+D quit、Ctrl+V 貼圖、BackTab collaboration mode）+
+        composer popup 觸發字元（`/`、`@`），共 24 列、4 組（Conversation/Editing/Navigation/Other）。
+        關閉語意：Esc 關閉；可列印字元關閉**且**經 `AppEvent::InsertComposerText` 重新打進
+        composer（`?` 按兩下＝輸入字面 `?` 的逃生口）；多頁時 Left/Right/PgUp/PgDn 翻頁（clamp）；
+        其他鍵只關閉（app event loop 無 raw key 重派發機制，非列印鍵被吞掉）。
+        composer 非空時 `?` 完全不攔截、照常輸入（regression test 佐證）。
+        **mode-stack 使用註記（誠實）**：plain composer 是單一 context（尚無 sub-mode），
+        `ModeStack` 疊層/覆寫在 live wiring 中未被行使——view 直接用 `WhichKeyRow` +
+        group-aware 分頁（header 跟列不分離、超大 group 以 "(cont.)" 續頁）取代 `pages()`；
+        純模型與其 6 tests 保留，供未來 sub-mode（如 git/search context）接上。
+        **取捨註記**：`?` 原本（空 composer 時）toggle footer 的精簡 ShortcutOverlay
+        （`composer.toggle_shortcuts` 預設 `?`/`shift-?`）；本 overlay 於預設鍵位下取代它，
+        使用者若把 `toggle_shortcuts` rebind 到其他鍵，該 footer overlay 仍可用（僅字面 `?` 被攔）。
+        8 unit tests + 1 insta snapshot（`which_key_overlay`）+ 2 chatwidget regression tests
+        （`chatwidget/tests/popups_and_settings.rs`）。
 
 ## 4. 驗收
 - [x] 4.1 單元：ghost 推導（相符縮短/發散隱藏）— `composer_ghost.rs` 9 tests（含空輸入全句、相符縮短、
       發散隱藏、全打完隱藏、accept 合併、大小寫、非 ASCII 邊界）。
 - [x] 4.2 單元：chip range 位移、展開送出 — `composer_chip.rs` 11 tests（前後/內部位移、插入/刪除/取代、
       `shift_all` 保留+丟棄、多 chip 任意順序 expand）。
-- [~] 4.3 snapshot：面板、which-key — 面板已完成（insta `command_palette_mo`，filter 套用後 render）；
-      which-key snapshot 仍 **DEFERRED**（which-key 尚未 live wiring）。
+- [x] 4.3 snapshot：面板、which-key — 面板（insta `command_palette_mo`，filter 套用後 render）；
+      which-key（insta `which_key_overlay`，page 1/3 於 64 欄 render，含群組標題與 chord 對齊）。
 - [~] 4.4 openspec validate + archive — `openspec validate tui-composer --strict` pass；archive 待 orchestrator。
 
 ## Staging note

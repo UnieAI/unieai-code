@@ -1,0 +1,43 @@
+---
+source: tui/src/bottom_pane/which_key_view.rs
+expression: "format!(\"{buf:?}\")"
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 64, height: 10 },
+    content: [
+        "▌ Keyboard Shortcuts  page 1/3                                  ",
+        "  Conversation                                                  ",
+        "            Enter  Send message                                 ",
+        "              Tab  Queue message while a task runs              ",
+        "              Esc  Interrupt task / edit previous message       ",
+        "           Ctrl+C  Interrupt; press twice to quit               ",
+        "           Ctrl+D  Quit (when composer is empty)                ",
+        "           Alt+Up  Edit most recently queued message            ",
+        "           Ctrl+O  Copy last response                           ",
+        "←/→ page  ·  Esc close  ·  typing closes and inserts the key    ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 2, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 20, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 30, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 14, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 2, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 3, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 4, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 5, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 6, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 7, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 8, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 60, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}
