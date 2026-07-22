@@ -93,6 +93,10 @@ const I18N = {
     slashLogout: "登出 UnieAI Studio",
     slashTerminal: "在終端開啟 TUI",
     slashHelp: "列出所有指令",
+    slashRewind: "檢視回捲點（每回合的檔案快照，唯讀）",
+    rewindTitle: "回捲點",
+    rewindEmpty: "尚無回捲點（改過檔案的回合才會建立快照）",
+    rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 個檔案變更`,
   },
   "zh-CN": {
     copy: "复制",
@@ -177,6 +181,10 @@ const I18N = {
     slashLogout: "退出 UnieAI Studio",
     slashTerminal: "在终端打开 TUI",
     slashHelp: "列出所有命令",
+    slashRewind: "查看回卷点（每回合的文件快照，只读）",
+    rewindTitle: "回卷点",
+    rewindEmpty: "暂无回卷点（修改过文件的回合才会创建快照）",
+    rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 个文件变更`,
   },
   en: {
     copy: "Copy",
@@ -263,6 +271,10 @@ const I18N = {
     slashLogout: "Sign out of UnieAI Studio",
     slashTerminal: "Open the TUI in a terminal",
     slashHelp: "List all commands",
+    slashRewind: "View rewind points (per-turn file snapshots, read-only)",
+    rewindTitle: "Rewind points",
+    rewindEmpty: "No rewind points yet (snapshots are taken on turns that changed files)",
+    rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} file(s) changed`,
   },
   ja: {
     copy: "コピー",
@@ -349,6 +361,10 @@ const I18N = {
     slashLogout: "UnieAI Studio からサインアウト",
     slashTerminal: "ターミナルで TUI を開く",
     slashHelp: "コマンド一覧",
+    slashRewind: "巻き戻しポイントを表示（ターンごとのファイルスナップショット・読み取り専用）",
+    rewindTitle: "巻き戻しポイント",
+    rewindEmpty: "巻き戻しポイントはまだありません（ファイルを変更したターンで作成されます）",
+    rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 件のファイル変更`,
   },
 }
 
@@ -1519,6 +1535,7 @@ const SLASH_COMMANDS = [
       )
     },
   },
+  { cmd: "/rewind", desc: () => L.slashRewind, run: () => vscode.postMessage({ type: "listCheckpoints" }) },
   { cmd: "/retry", desc: () => L.slashRetry, run: () => vscode.postMessage({ type: "retry" }) },
   { cmd: "/engine", desc: () => L.slashEngine, run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
   { cmd: "/stop", desc: () => L.slashStop, run: () => vscode.postMessage({ type: "stop" }) },
@@ -1957,6 +1974,43 @@ window.addEventListener("message", (e) => {
       workspaceFiles = Array.isArray(message.files) ? message.files : []
       if (mentionQuery() !== null) renderMentionMenu()
       break
+    case "checkpoints": {
+      // /rewind — read-only list of per-turn snapshots, rendered as a card.
+      const cps = Array.isArray(message.checkpoints) ? message.checkpoints : []
+      const el = document.createElement("div")
+      el.className = "line plan"
+      const title = document.createElement("div")
+      title.className = "plan-title"
+      title.textContent = L.rewindTitle
+      el.appendChild(title)
+      if (!cps.length) {
+        const empty = document.createElement("div")
+        empty.className = "plan-row"
+        empty.textContent = L.rewindEmpty
+        el.appendChild(empty)
+      } else {
+        const list = document.createElement("div")
+        list.className = "plan-list"
+        for (const cp of cps) {
+          const row = document.createElement("div")
+          row.className = "plan-row"
+          const time = cp.at ? new Date(cp.at).toLocaleTimeString() : "—"
+          const head = document.createElement("span")
+          head.textContent = L.rewindPoint(cp.index, time, (cp.files || []).length)
+          row.appendChild(head)
+          list.appendChild(row)
+          for (const f of (cp.files || []).slice(0, 8)) {
+            const fr = document.createElement("div")
+            fr.className = "plan-row done"
+            fr.textContent = `  ${f.status} ${f.path}`
+            list.appendChild(fr)
+          }
+        }
+        el.appendChild(list)
+      }
+      appendLine(el)
+      break
+    }
     case "sessionLoaded": {
       messagesEl.innerHTML = ""
       itemEls.clear()

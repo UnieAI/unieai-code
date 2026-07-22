@@ -196,6 +196,11 @@ export class AgentCoreBackend {
     this.ensureEngine(undefined, sessionId)
   }
 
+  /** Read-only rewind points: checkpoints + files changed since the previous one. */
+  describeCheckpoints(): Array<{ index: number; at: number | null; messageIndex: number; files: Array<{ path: string; status: string }> }> {
+    return this.engine?.describeCheckpoints() ?? []
+  }
+
   /** Set goal mode on the live engine: false | "review" (background) | "gate" (blocking). */
   setGoalMode(value: false | "review" | "gate"): void {
     this.goalMode = value

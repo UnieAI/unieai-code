@@ -537,6 +537,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "listSessions":
           this.listSessions()
           break
+        case "listCheckpoints":
+          // Read-only rewind points for the /rewind overlay (agent-core only).
+          this.post({ type: "checkpoints", checkpoints: this.agentCore?.describeCheckpoints() ?? [] })
+          break
         case "listFiles": {
           // Workspace file list for @-mention autocomplete (relative paths).
           const root = vscode.workspace.workspaceFolders?.[0]?.uri
