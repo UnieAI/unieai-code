@@ -25,7 +25,7 @@ import {
 import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
-import { initShadow, snapshotWorkspaceAsync } from "./snapshot.mjs";
+import { initShadow, snapshotWorkspaceAsync, listChangedPaths } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
@@ -331,7 +331,7 @@ export function createEngine({
     snapshotChain = snapshotChain
       .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
       .then((tree) => {
-        if (tree && checkpoints.length === 0) checkpoints.push({ messageIndex: messages.length, tree });
+        if (tree && checkpoints.length === 0) checkpoints.push({ messageIndex: messages.length, tree, at: Date.now() });
       })
       .catch(() => {});
   }
@@ -447,6 +447,22 @@ export function createEngine({
     /** Workspace checkpoints (message index → shadow-git tree) for revert. */
     get checkpoints() {
       return checkpoints.slice();
+    },
+
+    /**
+     * Describe the session's rewind points for a picker UI (grok views/rewind
+     * idea, read-only): each checkpoint with its timestamp and the files that
+     * changed SINCE the previous checkpoint. Never applies anything.
+     */
+    describeCheckpoints() {
+      const out = [];
+      for (let i = 0; i < checkpoints.length; i++) {
+        const cp = checkpoints[i];
+        const prev = i > 0 ? checkpoints[i - 1] : null;
+        const files = prev && shadowReady ? listChangedPaths(shadowGitDir, workspace, prev.tree, cp.tree) : [];
+        out.push({ index: i, at: cp.at || null, messageIndex: cp.messageIndex, files });
+      }
+      return out;
     },
 
     /** Flip the fetch tool on/off for subsequent turns, keeping the session. */
@@ -646,7 +662,7 @@ export function createEngine({
           .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
           .then((tree) => {
             if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
-              checkpoints.push({ messageIndex: msgIdx, tree });
+              checkpoints.push({ messageIndex: msgIdx, tree, at: Date.now() });
             }
           })
           .catch(() => {});
