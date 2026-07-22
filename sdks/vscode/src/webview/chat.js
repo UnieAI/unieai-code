@@ -5,6 +5,355 @@ import { marked } from "marked"
 
 const vscode = acquireVsCodeApi()
 
+// ---------- i18n ----------
+// The static HTML arrives pre-translated from the extension host; this
+// dictionary covers everything the webview renders dynamically. `L` defaults
+// to zh-TW and is switched by the `bootstrap` message's locale.
+const I18N = {
+  "zh-TW": {
+    copy: "複製",
+    copied: "已複製",
+    copyCode: "複製程式碼",
+    copyMarkdown: "複製為 Markdown",
+    thinking: "思考過程",
+    thinkingLive: "思考中",
+    steerTag: "↳ 插話",
+    openInEditor: "在編輯器中開啟",
+    toolRead: "讀取",
+    toolWrite: "寫入",
+    toolEdit: "編輯",
+    tool: (x) => `工具 ${x}`,
+    webSearch: (q) => `網頁搜尋 ${q}`,
+    multiAgent: (x) => `多代理 ${x}`,
+    autoReview: (a) => `· 自動審查 ${a}`,
+    waiting: (s) => (s == null ? "· 等待" : `· 等待 ${s}s`),
+    compacted: "· 已壓縮較早的對話以節省上下文",
+    reviewEnter: "· 進入審查模式",
+    reviewExit: "· 離開審查模式",
+    editedFiles: (n, stat) => `編輯 ${n} 個檔案${stat}`,
+    planTitle: "計畫",
+    image: "圖片",
+    imageStatus: (sym) => `圖片 ${sym}`,
+    subStarted: "啟動",
+    subCompleted: "完成",
+    subagent: (name, kind) => `子代理 ${name} ${kind}`,
+    approveCommand: "請求核准：執行指令",
+    approveFileChange: "請求核准：修改檔案",
+    approvePermissions: "請求核准：權限提升",
+    allowOnce: "允許一次",
+    allowSession: "本次對話都允許",
+    deny: "拒絕",
+    denyAbort: "拒絕並中斷",
+    needDecision: "需要你的決定",
+    pleaseChoose: "請選擇",
+    chosen: (x) => `已選擇：${x}`,
+    skipped: "已跳過",
+    skip: "跳過",
+    question: "問題",
+    submit: "送出",
+    answered: "已回覆",
+    steerBtn: "插話",
+    steerTitle: "插話：把訊息折入目前回合 (Enter)",
+    sendTitle: "送出 (Enter)",
+    hintSteering: "Enter 插話 · Shift+Enter 換行 · ■ 停止",
+    hintIdle: "Enter 送出 · Shift+Enter 換行 · / 指令",
+    emptyState: "問我任何事，或輸入 / 使用指令",
+    enterCompanyUrl: "請先輸入公司 Studio 網址",
+    noModels: "你的帳戶還沒有可用模型。",
+    addModels: "到 UnieAI Studio 新增模型",
+    thenRelogin: "，然後重新登入。",
+    turnFailed: "回合失敗",
+    retry: "重試",
+    interrupted: "已中斷",
+    sessionLoadedMeta: "已載入歷史 session — 繼續輸入即可接續此對話",
+    loading: "載入中…",
+    noSessions: "沒有歷史 session",
+    loginFailed: "登入失敗",
+    steerUndelivered: "（未送達：已放回輸入框，Enter 直接送出）",
+    switchedPlan: "已切到規劃模式",
+    switchedExec: "已切回執行模式",
+    metaWebOn: "上網：開",
+    metaWebOff: "上網：關",
+    goalReview: "目標模式：背景審查 — 回合照常即收，驗證在背景跑，發現缺口會提示你回「繼續」補完",
+    goalGate: "目標模式：嚴格把關 — 回合結束前自我驗證並當場補漏（尾端會多幾次模型呼叫）",
+    goalOff: "目標模式：關",
+    commandsList: (cmds) => `指令：${cmds}`,
+    tokenMeter: (k) => `${k}k tokens`,
+    slashNew: "開新對話",
+    slashHistory: "歷史 session",
+    slashModel: "切換模型",
+    slashPlan: "切到規劃模式（唯讀探索）",
+    slashExec: "切回執行模式",
+    slashWeb: "切換允許連網",
+    slashPerm: "切換權限（預設/唯讀/完全存取）",
+    slashGoal: "循環目標模式：關 → 背景審查（零延遲）→ 嚴格把關（擋回合尾）",
+    slashRetry: "重試上一回合",
+    slashEngine: "切換引擎 (app-server / agent-core)",
+    slashStop: "中斷目前回合",
+    slashLogout: "登出 UnieAI Studio",
+    slashTerminal: "在終端開啟 TUI",
+    slashHelp: "列出所有指令",
+  },
+  "zh-CN": {
+    copy: "复制",
+    copied: "已复制",
+    copyCode: "复制代码",
+    copyMarkdown: "复制为 Markdown",
+    thinking: "思考过程",
+    thinkingLive: "思考中",
+    steerTag: "↳ 插话",
+    openInEditor: "在编辑器中打开",
+    toolRead: "读取",
+    toolWrite: "写入",
+    toolEdit: "编辑",
+    tool: (x) => `工具 ${x}`,
+    webSearch: (q) => `网页搜索 ${q}`,
+    multiAgent: (x) => `多代理 ${x}`,
+    autoReview: (a) => `· 自动审查 ${a}`,
+    waiting: (s) => (s == null ? "· 等待" : `· 等待 ${s}s`),
+    compacted: "· 已压缩较早的对话以节省上下文",
+    reviewEnter: "· 进入审查模式",
+    reviewExit: "· 离开审查模式",
+    editedFiles: (n, stat) => `编辑 ${n} 个文件${stat}`,
+    planTitle: "计划",
+    image: "图片",
+    imageStatus: (sym) => `图片 ${sym}`,
+    subStarted: "启动",
+    subCompleted: "完成",
+    subagent: (name, kind) => `子代理 ${name} ${kind}`,
+    approveCommand: "请求审批：执行命令",
+    approveFileChange: "请求审批：修改文件",
+    approvePermissions: "请求审批：权限提升",
+    allowOnce: "允许一次",
+    allowSession: "本次会话都允许",
+    deny: "拒绝",
+    denyAbort: "拒绝并中断",
+    needDecision: "需要你的决定",
+    pleaseChoose: "请选择",
+    chosen: (x) => `已选择：${x}`,
+    skipped: "已跳过",
+    skip: "跳过",
+    question: "问题",
+    submit: "发送",
+    answered: "已回复",
+    steerBtn: "插话",
+    steerTitle: "插话：把消息并入当前回合 (Enter)",
+    sendTitle: "发送 (Enter)",
+    hintSteering: "Enter 插话 · Shift+Enter 换行 · ■ 停止",
+    hintIdle: "Enter 发送 · Shift+Enter 换行 · / 命令",
+    emptyState: "问我任何事，或输入 / 使用命令",
+    enterCompanyUrl: "请先输入公司 Studio 网址",
+    noModels: "你的账户还没有可用模型。",
+    addModels: "到 UnieAI Studio 添加模型",
+    thenRelogin: "，然后重新登录。",
+    turnFailed: "回合失败",
+    retry: "重试",
+    interrupted: "已中断",
+    sessionLoadedMeta: "已加载历史会话 — 继续输入即可接续此对话",
+    loading: "加载中…",
+    noSessions: "没有历史会话",
+    loginFailed: "登录失败",
+    steerUndelivered: "（未送达：已放回输入框，Enter 直接发送）",
+    switchedPlan: "已切到规划模式",
+    switchedExec: "已切回执行模式",
+    metaWebOn: "联网：开",
+    metaWebOff: "联网：关",
+    goalReview: "目标模式：后台审查 — 回合照常结束，验证在后台运行，发现缺口会提示你回复“继续”补完",
+    goalGate: "目标模式：严格把关 — 回合结束前自我验证并当场补漏（尾部会多几次模型调用）",
+    goalOff: "目标模式：关",
+    commandsList: (cmds) => `命令：${cmds}`,
+    tokenMeter: (k) => `${k}k tokens`,
+    slashNew: "开新对话",
+    slashHistory: "历史会话",
+    slashModel: "切换模型",
+    slashPlan: "切到规划模式（只读探索）",
+    slashExec: "切回执行模式",
+    slashWeb: "切换允许联网",
+    slashPerm: "切换权限（默认/只读/完全访问）",
+    slashGoal: "循环目标模式：关 → 后台审查（零延迟）→ 严格把关（阻塞回合尾）",
+    slashRetry: "重试上一回合",
+    slashEngine: "切换引擎 (app-server / agent-core)",
+    slashStop: "中断当前回合",
+    slashLogout: "退出 UnieAI Studio",
+    slashTerminal: "在终端打开 TUI",
+    slashHelp: "列出所有命令",
+  },
+  en: {
+    copy: "Copy",
+    copied: "Copied",
+    copyCode: "Copy code",
+    copyMarkdown: "Copy as Markdown",
+    thinking: "Thinking",
+    thinkingLive: "Thinking",
+    steerTag: "↳ Interject",
+    openInEditor: "Open in editor",
+    toolRead: "Read",
+    toolWrite: "Write",
+    toolEdit: "Edit",
+    tool: (x) => `Tool ${x}`,
+    webSearch: (q) => `Web search ${q}`,
+    multiAgent: (x) => `Multi-agent ${x}`,
+    autoReview: (a) => `· Auto review ${a}`,
+    waiting: (s) => (s == null ? "· Waiting" : `· Waiting ${s}s`),
+    compacted: "· Compacted earlier conversation to save context",
+    reviewEnter: "· Entered review mode",
+    reviewExit: "· Exited review mode",
+    editedFiles: (n, stat) => `Edited ${n} file${n === 1 ? "" : "s"}${stat}`,
+    planTitle: "Plan",
+    image: "Image",
+    imageStatus: (sym) => `Image ${sym}`,
+    subStarted: "started",
+    subCompleted: "completed",
+    subagent: (name, kind) => `Subagent ${name} ${kind}`,
+    approveCommand: "Approval requested: run command",
+    approveFileChange: "Approval requested: edit files",
+    approvePermissions: "Approval requested: elevated permissions",
+    allowOnce: "Allow once",
+    allowSession: "Allow for this chat",
+    deny: "Deny",
+    denyAbort: "Deny and stop",
+    needDecision: "Your decision needed",
+    pleaseChoose: "Choose an option",
+    chosen: (x) => `Selected: ${x}`,
+    skipped: "Skipped",
+    skip: "Skip",
+    question: "Question",
+    submit: "Submit",
+    answered: "Answered",
+    steerBtn: "Interject",
+    steerTitle: "Interject: fold this message into the running turn (Enter)",
+    sendTitle: "Send (Enter)",
+    hintSteering: "Enter to interject · Shift+Enter for newline · ■ to stop",
+    hintIdle: "Enter to send · Shift+Enter for newline · / for commands",
+    emptyState: "Ask me anything, or type / for commands",
+    enterCompanyUrl: "Enter your company Studio URL first",
+    noModels: "Your account has no models yet. ",
+    addModels: "Add models in UnieAI Studio",
+    thenRelogin: ", then sign in again.",
+    turnFailed: "Turn failed",
+    retry: "Retry",
+    interrupted: "Interrupted",
+    sessionLoadedMeta: "Session loaded — keep typing to continue this conversation",
+    loading: "Loading…",
+    noSessions: "No past sessions",
+    loginFailed: "Sign-in failed",
+    steerUndelivered: "(not delivered — returned to the input box, press Enter to send)",
+    switchedPlan: "Switched to plan mode",
+    switchedExec: "Switched back to run mode",
+    metaWebOn: "Web access: on",
+    metaWebOff: "Web access: off",
+    goalReview:
+      "Goal mode: background review — turns end normally, verification runs in the background, and you'll be prompted to reply \"continue\" if gaps are found",
+    goalGate:
+      "Goal mode: strict gate — self-verifies and fixes gaps before the turn ends (a few extra model calls at the end)",
+    goalOff: "Goal mode: off",
+    commandsList: (cmds) => `Commands: ${cmds}`,
+    tokenMeter: (k) => `${k}k tokens`,
+    slashNew: "Start a new chat",
+    slashHistory: "Session history",
+    slashModel: "Switch model",
+    slashPlan: "Switch to plan mode (read-only exploration)",
+    slashExec: "Switch back to run mode",
+    slashWeb: "Toggle network access",
+    slashPerm: "Cycle permissions (default / read-only / full access)",
+    slashGoal: "Cycle goal mode: off → background review (zero latency) → strict gate (blocks turn end)",
+    slashRetry: "Retry the last turn",
+    slashEngine: "Switch engine (app-server / agent-core)",
+    slashStop: "Stop the current turn",
+    slashLogout: "Sign out of UnieAI Studio",
+    slashTerminal: "Open the TUI in a terminal",
+    slashHelp: "List all commands",
+  },
+  ja: {
+    copy: "コピー",
+    copied: "コピー済み",
+    copyCode: "コードをコピー",
+    copyMarkdown: "Markdown としてコピー",
+    thinking: "思考プロセス",
+    thinkingLive: "思考中",
+    steerTag: "↳ 割り込み",
+    openInEditor: "エディタで開く",
+    toolRead: "読み取り",
+    toolWrite: "書き込み",
+    toolEdit: "編集",
+    tool: (x) => `ツール ${x}`,
+    webSearch: (q) => `ウェブ検索 ${q}`,
+    multiAgent: (x) => `マルチエージェント ${x}`,
+    autoReview: (a) => `· 自動レビュー ${a}`,
+    waiting: (s) => (s == null ? "· 待機中" : `· 待機中 ${s}s`),
+    compacted: "· コンテキスト節約のため以前の会話を圧縮しました",
+    reviewEnter: "· レビューモード開始",
+    reviewExit: "· レビューモード終了",
+    editedFiles: (n, stat) => `${n} 個のファイルを編集${stat}`,
+    planTitle: "プラン",
+    image: "画像",
+    imageStatus: (sym) => `画像 ${sym}`,
+    subStarted: "起動",
+    subCompleted: "完了",
+    subagent: (name, kind) => `サブエージェント ${name} ${kind}`,
+    approveCommand: "承認リクエスト: コマンド実行",
+    approveFileChange: "承認リクエスト: ファイル変更",
+    approvePermissions: "承認リクエスト: 権限昇格",
+    allowOnce: "1回許可",
+    allowSession: "このチャットでは常に許可",
+    deny: "拒否",
+    denyAbort: "拒否して中断",
+    needDecision: "あなたの判断が必要です",
+    pleaseChoose: "選択してください",
+    chosen: (x) => `選択: ${x}`,
+    skipped: "スキップしました",
+    skip: "スキップ",
+    question: "質問",
+    submit: "送信",
+    answered: "回答済み",
+    steerBtn: "割り込み",
+    steerTitle: "割り込み: 実行中のターンにメッセージを差し込む (Enter)",
+    sendTitle: "送信 (Enter)",
+    hintSteering: "Enter 割り込み · Shift+Enter 改行 · ■ 停止",
+    hintIdle: "Enter 送信 · Shift+Enter 改行 · / コマンド",
+    emptyState: "何でも質問してください。/ でコマンド一覧",
+    enterCompanyUrl: "会社の Studio URL を入力してください",
+    noModels: "アカウントに利用可能なモデルがありません。",
+    addModels: "UnieAI Studio でモデルを追加",
+    thenRelogin: "してから、再度サインインしてください。",
+    turnFailed: "ターンが失敗しました",
+    retry: "再試行",
+    interrupted: "中断しました",
+    sessionLoadedMeta: "セッションを読み込みました — 入力を続けるとこの会話を再開できます",
+    loading: "読み込み中…",
+    noSessions: "セッション履歴はありません",
+    loginFailed: "サインインに失敗しました",
+    steerUndelivered: "（未送達: 入力欄に戻しました。Enter で送信）",
+    switchedPlan: "プランモードに切り替えました",
+    switchedExec: "実行モードに戻しました",
+    metaWebOn: "ネット接続: オン",
+    metaWebOff: "ネット接続: オフ",
+    goalReview:
+      "ゴールモード: バックグラウンドレビュー — ターンは通常どおり終了し、検証は裏で実行。不足があれば「続けて」と返信するよう促されます",
+    goalGate:
+      "ゴールモード: 厳格ゲート — ターン終了前に自己検証して不足をその場で補完（終盤にモデル呼び出しが数回増えます）",
+    goalOff: "ゴールモード: オフ",
+    commandsList: (cmds) => `コマンド: ${cmds}`,
+    tokenMeter: (k) => `${k}k tokens`,
+    slashNew: "新しいチャット",
+    slashHistory: "セッション履歴",
+    slashModel: "モデル切替",
+    slashPlan: "プランモードへ（読み取り専用で調査）",
+    slashExec: "実行モードに戻る",
+    slashWeb: "ネット接続の切替",
+    slashPerm: "権限の切替（標準 / 読み取り専用 / フルアクセス）",
+    slashGoal: "ゴールモード切替: オフ → バックグラウンドレビュー（遅延なし）→ 厳格ゲート（ターン終了をブロック）",
+    slashRetry: "前のターンを再試行",
+    slashEngine: "エンジン切替 (app-server / agent-core)",
+    slashStop: "現在のターンを中断",
+    slashLogout: "UnieAI Studio からサインアウト",
+    slashTerminal: "ターミナルで TUI を開く",
+    slashHelp: "コマンド一覧",
+  },
+}
+
+let L = I18N["zh-TW"]
+
 const $ = (id) => document.getElementById(id)
 const loginView = $("login-view")
 const chatView = $("chat-view")
@@ -96,11 +445,11 @@ function renderMarkdown(text) {
     const btn = document.createElement("button")
     btn.className = "code-copy"
     btn.type = "button"
-    btn.textContent = "複製"
-    btn.title = "複製程式碼"
+    btn.textContent = L.copy
+    btn.title = L.copyCode
     btn.addEventListener("click", (e) => {
       e.stopPropagation()
-      copyText(code.textContent || "", btn, "複製")
+      copyText(code.textContent || "", btn, L.copy)
     })
     pre.classList.add("has-copy")
     pre.appendChild(btn)
@@ -112,7 +461,7 @@ function renderMarkdown(text) {
 function copyText(text, btn, restore) {
   vscode.postMessage({ type: "copy", text })
   if (btn) {
-    btn.textContent = "已複製"
+    btn.textContent = L.copied
     btn.classList.add("copied")
     setTimeout(() => {
       btn.textContent = restore
@@ -156,14 +505,14 @@ function splitThinking(text) {
   return segments.filter((s) => s.text.trim())
 }
 
-function reasoningBlock(text, open = false, label = "思考過程") {
+function reasoningBlock(text, open = false, label = null) {
   const details = document.createElement("details")
   details.className = "reasoning"
   if (open) {
     details.open = true
   }
   const summary = document.createElement("summary")
-  summary.textContent = label
+  summary.textContent = label || L.thinking
   const body = document.createElement("div")
   body.className = "reasoning-body"
   body.textContent = text.trim()
@@ -188,13 +537,13 @@ function userLine(text) {
 }
 
 /** A mid-turn interjection (steer): a distinct user line that reads as folded
- * into the running turn, e.g. "↳ 插話  <text>". */
+ * into the running turn, e.g. "↳ <interject tag>  <text>". */
 function steerLine(text) {
   const el = document.createElement("div")
   el.className = "line user steer"
   const tag = document.createElement("span")
   tag.className = "steer-tag"
-  tag.textContent = "↳ 插話"
+  tag.textContent = L.steerTag
   const body = document.createElement("span")
   body.className = "steer-text"
   body.textContent = text
@@ -234,9 +583,9 @@ function agentBlock(text, citations) {
   const copy = document.createElement("button")
   copy.className = "msg-copy"
   copy.type = "button"
-  copy.textContent = "複製"
-  copy.title = "複製為 Markdown"
-  copy.addEventListener("click", () => copyText(text, copy, "複製"))
+  copy.textContent = L.copy
+  copy.title = L.copyMarkdown
+  copy.addEventListener("click", () => copyText(text, copy, L.copy))
   el.appendChild(copy)
   const segments = splitThinking(text)
   // A model may wrap its entire reply in an (unclosed) <think> block; keep it
@@ -255,7 +604,7 @@ function agentBlock(text, citations) {
       const a = document.createElement("a")
       const range = c.lineStart ? `:${c.lineStart}${c.lineEnd && c.lineEnd !== c.lineStart ? "-" + c.lineEnd : ""}` : ""
       a.textContent = `↪ ${c.path}${range}`
-      a.title = c.note || "在編輯器中開啟"
+      a.title = c.note || L.openInEditor
       a.addEventListener("click", () => vscode.postMessage({ type: "openFile", path: c.path }))
       foot.appendChild(a)
     }
@@ -331,7 +680,7 @@ function commandExecutionBlock(item) {
 
   // read/write/edit — show the file verb + any path we can recover.
   if (tool === "read" || tool === "write" || tool === "edit") {
-    const verb = tool === "read" ? "讀取" : tool === "write" ? "寫入" : "編輯"
+    const verb = tool === "read" ? L.toolRead : tool === "write" ? L.toolWrite : L.toolEdit
     const path = filePathFromCommand(item.command, tool) || firstLine(output)
     const el = toolBlock({
       summary: `${verb}${path ? " " + path : ""}`,
@@ -363,7 +712,7 @@ function commandExecutionBlock(item) {
 
   // Any other named tool.
   return toolBlock({
-    summary: `工具 ${item.command || tool}`,
+    summary: L.tool(item.command || tool),
     body: output,
     status,
     failed,
@@ -406,12 +755,12 @@ function buildItemEl(item) {
     case "mcp_tool_call": {
       const argPreview = item.arguments ? summarizeArgs(item.arguments) : ""
       return toolBlock({
-        summary: `工具 ${item.server ? item.server + "/" : ""}${item.tool || ""}${argPreview ? " " + argPreview : ""}`,
+        summary: L.tool(`${item.server ? item.server + "/" : ""}${item.tool || ""}${argPreview ? " " + argPreview : ""}`),
         failed: item.status === "failed",
       })
     }
     case "web_search":
-      return toolBlock({ summary: `網頁搜尋 ${item.query || ""}` })
+      return toolBlock({ summary: L.webSearch(item.query || "") })
     case "plan":
       return planBlock(item.text || "")
     case "todo_list": {
@@ -425,32 +774,32 @@ function buildItemEl(item) {
     case "collab_agent": {
       const who = (item.agents || []).map((a) => `${a.threadId.slice(0, 6)}:${a.status}`).join(", ")
       return toolBlock({
-        summary: `多代理 ${item.tool}${item.model ? " (" + item.model + ")" : ""}${who ? " — " + who : ""}`,
+        summary: `${L.multiAgent(item.tool)}${item.model ? " (" + item.model + ")" : ""}${who ? " — " + who : ""}`,
         body: (item.agents || []).map((a) => a.message).filter(Boolean).join("\n"),
       })
     }
     case "dynamic_tool":
       return toolBlock({
-        summary: `工具 ${item.namespace ? item.namespace + "/" : ""}${item.tool}${item.success === false ? " ✗" : ""}`,
+        summary: L.tool(`${item.namespace ? item.namespace + "/" : ""}${item.tool}${item.success === false ? " ✗" : ""}`),
         body: item.arguments ? summarizeArgs(item.arguments) : "",
         failed: item.success === false,
       })
     case "auto_review": {
       const risk = item.riskLevel ? ` [${item.riskLevel}]` : ""
-      return metaBlockLine(`· 自動審查 ${item.action}${risk}${item.rationale ? " — " + item.rationale : ""}`)
+      return metaBlockLine(L.autoReview(`${item.action}${risk}${item.rationale ? " — " + item.rationale : ""}`))
     }
     case "image_generation":
       return imageBlock(item.savedPath, item.revisedPrompt, item.status)
     case "image_view":
       return imageBlock(item.path, "", "completed")
     case "sleep":
-      return metaBlockLine(`· 等待${item.durationMs ? ` ${Math.round(item.durationMs / 1000)}s` : ""}`)
+      return metaBlockLine(L.waiting(item.durationMs ? Math.round(item.durationMs / 1000) : null))
     case "hook_prompt":
       return item.text ? metaBlockLine(`· hook: ${item.text.slice(0, 120)}`) : null
     case "context_compaction":
-      return metaBlockLine("· 已壓縮較早的對話以節省上下文")
+      return metaBlockLine(L.compacted)
     case "review_mode":
-      return metaBlockLine(item.entered ? "· 進入審查模式" : "· 離開審查模式")
+      return metaBlockLine(item.entered ? L.reviewEnter : L.reviewExit)
     case "error": {
       const el = document.createElement("div")
       el.className = "line error"
@@ -494,7 +843,7 @@ function fileChangeBlock(item) {
   const label = document.createElement("span")
   label.className = "tool-label"
   const stat = totalAdd || totalDel ? `  +${totalAdd} -${totalDel}` : ""
-  label.textContent = `編輯 ${changes.length} 個檔案${stat}`
+  label.textContent = L.editedFiles(changes.length, stat)
   header.append(glyph, label)
   el.appendChild(header)
 
@@ -507,7 +856,7 @@ function fileChangeBlock(item) {
     name.className = "diff-file-name"
     const mark = change.kind === "add" ? "+ " : change.kind === "delete" ? "- " : "~ "
     name.textContent = mark + change.path
-    name.title = "在編輯器中開啟"
+    name.title = L.openInEditor
     name.addEventListener("click", () => {
       vscode.postMessage({ type: "openFile", path: change.path })
     })
@@ -550,7 +899,7 @@ function planBlock(text) {
   el.className = "line plan"
   const title = document.createElement("div")
   title.className = "plan-title"
-  title.textContent = "計畫"
+  title.textContent = L.planTitle
   el.appendChild(title)
   const list = document.createElement("div")
   list.className = "plan-list"
@@ -578,7 +927,7 @@ function imageBlock(path, caption, status) {
   const el = document.createElement("div")
   el.className = "line image-block"
   if (status && status !== "completed") {
-    return toolBlock({ summary: `圖片 ${status === "failed" ? "✗" : "…"}` })
+    return toolBlock({ summary: L.imageStatus(status === "failed" ? "✗" : "…") })
   }
   if (path) {
     const name = document.createElement("div")
@@ -593,7 +942,7 @@ function imageBlock(path, caption, status) {
     cap.textContent = caption
     el.appendChild(cap)
   }
-  return el.childElementCount ? el : toolBlock({ summary: "圖片" })
+  return el.childElementCount ? el : toolBlock({ summary: L.image })
 }
 
 /** Subagent card: nested activity from a child thread. */
@@ -608,8 +957,8 @@ function subagentBlock(item) {
   const label = document.createElement("span")
   const name = (item.agentPath || "subagent").split("/").pop()
   const kindText =
-    item.kind === "started" ? "啟動" : item.kind === "completed" ? "完成" : item.kind || ""
-  label.textContent = `子代理 ${name} ${kindText}`
+    item.kind === "started" ? L.subStarted : item.kind === "completed" ? L.subCompleted : item.kind || ""
+  label.textContent = L.subagent(name, kindText)
   header.append(glyph, label)
   el.appendChild(header)
   return el
@@ -679,7 +1028,7 @@ function ensureReasoningStream(itemId) {
   if (!entry) {
     const el = document.createElement("div")
     el.className = "line"
-    const details = reasoningBlock("", false, "思考中")
+    const details = reasoningBlock("", false, L.thinkingLive)
     details.classList.add("live")
     el.appendChild(details)
     appendLine(el)
@@ -775,7 +1124,7 @@ function approvalCard({ id, kind, detail }) {
   const title = document.createElement("div")
   title.className = "approval-title"
   title.textContent =
-    kind === "command" ? "請求核准：執行指令" : kind === "fileChange" ? "請求核准：修改檔案" : "請求核准：權限提升"
+    kind === "command" ? L.approveCommand : kind === "fileChange" ? L.approveFileChange : L.approvePermissions
   el.appendChild(title)
 
   // Show what is actually being approved.
@@ -808,10 +1157,10 @@ function approvalCard({ id, kind, detail }) {
   const row = document.createElement("div")
   row.className = "approval-actions"
   const actions = [
-    { label: "允許一次", decision: "accept", primary: true },
-    { label: "本次對話都允許", decision: "acceptForSession" },
-    { label: "拒絕", decision: "decline", danger: true },
-    { label: "拒絕並中斷", decision: "cancel", danger: true },
+    { label: L.allowOnce, decision: "accept", primary: true },
+    { label: L.allowSession, decision: "acceptForSession" },
+    { label: L.deny, decision: "decline", danger: true },
+    { label: L.denyAbort, decision: "cancel", danger: true },
   ]
   for (const action of actions) {
     const button = document.createElement("button")
@@ -844,11 +1193,11 @@ function questionCard({ id, question, options }) {
   el.className = "line approval question"
   const eyebrow = document.createElement("div")
   eyebrow.className = "approval-eyebrow"
-  eyebrow.textContent = "需要你的決定"
+  eyebrow.textContent = L.needDecision
   el.appendChild(eyebrow)
   const title = document.createElement("div")
   title.className = "approval-title"
-  title.textContent = question || "請選擇"
+  title.textContent = question || L.pleaseChoose
   el.appendChild(title)
 
   const row = document.createElement("div")
@@ -857,7 +1206,7 @@ function questionCard({ id, question, options }) {
     row.remove()
     const done = document.createElement("div")
     done.className = "approval-done"
-    done.textContent = label ? `已選擇：${label}` : "已跳過"
+    done.textContent = label ? L.chosen(label) : L.skipped
     el.appendChild(done)
   }
   for (const opt of Array.isArray(options) ? options : []) {
@@ -872,7 +1221,7 @@ function questionCard({ id, question, options }) {
   }
   const skip = document.createElement("button")
   skip.className = "approval-btn"
-  skip.textContent = "跳過"
+  skip.textContent = L.skip
   skip.addEventListener("click", () => {
     vscode.postMessage({ type: "questionReply", id, answer: null })
     settle("")
@@ -892,7 +1241,7 @@ function userInputCard({ id, questions }) {
     const q = questions[i]
     const title = document.createElement("div")
     title.className = "approval-title"
-    title.textContent = q.header || q.question || "問題"
+    title.textContent = q.header || q.question || L.question
     el.appendChild(title)
     if (q.question && q.question !== q.header) {
       const sub = document.createElement("div")
@@ -926,13 +1275,13 @@ function userInputCard({ id, questions }) {
   }
   const submit = document.createElement("button")
   submit.className = "approval-btn primary"
-  submit.textContent = "送出"
+  submit.textContent = L.submit
   submit.addEventListener("click", () => {
     vscode.postMessage({ type: "userInputReply", id, answers })
     el.querySelectorAll("button, input").forEach((x) => (x.disabled = true))
     const done = document.createElement("div")
     done.className = "approval-done"
-    done.textContent = "已回覆"
+    done.textContent = L.answered
     el.appendChild(done)
   })
   el.appendChild(submit)
@@ -950,7 +1299,7 @@ function setRunning(on) {
     workingEl.className = "working"
     const label = document.createElement("span")
     label.className = "working-label"
-    label.textContent = "思考中"
+    label.textContent = L.thinkingLive
     const time = document.createElement("span")
     time.className = "working-time"
     time.textContent = "0s"
@@ -975,8 +1324,8 @@ function setRunning(on) {
   }
   // While a turn runs, Enter / this button STEERS (folds text into the running
   // turn); the separate stop button interrupts.
-  sendEl.textContent = on ? "插話" : "↑"
-  sendEl.title = on ? "插話：把訊息折入目前回合 (Enter)" : "送出 (Enter)"
+  sendEl.textContent = on ? L.steerBtn : "↑"
+  sendEl.title = on ? L.steerTitle : L.sendTitle
   sendEl.classList.toggle("steer-mode", on)
   if (stopEl) {
     stopEl.hidden = !on
@@ -987,9 +1336,7 @@ function setRunning(on) {
 function updateComposerHint(on) {
   const hint = $("composer-hint")
   if (hint) {
-    hint.textContent = on
-      ? "Enter 插話 · Shift+Enter 換行 · ■ 停止"
-      : "Enter 送出 · Shift+Enter 換行 · / 指令"
+    hint.textContent = on ? L.hintSteering : L.hintIdle
   }
 }
 
@@ -1013,7 +1360,7 @@ function showChat() {
   if (!messagesEl.childElementCount) {
     const empty = document.createElement("div")
     empty.className = "empty-state"
-    empty.textContent = "問我任何事，或輸入 / 使用指令"
+    empty.textContent = L.emptyState
     messagesEl.appendChild(empty)
     const clear = () => empty.remove()
     inputEl.addEventListener("keydown", clear, { once: true })
@@ -1026,7 +1373,7 @@ $("login-unieai").addEventListener("click", () => startLogin(undefined))
 $("login-company").addEventListener("click", () => {
   const url = $("company-url").value.trim()
   if (!url) {
-    showLoginError("請先輸入公司 Studio 網址")
+    showLoginError(L.enterCompanyUrl)
     return
   }
   startLogin(url)
@@ -1066,14 +1413,14 @@ function showNoModelsNotice() {
   const el = document.createElement("div")
   el.className = "line notice"
   const text = document.createElement("span")
-  text.textContent = "你的帳戶還沒有可用模型。"
+  text.textContent = L.noModels
   const link = document.createElement("a")
-  link.textContent = "到 UnieAI Studio 新增模型"
+  link.textContent = L.addModels
   link.addEventListener("click", () => {
     vscode.postMessage({ type: "openStudioModels", url: studioModelsUrl })
   })
   const tail = document.createElement("span")
-  tail.textContent = "，然後重新登入。"
+  tail.textContent = L.thenRelogin
   el.append(text, link, tail)
   appendLine(el)
 }
@@ -1095,7 +1442,7 @@ function handleEvent(event) {
       break
     case "turn.failed":
       setRunning(false)
-      errorLine((event.error && event.error.message) || "回合失敗")
+      errorLine((event.error && event.error.message) || L.turnFailed)
       break
     case "error":
       errorLine(event.message || "error")
@@ -1146,45 +1493,41 @@ function send() {
 
 const slashMenuEl = $("slash-menu")
 const SLASH_COMMANDS = [
-  { cmd: "/new", desc: "開新對話", run: () => vscode.postMessage({ type: "newChat" }) },
-  { cmd: "/history", desc: "歷史 session", run: () => $("history-btn").click() },
-  { cmd: "/model", desc: "切換模型", run: () => modelEl.focus() },
-  { cmd: "/plan", desc: "切到規劃模式（唯讀探索）", run: () => { modeEl.value = "plan"; metaLine("已切到規劃模式") } },
-  { cmd: "/exec", desc: "切回執行模式", run: () => { modeEl.value = "exec"; metaLine("已切回執行模式") } },
+  { cmd: "/new", desc: () => L.slashNew, run: () => vscode.postMessage({ type: "newChat" }) },
+  { cmd: "/history", desc: () => L.slashHistory, run: () => $("history-btn").click() },
+  { cmd: "/model", desc: () => L.slashModel, run: () => modelEl.focus() },
+  { cmd: "/plan", desc: () => L.slashPlan, run: () => { modeEl.value = "plan"; metaLine(L.switchedPlan) } },
+  { cmd: "/exec", desc: () => L.slashExec, run: () => { modeEl.value = "exec"; metaLine(L.switchedExec) } },
   {
     cmd: "/web",
-    desc: "切換允許連網",
+    desc: () => L.slashWeb,
     run: () => {
       webEl.value = webEl.value === "on" ? "off" : "on"
       webEl.dispatchEvent(new Event("change"))
-      metaLine(webEl.value === "on" ? "上網：開" : "上網：關")
+      metaLine(webEl.value === "on" ? L.metaWebOn : L.metaWebOff)
     },
   },
-  { cmd: "/perm", desc: "切換權限（預設/唯讀/完全存取）", run: () => permEl.focus() },
+  { cmd: "/perm", desc: () => L.slashPerm, run: () => permEl.focus() },
   {
     cmd: "/goal",
-    desc: "循環目標模式：關 → 背景審查（零延遲）→ 嚴格把關（擋回合尾）",
+    desc: () => L.slashGoal,
     run: () => {
       goalMode = goalMode === false ? "review" : goalMode === "review" ? "gate" : false
       vscode.postMessage({ type: "setGoalMode", value: goalMode })
       metaLine(
-        goalMode === "review"
-          ? "目標模式：背景審查 — 回合照常即收，驗證在背景跑，發現缺口會提示你回「繼續」補完"
-          : goalMode === "gate"
-            ? "目標模式：嚴格把關 — 回合結束前自我驗證並當場補漏（尾端會多幾次模型呼叫）"
-            : "目標模式：關",
+        goalMode === "review" ? L.goalReview : goalMode === "gate" ? L.goalGate : L.goalOff,
       )
     },
   },
-  { cmd: "/retry", desc: "重試上一回合", run: () => vscode.postMessage({ type: "retry" }) },
-  { cmd: "/engine", desc: "切換引擎 (app-server / agent-core)", run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
-  { cmd: "/stop", desc: "中斷目前回合", run: () => vscode.postMessage({ type: "stop" }) },
-  { cmd: "/logout", desc: "登出 UnieAI Studio", run: () => vscode.postMessage({ type: "logout" }) },
-  { cmd: "/terminal", desc: "在終端開啟 TUI", run: () => vscode.postMessage({ type: "openTerminal" }) },
+  { cmd: "/retry", desc: () => L.slashRetry, run: () => vscode.postMessage({ type: "retry" }) },
+  { cmd: "/engine", desc: () => L.slashEngine, run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
+  { cmd: "/stop", desc: () => L.slashStop, run: () => vscode.postMessage({ type: "stop" }) },
+  { cmd: "/logout", desc: () => L.slashLogout, run: () => vscode.postMessage({ type: "logout" }) },
+  { cmd: "/terminal", desc: () => L.slashTerminal, run: () => vscode.postMessage({ type: "openTerminal" }) },
   {
     cmd: "/help",
-    desc: "列出所有指令",
-    run: () => metaLine("指令：" + SLASH_COMMANDS.map((c) => c.cmd).join("  ")),
+    desc: () => L.slashHelp,
+    run: () => metaLine(L.commandsList(SLASH_COMMANDS.map((c) => c.cmd).join("  "))),
   },
 ]
 let slashSelected = 0
@@ -1213,7 +1556,7 @@ function renderSlashMenu() {
     cmd.textContent = candidate.cmd
     const desc = document.createElement("span")
     desc.className = "slash-desc"
-    desc.textContent = candidate.desc
+    desc.textContent = candidate.desc()
     el.append(cmd, desc)
     el.addEventListener("mousedown", (e) => {
       e.preventDefault()
@@ -1401,7 +1744,7 @@ inputEl.addEventListener("keydown", (e) => {
 // ---------- history ----------
 
 $("history-btn").addEventListener("click", () => {
-  historyList.innerHTML = '<div class="line meta">載入中…</div>'
+  historyList.innerHTML = `<div class="line meta">${L.loading}</div>`
   historyOverlay.hidden = false
   vscode.postMessage({ type: "listSessions" })
 })
@@ -1428,7 +1771,7 @@ $("logout-btn").addEventListener("click", () => {
 function renderSessions(sessions) {
   historyList.innerHTML = ""
   if (!sessions.length) {
-    historyList.innerHTML = '<div class="line meta">沒有歷史 session</div>'
+    historyList.innerHTML = `<div class="line meta">${L.noSessions}</div>`
     return
   }
   for (const session of sessions) {
@@ -1458,6 +1801,7 @@ window.addEventListener("message", (e) => {
   const message = e.data
   switch (message.type) {
     case "bootstrap": {
+      L = I18N[message.locale] || I18N.en
       modelEl.innerHTML = ""
       for (const model of message.models || []) {
         const option = document.createElement("option")
@@ -1497,7 +1841,7 @@ window.addEventListener("message", (e) => {
     case "loginError":
       $("login-pending").hidden = true
       setLoginButtonsEnabled(true)
-      showLoginError(message.message || "登入失敗")
+      showLoginError(message.message || L.loginFailed)
       break
     case "event":
       handleEvent(message.event)
@@ -1534,7 +1878,7 @@ window.addEventListener("message", (e) => {
           el.classList.add("undelivered")
           const note = document.createElement("span")
           note.className = "steer-note"
-          note.textContent = "（未送達：已放回輸入框，Enter 直接送出）"
+          note.textContent = L.steerUndelivered
           el.appendChild(note)
           const original = el.querySelector(".steer-text")?.textContent || ""
           if (original && !inputEl.value.trim()) {
@@ -1556,7 +1900,7 @@ window.addEventListener("message", (e) => {
       break
     case "tokenUsage": {
       const meter = $("token-meter")
-      if (meter) meter.textContent = `${(message.total / 1000).toFixed(1)}k tokens`
+      if (meter) meter.textContent = L.tokenMeter((message.total / 1000).toFixed(1))
       break
     }
     case "approvalResolved": {
@@ -1569,16 +1913,16 @@ window.addEventListener("message", (e) => {
     case "turnState":
       if (message.state === "interrupted") {
         setRunning(false)
-        metaLine("已中斷")
+        metaLine(L.interrupted)
       } else if (message.state === "failed") {
         setRunning(false)
         const el = document.createElement("div")
         el.className = "line error"
-        el.textContent = "回合失敗"
+        el.textContent = L.turnFailed
         if (message.retryable) {
           const retry = document.createElement("button")
           retry.className = "approval-btn"
-          retry.textContent = "重試"
+          retry.textContent = L.retry
           retry.addEventListener("click", () => {
             retry.disabled = true
             setRunning(true)
@@ -1628,7 +1972,7 @@ window.addEventListener("message", (e) => {
           appendLine(agentBlock(item.text))
         }
       }
-      metaLine("已載入歷史 session — 繼續輸入即可接續此對話")
+      metaLine(L.sessionLoadedMeta)
       break
     }
     case "stderr":

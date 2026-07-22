@@ -53,6 +53,219 @@ export function activate(context: vscode.ExtensionContext) {
 /** Engine-plumbing user messages that must not render as real user content. */
 const SYNTHETIC_MSG_RE = /^\s*<(project_instructions|context_update|conversation_summary)\b/
 
+// ── i18n ────────────────────────────────────────────────────────────────
+
+type Locale = "zh-TW" | "zh-CN" | "en" | "ja"
+
+/** Extension-side UI strings. The webview has its own dictionary (chat.js);
+ * this one covers the initial HTML paint plus host-side runtime messages. */
+const EXT_I18N = {
+  "zh-TW": {
+    welcomeTitle: "歡迎使用 UnieAI Code",
+    loginSubtitle: "登入您的帳戶",
+    loginStudio: "使用 UnieAI Studio 登入",
+    or: "或",
+    companyUrlPlaceholder: "公司 Studio 網址（例如 studio.demo.unieai.com）",
+    loginCompany: "使用 Company UnieAI Studio 登入",
+    confirmCode: "請在瀏覽器中確認登入代碼",
+    cancel: "取消",
+    historyBtn: "歷史",
+    historyTitle: "歷史 session",
+    newChatBtn: "新對話",
+    newChatTitle: "開新對話",
+    logoutBtn: "登出",
+    logoutTitle: "登出 UnieAI Studio",
+    inputPlaceholder: "詢問 UnieAI Code 任何事",
+    modeTitle: "模式",
+    modeExec: "執行",
+    modePlan: "規劃",
+    permTitle: "權限",
+    permDefault: "預設權限",
+    permReadOnly: "唯讀",
+    permFull: "完全存取",
+    webTitle: "允許 agent 連網（唯讀模式下無效）",
+    webOff: "上網 關",
+    webOn: "上網 開",
+    modelTitle: "模型",
+    stopTitle: "停止目前回合",
+    sendTitle: "送出 (Enter)",
+    composerHint: "Enter 送出 · Shift+Enter 換行 · / 指令",
+    turnBusy: "上一回合仍在進行中——先按停止或稍候",
+    readSessionFailed: (e: string) => `無法讀取 session: ${e}`,
+    agentCoreFailed: (e: string) => `agent-core 失敗：${e}`,
+    cannotOpen: (p: string) => `無法開啟 ${p}`,
+    advancedDown: "進階模式無法啟動，已降級為基本模式（無互動核准與逐字串流）",
+    advancedFallback: (e: string) => `進階模式失敗，改用基本模式：${e}`,
+    toolGeneric: (name: string) => `工具 ${name}`,
+    approvalNeeded: (label: string) => `UnieAI Code 請求核准：${label}`,
+    cmdExec: "指令執行",
+    fileEdit: "檔案修改",
+    allow: "允許",
+    deny: "拒絕",
+    summaryPrefix: (text: string) => `結案摘要：${text}`,
+    reviewGaps: (finding: string) => `⚠ 背景驗證發現缺口（回「繼續」即可補完）：\n${finding}`,
+  },
+  "zh-CN": {
+    welcomeTitle: "欢迎使用 UnieAI Code",
+    loginSubtitle: "登录您的账户",
+    loginStudio: "使用 UnieAI Studio 登录",
+    or: "或",
+    companyUrlPlaceholder: "公司 Studio 网址（例如 studio.demo.unieai.com）",
+    loginCompany: "使用公司 UnieAI Studio 登录",
+    confirmCode: "请在浏览器中确认登录代码",
+    cancel: "取消",
+    historyBtn: "历史",
+    historyTitle: "历史会话",
+    newChatBtn: "新对话",
+    newChatTitle: "开新对话",
+    logoutBtn: "退出登录",
+    logoutTitle: "退出 UnieAI Studio",
+    inputPlaceholder: "询问 UnieAI Code 任何事",
+    modeTitle: "模式",
+    modeExec: "执行",
+    modePlan: "规划",
+    permTitle: "权限",
+    permDefault: "默认权限",
+    permReadOnly: "只读",
+    permFull: "完全访问",
+    webTitle: "允许 agent 联网（只读模式下无效）",
+    webOff: "联网 关",
+    webOn: "联网 开",
+    modelTitle: "模型",
+    stopTitle: "停止当前回合",
+    sendTitle: "发送 (Enter)",
+    composerHint: "Enter 发送 · Shift+Enter 换行 · / 命令",
+    turnBusy: "上一回合仍在进行中——先按停止或稍候",
+    readSessionFailed: (e: string) => `无法读取会话：${e}`,
+    agentCoreFailed: (e: string) => `agent-core 失败：${e}`,
+    cannotOpen: (p: string) => `无法打开 ${p}`,
+    advancedDown: "高级模式无法启动，已降级为基本模式（无交互审批与逐字流式输出）",
+    advancedFallback: (e: string) => `高级模式失败，改用基本模式：${e}`,
+    toolGeneric: (name: string) => `工具 ${name}`,
+    approvalNeeded: (label: string) => `UnieAI Code 请求审批：${label}`,
+    cmdExec: "命令执行",
+    fileEdit: "文件修改",
+    allow: "允许",
+    deny: "拒绝",
+    summaryPrefix: (text: string) => `结案摘要：${text}`,
+    reviewGaps: (finding: string) => `⚠ 后台验证发现缺口（回复“继续”即可补完）：\n${finding}`,
+  },
+  en: {
+    welcomeTitle: "Welcome to UnieAI Code",
+    loginSubtitle: "Sign in to your account",
+    loginStudio: "Sign in with UnieAI Studio",
+    or: "or",
+    companyUrlPlaceholder: "Company Studio URL (e.g. studio.demo.unieai.com)",
+    loginCompany: "Sign in with your company's UnieAI Studio",
+    confirmCode: "Confirm the login code in your browser",
+    cancel: "Cancel",
+    historyBtn: "History",
+    historyTitle: "Session history",
+    newChatBtn: "New chat",
+    newChatTitle: "Start a new chat",
+    logoutBtn: "Sign out",
+    logoutTitle: "Sign out of UnieAI Studio",
+    inputPlaceholder: "Ask UnieAI Code anything",
+    modeTitle: "Mode",
+    modeExec: "Run",
+    modePlan: "Plan",
+    permTitle: "Permissions",
+    permDefault: "Default permissions",
+    permReadOnly: "Read-only",
+    permFull: "Full access",
+    webTitle: "Allow the agent network access (no effect in read-only mode)",
+    webOff: "Web off",
+    webOn: "Web on",
+    modelTitle: "Model",
+    stopTitle: "Stop the current turn",
+    sendTitle: "Send (Enter)",
+    composerHint: "Enter to send · Shift+Enter for newline · / for commands",
+    turnBusy: "The previous turn is still running — stop it or wait",
+    readSessionFailed: (e: string) => `Failed to read session: ${e}`,
+    agentCoreFailed: (e: string) => `agent-core failed: ${e}`,
+    cannotOpen: (p: string) => `Cannot open ${p}`,
+    advancedDown: "Advanced mode failed to start; using basic mode (no interactive approvals or token streaming)",
+    advancedFallback: (e: string) => `Advanced mode failed, falling back to basic mode: ${e}`,
+    toolGeneric: (name: string) => `Tool ${name}`,
+    approvalNeeded: (label: string) => `UnieAI Code requests approval: ${label}`,
+    cmdExec: "Run command",
+    fileEdit: "File changes",
+    allow: "Allow",
+    deny: "Deny",
+    summaryPrefix: (text: string) => `Closing summary: ${text}`,
+    reviewGaps: (finding: string) => `⚠ Background review found gaps (reply "continue" to address them):\n${finding}`,
+  },
+  ja: {
+    welcomeTitle: "UnieAI Code へようこそ",
+    loginSubtitle: "アカウントにサインイン",
+    loginStudio: "UnieAI Studio でサインイン",
+    or: "または",
+    companyUrlPlaceholder: "会社の Studio URL（例: studio.demo.unieai.com）",
+    loginCompany: "会社の UnieAI Studio でサインイン",
+    confirmCode: "ブラウザでログインコードを確認してください",
+    cancel: "キャンセル",
+    historyBtn: "履歴",
+    historyTitle: "セッション履歴",
+    newChatBtn: "新しいチャット",
+    newChatTitle: "新しいチャットを開始",
+    logoutBtn: "サインアウト",
+    logoutTitle: "UnieAI Studio からサインアウト",
+    inputPlaceholder: "UnieAI Code に何でも質問",
+    modeTitle: "モード",
+    modeExec: "実行",
+    modePlan: "プラン",
+    permTitle: "権限",
+    permDefault: "標準権限",
+    permReadOnly: "読み取り専用",
+    permFull: "フルアクセス",
+    webTitle: "エージェントのネット接続を許可（読み取り専用モードでは無効）",
+    webOff: "ネット オフ",
+    webOn: "ネット オン",
+    modelTitle: "モデル",
+    stopTitle: "現在のターンを停止",
+    sendTitle: "送信 (Enter)",
+    composerHint: "Enter 送信 · Shift+Enter 改行 · / コマンド",
+    turnBusy: "前のターンが進行中です — 停止するかお待ちください",
+    readSessionFailed: (e: string) => `セッションを読み込めません: ${e}`,
+    agentCoreFailed: (e: string) => `agent-core が失敗しました: ${e}`,
+    cannotOpen: (p: string) => `${p} を開けません`,
+    advancedDown: "拡張モードを起動できず、基本モードに切り替えました（対話型承認・逐次ストリーミングなし）",
+    advancedFallback: (e: string) => `拡張モードが失敗したため基本モードを使用します: ${e}`,
+    toolGeneric: (name: string) => `ツール ${name}`,
+    approvalNeeded: (label: string) => `UnieAI Code が承認を求めています: ${label}`,
+    cmdExec: "コマンド実行",
+    fileEdit: "ファイル変更",
+    allow: "許可",
+    deny: "拒否",
+    summaryPrefix: (text: string) => `完了サマリー: ${text}`,
+    reviewGaps: (finding: string) => `⚠ バックグラウンド検証で不足が見つかりました（「続けて」と返信で補完）:\n${finding}`,
+  },
+}
+
+/** Resolve the panel locale: explicit setting, else VS Code display language. */
+function resolveLocale(): Locale {
+  const configured = vscode.workspace.getConfiguration("unieai-code").get<string>("locale")
+  if (configured === "zh-TW" || configured === "zh-CN" || configured === "en" || configured === "ja") {
+    return configured
+  }
+  const lang = (vscode.env.language || "").toLowerCase()
+  if (lang.startsWith("zh-tw") || lang.startsWith("zh-hant")) {
+    return "zh-TW"
+  }
+  if (lang.startsWith("zh")) {
+    return "zh-CN"
+  }
+  if (lang.startsWith("ja")) {
+    return "ja"
+  }
+  return "en"
+}
+
+/** Translate `key` for the currently resolved locale. */
+function t<K extends keyof (typeof EXT_I18N)["zh-TW"]>(key: K): (typeof EXT_I18N)["zh-TW"][K] {
+  return (EXT_I18N[resolveLocale()] ?? EXT_I18N.en)[key]
+}
+
 function executablePath(): string {
   const configured = vscode.workspace.getConfiguration("unieai-code").get<string>("executablePath")
   // A stale absolute path (e.g. a deleted dev-build binary) must not brick every
@@ -159,6 +372,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             this.agentCoreQuestions.set(questionId, resolve)
             this.post({ type: "questionRequest", id: questionId, question: d.question, options: d.options })
           }),
+        formatSummary: (text) => t("summaryPrefix")(text),
+        formatReview: (finding) => t("reviewGaps")(finding),
       })
     }
     return this.agentCore
@@ -197,7 +412,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
     }
-    view.webview.html = this.html(view.webview)
+    view.webview.html = this.html(view.webview, resolveLocale())
 
     view.webview.onDidReceiveMessage(async (message) => {
       switch (message?.type) {
@@ -314,7 +529,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             // Citations/tools may emit absolute paths — joinPath would mangle them.
             const target = path.isAbsolute(rel) || !root ? vscode.Uri.file(rel) : vscode.Uri.joinPath(root, rel)
             vscode.window.showTextDocument(target, { preview: true }).then(undefined, () => {
-              vscode.window.showWarningMessage(`無法開啟 ${rel}`)
+              vscode.window.showWarningMessage(t("cannotOpen")(rel))
             })
           }
           break
@@ -367,6 +582,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       type: "bootstrap",
       models,
       signedIn,
+      locale: resolveLocale(),
       threadId: this.threadId ?? null,
       currentModel: this.context.globalState.get<string>("unieai-code.model") ?? null,
       webAccess: this.context.globalState.get<boolean>("unieai-code.webAccess") ?? false,
@@ -592,7 +808,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       parsed = JSON.parse(fs.readFileSync(path.join(this.agentSessionsDir(), `${safe}.json`), "utf8"))
     } catch (err) {
-      this.post({ type: "fatal", message: `無法讀取 session: ${String(err)}` })
+      this.post({ type: "fatal", message: t("readSessionFailed")(String(err)) })
       return
     }
     const items: { role: string; text: string }[] = []
@@ -654,7 +870,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       } else if (parsed.type === "response_item" && payload["type"] === "function_call") {
         // Keep tool calls visible when a session is reloaded.
         const name = String(payload["name"] ?? "tool")
-        let summary = `工具 ${name}`
+        let summary = t("toolGeneric")(name)
         try {
           const args = JSON.parse(String(payload["arguments"] ?? "{}")) as {
             command?: string | string[]
@@ -764,7 +980,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.appServerBroken = true
       this.post({
         type: "stderr",
-        text: "進階模式無法啟動，已降級為基本模式（無互動核准與逐字串流）",
+        text: t("advancedDown"),
       })
     }
   }
@@ -1049,12 +1265,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "approvalRequest", id: approvalId, kind, itemKey: params?.itemId, detail })
       // If the panel is hidden, surface an actionable OS-level prompt too.
       if (!this.view?.visible) {
-        const label = kind === "command" ? "指令執行" : "檔案修改"
+        const label = kind === "command" ? t("cmdExec") : t("fileEdit")
+        const allowLabel = t("allow")
         vscode.window
-          .showInformationMessage(`UnieAI Code 請求核准：${label}`, "允許", "拒絕")
+          .showInformationMessage(t("approvalNeeded")(label), allowLabel, t("deny"))
           .then((choice) => {
             if (choice && this.pendingApprovals.has(approvalId)) {
-              this.resolveApproval(approvalId, choice === "允許" ? "accept" : "decline")
+              this.resolveApproval(approvalId, choice === allowLabel ? "accept" : "decline")
               this.post({ type: "approvalResolved", id: approvalId, decision: choice })
             }
           })
@@ -1113,7 +1330,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.currentTurn = undefined
     }
     if (this.child || this.currentTurn) {
-      this.post({ type: "stderr", text: "上一回合仍在進行中——先按停止或稍候" })
+      this.post({ type: "stderr", text: t("turnBusy") })
       return
     }
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -1145,7 +1362,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       try {
         await this.ensureAgentCore().send(prompt, model, webAccess)
       } catch (err) {
-        this.post({ type: "stderr", text: `agent-core 失敗：${String(err)}` })
+        this.post({ type: "stderr", text: t("agentCoreFailed")(String(err)) })
         this.post({ type: "running", value: false })
       }
       return
@@ -1157,7 +1374,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.runTurnAppServer(client, prompt, model, sandbox, webAccess, workspaceFolder)
         return
       } catch (err) {
-        this.post({ type: "stderr", text: `進階模式失敗，改用基本模式：${String(err)}` })
+        this.post({ type: "stderr", text: t("advancedFallback")(String(err)) })
       }
     }
     this.runTurnExec(prompt, model, sandbox, webAccess, workspaceFolder)
@@ -1171,7 +1388,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     webAccess: boolean,
     workspaceFolder: string | undefined,
   ) {
-    // 預設權限 = ask before commands/edits; 唯讀/完全存取 = never ask.
+    // Default permissions = ask before commands/edits; read-only/full-access = never ask.
     const approvalPolicy = sandbox === "workspace-write" ? "on-request" : "never"
     const config = webAccess ? { "sandbox_workspace_write.network_access": true } : undefined
 
@@ -1331,7 +1548,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     })
   }
 
-  private html(webview: vscode.Webview): string {
+  private html(webview: vscode.Webview, locale: Locale): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "media", "chat.js"),
     )
@@ -1341,9 +1558,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const logoUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "media", "logo.png"),
     )
+    const d = EXT_I18N[locale] ?? EXT_I18N.en
     const nonce = Math.random().toString(36).slice(2)
     return /* html */ `<!DOCTYPE html>
-<html lang="en">
+<html lang="${locale}">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
@@ -1357,17 +1575,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   <section id="login-view" hidden>
     <div id="login-card">
       <img id="login-logo" src="${logoUri}" alt="UnieAI">
-      <h1>歡迎使用 UnieAI Code</h1>
-      <p class="subtitle">登入您的帳戶</p>
-      <button id="login-unieai" class="login-option">使用 UnieAI Studio 登入</button>
-      <div class="divider"><span>或</span></div>
-      <input id="company-url" type="text" placeholder="公司 Studio 網址（例如 studio.demo.unieai.com）">
-      <button id="login-company" class="login-option">使用 Company UnieAI Studio 登入</button>
+      <h1>${d.welcomeTitle}</h1>
+      <p class="subtitle">${d.loginSubtitle}</p>
+      <button id="login-unieai" class="login-option">${d.loginStudio}</button>
+      <div class="divider"><span>${d.or}</span></div>
+      <input id="company-url" type="text" placeholder="${d.companyUrlPlaceholder}">
+      <button id="login-company" class="login-option">${d.loginCompany}</button>
       <div id="login-pending" hidden>
-        <p class="subtitle">請在瀏覽器中確認登入代碼</p>
+        <p class="subtitle">${d.confirmCode}</p>
         <div id="login-code"></div>
         <a id="login-link"></a>
-        <button id="login-cancel" class="link-button">取消</button>
+        <button id="login-cancel" class="link-button">${d.cancel}</button>
       </div>
       <p id="login-error" class="error-text" hidden></p>
     </div>
@@ -1377,15 +1595,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   <section id="chat-view" hidden>
     <div id="toolbar">
       <span id="token-meter" class="meter"></span>
-      <button id="history-btn" class="ghost" title="歷史 session">歷史</button>
-      <button id="new-chat-btn" class="ghost" title="開新對話">新對話</button>
-      <button id="logout-btn" class="ghost" title="登出 UnieAI Studio">登出</button>
+      <button id="history-btn" class="ghost" title="${d.historyTitle}">${d.historyBtn}</button>
+      <button id="new-chat-btn" class="ghost" title="${d.newChatTitle}">${d.newChatBtn}</button>
+      <button id="logout-btn" class="ghost" title="${d.logoutTitle}">${d.logoutBtn}</button>
     </div>
     <main id="messages" aria-live="polite"></main>
     <div id="history-overlay" hidden>
       <div id="history-panel">
         <div id="history-header">
-          <span>歷史 session</span>
+          <span>${d.historyTitle}</span>
           <button id="history-close" class="ghost">✕</button>
         </div>
         <div id="history-list"></div>
@@ -1396,32 +1614,32 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="composer-box">
         <div id="input-row">
           <span id="prompt-char">›</span>
-          <textarea id="input" rows="2" placeholder="詢問 UnieAI Code 任何事"></textarea>
+          <textarea id="input" rows="2" placeholder="${d.inputPlaceholder}"></textarea>
         </div>
         <div id="composer-row">
           <div class="composer-left">
-            <select id="mode" class="pill" title="模式">
-              <option value="exec">執行</option>
-              <option value="plan">規劃</option>
+            <select id="mode" class="pill" title="${d.modeTitle}">
+              <option value="exec">${d.modeExec}</option>
+              <option value="plan">${d.modePlan}</option>
             </select>
-            <select id="perm" class="pill" title="權限">
-              <option value="workspace-write">預設權限</option>
-              <option value="read-only">唯讀</option>
-              <option value="danger-full-access">完全存取</option>
+            <select id="perm" class="pill" title="${d.permTitle}">
+              <option value="workspace-write">${d.permDefault}</option>
+              <option value="read-only">${d.permReadOnly}</option>
+              <option value="danger-full-access">${d.permFull}</option>
             </select>
-            <select id="web" class="pill" title="允許 agent 連網（唯讀模式下無效）">
-              <option value="off">上網 關</option>
-              <option value="on">上網 開</option>
+            <select id="web" class="pill" title="${d.webTitle}">
+              <option value="off">${d.webOff}</option>
+              <option value="on">${d.webOn}</option>
             </select>
           </div>
           <div class="composer-right">
-            <select id="model" class="pill model-pill" title="模型"></select>
-            <button id="stop" class="send-btn stop-btn" title="停止目前回合" hidden>■</button>
-            <button id="send" class="send-btn" title="送出 (Enter)">↑</button>
+            <select id="model" class="pill model-pill" title="${d.modelTitle}"></select>
+            <button id="stop" class="send-btn stop-btn" title="${d.stopTitle}" hidden>■</button>
+            <button id="send" class="send-btn" title="${d.sendTitle}">↑</button>
           </div>
         </div>
       </div>
-      <div id="composer-hint">Enter 送出 · Shift+Enter 換行 · / 指令</div>
+      <div id="composer-hint">${d.composerHint}</div>
     </footer>
   </section>
   <script nonce="${nonce}" src="${scriptUri}"></script>

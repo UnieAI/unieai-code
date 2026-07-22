@@ -22,6 +22,10 @@ export interface AgentCoreCallbacks {
   requestApproval: (detail: { tool: string; action: string; detail: string }) => Promise<ApprovalDecision>
   /** Put a multiple-choice question to the user; resolves with the chosen label, or null if dismissed. */
   requestQuestion: (detail: { question: string; options: string[] }) => Promise<string | null>
+  /** Localized wrapper for the goal-mode closing summary meta line. */
+  formatSummary: (text: string) => string
+  /** Localized wrapper for the background-review findings meta line. */
+  formatReview: (finding: string) => string
 }
 
 /** One panel conversation backed by the agent-core loop. */
@@ -106,12 +110,12 @@ export class AgentCoreBackend {
       onSummary: (text: string) => {
         // Closing summary from the goal-mode summarizer — surface as a meta
         // line under the transcript.
-        this.cb.post({ type: "stderr", text: `結案摘要：${text}` })
+        this.cb.post({ type: "stderr", text: this.cb.formatSummary(text) })
       },
       onReview: (finding: string) => {
         // Background verifier (goal mode "review") found gaps AFTER the turn
-        // ended. Advisory: the user replies "繼續" to have them addressed.
-        this.cb.post({ type: "stderr", text: `⚠ 背景驗證發現缺口（回「繼續」即可補完）：\n${finding}` })
+        // ended. Advisory: the user replies "continue" to have them addressed.
+        this.cb.post({ type: "stderr", text: this.cb.formatReview(finding) })
       },
       onPlan: (plan: { steps: Array<{ text: string; done: boolean }> }) => {
         // Goal-mode planner checklist → render via the panel's plan card

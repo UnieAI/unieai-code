@@ -104,6 +104,18 @@
           "default": "workspace-write",
           "description": "Sandbox mode for agent turns started from the chat panel."
         },
+        "unieai-code.locale": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "zh-TW",
+            "zh-CN",
+            "en",
+            "ja"
+          ],
+          "default": "auto",
+          "description": "Display language for the chat panel. \"auto\" follows the VS Code display language."
+        },
         "unieai-code.engine": {
           "type": "string",
           "enum": [
