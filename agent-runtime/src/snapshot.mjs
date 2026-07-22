@@ -15,7 +15,7 @@
  * global/system config so a user's git settings can't perturb them. Best-effort:
  * every function fails soft (null / empty) rather than throwing.
  */
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -80,6 +80,48 @@ export function snapshotWorkspace(shadowDir, workspace) {
     if (wt.status !== 0) return null;
     const tree = wt.stdout.trim();
     return tree || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Async git call — same environment isolation as git(), but non-blocking. */
+function gitAsync(shadowDir, workspace, args) {
+  return new Promise((resolveDone) => {
+    execFile(
+      "git",
+      args,
+      {
+        cwd: workspace,
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+        env: {
+          ...process.env,
+          GIT_DIR: shadowDir,
+          GIT_WORK_TREE: workspace,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+      },
+      (err, stdout) => resolveDone({ status: err ? 1 : 0, stdout: String(stdout || "") })
+    );
+  });
+}
+
+/**
+ * Async variant of snapshotWorkspace. The first snapshot of a session hashes
+ * the whole work-tree (~seconds on a large repo); the sync version blocks the
+ * event loop — and the turn's completion — for that long. Same semantics,
+ * same best-effort null on failure.
+ */
+export async function snapshotWorkspaceAsync(shadowDir, workspace) {
+  try {
+    const add = await gitAsync(shadowDir, workspace, ["add", "-A"]);
+    if (add.status !== 0) return null;
+    const wt = await gitAsync(shadowDir, workspace, ["write-tree"]);
+    if (wt.status !== 0) return null;
+    return wt.stdout.trim() || null;
   } catch {
     return null;
   }

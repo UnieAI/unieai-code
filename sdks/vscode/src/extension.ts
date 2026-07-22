@@ -1093,7 +1093,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       // UNIEAI_BIN / PATH. A Dock-launched extension host often lacks the CLI on
       // PATH (e.g. an nvm-managed install), so hand it the configured path here —
       // otherwise every sandboxed bash call dies with ENOENT and no files change.
-      process.env.UNIEAI_BIN = executablePath()
+      const bin = executablePath()
+      process.env.UNIEAI_BIN = bin
+      // An nvm-installed `unieai` is a `#!/usr/bin/env node` script, and the
+      // Dock-launched host has no `node` on PATH either — exit 127 ("env: node:
+      // No such file or directory") on every bash call. The nvm bin dir sits
+      // next to the wrapper and contains node itself; prepend it once.
+      if (path.isAbsolute(bin)) {
+        const binDir = path.dirname(bin)
+        const cur = process.env.PATH || ""
+        if (!cur.split(path.delimiter).includes(binDir)) {
+          process.env.PATH = binDir + path.delimiter + cur
+        }
+      }
       try {
         await this.ensureAgentCore().send(prompt, model, webAccess)
       } catch (err) {

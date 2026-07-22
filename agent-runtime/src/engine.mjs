@@ -25,7 +25,7 @@ import {
 import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
-import { initShadow, snapshotWorkspace } from "./snapshot.mjs";
+import { initShadow, snapshotWorkspaceAsync } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
@@ -315,6 +315,19 @@ export function createEngine({
   const shadowGitDir = snapshotDir(sessionId);
   const shadowReady = initShadow(shadowGitDir, workspace);
   const checkpoints = Array.isArray(resumed?.checkpoints) ? resumed.checkpoints.slice() : [];
+  // Snapshots run in the BACKGROUND, serialized on this chain, so a turn's
+  // completion never waits on a whole-workspace `git add -A` (the first one on
+  // a large repo takes seconds). The warm-up below also pre-hashes the tree at
+  // session start, doubling as the session's baseline checkpoint.
+  let snapshotChain = Promise.resolve();
+  if (shadowReady) {
+    snapshotChain = snapshotChain
+      .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
+      .then((tree) => {
+        if (tree && checkpoints.length === 0) checkpoints.push({ messageIndex: messages.length, tree });
+      })
+      .catch(() => {});
+  }
 
   // Cross-turn state for the completion verifier (persisted like rollingSummary /
   // contextEpoch): the last turn's gap fingerprint (so repeated identical gaps
@@ -574,18 +587,22 @@ export function createEngine({
         // the mechanical PRUNE→TRIM path still bounds the next request.
       }
 
-      // Checkpoint the workspace after the turn's edits settle (best-effort).
-      // The snapshot is a whole-workspace `git add -A` into a shadow repo — on a
-      // large repo the first one costs several seconds — so only pay it when the
-      // turn actually ran a file-mutating tool (decided above, pre-compaction).
-      // A pure Q&A / conversational turn (e.g. "hi") or a read-only turn cannot
-      // have changed files, so blocking its completion on that scan is wasted
-      // latency.
+      // Checkpoint the workspace after the turn's edits settle (best-effort),
+      // in the BACKGROUND: the turn's result returns immediately and the
+      // checkpoint lands on the serialized chain when git finishes — it
+      // persists with the next saveSession (best-effort by design). Only turns
+      // that ran a file-mutating tool snapshot at all; a pure Q&A or read-only
+      // turn cannot have changed files.
       if (shadowReady && touchedWorkspace) {
-        const tree = snapshotWorkspace(shadowGitDir, workspace);
-        if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
-          checkpoints.push({ messageIndex: messages.length, tree });
-        }
+        const msgIdx = messages.length;
+        snapshotChain = snapshotChain
+          .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
+          .then((tree) => {
+            if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
+              checkpoints.push({ messageIndex: msgIdx, tree });
+            }
+          })
+          .catch(() => {});
       }
 
       saveSession({

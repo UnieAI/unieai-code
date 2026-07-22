@@ -1148,10 +1148,28 @@ const SLASH_COMMANDS = [
   { cmd: "/new", desc: "開新對話", run: () => vscode.postMessage({ type: "newChat" }) },
   { cmd: "/history", desc: "歷史 session", run: () => $("history-btn").click() },
   { cmd: "/model", desc: "切換模型", run: () => modelEl.focus() },
+  { cmd: "/plan", desc: "切到規劃模式（唯讀探索）", run: () => { modeEl.value = "plan"; metaLine("已切到規劃模式") } },
+  { cmd: "/exec", desc: "切回執行模式", run: () => { modeEl.value = "exec"; metaLine("已切回執行模式") } },
+  {
+    cmd: "/web",
+    desc: "切換允許連網",
+    run: () => {
+      webEl.value = webEl.value === "on" ? "off" : "on"
+      webEl.dispatchEvent(new Event("change"))
+      metaLine(webEl.value === "on" ? "上網：開" : "上網：關")
+    },
+  },
+  { cmd: "/perm", desc: "切換權限（預設/唯讀/完全存取）", run: () => permEl.focus() },
+  { cmd: "/retry", desc: "重試上一回合", run: () => vscode.postMessage({ type: "retry" }) },
   { cmd: "/engine", desc: "切換引擎 (app-server / agent-core)", run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
   { cmd: "/stop", desc: "中斷目前回合", run: () => vscode.postMessage({ type: "stop" }) },
   { cmd: "/logout", desc: "登出 UnieAI Studio", run: () => vscode.postMessage({ type: "logout" }) },
   { cmd: "/terminal", desc: "在終端開啟 TUI", run: () => vscode.postMessage({ type: "openTerminal" }) },
+  {
+    cmd: "/help",
+    desc: "列出所有指令",
+    run: () => metaLine("指令：" + SLASH_COMMANDS.map((c) => c.cmd).join("  ")),
+  },
 ]
 let slashSelected = 0
 
