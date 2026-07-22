@@ -19,7 +19,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
@@ -65,13 +66,49 @@ export function encodeLike(lfText, { bom = false, newline = "\n" } = {}) {
 }
 
 /**
+ * True when `text` mixes CRLF and bare-LF endings. Re-encoding such a file to
+ * one dominant style would rewrite every minority-ending line — exactly the
+ * phantom diff the fidelity path exists to prevent — so mixed files are edited
+ * byte-exact (raw match) instead of via normalize→re-encode.
+ */
+export function isMixedNewlines(text) {
+  const s = String(text ?? "");
+  const crlf = (s.match(/\r\n/g) || []).length;
+  const bare = (s.match(/(?<!\r)\n/g) || []).length;
+  return crlf > 0 && bare > 0;
+}
+
+/**
+ * Resolve symlinks on the deepest EXISTING ancestor of `p`, then re-append the
+ * not-yet-existing remainder. `path.resolve` alone is lexical, so a symlink
+ * inside the workspace pointing outside would pass a string containment check
+ * while the actual write lands elsewhere.
+ */
+function realDeep(p) {
+  let base = p;
+  const rest = [];
+  for (;;) {
+    try {
+      return rest.length ? join(realpathSync(base), ...rest) : realpathSync(base);
+    } catch {
+      const parent = dirname(base);
+      if (parent === base) return p; // hit the fs root without an existing ancestor
+      rest.unshift(basename(base));
+      base = parent;
+    }
+  }
+}
+
+/**
  * True when `targetPath` (resolved against `workspace`) lands OUTSIDE the
- * workspace root. Handles `..` escapes and absolute paths; containment is a
- * simple string check after resolve (symlink-free, which is fine as a gate).
+ * workspace root. Handles `..` escapes, absolute paths, AND symlinks — both
+ * sides are realpath-resolved (deepest existing ancestor) before the
+ * containment check, so `ws/link -> /etc` can't smuggle a write outside, and a
+ * workspace itself behind a symlink (e.g. /tmp on macOS) compares correctly.
  */
 export function isExternalPath(workspace, targetPath) {
-  const root = resolve(workspace || process.cwd());
-  const abs = resolve(root, String(targetPath ?? ""));
+  const root = realDeep(resolve(workspace || process.cwd()));
+  const abs = realDeep(resolve(root, String(targetPath ?? "")));
   return abs !== root && !abs.startsWith(root + sep);
 }
 
@@ -85,8 +122,14 @@ function pyInstantChecks(absPath, { oldString = null, fileBody = null } = {}) {
   try {
     execFileSync("python3", ["-m", "py_compile", absPath], { timeout: 15000, stdio: ["ignore", "pipe", "pipe"] });
   } catch (e) {
-    const err = String(e.stderr || e.message || "").slice(-500);
-    notes.push(`⚠ file no longer compiles:\n${err}\nFix this before anything else.`);
+    // No python3 on this machine (or the spawn itself failed/timed out) is NOT
+    // a syntax error — reporting it as one sends the model chasing a phantom
+    // bug. Only a real py_compile failure gets surfaced.
+    const spawnFailure = e?.code === "ENOENT" || e?.code === "ETIMEDOUT" || /ENOENT/.test(String(e?.message || ""));
+    if (!spawnFailure) {
+      const err = String(e.stderr || e.message || "").slice(-500);
+      notes.push(`⚠ file no longer compiles:\n${err}\nFix this before anything else.`);
+    }
   }
   // Sibling signal: a line just replaced still exists verbatim elsewhere.
   if (oldString && fileBody) {
@@ -213,7 +256,11 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     if (allowExternal || externalAllow.has(abs)) return { ok: true };
     if (typeof runCtx?.requestApproval === "function") {
       const decision = await runCtx.requestApproval({ tool: "fs", kind: "external_directory", action: "access a path outside the workspace", detail: abs });
-      if (decision === "accept" || decision === "acceptForSession") return { ok: true };
+      if (decision === "acceptForSession") {
+        externalAllow.add(abs); // remember: don't re-prompt for this path again this session
+        return { ok: true };
+      }
+      if (decision === "accept") return { ok: true };
     }
     return { ok: false, message: `error: ${filePath} resolves outside the workspace root (${abs}); external-directory access requires a separate approval that was not granted. Work inside the workspace instead.` };
   }
@@ -319,7 +366,11 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
             if (stale) return toolResult({ ok: false, modelText: stale });
             // §2.2: re-encode the model's (LF) content in the original's style so
             // overwriting a CRLF/BOM file doesn't manufacture a whole-file diff.
-            content = encodeLike(stripBom(content), { bom: hasBom(existing), newline: detectNewline(existing) });
+            // Mixed-ending originals are left as the model wrote them — forcing
+            // one dominant style onto them would rewrite the minority lines too.
+            if (!isMixedNewlines(existing)) {
+              content = encodeLike(stripBom(content), { bom: hasBom(existing), newline: detectNewline(existing) });
+            }
           }
           await mkdir(dirname(abs), { recursive: true });
           await writeFile(abs, content, "utf8");
@@ -337,13 +388,32 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           // §2.1: refuse if the file drifted on disk since the model last read it.
           const stale = staleGuard(abs, filePath, rawBefore);
           if (stale) return toolResult({ ok: false, modelText: stale });
+          const oldRaw = String(args?.oldString ?? "");
+          const newRaw = String(args?.newString ?? "");
+          // Byte-exact path first: when the model echoed the file's exact bytes
+          // (BOM/CRLF included), replace in place with ZERO re-encoding — the
+          // only path that is correct for mixed-ending files. The function-form
+          // replacement is deliberate: a string replacement would expand $&/$$
+          // patterns in newString and silently corrupt the write.
+          const rawHits = oldRaw ? rawBefore.split(oldRaw).length - 1 : 0;
+          if (rawHits === 1) {
+            const rawResult = rawBefore.replace(oldRaw, () => newRaw);
+            await writeFile(abs, rawResult, "utf8");
+            readHashes.set(abs, hashContent(rawResult));
+            return toolResult({ modelText: `edited ${args.filePath}${pyInstantChecks(abs, { oldString: oldRaw, fileBody: rawResult })}` });
+          }
           // §2.2: match/replace on a normalized-LF, BOM-stripped view, then
-          // re-encode the result in the file's original newline/BOM style.
+          // re-encode the result in the original's dominant style. Refused for
+          // mixed-ending files — re-encoding would rewrite every minority-ending
+          // line, the very phantom diff this path exists to prevent.
+          if (isMixedNewlines(rawBefore)) {
+            return toolResult({ ok: false, modelText: "error: oldString not found byte-exactly, and this file mixes CRLF and LF line endings — re-read the file and copy the exact text including line endings" });
+          }
           const bom = hasBom(rawBefore);
           const newline = detectNewline(rawBefore);
           const before = stripBom(rawBefore).replace(/\r\n/g, "\n");
-          const oldString = String(args?.oldString ?? "").replace(/\r\n/g, "\n");
-          const newString = String(args?.newString ?? "").replace(/\r\n/g, "\n");
+          const oldString = oldRaw.replace(/\r\n/g, "\n");
+          const newString = newRaw.replace(/\r\n/g, "\n");
           const commit = async (lfResult, extraNote) => {
             const encoded = encodeLike(lfResult, { bom, newline });
             await writeFile(abs, encoded, "utf8");
@@ -353,7 +423,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           // Fast path: exact substring, must be unique.
           const hits = before.split(oldString).length - 1;
           if (hits === 1) {
-            return commit(before.replace(oldString, newString), "");
+            return commit(before.replace(oldString, () => newString), "");
           }
           if (hits > 1) return toolResult({ ok: false, modelText: `error: oldString matches ${hits} times — include more surrounding context` });
           // Fuzzy path: line-based match under escalating normalization, so

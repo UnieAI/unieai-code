@@ -196,7 +196,7 @@ function workspaceCompletionCheck({ workspace, model, auxModel, callerKey, goalS
     if (!gatesRan) {
       gatesRan = true;
       try {
-        const task = realUserTask(messages);
+        const task = goalState.currentTask || realUserTask(messages);
         const problems = [...(deterministicGates(workspace) || []), ...staticDiffChecks(workspace, task)];
         if (problems.length) {
           return (
@@ -213,7 +213,11 @@ function workspaceCompletionCheck({ workspace, model, auxModel, callerKey, goalS
     try {
       const diff = spawnSync("git", ["-C", workspace, "diff"], { encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
       if (diff.status !== 0 || !String(diff.stdout || "").trim()) return null;
-      const task = realUserTask(messages);
+      // Judge against THIS turn's request (set by runTurn), not the session's
+      // first user message — after compaction or in a multi-task session the
+      // first message is stale or gone, and the skeptic would review the diff
+      // against the wrong task.
+      const task = goalState.currentTask || realUserTask(messages);
       const verdict = await callModelJson({
         baseModelSlug: model,
         callerKey,
@@ -447,13 +451,17 @@ export function createEngine({
 
     /**
      * Fold a mid-turn interjection into the running turn (drained by the loop
-     * between steps). If no turn is running, it is delivered on the next send().
-     * Returns whether a turn was in flight to receive it.
+     * between steps). Returns whether a turn was in flight to receive it; when
+     * none is, the text is NOT queued — the caller shows it as undelivered and
+     * the user resends, so silently injecting the original into the next turn
+     * too would deliver the instruction twice.
      */
     steer(text) {
       const t = String(text ?? "").trim();
-      if (t) steerQueue.push(t);
-      return turnCoordinator.isBusy(sessionId);
+      if (!t) return false;
+      const busy = turnCoordinator.isBusy(sessionId);
+      if (busy) steerQueue.push(t);
+      return busy;
     }
   };
 
@@ -474,6 +482,9 @@ export function createEngine({
         // context refresh is best-effort — never block a turn on it
       }
       messages.push({ role: "user", content: text });
+      // The task the verifier/planner should judge against — this turn's
+      // request, immune to compaction folding away the first user message.
+      goalState.currentTask = text;
       // Lightweight planner (goal-harness §3): once per mutation session, derive a
       // small task checklist from the task with ONE small aux-model call. Kicked
       // fire-and-forget (never awaited) so it stays off the turn's critical path;
@@ -481,7 +492,7 @@ export function createEngine({
       // on a malformed plan = leave goalState.plan null and simply skip planning.
       if (expectsMutation && !goalState.planAttempted) {
         goalState.planAttempted = true;
-        const { system, user } = buildPlanRequest(realUserTask(messages));
+        const { system, user } = buildPlanRequest(text || realUserTask(messages));
         Promise.resolve()
           .then(() =>
             callModelJson({ baseModelSlug: auxModel, callerKey: credentials.gatewayApiKey, system, user, temperature: 0, maxTokens: 400 })

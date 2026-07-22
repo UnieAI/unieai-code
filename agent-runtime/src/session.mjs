@@ -49,7 +49,12 @@ export function listSessions(limit = 30) {
       const path = join(dir, name);
       const mtime = statSync(path).mtimeMs;
       const parsed = JSON.parse(readFileSync(path, "utf8"));
-      const firstUser = (parsed.messages || []).find((m) => m.role === "user");
+      // Skip synthetic wrappers (project instructions, context updates, folded
+      // summaries) so the preview shows the user's actual first message, not
+      // the same AGENTS.md snippet on every row.
+      const firstUser = (parsed.messages || []).find(
+        (m) => m.role === "user" && !/^\s*<(project_instructions|context_update|conversation_summary)\b/.test(String(m.content || ""))
+      );
       rows.push({
         id: parsed.id || name.replace(/\.json$/, ""),
         preview: String(firstUser?.content || "(empty)").slice(0, 120),

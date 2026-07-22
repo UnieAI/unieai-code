@@ -52,3 +52,13 @@ test("saving an empty signature is a no-op", () => {
 });
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
+
+test("destructive commands never produce a rememberable signature", async () => {
+  const { ruleSignature } = await import("./approval-rules.mjs");
+  for (const cmd of ["rm tmp/x.txt", "rm -rf /", "find . -name '*.tmp' -delete", "chmod 777 x", "dd if=/dev/zero of=disk", "mv a b", "sudo ls", "sh -c 'anything'"]) {
+    assert.equal(ruleSignature(cmd), "", `\`${cmd}\` must not reduce to a signature`);
+  }
+  // benign read-only commands still normalize
+  assert.equal(ruleSignature("git log -n5 --oneline"), "git log");
+  assert.equal(ruleSignature("ls -la"), "ls");
+});

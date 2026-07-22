@@ -64,3 +64,15 @@ test("spill falls back to truncation when the store write fails", () => {
 });
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
+
+test("spill ids are unique for equal-length outputs (no silent overwrite)", () => {
+  const a = spillIfLarge("A".repeat(60_000), { id: "bash" });
+  const b = spillIfLarge("B".repeat(60_000), { id: "bash" });
+  assert.equal(a.spilled, true);
+  assert.equal(b.spilled, true);
+  assert.notEqual(a.id, b.id, "same-length outputs must not share a store id");
+  const ra = readSpilled(a.id, {});
+  const rb = readSpilled(b.id, {});
+  assert.ok(ra.text.includes("AAAA") && !ra.text.includes("BBBB"));
+  assert.ok(rb.text.includes("BBBB") && !rb.text.includes("AAAA"));
+});

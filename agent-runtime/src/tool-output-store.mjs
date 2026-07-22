@@ -54,12 +54,16 @@ function sweep(dir) {
  * @param {number} [opts.limit]   inline char budget before spilling
  * @param {(n:number)=>string} [opts.fallbackTruncate]  used when the store write fails
  */
+let spillSeq = 0;
+
 export function spillIfLarge(text, { id = "out", limit = DEFAULT_LIMIT, fallbackTruncate = null } = {}) {
   const s = String(text ?? "");
   if (s.length <= limit) return { modelText: s, spilled: false };
   const base = String(id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || "out";
-  // Deterministic-ish suffix without Math.random dependency at import time.
-  const suffix = (s.length % 100000).toString(36) + base.length.toString(36);
+  // Timestamp + in-process counter: unique across calls AND across processes,
+  // as the docstring promises. (The old length-derived suffix collided for any
+  // two same-length outputs, silently overwriting the earlier spill.)
+  const suffix = Date.now().toString(36) + "-" + (spillSeq++).toString(36);
   const fileId = `${base}-${suffix}`;
   try {
     const dir = storeDir();

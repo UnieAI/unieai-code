@@ -229,3 +229,85 @@ test("external write goes through with the allowExternal opt-in flag", async () 
     assert.equal(readFileSync(target, "utf8"), "flagged\n");
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
+
+// --- review fixes: $-patterns, symlink gate, mixed endings ------------------
+
+test("edit does not expand $& / $$ replacement patterns in newString", async () => {
+  const dir = tmpWs();
+  try {
+    const t = await tools(dir);
+    writeFileSync(join(dir, "a.js"), 'str.replace(/x/, "old");\n');
+    await t.executors.read({ filePath: "a.js" });
+    const r = await t.executors.edit({
+      filePath: "a.js",
+      oldString: '"old"',
+      newString: '"$& and $$5"',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(readFileSync(join(dir, "a.js"), "utf8"), 'str.replace(/x/, "$& and $$5");\n');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("isExternalPath follows symlinks: a link inside the workspace pointing outside is external", async () => {
+  const { symlinkSync, mkdirSync } = await import("node:fs");
+  const dir = tmpWs();
+  const outside = mkdtempSync(join(tmpdir(), "edit-safety-out-"));
+  try {
+    symlinkSync(outside, join(dir, "leak"));
+    assert.equal(isExternalPath(dir, "leak/file.txt"), true, "symlinked-out path must be external");
+    mkdirSync(join(dir, "sub"));
+    assert.equal(isExternalPath(dir, "sub/file.txt"), false, "real inside dir stays internal");
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("isExternalPath tolerates a workspace itself reached via symlink (/tmp style)", () => {
+  // tmpdir() on macOS is /var/... which realpaths to /private/var/... — the
+  // gate must compare realpaths on both sides, not mix lexical and real.
+  const dir = tmpWs();
+  try {
+    assert.equal(isExternalPath(dir, "inner.txt"), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("mixed-ending file: byte-exact edit succeeds and preserves both styles", async () => {
+  const dir = tmpWs();
+  try {
+    const t = await tools(dir);
+    writeFileSync(join(dir, "m.txt"), "a\r\nb\r\nc\nd\r\n");
+    await t.executors.read({ filePath: "m.txt" });
+    const r = await t.executors.edit({ filePath: "m.txt", oldString: "b\r\n", newString: "B\r\n" });
+    assert.equal(r.ok, true);
+    // untouched minority-LF line `c\n` must stay LF — no homogenization
+    assert.equal(readFileSync(join(dir, "m.txt"), "utf8"), "a\r\nB\r\nc\nd\r\n");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("mixed-ending file: non-exact oldString is refused, not homogenized", async () => {
+  const dir = tmpWs();
+  try {
+    const t = await tools(dir);
+    writeFileSync(join(dir, "m.txt"), "alpha\r\nbeta\r\ngamma\ndelta\r\n");
+    await t.executors.read({ filePath: "m.txt" });
+    // LF-normalized oldString does not match raw bytes → refuse (was: silent homogenize)
+    const r = await t.executors.edit({ filePath: "m.txt", oldString: "beta\ngamma\n", newString: "X\n" });
+    assert.equal(r.ok, false);
+    assert.match(r.modelText, /mixes CRLF and LF/);
+    assert.equal(readFileSync(join(dir, "m.txt"), "utf8"), "alpha\r\nbeta\r\ngamma\ndelta\r\n", "file untouched");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("external acceptForSession is remembered — second access does not re-prompt", async () => {
+  const dir = tmpWs();
+  const outside = mkdtempSync(join(tmpdir(), "edit-safety-out2-"));
+  try {
+    const t = await tools(dir);
+    let prompts = 0;
+    const runCtx = { requestApproval: async () => { prompts += 1; return "acceptForSession"; } };
+    const target = join(outside, "x.txt");
+    const r1 = await t.executors.write({ filePath: target, content: "one\n" }, runCtx);
+    const r2 = await t.executors.write({ filePath: target, content: "two\n" }, runCtx);
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true);
+    assert.equal(prompts, 1, "second access must reuse the session approval");
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});

@@ -27,6 +27,21 @@ const SUBCOMMAND_TOOLS = new Set([
   "systemctl", "terraform", "gcloud", "aws", "deno", "rustup",
 ]);
 
+// Commands whose danger lives in their ARGUMENTS, so a bare-name signature is
+// meaningless as a safety boundary: approving `rm tmp/x` must never
+// auto-approve `rm -rf ~`. These never produce a signature — every invocation
+// is approved individually. (These approvals gate the UNSANDBOXED rerun after
+// a sandbox denial, so the stakes are real.)
+const NEVER_REMEMBER = new Set([
+  "rm", "rmdir", "unlink", "shred", "srm",
+  "mv", "cp", "dd", "truncate", "ln",
+  "chmod", "chown", "chgrp", "chflags",
+  "find", "xargs", "rsync",
+  "kill", "killall", "pkill",
+  "mkfs", "diskutil", "fdisk", "launchctl", "shutdown", "reboot",
+  "sudo", "su", "doas", "env", "nice", "nohup", "time", "command", "exec", "eval", "sh", "bash", "zsh",
+]);
+
 /**
  * Normalize a shell command to an approval signature. Returns "" for an empty or
  * unparseable command (which never matches a saved rule).
@@ -41,6 +56,7 @@ export function ruleSignature(command) {
   const isFlag = (t) => t.startsWith("-");
   const name = tokens.find((t) => !isFlag(t));
   if (!name) return "";
+  if (NEVER_REMEMBER.has(name)) return ""; // argument-dangerous: approve each invocation
   if (!SUBCOMMAND_TOOLS.has(name)) return name;
   // Keep the first non-flag token after the command as the subcommand.
   const rest = tokens.slice(tokens.indexOf(name) + 1).filter((t) => !isFlag(t));
