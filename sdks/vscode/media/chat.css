@@ -1149,6 +1149,37 @@ details.reasoning.live summary {
   animation: shimmer 1.6s linear infinite;
 }
 
+/* ---------- verb groups (folded runs of same-tool cards) ---------- */
+
+details.tool-group {
+  margin: 1px 0;
+}
+
+details.tool-group > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--fg-secondary);
+  font-family: var(--vscode-editor-font-family);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+details.tool-group > summary::before {
+  content: "\25B8 ";
+}
+
+details.tool-group[open] > summary::before {
+  content: "\25BE ";
+}
+
+details.tool-group > summary:hover {
+  color: var(--fg);
+}
+
+details.tool-group > .line.tool {
+  margin: 2px 0 2px 14px;
+}
+
 /* ---------- narrow-panel resilience ----------
    VS Code side panels can be dragged very narrow. Keep the layout from
    overflowing horizontally: never let the body scroll sideways, let flex

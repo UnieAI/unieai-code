@@ -541,6 +541,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           // Read-only rewind points for the /rewind overlay (agent-core only).
           this.post({ type: "checkpoints", checkpoints: this.agentCore?.describeCheckpoints() ?? [] })
           break
+        case "rewindPreview": {
+          const idx = Number(message.index)
+          const p = await (this.agentCore?.previewRewind(idx) ?? Promise.resolve(null))
+          this.post({ type: "rewindPreview", index: idx, files: p?.files ?? null })
+          break
+        }
+        case "rewindApply": {
+          // Only reachable from the preview card's confirm button.
+          const idx = Number(message.index)
+          const r = await (this.agentCore?.applyRewind(idx) ?? Promise.resolve(null))
+          this.post({ type: "rewindDone", index: idx, restored: r?.restored ?? null, deleted: r?.deleted ?? null })
+          break
+        }
         case "listFiles": {
           // Workspace file list for @-mention autocomplete (relative paths).
           const root = vscode.workspace.workspaceFolders?.[0]?.uri

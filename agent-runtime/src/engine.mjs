@@ -25,7 +25,7 @@ import {
 import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
-import { initShadow, snapshotWorkspaceAsync, listChangedPaths } from "./snapshot.mjs";
+import { initShadow, snapshotWorkspaceAsync, listChangedPaths, previewRestore, restoreToTree } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
 import { fingerprintGaps, isRepeatedStall } from "../../third_party/unieai-agent-core/src/gap-fingerprint.mjs";
@@ -463,6 +463,45 @@ export function createEngine({
         out.push({ index: i, at: cp.at || null, messageIndex: cp.messageIndex, files });
       }
       return out;
+    },
+
+    /**
+     * Preview a rewind to checkpoint `index`: the files that would change,
+     * WITHOUT touching anything. Serialized on the snapshot chain so it never
+     * races the background checkpointer for the shadow index.
+     */
+    previewRewind(index) {
+      const cp = checkpoints[index];
+      if (!cp || !shadowReady) return Promise.resolve(null);
+      const run = snapshotChain.then(() => {
+        const p = previewRestore(shadowGitDir, workspace, cp.tree);
+        return p ? { index, files: p.files } : null;
+      });
+      snapshotChain = run.catch(() => {});
+      return run;
+    },
+
+    /**
+     * Apply a rewind to checkpoint `index` after the user confirmed the
+     * preview. The current state is snapshotted first and pushed as a new
+     * checkpoint (the undo point), so a rewind is itself rewindable. Refused
+     * while a turn is running — files are never changed under a live turn.
+     */
+    applyRewind(index) {
+      const cp = checkpoints[index];
+      if (!cp || !shadowReady) return Promise.resolve(null);
+      if (turnCoordinator.isBusy(sessionId)) return Promise.resolve(null);
+      const run = snapshotChain.then(() => {
+        const r = restoreToTree(shadowGitDir, workspace, cp.tree);
+        if (!r) return null;
+        if (checkpoints[checkpoints.length - 1]?.tree !== r.undoTree) {
+          checkpoints.push({ messageIndex: messages.length, tree: r.undoTree, at: Date.now() });
+        }
+        saveSession({ id: sessionId, messages, model: activeModel, cwd: workspace, summary: rollingSummary, contextEpoch, checkpoints, plan: goalState.plan });
+        return { index, restored: r.restored, deleted: r.deleted };
+      });
+      snapshotChain = run.catch(() => {});
+      return run;
     },
 
     /** Flip the fetch tool on/off for subsequent turns, keeping the session. */

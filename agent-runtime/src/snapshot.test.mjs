@@ -71,3 +71,48 @@ test("default excludes protect a workspace WITHOUT .gitignore from snapshot blow
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("restoreToTree round-trips: modify+add+delete, restore, then undo forward", { skip: !gitAvailable }, async () => {
+  const { previewRestore, restoreToTree } = await import("./snapshot.mjs");
+  const { readFileSync, existsSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "snap-restore-"));
+  const workspace = join(root, "ws");
+  const shadow = join(root, "shadow.git");
+  mkdirSync(workspace, { recursive: true });
+  try {
+    assert.equal(initShadow(shadow, workspace), true);
+    writeFileSync(join(workspace, "keep.txt"), "unchanged\n");
+    writeFileSync(join(workspace, "mod.txt"), "v1\n");
+    writeFileSync(join(workspace, "gone.txt"), "will be deleted\n");
+    const t1 = snapshotWorkspace(shadow, workspace);
+    assert.ok(t1);
+
+    // mutate: modify, add, delete
+    writeFileSync(join(workspace, "mod.txt"), "v2\n");
+    writeFileSync(join(workspace, "new.txt"), "brand new\n");
+    rmSync(join(workspace, "gone.txt"));
+
+    // preview lists exactly the three differing paths, touches nothing
+    const p = previewRestore(shadow, workspace, t1);
+    assert.ok(p && p.current);
+    assert.deepEqual(p.files.map((f) => f.path).sort(), ["gone.txt", "mod.txt", "new.txt"]);
+    assert.equal(readFileSync(join(workspace, "mod.txt"), "utf8"), "v2\n", "preview must not modify");
+
+    // destructive restore back to t1
+    const r = restoreToTree(shadow, workspace, t1);
+    assert.ok(r);
+    assert.equal(readFileSync(join(workspace, "mod.txt"), "utf8"), "v1\n");
+    assert.equal(readFileSync(join(workspace, "gone.txt"), "utf8"), "will be deleted\n");
+    assert.equal(existsSync(join(workspace, "new.txt")), false, "added file removed");
+    assert.equal(readFileSync(join(workspace, "keep.txt"), "utf8"), "unchanged\n");
+
+    // the undo point restores the mutated state right back
+    const undo = restoreToTree(shadow, workspace, r.undoTree);
+    assert.ok(undo);
+    assert.equal(readFileSync(join(workspace, "mod.txt"), "utf8"), "v2\n");
+    assert.equal(existsSync(join(workspace, "gone.txt")), false);
+    assert.equal(readFileSync(join(workspace, "new.txt"), "utf8"), "brand new\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

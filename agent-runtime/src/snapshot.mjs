@@ -16,8 +16,8 @@
  * every function fails soft (null / empty) rather than throwing.
  */
 import { execFile, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 // Always excluded from snapshots, on top of the workspace's own .gitignore —
 // a workspace WITHOUT a .gitignore would otherwise snapshot node_modules or
@@ -153,6 +153,69 @@ export function readFileAt(shadowDir, workspace, tree, path) {
   try {
     const r = git(shadowDir, workspace, ["cat-file", "-p", `${tree}:${path}`]);
     return r.status === 0 ? r.stdout : null;
+  } catch {
+    return null;
+  }
+}
+
+/** git call returning raw bytes (no utf8 decode) — for binary-safe cat-file. */
+function gitRaw(shadowDir, workspace, args) {
+  return spawnSync("git", args, {
+    cwd: workspace,
+    maxBuffer: 256 * 1024 * 1024,
+    env: {
+      ...process.env,
+      GIT_DIR: shadowDir,
+      GIT_WORK_TREE: workspace,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    },
+  });
+}
+
+/**
+ * Snapshot the CURRENT work-tree and return both its tree hash and the list of
+ * paths that differ from `targetTree` — the exact preview a restore
+ * confirmation shows. Read-only.
+ */
+export function previewRestore(shadowDir, workspace, targetTree) {
+  const current = snapshotWorkspace(shadowDir, workspace);
+  if (!current) return null;
+  return { current, files: listChangedPaths(shadowDir, workspace, current, targetTree) };
+}
+
+/**
+ * The DESTRUCTIVE apply: make the work-tree match `targetTree`. Always
+ * snapshots the current state FIRST and returns it as `undoTree`, so the
+ * restore itself is revertable. Applies per-file (binary-safe cat-file bytes;
+ * deletions removed), so the user's own untouched files are never rewritten.
+ * Returns { undoTree, restored, deleted } or null on failure.
+ */
+export function restoreToTree(shadowDir, workspace, targetTree) {
+  try {
+    const preview = previewRestore(shadowDir, workspace, targetTree);
+    if (!preview) return null;
+    const restored = [];
+    const deleted = [];
+    for (const { status, path } of preview.files) {
+      const abs = join(workspace, path);
+      if (status === "D") {
+        // present now, absent in target → delete
+        try {
+          rmSync(abs);
+          deleted.push(path);
+        } catch { /* best-effort per file */ }
+      } else {
+        const blob = gitRaw(shadowDir, workspace, ["cat-file", "-p", `${targetTree}:${path}`]);
+        if (blob.status === 0) {
+          mkdirSync(dirname(abs), { recursive: true });
+          writeFileSync(abs, blob.stdout); // Buffer — binary-safe
+          restored.push(path);
+        }
+      }
+    }
+    return { undoTree: preview.current, restored, deleted };
   } catch {
     return null;
   }

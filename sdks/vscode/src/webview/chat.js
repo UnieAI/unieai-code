@@ -97,6 +97,13 @@ const I18N = {
     rewindTitle: "回捲點",
     rewindEmpty: "尚無回捲點（改過檔案的回合才會建立快照）",
     rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 個檔案變更`,
+    rewindRestoreBtn: "還原到此點",
+    rewindPreviewTitle: (i) => `還原預覽 — 回捲點 #${i}`,
+    rewindNoChanges: "工作區與此回捲點相同，無需還原",
+    rewindConfirmBtn: "確認還原",
+    rewindCancelBtn: "取消",
+    rewindDone: (r, d) => `已還原 ${r} 個檔案、刪除 ${d} 個（還原前狀態已存為新回捲點，可再還原回來）`,
+    rewindFailed: "還原失敗（回合進行中或快照不可用）",
   },
   "zh-CN": {
     copy: "复制",
@@ -185,6 +192,13 @@ const I18N = {
     rewindTitle: "回卷点",
     rewindEmpty: "暂无回卷点（修改过文件的回合才会创建快照）",
     rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 个文件变更`,
+    rewindRestoreBtn: "还原到此点",
+    rewindPreviewTitle: (i) => `还原预览 — 回卷点 #${i}`,
+    rewindNoChanges: "工作区与此回卷点相同，无需还原",
+    rewindConfirmBtn: "确认还原",
+    rewindCancelBtn: "取消",
+    rewindDone: (r, d) => `已还原 ${r} 个文件、删除 ${d} 个（还原前状态已存为新回卷点，可再还原回来）`,
+    rewindFailed: "还原失败（回合进行中或快照不可用）",
   },
   en: {
     copy: "Copy",
@@ -275,6 +289,13 @@ const I18N = {
     rewindTitle: "Rewind points",
     rewindEmpty: "No rewind points yet (snapshots are taken on turns that changed files)",
     rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} file(s) changed`,
+    rewindRestoreBtn: "Restore to this point",
+    rewindPreviewTitle: (i) => `Restore preview — rewind point #${i}`,
+    rewindNoChanges: "Workspace already matches this point; nothing to restore",
+    rewindConfirmBtn: "Confirm restore",
+    rewindCancelBtn: "Cancel",
+    rewindDone: (r, d) => `Restored ${r} file(s), deleted ${d} (pre-restore state saved as a new rewind point)`,
+    rewindFailed: "Restore failed (a turn is running, or snapshots are unavailable)",
   },
   ja: {
     copy: "コピー",
@@ -365,6 +386,13 @@ const I18N = {
     rewindTitle: "巻き戻しポイント",
     rewindEmpty: "巻き戻しポイントはまだありません（ファイルを変更したターンで作成されます）",
     rewindPoint: (i, time, n) => `#${i} · ${time} · ${n} 件のファイル変更`,
+    rewindRestoreBtn: "この時点に復元",
+    rewindPreviewTitle: (i) => `復元プレビュー — ポイント #${i}`,
+    rewindNoChanges: "ワークスペースはこの時点と同一です。復元は不要です",
+    rewindConfirmBtn: "復元を実行",
+    rewindCancelBtn: "キャンセル",
+    rewindDone: (r, d) => `${r} 件を復元、${d} 件を削除しました（復元前の状態は新しいポイントとして保存済み）`,
+    rewindFailed: "復元に失敗しました（ターン実行中、またはスナップショット利用不可）",
   },
 }
 
@@ -691,6 +719,12 @@ function commandExecutionBlock(item) {
   const failed = status === "failed"
   const running = status === "in_progress"
   const output = item.aggregated_output || ""
+  // Tag for verb-group folding of consecutive same-tool cards.
+  const tagGroup = (el) => {
+    el.dataset.toolName = tool || "bash"
+    el.dataset.toolStatus = status || ""
+    return el
+  }
   const hasExit = item.exit_code !== undefined && item.exit_code !== null
   const nonZero = hasExit && item.exit_code !== 0
 
@@ -708,14 +742,14 @@ function commandExecutionBlock(item) {
     // Prefix the label with a file glyph.
     const glyph = el.querySelector(".tool-glyph")
     if (glyph && !running && !failed) glyph.textContent = FILE_TOOL_GLYPH[tool] || "•"
-    return el
+    return tagGroup(el)
   }
 
   // bash / shell (and app-server command_execution, which has no tool_name but
   // carries a real command line) — the classic "$ cmd" card.
   const isBash = !tool || tool === "bash" || tool === "shell"
   if (isBash) {
-    return toolBlock({
+    return tagGroup(toolBlock({
       summary: `$ ${item.command || ""}`.trimEnd(),
       body: output,
       status,
@@ -723,17 +757,17 @@ function commandExecutionBlock(item) {
       mono: true,
       badge: nonZero ? `exit ${item.exit_code}` : "",
       expanded: failed || nonZero,
-    })
+    }))
   }
 
   // Any other named tool.
-  return toolBlock({
+  return tagGroup(toolBlock({
     summary: L.tool(item.command || tool),
     body: output,
     status,
     failed,
     expanded: failed,
-  })
+  }))
 }
 
 function firstLine(text) {
@@ -752,6 +786,64 @@ function filePathFromCommand(command, tool) {
   } catch {
     return rest.length > 80 ? rest.slice(0, 80) + "…" : rest
   }
+}
+
+/** Fold runs of ≥3 consecutive COMPLETED same-tool cards into one expandable
+ * group line ("read ×5") — grok's scrollback verb-group idea, panel edition.
+ * Running/failed cards never fold; adjacent new cards merge into an existing
+ * group. Element identity is preserved (cards MOVE into the group), so
+ * itemEls/streams references stay valid. */
+function regroupTools() {
+  const kids = [...messagesEl.children]
+  let runStart = -1
+  let runTool = ""
+  const isFoldable = (el) =>
+    el.classList &&
+    el.classList.contains("line") &&
+    el.classList.contains("tool") &&
+    !el.classList.contains("failed") &&
+    !el.classList.contains("running") &&
+    el.dataset.toolStatus === "completed" &&
+    el.dataset.toolName
+  const flush = (endIdx) => {
+    if (runStart < 0) return
+    const cards = kids.slice(runStart, endIdx)
+    const prev = kids[runStart - 1]
+    const intoExisting =
+      prev && prev.classList && prev.classList.contains("tool-group") && prev.dataset.toolName === runTool
+    if (!intoExisting && cards.length < 3) return
+    let group = intoExisting ? prev : null
+    if (!group) {
+      group = document.createElement("details")
+      group.className = "tool-group"
+      group.dataset.toolName = runTool
+      const sum = document.createElement("summary")
+      sum.className = "tool-group-summary"
+      group.appendChild(sum)
+      messagesEl.insertBefore(group, cards[0])
+    }
+    for (const c of cards) group.appendChild(c)
+    const n = group.querySelectorAll(".line.tool").length
+    group.querySelector("summary").textContent = `${runTool} ×${n}`
+  }
+  for (let i = 0; i < kids.length; i++) {
+    const el = kids[i]
+    if (isFoldable(el)) {
+      const t = el.dataset.toolName
+      if (runStart === -1) {
+        runStart = i
+        runTool = t
+      } else if (t !== runTool) {
+        flush(i)
+        runStart = i
+        runTool = t
+      }
+    } else {
+      flush(i)
+      runStart = -1
+    }
+  }
+  flush(kids.length)
 }
 
 function buildItemEl(item) {
@@ -1007,6 +1099,11 @@ function renderItem(item) {
   }
   if (key) {
     itemEls.set(key, el)
+  }
+  // Fold finished tool-card runs (grok verb groups). Only when a card settles;
+  // running cards stay visible at top level.
+  if (item.type === "command_execution" && item.status && item.status !== "in_progress") {
+    regroupTools()
   }
   pinWorking()
   scrollToBottom()
@@ -1997,7 +2094,14 @@ window.addEventListener("message", (e) => {
           const time = cp.at ? new Date(cp.at).toLocaleTimeString() : "—"
           const head = document.createElement("span")
           head.textContent = L.rewindPoint(cp.index, time, (cp.files || []).length)
-          row.appendChild(head)
+          const restore = document.createElement("button")
+          restore.className = "approval-btn"
+          restore.textContent = L.rewindRestoreBtn
+          restore.addEventListener("click", () => {
+            restore.disabled = true
+            vscode.postMessage({ type: "rewindPreview", index: cp.index })
+          })
+          row.append(head, restore)
           list.appendChild(row)
           for (const f of (cp.files || []).slice(0, 8)) {
             const fr = document.createElement("div")
@@ -2011,6 +2115,60 @@ window.addEventListener("message", (e) => {
       appendLine(el)
       break
     }
+    case "rewindPreview": {
+      // Confirmation card: exactly what a restore would touch, apply-on-confirm.
+      const files = message.files
+      const el = document.createElement("div")
+      el.className = "line approval"
+      const title = document.createElement("div")
+      title.className = "approval-title"
+      title.textContent = L.rewindPreviewTitle(message.index)
+      el.appendChild(title)
+      if (!Array.isArray(files)) {
+        const note = document.createElement("div")
+        note.className = "approval-reason"
+        note.textContent = L.rewindFailed
+        el.appendChild(note)
+      } else if (!files.length) {
+        const note = document.createElement("div")
+        note.className = "approval-reason"
+        note.textContent = L.rewindNoChanges
+        el.appendChild(note)
+      } else {
+        const detail = document.createElement("div")
+        detail.className = "approval-detail"
+        for (const f of files) {
+          const line = document.createElement("div")
+          line.textContent = `${f.status} ${f.path}`
+          detail.appendChild(line)
+        }
+        el.appendChild(detail)
+        const actions = document.createElement("div")
+        actions.className = "approval-actions"
+        const confirm = document.createElement("button")
+        confirm.className = "approval-btn danger"
+        confirm.textContent = L.rewindConfirmBtn
+        confirm.addEventListener("click", () => {
+          el.querySelectorAll("button").forEach((b) => (b.disabled = true))
+          vscode.postMessage({ type: "rewindApply", index: message.index })
+        })
+        const cancel = document.createElement("button")
+        cancel.className = "approval-btn"
+        cancel.textContent = L.rewindCancelBtn
+        cancel.addEventListener("click", () => el.remove())
+        actions.append(confirm, cancel)
+        el.appendChild(actions)
+      }
+      appendLine(el)
+      break
+    }
+    case "rewindDone":
+      metaLine(
+        Array.isArray(message.restored)
+          ? L.rewindDone(message.restored.length, (message.deleted || []).length)
+          : L.rewindFailed,
+      )
+      break
     case "sessionLoaded": {
       messagesEl.innerHTML = ""
       itemEls.clear()

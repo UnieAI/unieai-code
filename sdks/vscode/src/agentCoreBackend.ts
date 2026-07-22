@@ -201,6 +201,16 @@ export class AgentCoreBackend {
     return this.engine?.describeCheckpoints() ?? []
   }
 
+  /** Preview what a rewind to checkpoint `index` would change (read-only). */
+  previewRewind(index: number): Promise<{ index: number; files: Array<{ path: string; status: string }> } | null> {
+    return this.engine?.previewRewind(index) ?? Promise.resolve(null)
+  }
+
+  /** Apply a user-confirmed rewind; the pre-restore state becomes an undo point. */
+  applyRewind(index: number): Promise<{ index: number; restored: string[]; deleted: string[] } | null> {
+    return this.engine?.applyRewind(index) ?? Promise.resolve(null)
+  }
+
   /** Set goal mode on the live engine: false | "review" (background) | "gate" (blocking). */
   setGoalMode(value: false | "review" | "gate"): void {
     this.goalMode = value
