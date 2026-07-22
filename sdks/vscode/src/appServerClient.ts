@@ -35,6 +35,9 @@ export class AppServerClient {
     })
     this.child = child
 
+    // The writable check in write() races the server dying; an EPIPE on stdin
+    // with no listener would crash the extension host.
+    child.stdin.on("error", () => {})
     child.stdout.setEncoding("utf8")
     child.stdout.on("data", (chunk: string) => this.onData(chunk))
     child.stderr.setEncoding("utf8")

@@ -163,6 +163,21 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private agentCoreApprovals = new Map<string, (d: Json) => void>()
   private agentCoreQuestions = new Map<string, (answer: string | null) => void>()
 
+  /** Settle every pending agent-core approval/question prompt. Without this, a
+   * new-chat/interrupt/panel-reset that removes the cards leaves the engine
+   * awaiting a reply that can never arrive — a wedged turn. Decline/dismiss is
+   * the safe default. */
+  private settleAgentCorePrompts() {
+    for (const [id, resolve] of this.agentCoreApprovals) {
+      this.agentCoreApprovals.delete(id)
+      resolve("decline")
+    }
+    for (const [id, resolve] of this.agentCoreQuestions) {
+      this.agentCoreQuestions.delete(id)
+      resolve(null)
+    }
+  }
+
   dispose() {
     this.appServer?.dispose()
     this.child?.kill("SIGTERM")
@@ -170,6 +185,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(view: vscode.WebviewView) {
     this.view = view
+    view.onDidDispose(() => {
+      if (this.view === view) {
+        this.view = undefined
+      }
+    })
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
@@ -279,7 +299,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           const rel = String(message.path || "")
           if (rel) {
             const root = vscode.workspace.workspaceFolders?.[0]?.uri
-            const target = root ? vscode.Uri.joinPath(root, rel) : vscode.Uri.file(rel)
+            // Citations/tools may emit absolute paths — joinPath would mangle them.
+            const target = path.isAbsolute(rel) || !root ? vscode.Uri.file(rel) : vscode.Uri.joinPath(root, rel)
             vscode.window.showTextDocument(target, { preview: true }).then(undefined, () => {
               vscode.window.showWarningMessage(`無法開啟 ${rel}`)
             })
@@ -301,6 +322,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.threadId = undefined
     this.threadSettings = undefined
     this.pendingApprovals.clear()
+    this.settleAgentCorePrompts()
     if (this.engineChoice() === "agent-core") {
       this.agentCore?.newChat()
     }
@@ -548,6 +570,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         if (text) items.push({ role: m.role === "user" ? "user" : "agent", text })
       }
     }
+    // Stop any in-flight turn (and settle its prompts) before swapping the
+    // session, so the old engine can't keep streaming into the new transcript.
+    this.stopTurn()
     this.ensureAgentCore().resume(safe)
     this.post({ type: "sessionLoaded", items })
   }
@@ -618,11 +643,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private post(message: unknown) {
-    this.view?.webview.postMessage(message)
+    // A disposed webview throws on postMessage; stream callbacks (child stdout,
+    // engine events) can fire after disposal, so swallow rather than crash the
+    // extension host.
+    try {
+      this.view?.webview.postMessage(message)
+    } catch {
+      /* view disposed mid-stream */
+    }
   }
 
   private stopTurn() {
     if (this.engineChoice() === "agent-core" && this.agentCore) {
+      // Unblock a turn parked on an approval/question card before aborting —
+      // the loop only observes the abort signal between steps, so a pending
+      // prompt would otherwise keep the turn wedged forever.
+      this.settleAgentCorePrompts()
       this.agentCore.interrupt()
       return
     }
@@ -1195,6 +1231,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "running", value: false })
     })
 
+    // Spawn failures (ENOENT) surface asynchronously; the pending stdin write
+    // then errors (EPIPE), which is fatal without a listener. The 'error'
+    // handler above already reports the underlying failure to the user.
+    child.stdin.on("error", () => {})
     child.stdin.write(prompt)
     child.stdin.end()
 

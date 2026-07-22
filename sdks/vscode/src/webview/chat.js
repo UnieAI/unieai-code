@@ -715,14 +715,14 @@ function ensureToolOutput(itemId) {
 // Token deltas arrive far faster than the display refreshes; applying each one
 // synchronously (append + auto-scroll reflow) is what makes streaming feel
 // janky. Buffered text is concatenated and flushed on the next frame.
-const pendingDeltas = new Map() // "kind itemId" -> accumulated text
+const pendingDeltas = new Map() // "<kind>\u0000<itemId>" -> accumulated text
 let deltaFlushScheduled = false
 
 function applyDelta(kind, itemId, text) {
   if (!text) {
     return
   }
-  const key = `${kind} ${itemId}`
+  const key = `${kind}\u0000${itemId}`
   pendingDeltas.set(key, (pendingDeltas.get(key) || "") + text)
   if (deltaFlushScheduled) {
     return
@@ -733,7 +733,7 @@ function applyDelta(kind, itemId, text) {
     const batch = [...pendingDeltas]
     pendingDeltas.clear()
     for (const [k, buffered] of batch) {
-      const sep = k.indexOf(" ")
+      const sep = k.indexOf("\u0000")
       applyDeltaNow(k.slice(0, sep), k.slice(sep + 1), buffered)
     }
     pinWorking()
@@ -964,6 +964,13 @@ function setRunning(on) {
     workingTimer = null
     workingEl.remove()
     workingEl = null
+  }
+  if (!on) {
+    // Settle any reasoning block still in its live-shimmer state — agent-core
+    // reasoning items never get a final upsert, so the turn's end is the cue.
+    for (const d of messagesEl.querySelectorAll("details.reasoning.live")) {
+      d.classList.remove("live")
+    }
   }
   // While a turn runs, Enter / this button STEERS (folds text into the running
   // turn); the separate stop button interrupts.
@@ -1356,9 +1363,15 @@ window.addEventListener("message", (e) => {
       break
     case "itemUpsert": {
       // Completed items re-render fully (markdown, think blocks); drop any
-      // streaming placeholder for the same item first.
+      // streaming placeholder for the same item first — including deltas still
+      // buffered for it (rAF batch), which would otherwise flush AFTER the
+      // re-render and duplicate the tail into a fresh stray element.
       streams.delete(streamKey(message.item.id))
       streams.delete(streamKey(message.item.id) + ":r")
+      streams.delete(streamKey(message.item.id) + ":plan")
+      for (const kind of ["agent", "reasoning", "cmdOutput", "plan"]) {
+        pendingDeltas.delete(`${kind}\u0000${message.item.id}`)
+      }
       renderItem(message.item)
       break
     }
@@ -1375,12 +1388,18 @@ window.addEventListener("message", (e) => {
           el.classList.add("delivered")
         } else {
           // No turn was in flight (it just finished, or app-server engine has
-          // no steer seam) — mark the line so the user knows it didn't land.
+          // no steer seam) — mark the line and hand the text back to the
+          // composer so one Enter resends it as a normal message.
           el.classList.add("undelivered")
           const note = document.createElement("span")
           note.className = "steer-note"
-          note.textContent = "（未送達：沒有進行中的回合）"
+          note.textContent = "（未送達：已放回輸入框，Enter 直接送出）"
           el.appendChild(note)
+          const original = el.querySelector(".steer-text")?.textContent || ""
+          if (original && !inputEl.value.trim()) {
+            inputEl.value = original
+            inputEl.focus()
+          }
         }
       }
       break

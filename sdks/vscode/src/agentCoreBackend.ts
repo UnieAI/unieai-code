@@ -38,6 +38,10 @@ export class AgentCoreBackend {
   // to the toggle between turns has to rebuild the engine, because the toolset
   // is assembled once when the engine is created.
   private webAccess = false
+  // Command line shown on a tool card, cached from the started event: the
+  // completed/failed event carries no args_preview, and rebuilding the card
+  // from it alone would degrade "$ git status" to "$ bash".
+  private toolCommands = new Map<string, string>()
 
   private get agentItemId(): string {
     return `agent-${this.blockIndex}`
@@ -75,7 +79,11 @@ export class AgentCoreBackend {
 
   /** (Re)create the engine for a model / resumed session. */
   private ensureEngine(model?: string, resume?: string): void {
-    if (this.engine && !model && !resume) {
+    // Keep the live engine (and with it the whole conversation history) unless
+    // the caller is resuming another session or actually CHANGING the model.
+    // The webview sends the current model on every send, so treating any
+    // truthy model as "rebuild" would discard the session each turn.
+    if (this.engine && !resume && (!model || model === this.engine.model)) {
       return
     }
     this.engine = createEngine({
@@ -121,6 +129,7 @@ export class AgentCoreBackend {
       // For bash the args preview IS the command line, so don't prefix "bash".
       // For file/other tools show "<tool> <arg>" (e.g. "read src/foo.ts").
       const command = tool === "bash" ? argsPreview || tool : `${tool} ${argsPreview}`.trim()
+      this.toolCommands.set(String(id), command)
       this.cb.post({
         type: "itemUpsert",
         item: {
@@ -136,13 +145,15 @@ export class AgentCoreBackend {
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {
       const failed = e.type === "tool_use_failed"
       const output = String(e.output_preview ?? e.result ?? e.error ?? "")
+      const command = this.toolCommands.get(String(id)) ?? tool
+      this.toolCommands.delete(String(id))
       this.cb.post({
         type: "itemUpsert",
         item: {
           id,
           type: "command_execution",
           tool_name: tool,
-          command: tool,
+          command,
           aggregated_output: output,
           status: failed ? "failed" : "completed",
         },
