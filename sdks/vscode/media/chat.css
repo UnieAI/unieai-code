@@ -226,6 +226,7 @@ button {
 
 #toolbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 2px;
   padding: 6px 8px 2px;
@@ -512,6 +513,7 @@ details.reasoning summary:hover { color: var(--fg); }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -519,9 +521,16 @@ details.reasoning summary:hover { color: var(--fg); }
 .composer-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   min-width: 0;
 }
+
+/* composer-left holds the mode/perm/web pills; let it take the row's slack and
+   its pills shrink so the send/stop cluster (composer-right) is never pushed
+   off-panel at narrow widths. */
+.composer-left { flex: 1 1 auto; }
+.composer-right { flex: 0 0 auto; }
 
 .pill {
   appearance: none;
@@ -533,9 +542,12 @@ details.reasoning summary:hover { color: var(--fg); }
   padding: 3px 8px;
   font-size: calc(var(--vscode-font-size) - 2px);
   cursor: pointer;
+  min-width: 0;
+  flex-shrink: 1;
   max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   transition: color 0.12s ease, border-color 0.12s ease;
 }
 
@@ -1134,4 +1146,34 @@ details.reasoning.live summary {
   background-clip: text;
   color: transparent;
   animation: shimmer 1.6s linear infinite;
+}
+
+/* ---------- narrow-panel resilience ----------
+   VS Code side panels can be dragged very narrow. Keep the layout from
+   overflowing horizontally: never let the body scroll sideways, let flex
+   children shrink, and compact the chrome on the tightest widths. */
+
+* { box-sizing: border-box; }
+
+html, body { max-width: 100%; overflow-x: hidden; }
+
+/* Flex items default to min-width:auto, which refuses to shrink below their
+   content and is the usual cause of sideways overflow. Let the scroll region
+   and the message column shrink instead. */
+#chat-view, #messages, .line, .md { min-width: 0; }
+
+/* Long unbroken tokens (URLs, paths) wrap instead of forcing width. */
+.md, .line { overflow-wrap: anywhere; }
+
+/* Wide, inherently-unwrappable content scrolls within its own box. */
+.tool-output, .approval-detail, .md pre, pre.diff { max-width: 100%; }
+
+@media (max-width: 340px) {
+  #messages { padding-left: 6px; padding-right: 6px; }
+  #composer { padding-left: 6px; padding-right: 6px; }
+  #toolbar { padding-left: 6px; padding-right: 6px; }
+  /* Tighter pills so the mode/perm/web/model row still fits. */
+  .pill { max-width: 108px; padding: 3px 6px; font-size: calc(var(--vscode-font-size) - 3px); }
+  #composer-row { gap: 5px; }
+  .composer-left, .composer-right { gap: 4px; }
 }
