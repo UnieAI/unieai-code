@@ -212,6 +212,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "setWebAccess":
           this.context.globalState.update("unieai-code.webAccess", Boolean(message.value))
           break
+        case "setGoalMode":
+          // Goal mode = agent-core completion contract (planner + skeptic
+          // verification + closing summary). agent-core engine only. Kept on
+          // the backend so it survives engine rebuilds and pre-send toggles.
+          this.ensureAgentCore().setGoalMode(Boolean(message.value))
+          break
         case "stop":
           this.stopTurn()
           break

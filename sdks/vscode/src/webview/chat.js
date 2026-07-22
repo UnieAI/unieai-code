@@ -28,6 +28,7 @@ let workingEl = null
 let workingTimer = null
 let workingStart = 0
 let running = false
+let goalMode = false
 let studioModelsUrl = "https://studio.unieai.com/models"
 
 // ---------- helpers ----------
@@ -1160,6 +1161,15 @@ const SLASH_COMMANDS = [
     },
   },
   { cmd: "/perm", desc: "切換權限（預設/唯讀/完全存取）", run: () => permEl.focus() },
+  {
+    cmd: "/goal",
+    desc: "切換目標模式：計畫＋完成驗證＋結案摘要（回合尾端多幾次模型呼叫）",
+    run: () => {
+      goalMode = !goalMode
+      vscode.postMessage({ type: "setGoalMode", value: goalMode })
+      metaLine(goalMode ? "目標模式：開 — 會產生任務清單、嚴格驗證完成度並附結案摘要" : "目標模式：關")
+    },
+  },
   { cmd: "/retry", desc: "重試上一回合", run: () => vscode.postMessage({ type: "retry" }) },
   { cmd: "/engine", desc: "切換引擎 (app-server / agent-core)", run: () => vscode.postMessage({ type: "openSetting", key: "unieai-code.engine" }) },
   { cmd: "/stop", desc: "中斷目前回合", run: () => vscode.postMessage({ type: "stop" }) },

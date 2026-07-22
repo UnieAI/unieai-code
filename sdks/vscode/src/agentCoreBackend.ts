@@ -103,6 +103,11 @@ export class AgentCoreBackend {
           text: d,
         }),
       onToolEvent: (e: Json) => this.mapToolEvent(e),
+      onSummary: (text: string) => {
+        // Closing summary from the goal-mode summarizer — surface as a meta
+        // line under the transcript.
+        this.cb.post({ type: "stderr", text: `結案摘要：${text}` })
+      },
       requestApproval: async ({ tool, action, detail }: Json) => {
         return this.cb.requestApproval({ tool, action, detail })
       },
@@ -176,9 +181,17 @@ export class AgentCoreBackend {
     this.ensureEngine(undefined, sessionId)
   }
 
+  /** Flip goal mode (completion verification) on the live engine. */
+  setGoalMode(value: boolean): void {
+    this.goalMode = value
+    this.engine?.setGoalMode(value)
+  }
+  private goalMode = false
+
   async send(text: string, model?: string, webAccess = false): Promise<void> {
     this.webAccess = webAccess
     this.ensureEngine(model)
+    this.engine?.setGoalMode(this.goalMode)
     // Apply the toggle without discarding the session: the engine rebuilds only
     // its toolset next turn. (ensureEngine already used this.webAccess for a
     // brand-new engine; this covers a flip on an existing one.)

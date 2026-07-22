@@ -451,6 +451,21 @@ export function createEngine({
       }
     },
 
+    /**
+     * Flip goal mode (the completion contract) for subsequent turns, keeping
+     * the session: planner checklist + skeptic verification + closing
+     * summarizer. Off by default — verification adds model calls after the
+     * answer, so it is a deliberate opt-in for "action" turns.
+     */
+    setGoalMode(value) {
+      expectsMutation = Boolean(value);
+    },
+
+    /** Whether goal mode (completion verification) is currently on. */
+    get goalMode() {
+      return expectsMutation;
+    },
+
     /** Run one user turn; resolves when the turn ends. */
     send(text, { abortSignal = null } = {}) {
       // Turns run one at a time per conversation; a send while another is in
