@@ -16,7 +16,12 @@
 //! the type + ranking live here, unit-tested in isolation. The one external type
 //! it borrows is crossterm's key model, already a `codex-tui` dependency, so a
 //! later wiring layer can build chords straight from real key events.
-#![allow(dead_code)]
+//!
+//! Live wiring so far: the Ctrl+P palette
+//! (`bottom_pane::command_palette_view`) builds a [`Registry`] from the slash
+//! commands and uses [`Registry::filter`] for ranking. The chord/binding and
+//! arg-picker halves are still awaiting their own wiring and keep targeted
+//! `#[allow(dead_code)]` markers.
 
 use std::fmt;
 
@@ -36,11 +41,13 @@ pub(crate) struct KeyChord {
 
 impl KeyChord {
     /// A chord with explicit modifiers.
+    #[allow(dead_code)] // deferred: key-dispatch wiring
     pub(crate) fn new(code: KeyCode, mods: KeyModifiers) -> Self {
         Self { code, mods }
     }
 
     /// A bare key with no modifiers (e.g. `Tab`, `Enter`).
+    #[allow(dead_code)] // deferred: key-dispatch wiring
     pub(crate) fn plain(code: KeyCode) -> Self {
         Self {
             code,
@@ -49,6 +56,7 @@ impl KeyChord {
     }
 
     /// A `Ctrl`+letter chord — the common palette / dispatch case.
+    #[allow(dead_code)] // deferred: key-dispatch wiring
     pub(crate) fn ctrl(c: char) -> Self {
         Self {
             code: KeyCode::Char(c.to_ascii_lowercase()),
@@ -118,6 +126,7 @@ impl Action {
     }
 
     /// Builder: attach fuzzy-search keywords.
+    #[allow(dead_code)] // deferred: synonym keywords for palette entries
     pub(crate) fn with_keywords<I, S>(mut self, keywords: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -128,12 +137,18 @@ impl Action {
     }
 
     /// Builder: attach a key binding.
+    #[allow(dead_code)] // deferred: shortcut hints / which-key wiring
     pub(crate) fn with_binding(mut self, chord: KeyChord) -> Self {
         self.binding = Some(chord);
         self
     }
 
     /// Builder: mark this action as needing an argument (arg-picker chain).
+    ///
+    /// The live palette decides arg handling from
+    /// `SlashCommand::supports_inline_args` at the dispatch site instead; this
+    /// flag remains for the deferred registry-consolidation step.
+    #[allow(dead_code)]
     pub(crate) fn needs_arg(mut self) -> Self {
         self.needs_arg = true;
         self
@@ -218,6 +233,7 @@ impl Registry {
     }
 
     /// All actions in insertion order.
+    #[allow(dead_code)] // deferred: shortcut-bar rendering
     pub(crate) fn actions(&self) -> &[Action] {
         &self.actions
     }
@@ -246,6 +262,7 @@ impl Registry {
 
     /// Resolve a key chord to the action bound to it, if any. First match in
     /// insertion order wins.
+    #[allow(dead_code)] // deferred: key-dispatch wiring
     pub(crate) fn lookup_binding(&self, chord: &KeyChord) -> Option<&Action> {
         self.actions
             .iter()
@@ -253,6 +270,7 @@ impl Registry {
     }
 
     /// Direct lookup by stable id.
+    #[allow(dead_code)] // deferred: registry-consolidation wiring
     pub(crate) fn by_id(&self, id: &str) -> Option<&Action> {
         self.actions.iter().find(|a| a.id == id)
     }

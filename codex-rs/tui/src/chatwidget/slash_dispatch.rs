@@ -52,6 +52,31 @@ impl ChatWidget {
         self.bottom_pane.record_pending_slash_command_history();
     }
 
+    /// Dispatch a Ctrl+P command-palette selection through the exact same code
+    /// path as the `/` popup.
+    ///
+    /// - No-arg builtins reuse [`Self::handle_slash_command_dispatch`], the
+    ///   handler for the popup's `InputResult::Command`.
+    /// - Service-tier commands reuse [`Self::handle_service_tier_command_dispatch`],
+    ///   the handler for `InputResult::ServiceTierCommand`.
+    /// - Builtins that take inline args are not executed; `/name ` is inserted
+    ///   into the composer (reopening the `/` popup), mirroring the popup's
+    ///   completion behavior so the user can type the arguments.
+    pub(crate) fn handle_command_palette_selection(&mut self, item: crate::bottom_pane::CommandItem) {
+        match item {
+            crate::bottom_pane::CommandItem::Builtin(cmd) if cmd.supports_inline_args() => {
+                self.bottom_pane.insert_str(&format!("/{} ", cmd.command()));
+                self.request_redraw();
+            }
+            crate::bottom_pane::CommandItem::Builtin(cmd) => {
+                self.handle_slash_command_dispatch(cmd);
+            }
+            crate::bottom_pane::CommandItem::ServiceTier(command) => {
+                self.handle_service_tier_command_dispatch(command);
+            }
+        }
+    }
+
     pub(super) fn handle_service_tier_command_dispatch(&mut self, command: ServiceTierCommand) {
         if self.active_side_conversation {
             self.add_error_message(format!(

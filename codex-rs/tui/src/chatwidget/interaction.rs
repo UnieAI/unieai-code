@@ -105,6 +105,18 @@ impl ChatWidget {
             _ => {}
         }
 
+        // Ctrl+P opens the fuzzy command palette, but only from the plain
+        // composer: any active modal view or composer popup keeps its own
+        // Ctrl+P behavior (move selection up / editor cursor up).
+        if key_event.kind == KeyEventKind::Press
+            && key_hint::ctrl(KeyCode::Char('p')).is_press(key_event)
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.bottom_pane.open_command_palette();
+            self.request_redraw();
+            return;
+        }
+
         if key_event.kind == KeyEventKind::Press
             && self.chat_keymap.edit_queued_message.is_pressed(key_event)
             && self.has_queued_follow_up_messages()

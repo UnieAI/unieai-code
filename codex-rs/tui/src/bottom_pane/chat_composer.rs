@@ -529,6 +529,12 @@ impl ChatComposer {
         )
     }
 
+    /// Commands for the Ctrl+P palette, built with the exact same availability
+    /// flags and filtering as this composer's `/` popup.
+    pub(crate) fn palette_command_items(&self) -> Vec<CommandItem> {
+        self.slash_input().command_popup("").palette_items()
+    }
+
     fn builtin_command_flags(&self) -> BuiltinCommandFlags {
         BuiltinCommandFlags {
             collaboration_modes_enabled: self.collaboration_modes_enabled,

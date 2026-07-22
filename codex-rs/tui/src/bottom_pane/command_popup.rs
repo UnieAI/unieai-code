@@ -197,6 +197,13 @@ impl CommandPopup {
         self.filtered().into_iter().map(|(c, _)| c).collect()
     }
 
+    /// Commands the Ctrl+P palette should list: the same availability-filtered
+    /// set the default `/` popup view shows (aliases hidden), in the same
+    /// presentation order.
+    pub(crate) fn palette_items(&self) -> Vec<CommandItem> {
+        self.filtered_items()
+    }
+
     fn rows_from_matches(
         &self,
         matches: Vec<(CommandItem, Option<Vec<usize>>)>,
@@ -253,7 +260,7 @@ impl CommandItem {
         }
     }
 
-    fn description(&self) -> &str {
+    pub(crate) fn description(&self) -> &str {
         match self {
             Self::Builtin(cmd) => cmd.description(),
             Self::ServiceTier(command) => &command.description,

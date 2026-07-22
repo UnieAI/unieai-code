@@ -97,7 +97,9 @@ pub(crate) struct MentionBinding {
 }
 mod chat_composer;
 mod chat_composer_history;
+mod command_palette_view;
 mod command_popup;
+pub(crate) use command_popup::CommandItem;
 pub(crate) mod custom_prompt_view;
 mod experimental_features_view;
 mod file_search_popup;
@@ -1370,6 +1372,17 @@ impl BottomPane {
 
     pub(crate) fn show_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.push_view(view);
+    }
+
+    /// Open the Ctrl+P command palette over the same slash-command set the
+    /// composer's `/` popup would show right now.
+    pub(crate) fn open_command_palette(&mut self) {
+        let view = command_palette_view::CommandPaletteView::new(
+            self.composer.palette_command_items(),
+            self.app_event_tx.clone(),
+        );
+        self.push_view(Box::new(view));
+        self.request_redraw();
     }
 
     /// Called when the agent requests user approval.

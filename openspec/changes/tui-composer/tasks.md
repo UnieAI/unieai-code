@@ -9,13 +9,27 @@
       → 同上，mode-stack + 可達鍵位推導落地於 `which_key.rs`。
 
 ## 2. 命令面板
-- [~] 2.1 把既有 action 收斂到單一 registry
-      → 僅落地 registry 型別 + 模糊排序核心（`action_registry.rs`：`Action{id,title,keywords,binding,needs_arg}`、
-        `Registry::{filter,lookup_binding,by_id}`、`fuzzy_score` 子序列排序、`KeyChord`（crossterm 鍵模型 + Display）），
-        10 tests。**未做**：真正把既有 codex action 收斂進 registry（高風險 live-path 重構，明確延後）。
-- [~] 2.2 模糊面板 + 快捷提示 + arg-picker 鏈
-      → 純資料層已備妥（`filter` 供模糊面板、`needs_arg` 供 arg-picker 判斷、`binding` 供快捷提示）；
-        面板 widget／arg-picker 鏈的實際 render 與輸入路徑串接延後（需 live TextArea/overlay 整合）。
+- [x] 2.1 把既有 action 收斂到單一 registry — **live-wired（slash commands）**
+      → registry 型別 + 模糊排序核心（`action_registry.rs`）已由 Ctrl+P 面板實際使用：
+        `bottom_pane/command_palette_view.rs` 以 `/` popup 的同一組 command 集合
+        （`CommandPopup::palette_items`，同 availability flags／alias／debug 過濾）建 `Registry`
+        （id=command name、title=description），`Registry::filter` 供模糊排名。
+        **仍延後**：非 slash 的既有 codex action（鍵位 dispatch、shortcut bar）收斂進 registry；
+        `KeyChord`/`lookup_binding`/`by_id` 等保留逐項 `#[allow(dead_code)]`。
+- [x] 2.2 模糊面板 + arg-picker 鏈 — **live-wired（Ctrl+P palette）**
+      → Ctrl+P（`chatwidget/interaction.rs`，僅在無 modal view／composer popup 時攔截）開啟
+        `CommandPaletteView`（bottom-pane view：輸入列 + 排名列表 + 選取高亮 + 捲動，
+        Up/Down/Ctrl+N 導覽、Enter 送出、Esc 關閉）。Dispatch 重用 `/` popup 的同一路徑：
+        `AppEvent::CommandPaletteSelection` → `ChatWidget::handle_command_palette_selection` →
+        `handle_slash_command_dispatch`／`handle_service_tier_command_dispatch`
+        （即 popup `InputResult::Command`／`ServiceTierCommand` 的同一 handler）；
+        arg-picker = 帶參數命令（`supports_inline_args`）不直接執行，插入 `/name ` 進 composer
+        （同 command_popup 補全行為，並重開 `/` popup 供輸入參數）。
+        10 unit tests + 1 insta render snapshot（`command_palette_mo`）。
+        **鍵位註記**：Ctrl+P 原為 composer editor `move_up` 的 Emacs 別名（Up 鍵仍在）；
+        Ctrl+K 因綁 kill-to-end-of-line（唯一綁定、有測試）不採用，故面板取 Ctrl+P，
+        僅遮蔽 plain composer 情境（popup／list 內的 Ctrl+P 導覽不受影響）。
+        **仍延後**：快捷提示（binding 顯示）、which-key／ghost／chip 的 live wiring。
 
 ## 3. composer 輔助
 - [x] 3.1 ghost 下一句（每幀從文字推導；Tab/Right 接受）— 預測用小模型
@@ -39,7 +53,8 @@
       發散隱藏、全打完隱藏、accept 合併、大小寫、非 ASCII 邊界）。
 - [x] 4.2 單元：chip range 位移、展開送出 — `composer_chip.rs` 11 tests（前後/內部位移、插入/刪除/取代、
       `shift_all` 保留+丟棄、多 chip 任意順序 expand）。
-- [ ] 4.3 snapshot：面板、which-key — **DEFERRED**：需 live widget/render（本輪為純核心邏輯，無 render）。
+- [~] 4.3 snapshot：面板、which-key — 面板已完成（insta `command_palette_mo`，filter 套用後 render）；
+      which-key snapshot 仍 **DEFERRED**（which-key 尚未 live wiring）。
 - [~] 4.4 openspec validate + archive — `openspec validate tui-composer --strict` pass；archive 待 orchestrator。
 
 ## Staging note

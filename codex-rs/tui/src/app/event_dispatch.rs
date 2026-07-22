@@ -64,6 +64,9 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::CommandPaletteSelection(item) => {
+                self.chat_widget.handle_command_palette_selection(item);
+            }
             AppEvent::OpenResumePicker => {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,

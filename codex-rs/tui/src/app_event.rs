@@ -42,6 +42,7 @@ use codex_utils_approval_presets::ApprovalPreset;
 use crate::app_command::AppCommand;
 use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
+use crate::bottom_pane::CommandItem;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
@@ -259,6 +260,14 @@ pub(crate) enum AppEvent {
     ClearUiAndSubmitUserMessage {
         text: String,
     },
+
+    /// A slash command was chosen in the Ctrl+P command palette.
+    ///
+    /// `ChatWidget` routes this through the exact same dispatch functions that
+    /// consume the `/` popup's `InputResult::Command` /
+    /// `InputResult::ServiceTierCommand`; inline-arg commands insert `/name `
+    /// into the composer instead, mirroring popup completion.
+    CommandPaletteSelection(CommandItem),
 
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
