@@ -113,6 +113,12 @@ export class AgentCoreBackend {
         // ended. Advisory: the user replies "繼續" to have them addressed.
         this.cb.post({ type: "stderr", text: `⚠ 背景驗證發現缺口（回「繼續」即可補完）：\n${finding}` })
       },
+      onPlan: (plan: { steps: Array<{ text: string; done: boolean }> }) => {
+        // Goal-mode planner checklist → render via the panel's plan card
+        // (checkbox-markdown text, same shape the plan delta path parses).
+        const md = (plan?.steps ?? []).map((s) => `- [${s.done ? "x" : " "}] ${s.text}`).join("\n")
+        if (md) this.cb.post({ type: "turnDelta", kind: "plan", itemKey: "goal-plan", text: md })
+      },
       requestApproval: async ({ tool, action, detail }: Json) => {
         return this.cb.requestApproval({ tool, action, detail })
       },

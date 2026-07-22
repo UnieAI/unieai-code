@@ -1231,9 +1231,90 @@ function runSlash(candidate) {
   candidate.run()
 }
 
+// ---------- @-file mentions (opencode-style) ----------
+// Typing "@partial" pops a workspace-file picker; Enter/Tab inserts the
+// relative path. The file list is fetched once per panel session, lazily.
+
+let workspaceFiles = null // null = not fetched; [] = fetched (possibly empty)
+let mentionSelected = 0
+
+/** The trailing "@query" token before the caret, or null. */
+function mentionQuery() {
+  const upToCaret = inputEl.value.slice(0, inputEl.selectionStart ?? inputEl.value.length)
+  const m = upToCaret.match(/(^|[\s([{'"`])@([\w./~-]*)$/)
+  return m ? m[2] : null
+}
+
+function mentionCandidates() {
+  const q = mentionQuery()
+  if (q === null || !Array.isArray(workspaceFiles)) {
+    return []
+  }
+  const needle = q.toLowerCase()
+  const scored = []
+  for (const f of workspaceFiles) {
+    const lower = f.toLowerCase()
+    const idx = lower.indexOf(needle)
+    if (needle && idx === -1) continue
+    // Rank basename hits above directory hits, shorter paths first.
+    const base = lower.slice(lower.lastIndexOf("/") + 1)
+    scored.push({ f, score: (base.includes(needle) ? 0 : 1000) + idx + f.length / 500 })
+  }
+  scored.sort((a, b) => a.score - b.score)
+  return scored.slice(0, 12).map((s) => s.f)
+}
+
+function renderMentionMenu() {
+  const candidates = mentionCandidates()
+  if (!candidates.length) {
+    if (mentionQuery() === null) return false
+    slashMenuEl.hidden = true
+    return true // in mention context, just nothing to show
+  }
+  mentionSelected = Math.min(mentionSelected, candidates.length - 1)
+  slashMenuEl.innerHTML = ""
+  candidates.forEach((file, index) => {
+    const el = document.createElement("div")
+    el.className = "slash-item" + (index === mentionSelected ? " selected" : "")
+    const cmd = document.createElement("span")
+    cmd.className = "slash-cmd"
+    cmd.textContent = file.slice(file.lastIndexOf("/") + 1)
+    const desc = document.createElement("span")
+    desc.className = "slash-desc"
+    desc.textContent = file
+    el.append(cmd, desc)
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault()
+      insertMention(file)
+    })
+    slashMenuEl.appendChild(el)
+  })
+  slashMenuEl.hidden = false
+  return true
+}
+
+function insertMention(file) {
+  const caret = inputEl.selectionStart ?? inputEl.value.length
+  const before = inputEl.value.slice(0, caret).replace(/@[\w./~-]*$/, file + " ")
+  inputEl.value = before + inputEl.value.slice(caret)
+  slashMenuEl.hidden = true
+  mentionSelected = 0
+  inputEl.focus()
+  inputEl.setSelectionRange(before.length, before.length)
+}
+
 inputEl.addEventListener("input", () => {
   slashSelected = 0
-  renderSlashMenu()
+  mentionSelected = 0
+  if (mentionQuery() !== null) {
+    if (workspaceFiles === null) {
+      workspaceFiles = [] // request once; menu fills when the reply lands
+      vscode.postMessage({ type: "listFiles" })
+    }
+    renderMentionMenu()
+  } else {
+    renderSlashMenu()
+  }
   // Auto-grow the composer with content (capped by CSS max-height).
   inputEl.style.height = "auto"
   inputEl.style.height = `${Math.min(inputEl.scrollHeight, 160)}px`
@@ -1259,6 +1340,32 @@ inputEl.addEventListener("keydown", (e) => {
   // IME composition: Enter confirms the composition, not the message.
   if (e.isComposing || e.keyCode === 229) {
     return
+  }
+  // @-mention menu takes precedence when a mention is being typed.
+  const mentions = mentionCandidates()
+  if (!slashMenuEl.hidden && mentions.length && mentionQuery() !== null) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      mentionSelected = (mentionSelected + 1) % mentions.length
+      renderMentionMenu()
+      return
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault()
+      mentionSelected = (mentionSelected - 1 + mentions.length) % mentions.length
+      renderMentionMenu()
+      return
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault()
+      insertMention(mentions[mentionSelected])
+      return
+    }
+    if (e.key === "Escape") {
+      e.preventDefault()
+      slashMenuEl.hidden = true
+      return
+    }
   }
   const candidates = slashCandidates()
   if (!slashMenuEl.hidden && candidates.length) {
@@ -1501,6 +1608,10 @@ window.addEventListener("message", (e) => {
       break
     case "sessions":
       renderSessions(message.sessions || [])
+      break
+    case "files":
+      workspaceFiles = Array.isArray(message.files) ? message.files : []
+      if (mentionQuery() !== null) renderMentionMenu()
       break
     case "sessionLoaded": {
       messagesEl.innerHTML = ""

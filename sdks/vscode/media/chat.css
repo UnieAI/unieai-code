@@ -262,20 +262,19 @@ button {
   line-height: 1.55;
 }
 
+/* User turns render as right-aligned bubbles so they read at a glance as
+   "mine", against the agent's full-width prose. */
 .line.user {
   color: var(--fg);
-  font-weight: 600;
-  padding-left: 14px;
-  position: relative;
+  font-weight: 500;
+  align-self: flex-end;
+  max-width: 86%;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  border-bottom-right-radius: 4px;
+  padding: 7px 12px;
   margin-top: 4px;
-}
-
-.line.user::before {
-  content: "\203A";
-  position: absolute;
-  left: 2px;
-  color: var(--fg-secondary);
-  font-weight: 700;
 }
 
 .line.agent {
@@ -622,15 +621,16 @@ details.reasoning summary:hover { color: var(--fg); }
 
 .line.user.steer {
   font-weight: 500;
-  padding-left: 0;
   margin-top: 8px;
   display: flex;
   gap: 8px;
   align-items: baseline;
-}
-
-.line.user.steer::before {
-  content: none;
+  /* steer reads as an inline interjection, not a bubble */
+  align-self: stretch;
+  max-width: none;
+  background: none;
+  border: none;
+  padding: 0;
 }
 
 .steer-tag {

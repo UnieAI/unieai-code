@@ -322,6 +322,21 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "listSessions":
           this.listSessions()
           break
+        case "listFiles": {
+          // Workspace file list for @-mention autocomplete (relative paths).
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri
+          if (!root) {
+            this.post({ type: "files", files: [] })
+            break
+          }
+          vscode.workspace
+            .findFiles("**/*", "{**/node_modules/**,**/.git/**,**/target/**,**/dist/**,**/build/**,**/.venv/**}", 3000)
+            .then((uris) => {
+              const files = uris.map((u) => path.relative(root.fsPath, u.fsPath)).sort()
+              this.post({ type: "files", files })
+            })
+          break
+        }
         case "loadSession":
           this.loadSession(String(message.path || ""))
           break

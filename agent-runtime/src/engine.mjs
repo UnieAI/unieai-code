@@ -282,6 +282,7 @@ export function createEngine({
   requestQuestion = null,
   onSummary = () => {},
   onReview = () => {},
+  onPlan = () => {},
   expectsMutation = false,
   webAccess = false
 } = {}) {
@@ -532,7 +533,13 @@ export function createEngine({
           .then(() =>
             callModelJson({ baseModelSlug: auxModel, callerKey: credentials.gatewayApiKey, system, user, temperature: 0, maxTokens: 400 })
           )
-          .then((raw) => { const p = parsePlan(raw); if (p) goalState.plan = p; })
+          .then((raw) => {
+            const p = parsePlan(raw);
+            if (p) {
+              goalState.plan = p;
+              onPlan(p); // surface the checklist to the host UI (advisory)
+            }
+          })
           .catch(() => {}); // fail-open: no plan → verifier omits the plan block
       }
       // One verifier per turn, shared by both goal modes: in "gate" mode the
