@@ -46,12 +46,6 @@ export class AgentCoreBackend {
   // completed/failed event carries no args_preview, and rebuilding the card
   // from it alone would degrade "$ git status" to "$ bash".
   private toolCommands = new Map<string, string>()
-  // Diff attached by the edit/write tool (file_diff timeline event, emitted
-  // just before tool_use_completed): cached per call so the completed card can
-  // render as a red/green file_change diff instead of a plain text card.
-  private pendingDiffs = new Map<string, { path: string; kind: string; diff: string }>()
-  // Line count from the read tool's file_read timeline event, per call.
-  private pendingReads = new Map<string, number>()
 
   private get agentItemId(): string {
     return `agent-${this.blockIndex}`
@@ -169,36 +163,36 @@ export class AgentCoreBackend {
         done: false,
       })
     } else if (e.type === "file_diff") {
-      // Emitted by edit/write just before their tool_use_completed.
-      if (e.path && typeof e.diff === "string") {
-        this.pendingDiffs.set(String(id), { path: String(e.path), kind: String(e.kind ?? "update"), diff: e.diff })
-      }
+      // The loop emits a tool's metadata.timelineEvent INSTEAD OF the generic
+      // tool_use_completed (Studio's sql_call frames rely on that), so this IS
+      // the completion signal for a successful edit/write. Render the
+      // red/green file card (same shape as app-server file_change items).
+      this.toolCommands.delete(String(id))
+      const changes =
+        e.path && typeof e.diff === "string"
+          ? [{ path: String(e.path), kind: String(e.kind ?? "update"), diff: e.diff }]
+          : []
+      this.cb.post({
+        type: "itemUpsert",
+        item: { id, type: "file_change", status: "completed", changes },
+        done: true,
+      })
     } else if (e.type === "file_read") {
-      // Line count for the read card's label ("read foo.ts · 120L").
-      if (Number.isFinite(e.lines)) this.pendingReads.set(String(id), Number(e.lines))
+      // Same replacement semantics: this IS the read's completion. Settle the
+      // card with the line-count badge.
+      let command = this.toolCommands.get(String(id)) ?? tool
+      this.toolCommands.delete(String(id))
+      if (Number.isFinite(e.lines)) command = `${command} · ${Number(e.lines)}L`
+      this.cb.post({
+        type: "itemUpsert",
+        item: { id, type: "command_execution", tool_name: tool, command, aggregated_output: "", status: "completed" },
+        done: true,
+      })
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {
       const failed = e.type === "tool_use_failed"
       const output = String(e.output_preview ?? e.result ?? e.error ?? "")
-      let command = this.toolCommands.get(String(id)) ?? tool
+      const command = this.toolCommands.get(String(id)) ?? tool
       this.toolCommands.delete(String(id))
-      const lines = this.pendingReads.get(String(id))
-      this.pendingReads.delete(String(id))
-      if (lines !== undefined && !failed) {
-        command = `${command} · ${lines}L`
-      }
-      const diff = this.pendingDiffs.get(String(id))
-      this.pendingDiffs.delete(String(id))
-      if (diff && !failed) {
-        // Successful edit/write with a diff: render the red/green file card
-        // (same shape the app-server file_change items use) instead of a
-        // plain text tool card.
-        this.cb.post({
-          type: "itemUpsert",
-          item: { id, type: "file_change", status: "completed", changes: [diff] },
-          done: true,
-        })
-        return
-      }
       this.cb.post({
         type: "itemUpsert",
         item: {
