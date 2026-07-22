@@ -55,19 +55,14 @@ impl ChatWidget {
     /// Dispatch a Ctrl+P command-palette selection through the exact same code
     /// path as the `/` popup.
     ///
-    /// - No-arg builtins reuse [`Self::handle_slash_command_dispatch`], the
-    ///   handler for the popup's `InputResult::Command`.
-    /// - Service-tier commands reuse [`Self::handle_service_tier_command_dispatch`],
-    ///   the handler for `InputResult::ServiceTierCommand`.
-    /// - Builtins that take inline args are not executed; `/name ` is inserted
-    ///   into the composer (reopening the `/` popup), mirroring the popup's
-    ///   completion behavior so the user can type the arguments.
+    /// Enter in the `/` popup returns `InputResult::Command(cmd)` for EVERY
+    /// builtin — inline-args commands included (`/model` executes and opens the
+    /// picker; typed arguments are a separate `CommandWithArgs` path the
+    /// palette doesn't produce). So the palette must execute every builtin the
+    /// same way; inserting `/name ` instead (the old behavior) left the user
+    /// with text in the composer and no action — "the model menu didn't open".
     pub(crate) fn handle_command_palette_selection(&mut self, item: crate::bottom_pane::CommandItem) {
         match item {
-            crate::bottom_pane::CommandItem::Builtin(cmd) if cmd.supports_inline_args() => {
-                self.bottom_pane.insert_str(&format!("/{} ", cmd.command()));
-                self.request_redraw();
-            }
             crate::bottom_pane::CommandItem::Builtin(cmd) => {
                 self.handle_slash_command_dispatch(cmd);
             }
