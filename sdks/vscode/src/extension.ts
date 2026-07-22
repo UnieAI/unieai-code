@@ -51,7 +51,17 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function executablePath(): string {
-  return vscode.workspace.getConfiguration("unieai-code").get<string>("executablePath") || "unieai"
+  const configured = vscode.workspace.getConfiguration("unieai-code").get<string>("executablePath")
+  // A stale absolute path (e.g. a deleted dev-build binary) must not brick every
+  // shell call — fall back to resolving `unieai` rather than spawning a path we
+  // can already see is gone. Relative/bare names go to spawn's PATH lookup as-is.
+  if (configured && (!path.isAbsolute(configured) || fs.existsSync(configured))) {
+    return configured
+  }
+  if (configured) {
+    console.warn(`unieai-code.executablePath does not exist: ${configured}; falling back to \`unieai\``)
+  }
+  return "unieai"
 }
 
 function unieaiHome(): string {

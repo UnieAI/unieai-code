@@ -516,6 +516,17 @@ export function createEngine({
       };
       const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
 
+      // Decide NOW — before compaction can splice/renumber `messages` — whether
+      // this turn ran a file-mutating tool (drives the workspace snapshot below).
+      const MUTATING_TOOLS = new Set(["write", "edit", "apply_patch", "bash"]);
+      let touchedWorkspace = false;
+      for (let i = turnStart; i < messages.length && !touchedWorkspace; i++) {
+        const m = messages[i];
+        if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+          touchedWorkspace = m.tool_calls.some((tc) => MUTATING_TOOLS.has(tc.function?.name));
+        }
+      }
+
       // Between-turns semantic compaction (off critical path, fail-open). When
       // the history grows past budget, fold the older turns into one rolling
       // structured summary instead of letting the per-request mechanical path
@@ -555,17 +566,10 @@ export function createEngine({
       // Checkpoint the workspace after the turn's edits settle (best-effort).
       // The snapshot is a whole-workspace `git add -A` into a shadow repo — on a
       // large repo the first one costs several seconds — so only pay it when the
-      // turn actually ran a file-mutating tool. A pure Q&A / conversational turn
-      // (e.g. "hi") or a read-only turn cannot have changed files, so blocking
-      // its completion on that scan is wasted latency.
-      const MUTATING_TOOLS = new Set(["write", "edit", "apply_patch", "bash"]);
-      let touchedWorkspace = false;
-      for (let i = turnStart; i < messages.length && !touchedWorkspace; i++) {
-        const m = messages[i];
-        if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
-          touchedWorkspace = m.tool_calls.some((tc) => MUTATING_TOOLS.has(tc.function?.name));
-        }
-      }
+      // turn actually ran a file-mutating tool (decided above, pre-compaction).
+      // A pure Q&A / conversational turn (e.g. "hi") or a read-only turn cannot
+      // have changed files, so blocking its completion on that scan is wasted
+      // latency.
       if (shadowReady && touchedWorkspace) {
         const tree = snapshotWorkspace(shadowGitDir, workspace);
         if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {

@@ -40,10 +40,20 @@ messagesEl.addEventListener("scroll", () => {
     messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80
 })
 
+// Coalesce scrolls to one per animation frame: reading scrollHeight forces a
+// synchronous layout, and streaming can request dozens of scrolls per second.
+let scrollScheduled = false
 function scrollToBottom() {
-  if (stickToBottom) {
-    messagesEl.scrollTop = messagesEl.scrollHeight
+  if (!stickToBottom || scrollScheduled) {
+    return
   }
+  scrollScheduled = true
+  requestAnimationFrame(() => {
+    scrollScheduled = false
+    if (stickToBottom) {
+      messagesEl.scrollTop = messagesEl.scrollHeight
+    }
+  })
 }
 
 /** Markdown -> sanitized DOM nodes. CSP already blocks script execution;
@@ -701,10 +711,37 @@ function ensureToolOutput(itemId) {
   return pre
 }
 
+// Batch streamed deltas to one DOM write per (kind,item) per animation frame.
+// Token deltas arrive far faster than the display refreshes; applying each one
+// synchronously (append + auto-scroll reflow) is what makes streaming feel
+// janky. Buffered text is concatenated and flushed on the next frame.
+const pendingDeltas = new Map() // "kind itemId" -> accumulated text
+let deltaFlushScheduled = false
+
 function applyDelta(kind, itemId, text) {
   if (!text) {
     return
   }
+  const key = `${kind} ${itemId}`
+  pendingDeltas.set(key, (pendingDeltas.get(key) || "") + text)
+  if (deltaFlushScheduled) {
+    return
+  }
+  deltaFlushScheduled = true
+  requestAnimationFrame(() => {
+    deltaFlushScheduled = false
+    const batch = [...pendingDeltas]
+    pendingDeltas.clear()
+    for (const [k, buffered] of batch) {
+      const sep = k.indexOf(" ")
+      applyDeltaNow(k.slice(0, sep), k.slice(sep + 1), buffered)
+    }
+    pinWorking()
+    scrollToBottom()
+  })
+}
+
+function applyDeltaNow(kind, itemId, text) {
   if (kind === "agent") {
     ensureAgentStream(itemId).textNode.textContent += text
   } else if (kind === "reasoning") {
@@ -727,8 +764,6 @@ function applyDelta(kind, itemId, text) {
     entry.el.replaceWith(replaced)
     entry.el = replaced
   }
-  pinWorking()
-  scrollToBottom()
 }
 
 // ---------- approvals ----------
@@ -1407,6 +1442,7 @@ window.addEventListener("message", (e) => {
     case "reset":
       messagesEl.innerHTML = ""
       itemEls.clear()
+      pendingDeltas.clear()
       turnSeq += 1
       setRunning(false)
       break
@@ -1416,6 +1452,7 @@ window.addEventListener("message", (e) => {
     case "sessionLoaded": {
       messagesEl.innerHTML = ""
       itemEls.clear()
+      pendingDeltas.clear()
       turnSeq += 1
       setRunning(false)
       for (const item of message.items || []) {
