@@ -15,6 +15,19 @@
       → 新增 `codex-rs/tui/src/color_support.rs`：`ColorLevel{None,Basic,Ansi256,TrueColor}`、
         `level_from_env`（NO_COLOR / `UNIEAI_FORCE_COLOR_LEVEL`|`CODEX_FORCE_COLOR_LEVEL` 覆寫 / COLORTERM / TERM）、
         `quantize`（truecolor→ansi256 6×6×6 cube+24 級灰階→basic 16 named），全部單元測試。
+      → **已 live-wire 進渲染管線**（`init_active_level` 於 `lib.rs::run_main` 啟動時 pin 一次，
+        `adapt_color`/`adapt_color_for_level` 為量化 seam；truecolor 為 identity，測試不受影響）：
+        * `render/highlight.rs::convert_syntect_color`——syntect→ratatui 中央轉換點，覆蓋
+          markdown code block、exec bash 高亮、diff 語法疊色、chart accent、statusline 主題色
+          （＝TUI 最大的 RGB 來源，單一 seam 全包）。
+        * `shimmer.rs`——truecolor gate 改用 `active_level().has_truecolor()`（尊重覆寫/NO_COLOR）。
+        * `terminal_palette.rs::stdout_color_level`——`forced_level()` 覆寫優先於 supports-color 探測，
+          使既有 level-aware 路徑（diff_render 背景、style.rs 表格分隔線、best_color）也吃到強制層級。
+      → 未改（本來就 level-aware 或非 RGB 來源）：`diff_render.rs`（自有 RichDiffColorLevel 量化）、
+        `terminal_palette::best_color`（感知量化）、`status_line_style.rs` soften（輸入已被 seam 量化，
+        非 truecolor 時走 passthrough 分支）。clippy disallowed-methods 本已把 `Color::Rgb` 建構
+        收斂到上述幾個 seam，無散落殘餘。
+        驗證方式：`CODEX_FORCE_COLOR_LEVEL=ansi256 ./codex` 可見 code block/diff 量化。
 - [~] 3.2 OSC11 背景偵測 → 自動 dark/light
       → 純解析/分類 helper 已實作並測試（`parse_osc11_rgb`、`classify_luminance`、`Appearance`）。
         實時 TTY 往返查詢未接（codex 既有以 crossterm `query_background_color` 走另一路徑），故延後。

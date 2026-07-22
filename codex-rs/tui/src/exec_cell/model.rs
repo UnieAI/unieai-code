@@ -11,6 +11,9 @@ use std::time::Instant;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::parse_command::ParsedCommand;
 
+use crate::scrollback_verb_group::ToolEvent;
+use crate::scrollback_verb_group::VerbGroupKind;
+
 #[derive(Debug, Default)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
@@ -143,6 +146,55 @@ impl ExecCell {
         let output = call.output.get_or_insert_with(CommandOutput::default);
         output.aggregated_output.push_str(chunk);
         true
+    }
+
+    /// Build verb-group [`ToolEvent`]s from this cell's parsed commands, for
+    /// the aggregated exploring header ("Read 3 files, Searched 2 patterns ·
+    /// 1 failed").
+    ///
+    /// Mapping: `Read` → `Read`/`ReadSkill` (skill-manifest paths bucket
+    /// separately), `ListFiles` → `ListDir`, `Search` → `Search`; other
+    /// parsed commands produce no event (they never appear in exploring
+    /// cells anyway). Each event carries a de-dup source key (file name /
+    /// listed path / search query) so re-reading the same file counts once,
+    /// matching the existing `.unique()` behavior of the detail lines.
+    /// `running` mirrors the call being in flight (flips the group verb to
+    /// present tense); a failed call (non-zero exit) is counted once per
+    /// call via its first event.
+    pub(crate) fn verb_group_events(&self) -> Vec<ToolEvent> {
+        let mut events = Vec::new();
+        for call in &self.calls {
+            let running = call.duration.is_none();
+            let failed = call
+                .output
+                .as_ref()
+                .is_some_and(|output| output.exit_code != 0);
+            let mut failed_pending = failed;
+            for parsed in &call.parsed {
+                let (kind, source) = match parsed {
+                    ParsedCommand::Read { name, .. } => (
+                        crate::scrollback_verb_group::read_kind_for_arg(Some(name)),
+                        Some(name.clone()),
+                    ),
+                    ParsedCommand::ListFiles { cmd, path } => (
+                        VerbGroupKind::ListDir,
+                        Some(path.clone().unwrap_or_else(|| cmd.clone())),
+                    ),
+                    ParsedCommand::Search { cmd, query, .. } => (
+                        VerbGroupKind::Search,
+                        Some(query.clone().unwrap_or_else(|| cmd.clone())),
+                    ),
+                    _ => continue,
+                };
+                events.push(ToolEvent::with_sources(
+                    kind,
+                    running,
+                    std::mem::take(&mut failed_pending),
+                    source.into_iter().collect(),
+                ));
+            }
+        }
+        events
     }
 
     pub(super) fn is_exploring_call(call: &ExecCall) -> bool {

@@ -138,6 +138,54 @@ pub fn level_from_env(
     }
 }
 
+/// Explicit `*_FORCE_COLOR_LEVEL` override, if set to a parseable level.
+///
+/// Exposed separately from [`detect_level`] so pre-existing detection paths
+/// (e.g. [`crate::terminal_palette::stdout_color_level`], which drives diff
+/// backgrounds and table separators) can honor the same override without
+/// replacing their own capability probing.
+pub fn forced_level() -> Option<ColorLevel> {
+    FORCE_LEVEL_VARS
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .filter(|v| !v.is_empty())
+        .and_then(|v| ColorLevel::parse(&v))
+}
+
+// ── Process-wide active level ────────────────────────────────────────────
+
+static ACTIVE_LEVEL: std::sync::OnceLock<ColorLevel> = std::sync::OnceLock::new();
+
+/// Detect and pin the process-wide color level. Called once at TUI startup
+/// (after the environment is final); later calls return the pinned level.
+pub fn init_active_level() -> ColorLevel {
+    *ACTIVE_LEVEL.get_or_init(detect_level)
+}
+
+/// The pinned process-wide level.
+///
+/// Defaults to [`ColorLevel::TrueColor`] (identity adaptation) when
+/// [`init_active_level`] has not run — notably in unit tests, which opt in to
+/// quantization explicitly through the `*_for_level` helpers instead of
+/// mutating process globals.
+pub fn active_level() -> ColorLevel {
+    ACTIVE_LEVEL.get().copied().unwrap_or(ColorLevel::TrueColor)
+}
+
+/// Adapt a color to the terminal this process is actually talking to: on
+/// truecolor terminals this is the identity; on lesser terminals RGB (and,
+/// under `basic`, indexed) colors are quantized via [`quantize`] instead of
+/// leaving the approximation to the terminal.
+pub fn adapt_color(color: Color) -> Color {
+    adapt_color_for_level(color, active_level())
+}
+
+/// Pure core of [`adapt_color`], parameterized by level for tests and for
+/// callers that already resolved a level.
+pub fn adapt_color_for_level(color: Color, level: ColorLevel) -> Color {
+    quantize(color, level)
+}
+
 // ── Quantization ─────────────────────────────────────────────────────────
 
 /// Downgrade a [`Color`] to the best representation `level` supports.
@@ -521,6 +569,74 @@ mod tests {
         assert_eq!(quantize(Color::Indexed(196), ColorLevel::Basic), Color::LightRed);
         // Indexed(0) is black.
         assert_eq!(quantize(Color::Indexed(0), ColorLevel::Basic), Color::Black);
+    }
+
+    // ── adapt_color ──────────────────────────────────────────────────────
+
+    #[test]
+    fn adapt_color_identity_under_truecolor() {
+        let rgb = Color::Rgb(122, 162, 247);
+        assert_eq!(adapt_color_for_level(rgb, ColorLevel::TrueColor), rgb);
+        assert_eq!(
+            adapt_color_for_level(Color::Indexed(141), ColorLevel::TrueColor),
+            Color::Indexed(141)
+        );
+    }
+
+    #[test]
+    fn adapt_color_rgb_to_indexed_under_ansi256() {
+        assert!(matches!(
+            adapt_color_for_level(Color::Rgb(122, 162, 247), ColorLevel::Ansi256),
+            Color::Indexed(_)
+        ));
+    }
+
+    #[test]
+    fn adapt_color_rgb_to_named_under_basic() {
+        assert_eq!(
+            adapt_color_for_level(Color::Rgb(255, 0, 0), ColorLevel::Basic),
+            Color::LightRed
+        );
+        // Indexed also collapses to named under basic.
+        assert_eq!(
+            adapt_color_for_level(Color::Indexed(196), ColorLevel::Basic),
+            Color::LightRed
+        );
+    }
+
+    #[test]
+    fn adapt_color_non_rgb_passthrough() {
+        for level in [ColorLevel::TrueColor, ColorLevel::Ansi256, ColorLevel::Basic] {
+            assert_eq!(adapt_color_for_level(Color::Red, level), Color::Red);
+            assert_eq!(adapt_color_for_level(Color::Reset, level), Color::Reset);
+        }
+        // Indexed passes through at 256-color level.
+        assert_eq!(
+            adapt_color_for_level(Color::Indexed(200), ColorLevel::Ansi256),
+            Color::Indexed(200)
+        );
+    }
+
+    #[test]
+    fn adapt_color_resets_under_none() {
+        assert_eq!(
+            adapt_color_for_level(Color::Rgb(1, 2, 3), ColorLevel::None),
+            Color::Reset
+        );
+        assert_eq!(
+            adapt_color_for_level(Color::Red, ColorLevel::None),
+            Color::Reset
+        );
+    }
+
+    #[test]
+    fn active_level_defaults_to_truecolor_without_init() {
+        // Unit tests never call init_active_level, so adapt_color must be the
+        // identity here — this is what keeps every pre-existing rendering test
+        // (which asserts raw Rgb spans) byte-for-byte unchanged.
+        assert_eq!(active_level(), ColorLevel::TrueColor);
+        let rgb = Color::Rgb(9, 9, 9);
+        assert_eq!(adapt_color(rgb), rgb);
     }
 
     // ── rgb_to_ansi256 math ──────────────────────────────────────────────

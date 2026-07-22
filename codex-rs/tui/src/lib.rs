@@ -1745,6 +1745,16 @@ async fn run_ratatui_app(
         _ => config,
     };
 
+    // Pin the process-wide terminal color level (honors
+    // UNIEAI/CODEX_FORCE_COLOR_LEVEL and NO_COLOR) so theme-derived RGB colors
+    // are quantized to what the terminal can actually render instead of
+    // relying on the terminal's own approximation.
+    crate::color_support::init_active_level();
+
+    // Pin the verb-group scrollback fold gate (UNIEAI/CODEX_TUI_VERB_GROUPS;
+    // default off until a `tui.verb_groups` config key lands in codex-core).
+    crate::scrollback_verb_group::init_verb_groups_enabled();
+
     // Configure syntax highlighting theme from the final config — onboarding
     // and resume/fork can both reload config with a different tui_theme, so
     // this must happen after the last possible reload.

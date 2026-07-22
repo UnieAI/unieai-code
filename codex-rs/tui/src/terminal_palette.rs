@@ -12,6 +12,18 @@ pub enum StdoutColorLevel {
 }
 
 pub fn stdout_color_level() -> StdoutColorLevel {
+    // An explicit UNIEAI/CODEX_FORCE_COLOR_LEVEL override wins over the
+    // supports-color probe, so the whole level-aware pipeline (diff
+    // backgrounds, table separators, best_color) can be forced for testing
+    // and for terminals that misreport their capabilities.
+    if let Some(forced) = crate::color_support::forced_level() {
+        return match forced {
+            crate::color_support::ColorLevel::TrueColor => StdoutColorLevel::TrueColor,
+            crate::color_support::ColorLevel::Ansi256 => StdoutColorLevel::Ansi256,
+            crate::color_support::ColorLevel::Basic => StdoutColorLevel::Ansi16,
+            crate::color_support::ColorLevel::None => StdoutColorLevel::Unknown,
+        };
+    }
     match supports_color::on_cached(supports_color::Stream::Stdout) {
         Some(level) if level.has_16m => StdoutColorLevel::TrueColor,
         Some(level) if level.has_256 => StdoutColorLevel::Ansi256,

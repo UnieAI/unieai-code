@@ -256,7 +256,37 @@ impl ExecCell {
         Line::from(vec![Self::output_ellipsis_text(omitted).dim()])
     }
 
+    /// The aggregated verb-group header ("Read 3 files, Searched 2 patterns
+    /// · 1 failed") for this exploring cell, or `None` when the feature is
+    /// gated off, the run is below the fold threshold, or no parsed command
+    /// maps to a verb-group bucket (the caller then falls back to the plain
+    /// "Exploring"/"Explored" header).
+    fn verb_group_header_span(&self, verb_groups: bool) -> Option<Span<'static>> {
+        if !verb_groups
+            || self.calls.len() < crate::scrollback_verb_group::VERB_GROUP_FOLD_THRESHOLD
+        {
+            return None;
+        }
+        let events = self.verb_group_events();
+        if events.is_empty() {
+            return None;
+        }
+        let label = crate::scrollback_verb_group::aggregate(&events);
+        (!label.text.is_empty()).then(|| label.text.bold())
+    }
+
     fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.exploring_display_lines_with_verb_groups(
+            width,
+            crate::scrollback_verb_group::verb_groups_enabled(),
+        )
+    }
+
+    fn exploring_display_lines_with_verb_groups(
+        &self,
+        width: u16,
+        verb_groups: bool,
+    ) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
         out.push(Line::from(vec![
             if self.is_active() {
@@ -265,10 +295,10 @@ impl ExecCell {
                 "•".dim()
             },
             " ".into(),
-            if self.is_active() {
-                "Exploring".bold()
-            } else {
-                "Explored".bold()
+            match self.verb_group_header_span(verb_groups) {
+                Some(label) => label,
+                None if self.is_active() => "Exploring".bold(),
+                None => "Explored".bold(),
             },
         ]));
 
@@ -1000,6 +1030,277 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first, vec!["• Running echo done".to_string()]);
+    }
+
+    // ── verb-group fold header ───────────────────────────────────────────
+
+    use crate::scrollback_verb_group::VerbGroupKind;
+    use std::time::Duration;
+
+    fn read_call(id: &str, name: &str) -> ExecCall {
+        ExecCall {
+            call_id: id.to_string(),
+            command: vec!["bash".into(), "-lc".into(), format!("cat {name}")],
+            parsed: vec![ParsedCommand::Read {
+                cmd: format!("cat {name}"),
+                name: name.to_string(),
+                path: std::path::PathBuf::from(name),
+            }],
+            output: Some(CommandOutput {
+                exit_code: 0,
+                aggregated_output: String::new(),
+            }),
+            source: ExecCommandSource::Agent,
+            start_time: None,
+            duration: Some(Duration::from_millis(5)),
+            interaction_input: None,
+        }
+    }
+
+    fn search_call(id: &str, query: &str) -> ExecCall {
+        ExecCall {
+            call_id: id.to_string(),
+            command: vec!["bash".into(), "-lc".into(), format!("rg {query}")],
+            parsed: vec![ParsedCommand::Search {
+                cmd: format!("rg {query}"),
+                query: Some(query.to_string()),
+                path: None,
+            }],
+            output: Some(CommandOutput {
+                exit_code: 0,
+                aggregated_output: String::new(),
+            }),
+            source: ExecCommandSource::Agent,
+            start_time: None,
+            duration: Some(Duration::from_millis(5)),
+            interaction_input: None,
+        }
+    }
+
+    fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
+        lines.iter().map(render_line_text).collect()
+    }
+
+    #[test]
+    fn verb_group_events_classify_real_exec_calls() {
+        // Built through the real constructor + add_call fold seam.
+        let mut cell = new_active_exec_command(
+            "c1".into(),
+            vec!["bash".into(), "-lc".into(), "cat a.rs".into()],
+            vec![ParsedCommand::Read {
+                cmd: "cat a.rs".into(),
+                name: "a.rs".into(),
+                path: std::path::PathBuf::from("a.rs"),
+            }],
+            ExecCommandSource::Agent,
+            None,
+            /*animations_enabled*/ false,
+        );
+        assert!(cell.add_call(
+            "c2".into(),
+            vec!["bash".into(), "-lc".into(), "ls src".into()],
+            vec![ParsedCommand::ListFiles {
+                cmd: "ls src".into(),
+                path: Some("src".into()),
+            }],
+            ExecCommandSource::Agent,
+            None,
+        ));
+        assert!(cell.add_call(
+            "c3".into(),
+            vec!["bash".into(), "-lc".into(), "rg foo".into()],
+            vec![ParsedCommand::Search {
+                cmd: "rg foo".into(),
+                query: Some("foo".into()),
+                path: None,
+            }],
+            ExecCommandSource::Agent,
+            None,
+        ));
+
+        let events = cell.verb_group_events();
+        let kinds: Vec<VerbGroupKind> = events.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                VerbGroupKind::Read,
+                VerbGroupKind::ListDir,
+                VerbGroupKind::Search,
+            ]
+        );
+        // All calls are still running (no duration): events carry the flag.
+        assert!(events.iter().all(|e| e.running));
+        assert!(events.iter().all(|e| !e.failed));
+
+        // Skill-manifest reads bucket separately from ordinary files.
+        let skill = ExecCell::new(
+            ExecCall {
+                parsed: vec![ParsedCommand::Read {
+                    cmd: "cat SKILL.md".into(),
+                    name: "/x/skills/deploy/SKILL.md".into(),
+                    path: std::path::PathBuf::from("/x/skills/deploy/SKILL.md"),
+                }],
+                ..read_call("c4", "unused")
+            },
+            /*animations_enabled*/ false,
+        );
+        assert_eq!(
+            skill.verb_group_events()[0].kind,
+            VerbGroupKind::ReadSkill
+        );
+    }
+
+    #[test]
+    fn add_call_folds_same_group_and_breaks_on_non_exploring() {
+        // The insert-time fold seam: 2nd and 3rd exploring calls fold into
+        // the same cell; a non-exploring (plain exec) call refuses to fold,
+        // which makes the chat widget flush the group and start a new cell.
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        assert!(cell.add_call(
+            "c2".into(),
+            vec!["bash".into(), "-lc".into(), "cat b.rs".into()],
+            vec![ParsedCommand::Read {
+                cmd: "cat b.rs".into(),
+                name: "b.rs".into(),
+                path: std::path::PathBuf::from("b.rs"),
+            }],
+            ExecCommandSource::Agent,
+            None,
+        ));
+        assert!(cell.add_call(
+            "c3".into(),
+            vec!["bash".into(), "-lc".into(), "rg foo".into()],
+            vec![ParsedCommand::Search {
+                cmd: "rg foo".into(),
+                query: Some("foo".into()),
+                path: None,
+            }],
+            ExecCommandSource::Agent,
+            None,
+        ));
+        assert_eq!(cell.iter_calls().count(), 3);
+
+        // Plain command (ParsedCommand::Unknown) breaks the run.
+        assert!(!cell.add_call(
+            "c4".into(),
+            vec!["bash".into(), "-lc".into(), "make build".into()],
+            vec![ParsedCommand::Unknown {
+                cmd: "make build".into(),
+            }],
+            ExecCommandSource::Agent,
+            None,
+        ));
+        assert_eq!(cell.iter_calls().count(), 3, "broken run must not grow");
+    }
+
+    #[test]
+    fn folded_run_renders_verb_group_summary_header() {
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "b.rs"));
+        cell.calls.push(read_call("c3", "a.rs")); // duplicate read: dedups
+        cell.calls.push(search_call("c4", "needle"));
+
+        let rendered = render_lines(
+            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
+        );
+        assert_eq!(
+            rendered[0], "• Read 2 files, Searched 1 pattern",
+            "expected aggregated header, got {rendered:?}"
+        );
+        // Detail lines are preserved below the summary — nothing is lost.
+        assert!(
+            rendered.iter().any(|l| l.contains("a.rs")),
+            "expected read detail lines to remain, got {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn verb_group_header_flips_tense_while_running() {
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "b.rs"));
+        let mut running = read_call("c3", "c.rs");
+        running.output = None;
+        running.duration = None;
+        cell.calls.push(running);
+
+        let rendered = render_lines(
+            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
+        );
+        assert_eq!(rendered[0], "• Reading 3 files");
+    }
+
+    #[test]
+    fn verb_group_header_surfaces_failure_count() {
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "b.rs"));
+        let mut failed = read_call("c3", "c.rs");
+        failed.output = Some(CommandOutput {
+            exit_code: 1,
+            aggregated_output: String::new(),
+        });
+        cell.calls.push(failed);
+
+        let rendered = render_lines(
+            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
+        );
+        assert_eq!(rendered[0], "• Read 3 files · 1 failed");
+    }
+
+    #[test]
+    fn verb_group_header_requires_fold_threshold() {
+        // Two calls: below the >=3 threshold, keep the plain header.
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "b.rs"));
+        let rendered = render_lines(
+            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
+        );
+        assert_eq!(rendered[0], "• Explored");
+    }
+
+    #[test]
+    fn verb_group_header_gated_off_keeps_existing_render() {
+        let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "b.rs"));
+        cell.calls.push(search_call("c3", "needle"));
+
+        let gated_off = render_lines(
+            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ false),
+        );
+        assert_eq!(gated_off[0], "• Explored");
+        // And the public display path defaults to the gate (off in tests).
+        let default_path = render_lines(&cell.display_lines(/*width*/ 80));
+        assert_eq!(default_path, gated_off);
+    }
+
+    #[test]
+    fn folded_transcript_snapshot_with_verb_groups_enabled() {
+        let mut cell = ExecCell::new(read_call("c1", "model.rs"), /*animations*/ false);
+        cell.calls.push(read_call("c2", "render.rs"));
+        cell.calls.push(search_call("c3", "verb_group"));
+        cell.calls.push(ExecCall {
+            call_id: "c4".into(),
+            command: vec!["bash".into(), "-lc".into(), "ls src".into()],
+            parsed: vec![ParsedCommand::ListFiles {
+                cmd: "ls src".into(),
+                path: Some("src".into()),
+            }],
+            output: Some(CommandOutput {
+                exit_code: 1,
+                aggregated_output: String::new(),
+            }),
+            source: ExecCommandSource::Agent,
+            start_time: None,
+            duration: Some(Duration::from_millis(3)),
+            interaction_input: None,
+        });
+
+        let rendered = cell
+            .exploring_display_lines_with_verb_groups(/*width*/ 60, /*verb_groups*/ true)
+            .iter()
+            .map(render_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!("verb_group_folded_exploring_cell", rendered);
     }
 
     #[test]

@@ -487,18 +487,36 @@ fn ansi_palette_color(index: u8) -> RtColor {
 ///
 /// `clippy::disallowed_methods` is explicitly allowed here because this helper
 /// intentionally constructs `ratatui::style::Color::Rgb`.
-#[allow(clippy::disallowed_methods)]
+///
+/// The decoded color is passed through
+/// [`crate::color_support::adapt_color`], so on terminals without truecolor
+/// every theme RGB is quantized to the terminal's actual level (256-color
+/// cube / ANSI-16) instead of relying on the terminal's own approximation.
+/// This is the central syntect→ratatui seam: markdown code blocks, exec bash
+/// highlighting, diff syntax overlays, chart accents, and status-line theme
+/// colors all obtain their RGB values here.
 fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
-    match color.a {
+    convert_syntect_color_for_level(color, crate::color_support::active_level())
+}
+
+/// Pure core of [`convert_syntect_color`], parameterized by color level so
+/// tests can force a level without touching process-global state.
+#[allow(clippy::disallowed_methods)]
+fn convert_syntect_color_for_level(
+    color: SyntectColor,
+    level: crate::color_support::ColorLevel,
+) -> Option<RtColor> {
+    let decoded = match color.a {
         // Bat-compatible encoding used by `ansi`, `base16`, and `base16-256`:
         // alpha 0x00 means `r` stores an ANSI palette index, not RGB red.
-        ANSI_ALPHA_INDEX => Some(ansi_palette_color(color.r)),
+        ANSI_ALPHA_INDEX => ansi_palette_color(color.r),
         // alpha 0x01 means "use terminal default foreground/background".
-        ANSI_ALPHA_DEFAULT => None,
-        OPAQUE_ALPHA => Some(RtColor::Rgb(color.r, color.g, color.b)),
+        ANSI_ALPHA_DEFAULT => return None,
+        OPAQUE_ALPHA => RtColor::Rgb(color.r, color.g, color.b),
         // Non-ANSI alpha values appear in some bundled themes; treat as plain RGB.
-        _ => Some(RtColor::Rgb(color.r, color.g, color.b)),
-    }
+        _ => RtColor::Rgb(color.r, color.g, color.b),
+    };
+    Some(crate::color_support::adapt_color_for_level(decoded, level))
 }
 
 /// Convert a syntect `Style` to a ratatui `Style`.
@@ -1046,6 +1064,79 @@ mod tests {
         };
         let rt = convert_style(syn);
         assert!(matches!(rt.fg, Some(RtColor::Rgb(10, 20, 30))));
+    }
+
+    #[test]
+    fn syntect_seam_quantizes_rgb_for_ansi256_level() {
+        use crate::color_support::ColorLevel;
+        let rgb = SyntectColor {
+            r: 122,
+            g: 162,
+            b: 247,
+            a: 0xFF,
+        };
+        assert!(matches!(
+            convert_syntect_color_for_level(rgb, ColorLevel::Ansi256),
+            Some(RtColor::Indexed(_))
+        ));
+    }
+
+    #[test]
+    fn syntect_seam_quantizes_rgb_to_named_for_basic_level() {
+        use crate::color_support::ColorLevel;
+        let rgb = SyntectColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 0xFF,
+        };
+        assert_eq!(
+            convert_syntect_color_for_level(rgb, ColorLevel::Basic),
+            Some(RtColor::LightRed)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn syntect_seam_passes_rgb_through_for_truecolor_level() {
+        use crate::color_support::ColorLevel;
+        let rgb = SyntectColor {
+            r: 10,
+            g: 20,
+            b: 30,
+            a: 0xFF,
+        };
+        assert_eq!(
+            convert_syntect_color_for_level(rgb, ColorLevel::TrueColor),
+            Some(RtColor::Rgb(10, 20, 30))
+        );
+    }
+
+    #[test]
+    fn syntect_seam_quantizes_ansi_indexed_under_basic_level() {
+        use crate::color_support::ColorLevel;
+        // alpha 0x00 => `r` is an ANSI palette index; 196 is cube pure red.
+        let indexed = SyntectColor {
+            r: 196,
+            g: 0,
+            b: 0,
+            a: 0x00,
+        };
+        assert_eq!(
+            convert_syntect_color_for_level(indexed, ColorLevel::Basic),
+            Some(RtColor::LightRed)
+        );
+        // Terminal-default marker stays None at every level.
+        let default_marker = SyntectColor {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0x01,
+        };
+        assert_eq!(
+            convert_syntect_color_for_level(default_marker, ColorLevel::Basic),
+            None
+        );
     }
 
     #[test]

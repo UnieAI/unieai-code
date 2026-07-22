@@ -20,12 +20,55 @@
 //! `BucketAccumulator::into_label` (bucketing / pluralization / tense / failure
 //! suffix), and the citation-URL / child-session-id source de-dup.
 //!
-//! Staging note: this is the fully-tested aggregation core. Wiring it into the
-//! live scrollback render (collapsing a burst of consecutive tool cells into a
-//! single re-aggregating summary cell) is a follow-up in the render pipeline;
-//! until that lands the public surface below has only test consumers, so the
-//! module opts out of dead-code warnings rather than emit them for staged code.
+//! Live wiring: the transcript already folds a run of consecutive
+//! non-destructive exec calls (read / list / search) into one exploring
+//! `ExecCell` at insert time (`ExecCell::add_call`), and commits that cell to
+//! terminal scrollback exactly once, when the run breaks. This module supplies
+//! the aggregated header for that fold: `exec_cell::render` builds
+//! [`ToolEvent`]s from the cell's parsed commands and renders [`aggregate`]'s
+//! label ("Read 3 files, Searched 2 patterns · 1 failed") as the group header
+//! when [`verb_groups_enabled`] and the run has at least
+//! [`VERB_GROUP_FOLD_THRESHOLD`] calls.
+//!
+//! Staging note: the exec-side wiring exercises the Read/ReadSkill/Search/
+//! ListDir buckets and the accumulator. The name-based [`classify_tool`]
+//! classifier and the WebSearch/WebFetch/Subagent/McpTool buckets are staged
+//! for the follow-up that folds runs of MCP / web-search *cells* (a
+//! different insert seam); they keep the module-level dead-code opt-out.
 #![allow(dead_code)]
+
+/// Minimum number of calls in a fold before the verb-group summary header
+/// replaces the plain "Explored" header (matches the panel's threshold).
+pub(crate) const VERB_GROUP_FOLD_THRESHOLD: usize = 3;
+
+/// Environment variables (in priority order) gating the verb-group summary
+/// header. Mirrors the `*_FORCE_COLOR_LEVEL` naming convention.
+const VERB_GROUPS_ENV_VARS: [&str; 2] = ["UNIEAI_TUI_VERB_GROUPS", "CODEX_TUI_VERB_GROUPS"];
+
+static VERB_GROUPS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn verb_groups_enabled_from_env() -> bool {
+    VERB_GROUPS_ENV_VARS
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .map(|v| matches!(v.trim(), "1" | "true" | "on" | "yes"))
+        // Default OFF: a `tui.verb_groups` config key belongs in codex-core's
+        // Config (alongside `tui.theme`), which is outside this change's file
+        // scope; until that lands the env gate is the only opt-in, and OFF
+        // keeps every existing exploring-header snapshot byte-identical.
+        .unwrap_or(false)
+}
+
+/// Detect and pin the process-wide gate. Called once at TUI startup.
+pub(crate) fn init_verb_groups_enabled() -> bool {
+    *VERB_GROUPS_ENABLED.get_or_init(verb_groups_enabled_from_env)
+}
+
+/// The pinned gate value; defaults to OFF when `init_verb_groups_enabled`
+/// has not run (notably in unit tests, which pass the flag explicitly).
+pub(crate) fn verb_groups_enabled() -> bool {
+    VERB_GROUPS_ENABLED.get().copied().unwrap_or(false)
+}
 
 /// The kind of a tool call, for verb-group bucketing.
 ///
@@ -284,7 +327,7 @@ pub(crate) fn classify_tool(name: &str, primary_arg: Option<&str>) -> Option<Ver
 /// A read whose target lives under a `skills/` tree and points at a skill
 /// manifest is a `ReadSkill`; anything else is an ordinary `Read`. Keeping the
 /// two apart stops a `SKILL.md` read from inflating the visible file count.
-fn read_kind_for_arg(primary_arg: Option<&str>) -> VerbGroupKind {
+pub(crate) fn read_kind_for_arg(primary_arg: Option<&str>) -> VerbGroupKind {
     let looks_like_skill = primary_arg.is_some_and(|path| {
         let lower = path.to_ascii_lowercase();
         (lower.contains("/skills/") || lower.contains("\\skills\\"))
