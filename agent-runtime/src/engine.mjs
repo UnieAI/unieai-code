@@ -281,9 +281,15 @@ export function createEngine({
   requestApproval = null,
   requestQuestion = null,
   onSummary = () => {},
+  onReview = () => {},
   expectsMutation = false,
   webAccess = false
 } = {}) {
+  // Goal mode: false = off, "gate" = verification blocks turn completion so
+  // the model fixes its own gaps in-turn, "review" = the turn ends immediately
+  // and the SAME verifier runs in the background, surfacing findings via
+  // onReview for the user to act on. Legacy true means "gate".
+  let goalMode = expectsMutation === true ? "gate" : expectsMutation || false;
   const credentials = loadCredentials();
   if (!credentials.signedIn) {
     throw new Error("not signed in — run `unieai login` first");
@@ -452,18 +458,19 @@ export function createEngine({
     },
 
     /**
-     * Flip goal mode (the completion contract) for subsequent turns, keeping
-     * the session: planner checklist + skeptic verification + closing
-     * summarizer. Off by default — verification adds model calls after the
-     * answer, so it is a deliberate opt-in for "action" turns.
+     * Set goal mode (the completion contract) for subsequent turns, keeping
+     * the session. false = off; "review" = verify in the BACKGROUND after the
+     * turn ends (zero latency, findings via onReview); "gate" (or legacy true)
+     * = verification blocks completion so the model fixes gaps in-turn. Off by
+     * default — a deliberate opt-in for "action" turns.
      */
     setGoalMode(value) {
-      expectsMutation = Boolean(value);
+      goalMode = value === true ? "gate" : value === "gate" || value === "review" ? value : false;
     },
 
-    /** Whether goal mode (completion verification) is currently on. */
+    /** Current goal mode: false | "review" | "gate". */
     get goalMode() {
-      return expectsMutation;
+      return goalMode;
     },
 
     /** Run one user turn; resolves when the turn ends. */
@@ -518,7 +525,7 @@ export function createEngine({
       // fire-and-forget (never awaited) so it stays off the turn's critical path;
       // the verifier references whatever is ready via planNudgeBlock. fail-closed
       // on a malformed plan = leave goalState.plan null and simply skip planning.
-      if (expectsMutation && !goalState.planAttempted) {
+      if (goalMode && !goalState.planAttempted) {
         goalState.planAttempted = true;
         const { system, user } = buildPlanRequest(text || realUserTask(messages));
         Promise.resolve()
@@ -528,6 +535,13 @@ export function createEngine({
           .then((raw) => { const p = parsePlan(raw); if (p) goalState.plan = p; })
           .catch(() => {}); // fail-open: no plan → verifier omits the plan block
       }
+      // One verifier per turn, shared by both goal modes: in "gate" mode the
+      // loop consults it before ending (gaps feed BACK into the same turn); in
+      // "review" mode it runs AFTER the turn in the background and its
+      // findings surface via onReview instead.
+      const completionCheck = goalMode
+        ? workspaceCompletionCheck({ workspace, model: activeModel, auxModel, callerKey: credentials.gatewayApiKey, goalState, onSummary })
+        : null;
       const ctx = {
         baseModelSlug: activeModel,
         callerKey: credentials.gatewayApiKey,
@@ -544,9 +558,7 @@ export function createEngine({
         // novel successful calls — see loop.mjs progress-aware weights).
         doomStreakWarn: 10,
         doomStreakForce: 14,
-        completionCheck: expectsMutation
-          ? workspaceCompletionCheck({ workspace, model: activeModel, auxModel, callerKey: credentials.gatewayApiKey, goalState, onSummary })
-          : null,
+        completionCheck: goalMode === "gate" ? completionCheck : null,
         completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
         abortSignal,
         requestApproval: requestApprovalWrapped,
@@ -554,6 +566,19 @@ export function createEngine({
         drainSteer
       };
       const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
+
+      // "review" goal mode: run the SAME verifier in the background AFTER the
+      // turn ends — zero added latency; findings surface via onReview and the
+      // user decides whether to continue. Snapshot messages now so the check
+      // judges this turn, not whatever a later turn mutated the array into.
+      if (goalMode === "review" && completionCheck) {
+        const messagesAtEnd = messages.slice();
+        const answerText = String(result?.text ?? "");
+        Promise.resolve()
+          .then(() => completionCheck({ answerText, messages: messagesAtEnd, nudges: 0 }))
+          .then((finding) => { if (finding) onReview(String(finding)); })
+          .catch(() => {}); // review is advisory — never let it break anything
+      }
 
       // Decide NOW — before compaction can splice/renumber `messages` — whether
       // this turn ran a file-mutating tool (drives the workspace snapshot below).

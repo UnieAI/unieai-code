@@ -108,6 +108,11 @@ export class AgentCoreBackend {
         // line under the transcript.
         this.cb.post({ type: "stderr", text: `結案摘要：${text}` })
       },
+      onReview: (finding: string) => {
+        // Background verifier (goal mode "review") found gaps AFTER the turn
+        // ended. Advisory: the user replies "繼續" to have them addressed.
+        this.cb.post({ type: "stderr", text: `⚠ 背景驗證發現缺口（回「繼續」即可補完）：\n${finding}` })
+      },
       requestApproval: async ({ tool, action, detail }: Json) => {
         return this.cb.requestApproval({ tool, action, detail })
       },
@@ -181,12 +186,12 @@ export class AgentCoreBackend {
     this.ensureEngine(undefined, sessionId)
   }
 
-  /** Flip goal mode (completion verification) on the live engine. */
-  setGoalMode(value: boolean): void {
+  /** Set goal mode on the live engine: false | "review" (background) | "gate" (blocking). */
+  setGoalMode(value: false | "review" | "gate"): void {
     this.goalMode = value
     this.engine?.setGoalMode(value)
   }
-  private goalMode = false
+  private goalMode: false | "review" | "gate" = false
 
   async send(text: string, model?: string, webAccess = false): Promise<void> {
     this.webAccess = webAccess

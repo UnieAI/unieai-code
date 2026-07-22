@@ -1163,11 +1163,17 @@ const SLASH_COMMANDS = [
   { cmd: "/perm", desc: "切換權限（預設/唯讀/完全存取）", run: () => permEl.focus() },
   {
     cmd: "/goal",
-    desc: "切換目標模式：計畫＋完成驗證＋結案摘要（回合尾端多幾次模型呼叫）",
+    desc: "循環目標模式：關 → 背景審查（零延遲）→ 嚴格把關（擋回合尾）",
     run: () => {
-      goalMode = !goalMode
+      goalMode = goalMode === false ? "review" : goalMode === "review" ? "gate" : false
       vscode.postMessage({ type: "setGoalMode", value: goalMode })
-      metaLine(goalMode ? "目標模式：開 — 會產生任務清單、嚴格驗證完成度並附結案摘要" : "目標模式：關")
+      metaLine(
+        goalMode === "review"
+          ? "目標模式：背景審查 — 回合照常即收，驗證在背景跑，發現缺口會提示你回「繼續」補完"
+          : goalMode === "gate"
+            ? "目標模式：嚴格把關 — 回合結束前自我驗證並當場補漏（尾端會多幾次模型呼叫）"
+            : "目標模式：關",
+      )
     },
   },
   { cmd: "/retry", desc: "重試上一回合", run: () => vscode.postMessage({ type: "retry" }) },

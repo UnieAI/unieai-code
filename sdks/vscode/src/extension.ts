@@ -50,6 +50,9 @@ export function activate(context: vscode.ExtensionContext) {
   )
 }
 
+/** Engine-plumbing user messages that must not render as real user content. */
+const SYNTHETIC_MSG_RE = /^\s*<(project_instructions|context_update|conversation_summary)\b/
+
 function executablePath(): string {
   const configured = vscode.workspace.getConfiguration("unieai-code").get<string>("executablePath")
   // A stale absolute path (e.g. a deleted dev-build binary) must not brick every
@@ -212,12 +215,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         case "setWebAccess":
           this.context.globalState.update("unieai-code.webAccess", Boolean(message.value))
           break
-        case "setGoalMode":
+        case "setGoalMode": {
           // Goal mode = agent-core completion contract (planner + skeptic
           // verification + closing summary). agent-core engine only. Kept on
           // the backend so it survives engine rebuilds and pre-send toggles.
-          this.ensureAgentCore().setGoalMode(Boolean(message.value))
+          // value: false | "review" (background, zero latency) | "gate" (blocks).
+          const v = message.value === "review" || message.value === "gate" ? message.value : false
+          this.ensureAgentCore().setGoalMode(v)
           break
+        }
         case "stop":
           this.stopTurn()
           break
@@ -542,7 +548,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       try {
         const full = path.join(dir, name)
         const parsed = JSON.parse(fs.readFileSync(full, "utf8"))
-        const firstUser = (parsed.messages ?? []).find((m: Json) => m.role === "user")
+        // Skip synthetic wrappers (project instructions / context updates /
+        // folded summaries) so the preview is the user's actual message, not
+        // the same AGENTS.md snippet on every row.
+        const firstUser = (parsed.messages ?? []).find(
+          (m: Json) => m.role === "user" && !SYNTHETIC_MSG_RE.test(String(m.content ?? "")),
+        )
         const id = parsed.id ?? name.replace(/\.json$/, "")
         sessions.push({
           id,
@@ -573,6 +584,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const m of parsed.messages ?? []) {
       if (m.role === "user" || m.role === "assistant") {
         const text = typeof m.content === "string" ? m.content.trim() : ""
+        // Synthetic user wrappers (AGENTS.md injection, context updates, folded
+        // summaries) are engine plumbing — replaying them as fake user bubbles
+        // clutters the transcript with "<project_instructions> #Repository…".
+        if (m.role === "user" && SYNTHETIC_MSG_RE.test(text)) continue
         if (text) items.push({ role: m.role === "user" ? "user" : "agent", text })
       }
     }
