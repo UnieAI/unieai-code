@@ -1141,15 +1141,34 @@ function ensureAgentStream(itemId) {
   if (!entry) {
     const el = document.createElement("div")
     el.className = "line agent streaming"
-    const textNode = document.createElement("span")
-    textNode.className = "stream-text"
-    el.appendChild(textNode)
     appendLine(el)
     itemEls.set(key, el)
-    entry = { el, textNode }
+    entry = { el, raw: "" }
     streams.set(key, entry)
   }
   return entry
+}
+
+// Cap for live markdown re-rendering; past this, fall back to plain text so a
+// giant reply can't make every frame re-parse the whole message.
+const STREAM_MD_LIMIT = 60_000
+
+/** Re-render a streaming agent message as markdown (per rAF flush). Keeps the
+ * open/closed state of any <think> folds across re-renders so a fold the user
+ * opened doesn't snap shut on the next token. */
+function renderStreamingAgent(entry) {
+  const openStates = [...entry.el.querySelectorAll("details")].map((d) => d.open)
+  const segments = splitThinking(entry.raw)
+  const hasProse = segments.some((s) => !s.think)
+  const frag = document.createDocumentFragment()
+  for (const segment of segments) {
+    frag.appendChild(segment.think ? reasoningBlock(segment.text, !hasProse) : renderMarkdown(segment.text))
+  }
+  entry.el.replaceChildren(frag)
+  const details = entry.el.querySelectorAll("details")
+  details.forEach((d, i) => {
+    if (openStates[i] !== undefined) d.open = openStates[i]
+  })
 }
 
 function ensureReasoningStream(itemId) {
@@ -1223,7 +1242,15 @@ function applyDelta(kind, itemId, text) {
 
 function applyDeltaNow(kind, itemId, text) {
   if (kind === "agent") {
-    ensureAgentStream(itemId).textNode.textContent += text
+    {
+      const entry = ensureAgentStream(itemId)
+      entry.raw += text
+      if (entry.raw.length > STREAM_MD_LIMIT) {
+        entry.el.textContent = entry.raw // huge reply: cheap plain-text mode
+      } else {
+        renderStreamingAgent(entry)
+      }
+    }
   } else if (kind === "reasoning") {
     ensureReasoningStream(itemId).textNode.textContent += text
   } else if (kind === "cmdOutput") {

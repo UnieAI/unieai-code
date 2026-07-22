@@ -381,7 +381,10 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           // detect an intervening on-disk change.
           readHashes.set(abs, hashContent(body));
           const out = spillIfLarge(body, { id: "read", limit: 32_000, fallbackTruncate: () => body.slice(0, 32_000) });
-          return toolResult({ modelText: out.modelText });
+          return toolResult({
+            modelText: out.modelText,
+            metadata: { timelineEvent: { type: "file_read", path: filePath, lines: body.split("\n").length } }
+          });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       async read_output(args) {

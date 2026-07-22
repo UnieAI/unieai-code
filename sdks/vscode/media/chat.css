@@ -22,9 +22,11 @@ body.vscode-light {
   --bg: #ffffff;
   --bg-raised: #fafafa;
   --fg: #171717;
-  --fg-secondary: #666666;
-  --border: #eaeaea;
-  --border-strong: #cccccc;
+  /* slightly darker secondaries/borders than the old values — hairlines and
+     meta text were washing out on bright displays */
+  --fg-secondary: #595959;
+  --border: #e0e0e0;
+  --border-strong: #b8b8b8;
   --primary-bg: #171717;
   --primary-fg: #ffffff;
   --primary-hover: #000000;
@@ -1124,8 +1126,11 @@ pre.diff {
 
 /* ---------- streaming affordances ---------- */
 
-/* Blinking caret at the tail of streaming agent text. */
-.line.agent.streaming .stream-text::after {
+/* Blinking caret at the tail of streaming agent text — attach to the last
+   rendered markdown block (progressive rendering replaces the old plain
+   .stream-text span), with a fallback on the container for plain-text mode. */
+.line.agent.streaming .md:last-of-type > :last-child::after,
+.line.agent.streaming:not(:has(.md))::after {
   content: "\258B";
   color: var(--fg-secondary);
   animation: caret-blink 1s step-end infinite;

@@ -50,6 +50,8 @@ export class AgentCoreBackend {
   // just before tool_use_completed): cached per call so the completed card can
   // render as a red/green file_change diff instead of a plain text card.
   private pendingDiffs = new Map<string, { path: string; kind: string; diff: string }>()
+  // Line count from the read tool's file_read timeline event, per call.
+  private pendingReads = new Map<string, number>()
 
   private get agentItemId(): string {
     return `agent-${this.blockIndex}`
@@ -171,11 +173,19 @@ export class AgentCoreBackend {
       if (e.path && typeof e.diff === "string") {
         this.pendingDiffs.set(String(id), { path: String(e.path), kind: String(e.kind ?? "update"), diff: e.diff })
       }
+    } else if (e.type === "file_read") {
+      // Line count for the read card's label ("read foo.ts · 120L").
+      if (Number.isFinite(e.lines)) this.pendingReads.set(String(id), Number(e.lines))
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {
       const failed = e.type === "tool_use_failed"
       const output = String(e.output_preview ?? e.result ?? e.error ?? "")
-      const command = this.toolCommands.get(String(id)) ?? tool
+      let command = this.toolCommands.get(String(id)) ?? tool
       this.toolCommands.delete(String(id))
+      const lines = this.pendingReads.get(String(id))
+      this.pendingReads.delete(String(id))
+      if (lines !== undefined && !failed) {
+        command = `${command} · ${lines}L`
+      }
       const diff = this.pendingDiffs.get(String(id))
       this.pendingDiffs.delete(String(id))
       if (diff && !failed) {
