@@ -458,6 +458,10 @@ export function createEngine({
   };
 
   async function runTurn(text, { abortSignal = null } = {}) {
+      // Message index at the turn's start, so afterward we can tell whether this
+      // turn used any file-mutating tool (and thus whether the costly workspace
+      // snapshot below is worth taking).
+      const turnStart = messages.length;
       // Re-resolve context sources; if the date rolled over or AGENTS.md changed
       // since last turn, inject a compact delta (not the whole prompt) before the
       // user's message so this turn sees the current state.
@@ -549,7 +553,20 @@ export function createEngine({
       }
 
       // Checkpoint the workspace after the turn's edits settle (best-effort).
-      if (shadowReady) {
+      // The snapshot is a whole-workspace `git add -A` into a shadow repo — on a
+      // large repo the first one costs several seconds — so only pay it when the
+      // turn actually ran a file-mutating tool. A pure Q&A / conversational turn
+      // (e.g. "hi") or a read-only turn cannot have changed files, so blocking
+      // its completion on that scan is wasted latency.
+      const MUTATING_TOOLS = new Set(["write", "edit", "apply_patch", "bash"]);
+      let touchedWorkspace = false;
+      for (let i = turnStart; i < messages.length && !touchedWorkspace; i++) {
+        const m = messages[i];
+        if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+          touchedWorkspace = m.tool_calls.some((tc) => MUTATING_TOOLS.has(tc.function?.name));
+        }
+      }
+      if (shadowReady && touchedWorkspace) {
         const tree = snapshotWorkspace(shadowGitDir, workspace);
         if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
           checkpoints.push({ messageIndex: messages.length, tree });

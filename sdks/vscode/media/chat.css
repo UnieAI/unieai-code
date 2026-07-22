@@ -512,7 +512,6 @@ details.reasoning summary:hover { color: var(--fg); }
 #composer-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
   gap: 6px;
 }
@@ -526,11 +525,13 @@ details.reasoning summary:hover { color: var(--fg); }
   min-width: 0;
 }
 
-/* composer-left holds the mode/perm/web pills; let it take the row's slack and
-   its pills shrink so the send/stop cluster (composer-right) is never pushed
-   off-panel at narrow widths. */
+/* composer-left holds the mode/perm/web pills and takes the row's slack; its
+   pills shrink (min-width:0 + flex-shrink + ellipsis) rather than overflow.
+   composer-right (model + stop + send) hugs the right via margin-left:auto —
+   so it sits right-aligned on the same line when there's room, and drops to
+   the right edge of its own line when the panel is too narrow to share one. */
 .composer-left { flex: 1 1 auto; }
-.composer-right { flex: 0 0 auto; }
+.composer-right { flex: 0 0 auto; margin-left: auto; }
 
 .pill {
   appearance: none;
