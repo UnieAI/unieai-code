@@ -148,8 +148,14 @@ pub(crate) fn expand(display_text: &str, chips: &[Chip]) -> String {
     let mut cursor = 0usize;
     for chip in ordered {
         let Range { start, end } = chip.range;
-        if start < cursor || end > display_text.len() || start > end {
-            // Overlapping, reversed, or out-of-bounds range: skip defensively.
+        if start < cursor
+            || end > display_text.len()
+            || start > end
+            || !display_text.is_char_boundary(start)
+            || !display_text.is_char_boundary(end)
+        {
+            // Overlapping, reversed, out-of-bounds, or mid-multibyte range:
+            // skip defensively — slicing on a non-char boundary would panic.
             continue;
         }
         out.push_str(&display_text[cursor..start]);
@@ -268,5 +274,14 @@ mod tests {
     #[test]
     fn expand_with_no_chips_is_identity() {
         assert_eq!(expand("plain text", &[]), "plain text");
+    }
+
+    #[test]
+    fn expand_skips_mid_multibyte_range_instead_of_panicking() {
+        // "日" is 3 bytes; a range starting inside it must be skipped, not panic.
+        let text = "日本語 rest";
+        let bad = Chip::paste(1..4, 2, "PASTE");
+        let out = expand(text, &[bad]);
+        assert_eq!(out, text, "invalid chip is ignored, text unchanged");
     }
 }

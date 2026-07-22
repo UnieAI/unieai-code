@@ -123,7 +123,12 @@ pub(crate) fn parse_unified_diff(input: &str) -> Vec<FileDiff> {
                 file.path = path;
             }
         } else if let Some(rest) = raw.strip_prefix("--- ") {
-            // Only used as a fallback path when there is no usable +++ path.
+            // A `--- ` header after a file that already collected hunks means a
+            // NEW file in a plain (no `diff --git`) multi-file diff — flush the
+            // finished one instead of merging every file into the last path.
+            if cur_file.as_ref().is_some_and(|f| !f.hunks.is_empty()) {
+                flush_file(&mut files, &mut cur_file);
+            }
             if cur_file.is_none() {
                 cur_file = Some(FileDiff::default());
             }
@@ -613,5 +618,18 @@ new file mode 100644
         assert_eq!(s, DiffSource::PrevTurn);
         let s = s.cycle();
         assert_eq!(s, DiffSource::Workspace);
+    }
+
+    #[test]
+    fn plain_multi_file_diff_without_git_headers_splits_files() {
+        // `diff -u`-style concatenation has no `diff --git` separators; a new
+        // `--- ` header after collected hunks must start a NEW file.
+        let input = "--- a/f1.txt\n+++ b/f1.txt\n@@ -1 +1 @@\n-a\n+b\n--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-c\n+d\n";
+        let files = parse_unified_diff(input);
+        assert_eq!(files.len(), 2, "expected two files, got {files:?}");
+        assert_eq!(files[0].path, "f1.txt");
+        assert_eq!(files[1].path, "f2.txt");
+        assert_eq!(files[0].hunks.len(), 1);
+        assert_eq!(files[1].hunks.len(), 1);
     }
 }
