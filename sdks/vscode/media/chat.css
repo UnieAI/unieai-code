@@ -788,7 +788,40 @@ details.reasoning summary:hover { color: var(--fg); }
   text-align: center;
   margin: auto;
   font-size: calc(var(--vscode-font-size) - 1px);
-  opacity: 0.7;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  max-width: 300px;
+}
+
+.empty-hint {
+  opacity: 0.75;
+}
+
+.empty-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.example-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--fg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 7px 12px;
+  font-size: calc(var(--vscode-font-size) - 1px);
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.example-chip:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+  background: var(--hover);
 }
 
 /* Breathing room between a user prompt and the reply above/below it. */
@@ -1152,6 +1185,49 @@ details.reasoning.live summary {
   background-clip: text;
   color: transparent;
   animation: shimmer 1.6s linear infinite;
+}
+
+/* ---------- motion + scrollbars ---------- */
+
+/* New transcript lines ease in — but only for users who haven't asked the OS
+   to reduce motion. Streaming re-renders replace children INSIDE .line, so
+   this fires once per line, not per token. */
+@media (prefers-reduced-motion: no-preference) {
+  #messages > .line,
+  #messages > details.tool-group {
+    animation: line-in 0.16s ease-out;
+  }
+  @keyframes line-in {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+  }
+}
+
+/* Thin, theme-matched scrollbars (webview default is a chunky gutter). */
+#messages::-webkit-scrollbar,
+.tool-output::-webkit-scrollbar,
+.approval-detail::-webkit-scrollbar,
+pre.diff::-webkit-scrollbar,
+.md pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#messages::-webkit-scrollbar-thumb,
+.tool-output::-webkit-scrollbar-thumb,
+.approval-detail::-webkit-scrollbar-thumb,
+pre.diff::-webkit-scrollbar-thumb,
+.md pre::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+#messages::-webkit-scrollbar-track,
+.tool-output::-webkit-scrollbar-track,
+.approval-detail::-webkit-scrollbar-track,
+pre.diff::-webkit-scrollbar-track,
+.md pre::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* ---------- jump-to-latest pill ---------- */

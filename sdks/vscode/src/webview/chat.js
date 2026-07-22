@@ -58,6 +58,7 @@ const I18N = {
     hintSteering: "Enter 插話 · Shift+Enter 換行 · ■ 停止",
     hintIdle: "Enter 送出 · Shift+Enter 換行 · / 指令",
     emptyState: "問我任何事，或輸入 / 使用指令",
+    emptyExamples: ["修掉這個 repo 的一個 TODO", "解釋 src/ 的整體架構", "幫我寫這支模組的單元測試"],
     enterCompanyUrl: "請先輸入公司 Studio 網址",
     noModels: "你的帳戶還沒有可用模型。",
     addModels: "到 UnieAI Studio 新增模型",
@@ -154,6 +155,7 @@ const I18N = {
     hintSteering: "Enter 插话 · Shift+Enter 换行 · ■ 停止",
     hintIdle: "Enter 发送 · Shift+Enter 换行 · / 命令",
     emptyState: "问我任何事，或输入 / 使用命令",
+    emptyExamples: ["修掉这个仓库的一个 TODO", "解释 src/ 的整体架构", "帮我给这个模块写单元测试"],
     enterCompanyUrl: "请先输入公司 Studio 网址",
     noModels: "你的账户还没有可用模型。",
     addModels: "到 UnieAI Studio 添加模型",
@@ -250,6 +252,7 @@ const I18N = {
     hintSteering: "Enter to interject · Shift+Enter for newline · ■ to stop",
     hintIdle: "Enter to send · Shift+Enter for newline · / for commands",
     emptyState: "Ask me anything, or type / for commands",
+    emptyExamples: ["Fix a TODO in this repo", "Explain the architecture of src/", "Write unit tests for this module"],
     enterCompanyUrl: "Enter your company Studio URL first",
     noModels: "Your account has no models yet. ",
     addModels: "Add models in UnieAI Studio",
@@ -348,6 +351,7 @@ const I18N = {
     hintSteering: "Enter 割り込み · Shift+Enter 改行 · ■ 停止",
     hintIdle: "Enter 送信 · Shift+Enter 改行 · / コマンド",
     emptyState: "何でも質問してください。/ でコマンド一覧",
+    emptyExamples: ["このリポジトリの TODO を1つ修正", "src/ の全体構成を説明", "このモジュールのユニットテストを作成"],
     enterCompanyUrl: "会社の Studio URL を入力してください",
     noModels: "アカウントに利用可能なモデルがありません。",
     addModels: "UnieAI Studio でモデルを追加",
@@ -1517,7 +1521,25 @@ function showChat() {
   if (!messagesEl.childElementCount) {
     const empty = document.createElement("div")
     empty.className = "empty-state"
-    empty.textContent = L.emptyState
+    const hint = document.createElement("div")
+    hint.className = "empty-hint"
+    hint.textContent = L.emptyState
+    empty.appendChild(hint)
+    // Example-prompt chips: one click drops the text into the composer.
+    const chips = document.createElement("div")
+    chips.className = "empty-chips"
+    for (const example of L.emptyExamples || []) {
+      const chip = document.createElement("button")
+      chip.type = "button"
+      chip.className = "example-chip"
+      chip.textContent = example
+      chip.addEventListener("click", () => {
+        inputEl.value = example
+        inputEl.focus()
+      })
+      chips.appendChild(chip)
+    }
+    empty.appendChild(chips)
     messagesEl.appendChild(empty)
     const clear = () => empty.remove()
     inputEl.addEventListener("keydown", clear, { once: true })
