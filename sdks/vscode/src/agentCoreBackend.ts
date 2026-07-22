@@ -46,6 +46,10 @@ export class AgentCoreBackend {
   // completed/failed event carries no args_preview, and rebuilding the card
   // from it alone would degrade "$ git status" to "$ bash".
   private toolCommands = new Map<string, string>()
+  // Diff attached by the edit/write tool (file_diff timeline event, emitted
+  // just before tool_use_completed): cached per call so the completed card can
+  // render as a red/green file_change diff instead of a plain text card.
+  private pendingDiffs = new Map<string, { path: string; kind: string; diff: string }>()
 
   private get agentItemId(): string {
     return `agent-${this.blockIndex}`
@@ -162,11 +166,29 @@ export class AgentCoreBackend {
         },
         done: false,
       })
+    } else if (e.type === "file_diff") {
+      // Emitted by edit/write just before their tool_use_completed.
+      if (e.path && typeof e.diff === "string") {
+        this.pendingDiffs.set(String(id), { path: String(e.path), kind: String(e.kind ?? "update"), diff: e.diff })
+      }
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {
       const failed = e.type === "tool_use_failed"
       const output = String(e.output_preview ?? e.result ?? e.error ?? "")
       const command = this.toolCommands.get(String(id)) ?? tool
       this.toolCommands.delete(String(id))
+      const diff = this.pendingDiffs.get(String(id))
+      this.pendingDiffs.delete(String(id))
+      if (diff && !failed) {
+        // Successful edit/write with a diff: render the red/green file card
+        // (same shape the app-server file_change items use) instead of a
+        // plain text tool card.
+        this.cb.post({
+          type: "itemUpsert",
+          item: { id, type: "file_change", status: "completed", changes: [diff] },
+          done: true,
+        })
+        return
+      }
       this.cb.post({
         type: "itemUpsert",
         item: {

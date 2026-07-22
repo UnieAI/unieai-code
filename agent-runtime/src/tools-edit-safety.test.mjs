@@ -311,3 +311,64 @@ test("external acceptForSession is remembered — second access does not re-prom
     assert.equal(prompts, 1, "second access must reuse the session approval");
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
+
+// --- makeDiff (edit/write card diff rendering) -------------------------------
+
+test("makeDiff: identical texts produce empty diff", async () => {
+  const { makeDiff } = await import("./tools.mjs");
+  assert.equal(makeDiff("a\nb\nc", "a\nb\nc"), "");
+});
+
+test("makeDiff: middle change yields hunk with context and +/- lines", async () => {
+  const { makeDiff } = await import("./tools.mjs");
+  const d = makeDiff("one\ntwo\nthree\nfour\nfive", "one\ntwo\nTHREE\nfour\nfive");
+  assert.match(d, /^@@ -1,5 \+1,5 @@/);
+  assert.ok(d.includes("-three"));
+  assert.ok(d.includes("+THREE"));
+  assert.ok(d.includes(" two"), "context kept");
+});
+
+test("makeDiff: new file (empty before) is all additions", async () => {
+  const { makeDiff } = await import("./tools.mjs");
+  const d = makeDiff("", "x\ny");
+  assert.ok(d.includes("+x") && d.includes("+y"));
+  assert.ok(!d.split("\n").some((l) => l.startsWith("-") && !l.startsWith("---")));
+});
+
+test("makeDiff: output is capped with an omission marker", async () => {
+  const { makeDiff } = await import("./tools.mjs");
+  const big = Array.from({ length: 500 }, (_, i) => `line${i}`).join("\n");
+  const d = makeDiff("", big, { maxLines: 50 });
+  assert.ok(d.split("\n").length <= 51);
+  assert.match(d, /more lines/);
+});
+
+test("edit result carries a file_diff timeline event", async () => {
+  const dir = tmpWs();
+  try {
+    const t = await tools(dir);
+    writeFileSync(join(dir, "d.txt"), "alpha\nbeta\ngamma\n");
+    await t.executors.read({ filePath: "d.txt" });
+    const r = await t.executors.edit({ filePath: "d.txt", oldString: "beta", newString: "BETA" });
+    assert.equal(r.ok, true);
+    const ev = r.metadata?.timelineEvent;
+    assert.ok(ev, "timelineEvent attached");
+    assert.equal(ev.type, "file_diff");
+    assert.equal(ev.path, "d.txt");
+    assert.equal(ev.kind, "update");
+    assert.ok(ev.diff.includes("-beta") && ev.diff.includes("+BETA"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("write over existing carries update diff; create carries add diff", async () => {
+  const dir = tmpWs();
+  try {
+    const t = await tools(dir);
+    const created = await t.executors.write({ filePath: "n.txt", content: "hello\n" });
+    assert.equal(created.metadata?.timelineEvent?.kind, "add");
+    await t.executors.read({ filePath: "n.txt" });
+    const updated = await t.executors.write({ filePath: "n.txt", content: "hello world\n" });
+    assert.equal(updated.metadata?.timelineEvent?.kind, "update");
+    assert.ok(updated.metadata.timelineEvent.diff.includes("+hello world"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1149,6 +1149,31 @@ details.reasoning.live summary {
   animation: shimmer 1.6s linear infinite;
 }
 
+/* ---------- jump-to-latest pill ---------- */
+
+#jump-latest {
+  position: absolute;
+  right: 14px;
+  /* float just above the composer (its min height + hint line) */
+  bottom: 132px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-size: 15px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  transition: background 0.12s ease, border-color 0.12s ease;
+  z-index: 5;
+}
+
+#jump-latest:hover {
+  background: var(--hover);
+  border-color: var(--fg-secondary);
+}
+
 /* ---------- verb groups (folded runs of same-tool cards) ---------- */
 
 details.tool-group {

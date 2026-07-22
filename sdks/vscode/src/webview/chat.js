@@ -104,6 +104,7 @@ const I18N = {
     rewindCancelBtn: "取消",
     rewindDone: (r, d) => `已還原 ${r} 個檔案、刪除 ${d} 個（還原前狀態已存為新回捲點，可再還原回來）`,
     rewindFailed: "還原失敗（回合進行中或快照不可用）",
+    jumpToLatest: "跳到最新",
   },
   "zh-CN": {
     copy: "复制",
@@ -199,6 +200,7 @@ const I18N = {
     rewindCancelBtn: "取消",
     rewindDone: (r, d) => `已还原 ${r} 个文件、删除 ${d} 个（还原前状态已存为新回卷点，可再还原回来）`,
     rewindFailed: "还原失败（回合进行中或快照不可用）",
+    jumpToLatest: "跳到最新",
   },
   en: {
     copy: "Copy",
@@ -296,6 +298,7 @@ const I18N = {
     rewindCancelBtn: "Cancel",
     rewindDone: (r, d) => `Restored ${r} file(s), deleted ${d} (pre-restore state saved as a new rewind point)`,
     rewindFailed: "Restore failed (a turn is running, or snapshots are unavailable)",
+    jumpToLatest: "Jump to latest",
   },
   ja: {
     copy: "コピー",
@@ -393,6 +396,7 @@ const I18N = {
     rewindCancelBtn: "キャンセル",
     rewindDone: (r, d) => `${r} 件を復元、${d} 件を削除しました（復元前の状態は新しいポイントとして保存済み）`,
     rewindFailed: "復元に失敗しました（ターン実行中、またはスナップショット利用不可）",
+    jumpToLatest: "最新へ移動",
   },
 }
 
@@ -427,11 +431,24 @@ let studioModelsUrl = "https://studio.unieai.com/models"
 // ---------- helpers ----------
 
 // Only auto-scroll while the user is already reading the tail; don't yank
-// them down while they're scrolled up reviewing earlier output.
+// them down while they're scrolled up reviewing earlier output. While scrolled
+// up, a floating "jump to latest" pill offers the way back.
 let stickToBottom = true
+const jumpBtn = document.createElement("button")
+jumpBtn.id = "jump-latest"
+jumpBtn.type = "button"
+jumpBtn.textContent = "↓"
+jumpBtn.hidden = true
+jumpBtn.addEventListener("click", () => {
+  stickToBottom = true
+  jumpBtn.hidden = true
+  messagesEl.scrollTop = messagesEl.scrollHeight
+})
+messagesEl.parentElement?.appendChild(jumpBtn)
 messagesEl.addEventListener("scroll", () => {
   stickToBottom =
     messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80
+  jumpBtn.hidden = stickToBottom
 })
 
 // Coalesce scrolls to one per animation frame: reading scrollHeight forces a
@@ -1916,6 +1933,7 @@ window.addEventListener("message", (e) => {
   switch (message.type) {
     case "bootstrap": {
       L = I18N[message.locale] || I18N.en
+      jumpBtn.title = L.jumpToLatest
       modelEl.innerHTML = ""
       for (const model of message.models || []) {
         const option = document.createElement("option")
