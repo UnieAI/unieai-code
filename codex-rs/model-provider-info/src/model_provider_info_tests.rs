@@ -385,10 +385,8 @@ fn test_merge_configured_model_providers_unieai_override_replaces_built_in() {
         wire_api: WireApi::Responses,
         ..ModelProviderInfo::default()
     };
-    let configured_model_providers = std::collections::HashMap::from([(
-        UNIEAI_PROVIDER_ID.to_string(),
-        custom_unieai.clone(),
-    )]);
+    let configured_model_providers =
+        std::collections::HashMap::from([(UNIEAI_PROVIDER_ID.to_string(), custom_unieai.clone())]);
 
     let merged = merge_configured_model_providers(
         built_in_model_providers(/*openai_base_url*/ None),

@@ -1,4 +1,4 @@
-//! Default Codex HTTP client: shared `User-Agent`, `originator`, optional residency header, and
+//! Default UnieAI HTTP client: shared `User-Agent`, `originator`, optional residency header, and
 //! reqwest/`HttpClient` construction.
 //!
 //! Use [`crate::default_client`] or [`codex_login::default_client`] from other crates in this
@@ -37,7 +37,7 @@ use crate::outbound_proxy::AuthRouteConfig;
 ///
 /// A space is automatically added between the suffix and the rest of the User-Agent string.
 /// The full user agent string is returned from the mcp initialize response.
-/// Parenthesis will be added by Codex. This should only specify what goes inside of the parenthesis.
+/// Parenthesis will be added by UnieAI. This should only specify what goes inside of the parenthesis.
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 pub const DEFAULT_ORIGINATOR: &str = "unieai_code_cli";
 pub const CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
@@ -219,21 +219,21 @@ fn sanitize_user_agent(candidate: String, fallback: &str) -> String {
 /// Create an HTTP client with default `originator` and `User-Agent` headers set.
 ///
 /// This supported default path preserves reqwest's existing proxy behavior and does not opt into
-/// Codex's route-aware system/PAC resolution.
+/// UnieAI's route-aware system/PAC resolution.
 pub fn create_client() -> HttpClient {
     let inner = build_reqwest_client();
     HttpClient::new(inner)
 }
 
-/// Builds the default reqwest client used for ordinary Codex HTTP traffic.
+/// Builds the default reqwest client used for ordinary UnieAI HTTP traffic.
 ///
-/// This starts from the standard Codex user agent, default headers, and sandbox-specific proxy
+/// This starts from the standard UnieAI user agent, default headers, and sandbox-specific proxy
 /// policy, then layers in shared custom CA handling from `CODEX_CA_CERTIFICATE` /
 /// `SSL_CERT_FILE`. The function remains infallible for compatibility with existing call sites, so
 /// a custom-CA or builder failure is logged and falls back to `reqwest::Client::new()`.
 ///
 /// This supported default path preserves reqwest's existing proxy behavior and does not opt into
-/// Codex's route-aware system/PAC resolution. Auth callers with route settings must use
+/// UnieAI's route-aware system/PAC resolution. Auth callers with route settings must use
 /// `build_default_auth_reqwest_client` or `create_default_auth_client`.
 pub fn build_reqwest_client() -> reqwest::Client {
     try_build_reqwest_client().unwrap_or_else(|error| {
@@ -250,7 +250,7 @@ pub fn build_reqwest_client() -> reqwest::Client {
     })
 }
 
-/// Tries to build the default reqwest client used for ordinary Codex HTTP traffic.
+/// Tries to build the default reqwest client used for ordinary UnieAI HTTP traffic.
 ///
 /// Callers that need a structured CA-loading failure instead of the legacy logged fallback can use
 /// this method directly.
@@ -258,9 +258,9 @@ pub fn try_build_reqwest_client() -> Result<reqwest::Client, BuildCustomCaTransp
     build_reqwest_client_with_custom_ca(default_reqwest_client_builder())
 }
 
-/// Builds the default Codex reqwest client for a concrete outbound route.
+/// Builds the default UnieAI reqwest client for a concrete outbound route.
 ///
-/// When route-aware proxy handling is disabled, or the client is running inside the Codex
+/// When route-aware proxy handling is disabled, or the client is running inside the UnieAI
 /// sandbox, this preserves the default client's existing proxy behavior. Otherwise it resolves
 /// the destination through the shared system/PAC-aware routing policy.
 pub fn build_default_reqwest_client_for_route(
@@ -287,7 +287,7 @@ pub fn build_default_reqwest_client_for_route(
     )
 }
 
-/// Builds the default Codex reqwest client for a concrete outbound route without blocking the
+/// Builds the default UnieAI reqwest client for a concrete outbound route without blocking the
 /// async runtime worker that initiated the request.
 pub async fn build_default_reqwest_client_for_route_async(
     http_client_factory: HttpClientFactory,
@@ -315,7 +315,7 @@ fn default_reqwest_client_builder() -> reqwest::ClientBuilder {
     with_chatgpt_cloudflare_cookie_store(builder)
 }
 
-/// Builds an HTTP client for an auth endpoint without Codex default headers.
+/// Builds an HTTP client for an auth endpoint without UnieAI default headers.
 pub(crate) fn create_raw_auth_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,
@@ -324,7 +324,7 @@ pub(crate) fn create_raw_auth_client(
         .build_client_without_request_logging(endpoint, ClientRouteClass::Auth)
 }
 
-/// Builds the default Codex reqwest client for an auth endpoint.
+/// Builds the default UnieAI reqwest client for an auth endpoint.
 pub(crate) fn build_default_auth_reqwest_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,
@@ -336,7 +336,7 @@ pub(crate) fn build_default_auth_reqwest_client(
     )
 }
 
-/// Builds the default Codex HTTP client wrapper for an auth endpoint.
+/// Builds the default UnieAI HTTP client wrapper for an auth endpoint.
 pub(crate) fn create_default_auth_client(
     endpoint: &str,
     auth_route_config: Option<&AuthRouteConfig>,

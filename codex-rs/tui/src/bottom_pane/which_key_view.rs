@@ -94,7 +94,11 @@ fn push_row(rows: &mut Vec<WhichKeyRow>, chord: Option<KeyChord>, label: &str) {
 /// triggers, which are not keymap-configurable today.
 pub(crate) fn composer_which_key_groups(keymap: &RuntimeKeymap) -> Vec<WhichKeyGroup> {
     let mut conversation = Vec::new();
-    push_row(&mut conversation, chord_of(&keymap.composer.submit), "Send message");
+    push_row(
+        &mut conversation,
+        chord_of(&keymap.composer.submit),
+        "Send message",
+    );
     push_row(
         &mut conversation,
         chord_of(&keymap.composer.queue),
@@ -118,12 +122,19 @@ pub(crate) fn composer_which_key_groups(keymap: &RuntimeKeymap) -> Vec<WhichKeyG
         chord_of(&keymap.chat.edit_queued_message),
         "Edit most recently queued message",
     );
-    push_row(&mut conversation, chord_of(&keymap.app.copy), "Copy last response");
+    push_row(
+        &mut conversation,
+        chord_of(&keymap.app.copy),
+        "Copy last response",
+    );
 
     let mut editing = Vec::new();
     push_row(
         &mut editing,
-        chord_preferring(&keymap.editor.insert_newline, key_hint::shift(KeyCode::Enter)),
+        chord_preferring(
+            &keymap.editor.insert_newline,
+            key_hint::shift(KeyCode::Enter),
+        ),
         "Insert newline",
     );
     push_row(
@@ -166,10 +177,17 @@ pub(crate) fn composer_which_key_groups(keymap: &RuntimeKeymap) -> Vec<WhichKeyG
         chord_of(&keymap.app.open_transcript),
         "Show full transcript",
     );
-    push_row(&mut navigation, chord_of(&keymap.app.clear_terminal), "Clear screen");
+    push_row(
+        &mut navigation,
+        chord_of(&keymap.app.clear_terminal),
+        "Clear screen",
+    );
 
     let mut other = Vec::new();
-    other.push(WhichKeyRow::new(KeyChord::ctrl('p'), "Open command palette"));
+    other.push(WhichKeyRow::new(
+        KeyChord::ctrl('p'),
+        "Open command palette",
+    ));
     other.push(WhichKeyRow::new(
         KeyChord::plain(KeyCode::Char('/')),
         "Slash commands",
@@ -410,10 +428,7 @@ mod tests {
         composer_which_key_groups(&RuntimeKeymap::defaults())
     }
 
-    fn test_view() -> (
-        WhichKeyView,
-        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-    ) {
+    fn test_view() -> (WhichKeyView, tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
         let (tx, rx) = unbounded_channel::<AppEvent>();
         let view = WhichKeyView::new(default_groups(), AppEventSender::new(tx));
         (view, rx)
@@ -523,10 +538,7 @@ mod tests {
         let rows = (0..20)
             .map(|i| WhichKeyRow::new(KeyChord::ctrl(char::from(b'a' + i)), format!("Action {i}")))
             .collect();
-        let groups = vec![WhichKeyGroup {
-            name: "Big",
-            rows,
-        }];
+        let groups = vec![WhichKeyGroup { name: "Big", rows }];
         let pages = paginate(&groups, 6);
         assert!(pages.len() > 1);
         for page in &pages {

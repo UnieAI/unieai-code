@@ -478,7 +478,9 @@ async fn poll_for_tokens(
                     .error_description
                     .or_else(|| other.map(str::to_string))
                     .unwrap_or_else(|| "unknown error".to_string());
-                return Err(io::Error::other(format!("device token request failed: {detail}")));
+                return Err(io::Error::other(format!(
+                    "device token request failed: {detail}"
+                )));
             }
         }
 

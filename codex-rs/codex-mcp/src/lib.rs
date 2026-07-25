@@ -16,9 +16,9 @@ pub use runtime::SandboxState;
 pub use tool_catalog_cache::McpToolCatalogCache;
 pub use tools::ToolInfo;
 
-/// Backward-compatible name for the shared Codex Apps tools runtime.
+/// Backward-compatible name for the shared UnieAI Apps tools runtime.
 pub type CodexAppsToolsCache = codex_connectors::ConnectorRuntimeManager<ToolInfo>;
-/// Backward-compatible name for the Codex Apps runtime context key.
+/// Backward-compatible name for the UnieAI Apps runtime context key.
 pub type CodexAppsToolsCacheKey = codex_connectors::ConnectorRuntimeContextKey;
 
 pub use catalog::McpCatalogBuilder;
@@ -44,7 +44,7 @@ pub use auth_elicitation::auth_elicitation_id;
 pub use auth_elicitation::build_auth_elicitation;
 pub use auth_elicitation::build_auth_elicitation_plan;
 pub use auth_elicitation::connector_auth_failure_from_tool_result;
-/// Backward-compatible name for the Codex Apps runtime context key builder.
+/// Backward-compatible name for the UnieAI Apps runtime context key builder.
 pub use codex_connectors::connector_runtime_context_key as codex_apps_tools_cache_key;
 pub use mcp::codex_apps_mcp_server_config;
 pub use mcp::configured_mcp_servers;

@@ -130,7 +130,10 @@ mod tests {
         );
         // Accepting preserves the exact typed prefix, adopting prediction casing
         // only for the suffix.
-        assert_eq!(accept_ghost("RUN", "run the tests").as_deref(), Some("RUN the tests"));
+        assert_eq!(
+            accept_ghost("RUN", "run the tests").as_deref(),
+            Some("RUN the tests")
+        );
     }
 
     #[test]

@@ -609,7 +609,7 @@ description = "Research role"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
-Research with Codex carefully."""
+Research with UnieAI carefully."""
 "#,
     )
     .expect("parse expected agent");

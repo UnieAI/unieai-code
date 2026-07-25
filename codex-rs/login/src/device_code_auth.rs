@@ -83,7 +83,7 @@ async fn request_user_code(
         if status == StatusCode::NOT_FOUND {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "device code login is not enabled for this Codex server. Use the browser login or verify the server URL.",
+                "device code login is not enabled for this UnieAI server. Use the browser login or verify the server URL.",
             ));
         }
 
@@ -153,7 +153,7 @@ fn device_code_prompt(verification_url: &str, code: &str) -> String {
 \nFollow these steps to sign in with ChatGPT using device code authorization:\n\
 \n1. Open this link in your browser and sign in to your account\n   {ANSI_BLUE}{verification_url}{ANSI_RESET}\n\
 \n2. Enter this one-time code {ANSI_GRAY}(expires in 15 minutes){ANSI_RESET}\n   {ANSI_BLUE}{code}{ANSI_RESET}\n\
-\n{ANSI_GRAY}Continue only if you started this login in Codex. If a website or another person gave you this code, cancel.{ANSI_RESET}\n",
+\n{ANSI_GRAY}Continue only if you started this login in UnieAI. If a website or another person gave you this code, cancel.{ANSI_RESET}\n",
     )
 }
 

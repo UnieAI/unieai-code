@@ -31,7 +31,7 @@ pub use feedback_diagnostics::FeedbackDiagnostics;
 
 /// Filename used for the redacted `codex doctor --json` feedback attachment.
 pub const DOCTOR_REPORT_ATTACHMENT_FILENAME: &str = "codex-doctor-report.json";
-/// Filename used for the raw Codex Apps MCP tools cache feedback attachment.
+/// Filename used for the raw UnieAI Apps MCP tools cache feedback attachment.
 pub const CODEX_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME: &str = "codex-apps-tools-cache.json";
 /// Filename used for the raw connector directory cache feedback attachment.
 pub const CODEX_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME: &str = "codex-app-directory-cache.json";
@@ -424,6 +424,12 @@ impl FeedbackSnapshot {
         Ok(path)
     }
 
+    /// Captured in-memory log buffer for this session, for callers that ship
+    /// feedback somewhere other than Sentry (for example a webhook receiver).
+    pub fn logs_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Upload feedback to Sentry with optional attachments.
     pub fn upload_feedback(&self, options: FeedbackUploadOptions<'_>) -> Result<()> {
         use std::str::FromStr;
@@ -459,7 +465,7 @@ impl FeedbackSnapshot {
 
         let mut envelope = Envelope::new();
         let title = format!(
-            "[{}]: Codex session {}",
+            "[{}]: UnieAI session {}",
             display_classification(options.classification),
             self.thread_id
         );

@@ -1,7 +1,7 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 
-/// Provenance for one layer in the effective Codex configuration.
+/// Provenance for one layer in the effective UnieAI configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigLayerSource {
     /// Managed preferences delivered by MDM.

@@ -1,4 +1,4 @@
-//! Command parsing and safety utilities shared across Codex crates.
+//! Command parsing and safety utilities shared across UnieAI crates.
 
 pub mod shell_detect;
 

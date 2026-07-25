@@ -14,7 +14,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Resolved configuration shared by all Codex SQLite connections.
+/// Resolved configuration Shared by all UnieAI SQLite connections.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteConfig {
     sqlite_home: AbsolutePathBuf,
@@ -39,7 +39,7 @@ impl SqliteConfig {
         self.sqlite_home.as_path()
     }
 
-    /// Open a writable Codex SQLite database, creating it if necessary.
+    /// Open a writable UnieAI SQLite database, creating it if necessary.
     pub async fn open_read_write_pool(&self, path: &Path) -> Result<SqlitePool, Error> {
         let options = SqliteConnectOptions::new()
             .filename(path)
@@ -55,7 +55,7 @@ impl SqliteConfig {
             .await
     }
 
-    /// Open an existing Codex SQLite database without creating or modifying it.
+    /// Open an existing UnieAI SQLite database without creating or modifying it.
     pub async fn open_read_only_pool(&self, path: &Path) -> Result<SqlitePool, Error> {
         let options = SqliteConnectOptions::new()
             .filename(path)

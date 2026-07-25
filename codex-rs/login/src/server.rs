@@ -56,7 +56,7 @@ use tracing::warn;
 
 pub(super) const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const DEFAULT_PORT: u16 = 1455;
-// Keep in sync with the Codex CLI Hydra redirect URI allow-list.
+// Keep in sync with the UnieAI CLI Hydra redirect URI allow-list.
 const FALLBACK_PORT: u16 = 1457;
 static LOGIN_ERROR_PAGE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     Template::parse(include_str!("assets/error.html"))
@@ -959,7 +959,7 @@ fn login_error_response(
     }
 }
 
-/// Returns true when the OAuth callback represents a missing Codex entitlement.
+/// Returns true when the OAuth callback represents a missing UnieAI entitlement.
 fn is_missing_codex_entitlement_error(error_code: &str, error_description: Option<&str>) -> bool {
     error_code == "access_denied"
         && error_description.is_some_and(|description| {

@@ -144,9 +144,9 @@ pub(crate) struct TurnMetadataWorkspace {
     pub(crate) has_changes: Option<bool>,
 }
 
-/// Caller-owned snapshot of Codex metadata sent to ResponsesAPI.
+/// Caller-owned snapshot of UnieAI metadata sent to ResponsesAPI.
 ///
-/// The full Codex turn metadata blob is transported canonically as
+/// The full UnieAI turn metadata blob is transported canonically as
 /// `client_metadata["x-codex-turn-metadata"]`. Flat `client_metadata` keys and direct HTTP/ws
 /// headers are generated compatibility projections of this snapshot, not separate sources of
 /// truth.
@@ -294,7 +294,7 @@ impl CodexResponsesMetadata {
             workspaces: non_empty_workspaces(&self.workspaces),
             turn_started_at_unix_ms: self.turn_started_at_unix_ms,
             compaction,
-            // responsesapi_client_metadata enriches the Codex turn metadata blob, not literal
+            // responsesapi_client_metadata enriches the UnieAI turn metadata blob, not literal
             // top-level Responses client_metadata. Reserved Codex-owned keys are filtered when
             // these extras enter turn state.
             extra: &self.extra,

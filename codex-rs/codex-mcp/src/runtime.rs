@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::McpConnectionManager;
 
-/// Owns the currently published MCP connection set for one Codex thread.
+/// Owns the currently published MCP connection set for one UnieAI thread.
 ///
 /// Replacements are published atomically. Callers that already hold a snapshot
 /// keep the previous connection set alive until their work completes.

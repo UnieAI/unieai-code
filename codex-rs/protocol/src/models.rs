@@ -228,7 +228,7 @@ impl AdditionalPermissionProfile {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxEnforcement {
-    /// Codex owns sandbox construction for this profile.
+    /// UnieAI owns sandbox construction for this profile.
     #[default]
     Managed,
     /// No outer filesystem sandbox should be applied.
@@ -247,7 +247,7 @@ impl SandboxEnforcement {
     }
 }
 
-/// Filesystem permissions for profiles where Codex owns sandbox construction.
+/// Filesystem permissions for profiles where UnieAI owns sandbox construction.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type")]
@@ -310,7 +310,7 @@ pub const BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS: &str = ":danger-full-a
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type")]
 pub enum PermissionProfile {
-    /// Codex owns sandbox construction for this profile.
+    /// UnieAI owns sandbox construction for this profile.
     #[serde(rename_all = "snake_case")]
     #[ts(rename_all = "snake_case")]
     Managed {

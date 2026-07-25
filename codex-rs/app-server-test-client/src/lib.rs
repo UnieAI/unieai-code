@@ -110,9 +110,9 @@ const OTEL_SERVICE_NAME: &str = "codex-app-server-test-client";
 const TRACE_DISABLED_MESSAGE: &str =
     "Not enabled - enable tracing in $CODEX_HOME/config.toml to get a trace URL!";
 
-/// Minimal launcher that initializes the Codex app-server and logs the handshake.
+/// Minimal launcher that initializes the UnieAI app-server and logs the handshake.
 #[derive(Parser)]
-#[command(author = "Codex", version, about = "Bootstrap Codex app-server", long_about = None)]
+#[command(author = "Codex", version, about = "Bootstrap UnieAI app-server", long_about = None)]
 struct Cli {
     /// Path to the `codex` CLI binary. When set, requests use stdio by
     /// spawning `codex app-server` as a child process.
@@ -166,9 +166,9 @@ enum CliCommand {
         #[arg(long, default_value_t = false)]
         kill: bool,
     },
-    /// Send a user message through the Codex app-server.
+    /// Send a user message through the UnieAI app-server.
     SendMessage {
-        /// User message to send to Codex.
+        /// User message to send to UnieAI.
         user_message: String,
     },
     /// Send a user message through the app-server V2 thread/turn APIs.
@@ -176,14 +176,14 @@ enum CliCommand {
         /// Opt into experimental app-server methods and fields.
         #[arg(long)]
         experimental_api: bool,
-        /// User message to send to Codex.
+        /// User message to send to UnieAI.
         user_message: String,
     },
     /// Resume a V2 thread by id, then send a user message.
     ResumeMessageV2 {
         /// Existing thread id to resume.
         thread_id: String,
-        /// User message to send to Codex.
+        /// User message to send to UnieAI.
         user_message: String,
     },
     /// Resume a V2 thread and continuously stream notifications/events.
@@ -236,7 +236,7 @@ enum CliCommand {
         /// Use the device-code login flow instead of the browser callback flow.
         #[arg(long, default_value_t = false, conflicts_with = "amazon_bedrock")]
         device_code: bool,
-        /// Use a Codex-managed Amazon Bedrock API key.
+        /// Use a UnieAI-managed Amazon Bedrock API key.
         #[arg(long, default_value_t = false, conflicts_with = "device_code")]
         amazon_bedrock: bool,
         /// Amazon Bedrock API key.
@@ -248,12 +248,12 @@ enum CliCommand {
     },
     /// Log out of the current account and wait for the account update.
     TestLogout,
-    /// Fetch the current account rate limits from the Codex app-server.
+    /// Fetch the current account rate limits from the UnieAI app-server.
     GetAccountRateLimits,
-    /// List the available models from the Codex app-server.
+    /// List the available models from the UnieAI app-server.
     #[command(name = "model-list")]
     ModelList,
-    /// List stored threads from the Codex app-server.
+    /// List stored threads from the UnieAI app-server.
     #[command(name = "thread-list")]
     ThreadList {
         /// Number of threads to return.

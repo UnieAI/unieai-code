@@ -104,7 +104,7 @@ pub trait CodeModeSessionDelegate: Send + Sync {
     fn cell_closed(&self, cell_id: &CellId);
 }
 
-/// A durable code-mode session owned by one Codex thread.
+/// A durable code-mode session owned by one UnieAI thread.
 ///
 /// Cells executed in the same session share stored values. Separate sessions
 /// must keep those values isolated. Implementations may execute cells
@@ -122,7 +122,7 @@ pub trait CodeModeSession: Send + Sync {
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()>;
 }
 
-/// Creates code-mode sessions for Codex threads.
+/// Creates code-mode sessions for UnieAI threads.
 ///
 /// Implementations may share a remote host process across all sessions created
 /// by one provider.

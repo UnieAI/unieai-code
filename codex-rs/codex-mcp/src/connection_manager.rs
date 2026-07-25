@@ -1,4 +1,4 @@
-//! Aggregates MCP server connections for Codex.
+//! Aggregates MCP server connections for UnieAI.
 //!
 //! [`McpConnectionManager`] owns the set of running async RMCP clients keyed by
 //! MCP server name. It coordinates startup status events, keeps server origin
@@ -196,7 +196,7 @@ impl McpConnectionManager {
                 || Ok(None),
                 |config| runtime_context.resolve_server_environment(&server_name, config),
             );
-            // For built-in Codex Apps, `CODEX_CONNECTORS_TOKEN` is a debug
+            // For built-in UnieAI Apps, `CODEX_CONNECTORS_TOKEN` is a debug
             // override: it supplies runtime auth but bypasses the shared tools
             // cache.
             let uses_env_bearer_token =
@@ -215,7 +215,7 @@ impl McpConnectionManager {
                 codex_apps_tools_cache
                     .context(codex_home.clone(), codex_apps_tools_cache_key.clone())
             });
-            // The reserved Codex Apps registration follows the shared
+            // The reserved UnieAI Apps registration follows the shared
             // AuthManager across refreshes. In the hosted-plugin path, this
             // is the ChatGPT /ps/mcp connection. User-configured MCP
             // registrations keep their existing configured auth path.
@@ -226,7 +226,7 @@ impl McpConnectionManager {
             } else {
                 static_chatgpt_auth_provider.clone()
             };
-            // If Codex Apps has an env bearer token, that is its auth path. Do
+            // If UnieAI Apps has an env bearer token, that is its auth path. Do
             // not also attach the ambient CodexAuth provider.
             let runtime_auth_provider =
                 if server_name == CODEX_APPS_MCP_SERVER_NAME && uses_env_bearer_token {
@@ -665,7 +665,7 @@ impl McpConnectionManager {
                 (Some(cache_context), Some(fetch_ticket)) => cache_context
                     .publish_if_newest_accepted(fetch_ticket, &managed_client.server_info, tools),
                 (None, None) => tools,
-                _ => unreachable!("Codex Apps fetch ticket requires cache context"),
+                _ => unreachable!("UnieAI Apps fetch ticket requires cache context"),
             };
         emit_duration(
             MCP_TOOLS_LIST_DURATION_METRIC,
@@ -931,7 +931,7 @@ impl McpConnectionManager {
     }
 
     /// Returns presentation metadata from the current connection.
-    /// Codex Apps metadata may come from its existing cache; regular MCP server information is
+    /// UnieAI Apps metadata may come from its existing cache; regular MCP server information is
     /// connection-specific, so pending regular clients are awaited.
     pub(crate) async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
         let mut server_infos = HashMap::new();

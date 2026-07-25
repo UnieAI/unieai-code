@@ -2,7 +2,7 @@
 //!
 //! This module owns startup of individual RMCP clients: building the transport,
 //! initializing the server, listing raw tools, applying per-server tool filters,
-//! and exposing cached Codex Apps tools while a client is still connecting.
+//! and exposing cached UnieAI Apps tools while a client is still connecting.
 //! Higher-level aggregation and resource/tool APIs live in
 //! [`crate::connection_manager`].
 
@@ -77,7 +77,7 @@ use tracing::Instrument;
 use tracing::instrument;
 use tracing::warn;
 
-/// MCP server capability indicating that Codex should include [`SandboxState`]
+/// MCP server capability indicating that UnieAI should include [`SandboxState`]
 /// in tool-call request `_meta` under this key.
 pub const MCP_SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
 /// Experimental MCP server capability for development and testing only; production servers should
@@ -662,7 +662,7 @@ pub(crate) async fn list_tools_for_client_uncached(
     Ok(tools)
 }
 
-/// Presents declared Codex Apps file parameters to the model as local-path inputs and adds plugin
+/// Presents declared UnieAI Apps file parameters to the model as local-path inputs and adds plugin
 /// names to each tool. Plugin membership is resolved by connector ID, falling back to the MCP
 /// server when absent.
 fn prepare_codex_apps_tools_for_model(
@@ -744,7 +744,7 @@ fn tool_info_from_listed_tool(
     }
 }
 
-/// Converts a Codex Apps tool by preserving connector fields, removing connector prefixes from
+/// Converts a UnieAI Apps tool by preserving connector fields, removing connector prefixes from
 /// model-visible names and titles, and using the connector description for its tool namespace.
 fn codex_apps_tool_info_from_listed_tool(
     server_name: &str,
@@ -931,7 +931,7 @@ async fn start_server_task(
             cache_context.publish_if_newest_accepted(fetch_ticket, &server_info, tools)
         }
         (None, None) => tools,
-        _ => unreachable!("Codex Apps fetch ticket requires cache context"),
+        _ => unreachable!("UnieAI Apps fetch ticket requires cache context"),
     };
     let has_shared_tool_catalog = is_codex_apps_mcp_server || tool_catalog_cache_context.is_some();
     if let (Some(cache_context), Some(fetch_ticket)) = (

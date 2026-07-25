@@ -1,4 +1,4 @@
-//! Defines the protocol for a Codex session between a client and an agent.
+//! Defines the protocol for UnieAI session between a client and an agent.
 //!
 //! Uses a SQ (Submission Queue) / EQ (Event Queue) pattern to asynchronously communicate
 //! between user and agent.
@@ -121,7 +121,7 @@ pub const CONTEXT_WINDOW_OPEN_TAG: &str = "<context_window>";
 pub const CONTEXT_WINDOW_CLOSE_TAG: &str = "</context_window>";
 pub const CONTEXT_WINDOW_GUIDANCE_OPEN_TAG: &str = "<context_window_guidance>";
 pub const CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG: &str = "</context_window_guidance>";
-pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
+pub const USER_MESSAGE_BEGIN: &str = "## My request for UnieAI:";
 
 /// Removes the model-context prefix from a user message before displaying it.
 pub fn strip_user_message_prefix(text: &str) -> &str {
@@ -204,23 +204,23 @@ pub struct McpServerRefreshConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationStartParams {
-    /// Whether Codex response handoffs are managed through explicit client append calls.
+    /// Whether UnieAI response handoffs are managed through explicit client append calls.
     pub client_managed_handoffs: bool,
-    /// Whether to route any remaining transcript tail through Codex when the session ends.
+    /// Whether to route UnieAI when the session ends.
     /// TODO: Remove this rollout knob once transcript-tail flushing is always enabled.
     pub flush_transcript_tail_on_session_end: bool,
-    /// Sends automatic Codex responses as realtime conversation items instead of handoff appends.
+    /// Sends automatic UnieAI responses as realtime conversation items instead of handoff appends.
     pub codex_responses_as_items: bool,
-    /// Optional prefix added to automatic Codex response items when `codex_responses_as_items` is set.
+    /// Optional prefix added to automatic UnieAI response items when `codex_responses_as_items` is set.
     pub codex_response_item_prefix: Option<String>,
-    /// Selects how automatic Codex handoffs are routed in Frameless Bidi sessions.
+    /// Selects how automatic UnieAI handoffs are routed in Frameless Bidi sessions.
     /// Realtime V1 and V2 ignore this setting.
     pub codex_response_handoff_mode: CodexResponseHandoffMode,
     /// Overrides the configured realtime model for this session only.
     pub model: Option<String>,
     /// Selects whether the realtime session should produce text or audio output.
     pub output_modality: RealtimeOutputModality,
-    /// Whether to append Codex's startup context to the realtime backend prompt.
+    /// Whether to append UnieAI's startup context to the realtime backend prompt.
     pub include_startup_context: bool,
     /// Complete role-bearing text items to include in the initial realtime session history.
     pub initial_items: Vec<ConversationTextParams>,
@@ -658,7 +658,7 @@ pub enum Op {
     /// model.
     SetThreadMemoryMode { mode: ThreadMemoryMode },
 
-    /// Request Codex to drop the last N user turns from in-memory context.
+    /// Request UnieAI to drop the last N user turns from in-memory context.
     ///
     /// This does not attempt to revert local filesystem changes. Clients are
     /// responsible for undoing any edits on disk.
@@ -894,7 +894,7 @@ impl Op {
 }
 
 /// Determines the conditions under which the user is consulted to approve
-/// running the command proposed by Codex.
+/// running the command proposed by UnieAI.
 #[derive(
     Debug,
     Clone,
@@ -1757,7 +1757,7 @@ pub enum NonSteerableTurnKind {
     Compact,
 }
 
-/// Codex errors that we expose to clients.
+/// UnieAI errors that we expose to clients.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]

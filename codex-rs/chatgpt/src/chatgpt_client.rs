@@ -33,7 +33,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
         .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
     anyhow::ensure!(
         auth.uses_codex_backend(),
-        "ChatGPT backend requests require Codex backend auth"
+        "ChatGPT backend requests require UnieAI backend auth"
     );
     anyhow::ensure!(
         auth.get_account_id().is_some(),
@@ -90,7 +90,7 @@ pub(crate) async fn chatgpt_post_request_with_timeout<
 ) -> anyhow::Result<TResponse> {
     anyhow::ensure!(
         auth.uses_codex_backend(),
-        "ChatGPT backend requests require Codex backend auth"
+        "ChatGPT backend requests require UnieAI backend auth"
     );
     anyhow::ensure!(
         auth.get_account_id().is_some(),

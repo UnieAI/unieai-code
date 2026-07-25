@@ -1,6 +1,6 @@
 //! Minimal exec-server fixture for Bazel-only integration tests.
 //!
-//! Linking only exec-server avoids depending on the full Codex CLI binary
+//! Linking only exec-server avoids depending on the full UnieAI CLI binary
 //! when a test only needs a WebSocket executor endpoint.
 
 use codex_exec_server::ExecServerRuntimePaths;

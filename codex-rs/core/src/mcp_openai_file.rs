@@ -1,4 +1,4 @@
-//! Bridges Apps SDK-style `openai/fileParams` metadata into Codex's MCP flow.
+//! Bridges Apps SDK-style `openai/fileParams` metadata into UnieAI's MCP flow.
 //!
 //! Strategy:
 //! - Inspect `_meta["openai/fileParams"]` to discover which tool arguments are
@@ -122,10 +122,10 @@ async fn build_uploaded_argument_value(
         None => format!("failed to upload `{file_path}` for `{field_name}`: {error}"),
     };
     let Some(auth) = auth else {
-        return Err("ChatGPT auth is required to upload files for Codex Apps tools".to_string());
+        return Err("ChatGPT auth is required to upload files for UnieAI Apps tools".to_string());
     };
     if !auth.uses_codex_backend() {
-        return Err("ChatGPT auth is required to upload files for Codex Apps tools".to_string());
+        return Err("ChatGPT auth is required to upload files for UnieAI Apps tools".to_string());
     }
     let Some(turn_environment) = turn_context.environments.primary() else {
         return Err(contextualize_error(

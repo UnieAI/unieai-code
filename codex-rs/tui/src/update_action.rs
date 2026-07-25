@@ -44,7 +44,7 @@ impl UpdateAction {
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@unieai/code"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@unieai/code"]),
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@unieai/code"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "unieai"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
                 &[
@@ -129,7 +129,7 @@ mod tests {
                 method: InstallMethod::Standalone {
                     platform: StandalonePlatform::Unix,
                     release_dir: native_release_dir.clone(),
-                    resources_dir: Some(native_release_dir.join("codex-resources")),
+                    resources_dir: Some(native_release_dir.join("unieai-resources")),
                 },
                 package_layout: None,
             }),
@@ -140,7 +140,7 @@ mod tests {
                 method: InstallMethod::Standalone {
                     platform: StandalonePlatform::Windows,
                     release_dir: native_release_dir.clone(),
-                    resources_dir: Some(native_release_dir.join("codex-resources")),
+                    resources_dir: Some(native_release_dir.join("unieai-resources")),
                 },
                 package_layout: None,
             }),

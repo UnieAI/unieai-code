@@ -24,7 +24,7 @@ use toml::Value as TomlValue;
 use tracing::instrument;
 use tracing::warn;
 
-/// Shared app-server entry point for loading effective Codex configuration.
+/// Shared app-server entry point for loading effective UnieAI configuration.
 #[derive(Clone)]
 pub(crate) struct ConfigManager {
     codex_home: PathBuf,

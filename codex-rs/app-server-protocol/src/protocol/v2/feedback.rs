@@ -10,6 +10,9 @@ use ts_rs::TS;
 #[ts(export_to = "v2/")]
 pub struct FeedbackUploadParams {
     pub classification: String,
+    /// Optional thumbs rating for the session: "up" or "down".
+    #[ts(optional = nullable)]
+    pub rating: Option<String>,
     #[ts(optional = nullable)]
     pub reason: Option<String>,
     #[ts(optional = nullable)]

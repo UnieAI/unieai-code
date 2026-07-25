@@ -508,6 +508,28 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             vscode.env.openExternal(vscode.Uri.parse(message.url))
           }
           break
+        case "feedback": {
+          // 👍/👎 rating from the chat webview. Best-effort: routed to the
+          // app-server feedback/upload RPC, which the configured webhook (e.g. a
+          // Google Sheet) receives. Never surfaced as a hard error to the user.
+          const rating = message.rating === "up" || message.rating === "down" ? message.rating : undefined
+          if (!rating) break
+          try {
+            const client = await this.ensureAppServer()
+            if (client) {
+              await client.request("feedback/upload", {
+                classification: "thumbs",
+                rating,
+                reason: typeof message.reason === "string" ? message.reason : null,
+                threadId: this.threadId ?? null,
+                includeLogs: true,
+              })
+            }
+          } catch (err) {
+            console.error("feedback/upload failed", err)
+          }
+          break
+        }
         case "openStudioModels": {
           const url = String(message.url || "https://studio.unieai.com/models")
           vscode.env.openExternal(vscode.Uri.parse(url))

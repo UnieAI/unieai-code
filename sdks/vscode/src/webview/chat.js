@@ -1348,6 +1348,41 @@ function approvalCard({ id, kind, detail }) {
   return el
 }
 
+// Once-per-session throttle so the 👍/👎 prompt never nags.
+let feedbackPrompted = false
+function appendFeedbackCard() {
+  if (feedbackPrompted) return
+  feedbackPrompted = true
+  const el = document.createElement("div")
+  el.className = "line approval feedback-card"
+  const title = document.createElement("div")
+  title.className = "approval-title"
+  title.textContent = (typeof L !== "undefined" && L.feedbackPrompt) || "How was this result?"
+  el.appendChild(title)
+  const row = document.createElement("div")
+  row.className = "approval-actions"
+  const settle = (label) => {
+    row.remove()
+    const done = document.createElement("div")
+    done.className = "approval-done"
+    done.textContent = label
+    el.appendChild(done)
+  }
+  const done = (typeof L !== "undefined" && L.feedbackThanks) || "Thanks for the feedback!"
+  for (const b of [{ label: "👍", rating: "up" }, { label: "👎", rating: "down" }]) {
+    const button = document.createElement("button")
+    button.className = "approval-btn"
+    button.textContent = b.label
+    button.addEventListener("click", () => {
+      vscode.postMessage({ type: "feedback", rating: b.rating })
+      settle(done)
+    })
+    row.appendChild(button)
+  }
+  el.appendChild(row)
+  appendLine(el)
+}
+
 /** Multiple-choice question from the model's `ask` tool (agent-core). */
 function questionCard({ id, question, options }) {
   const el = document.createElement("div")
@@ -1475,6 +1510,8 @@ function setRunning(on) {
     workingTimer = null
     workingEl.remove()
     workingEl = null
+    // A real turn just finished (workingEl existed): offer a 👍/👎 once.
+    appendFeedbackCard()
   }
   if (!on) {
     // Settle any reasoning block still in its live-shimmer state — agent-core

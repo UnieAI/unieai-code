@@ -16,6 +16,13 @@
     "includeLogs": {
       "type": "boolean"
     },
+    "rating": {
+      "description": "Optional thumbs rating for the session: \"up\" or \"down\".",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "reason": {
       "type": [
         "string",

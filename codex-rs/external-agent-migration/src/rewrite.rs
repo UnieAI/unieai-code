@@ -35,7 +35,7 @@ impl RewriteProfile {
         self.case_sensitive_term_variants
     }
 
-    /// Rewrites source-specific documentation names and product terms to their Codex forms.
+    /// Rewrites source-specific documentation names and product terms to their UnieAI forms.
     pub fn rewrite(self, content: &str) -> String {
         let mut rewritten =
             replace_case_insensitive_with_boundaries(content, self.doc_file_name, "AGENTS.md");

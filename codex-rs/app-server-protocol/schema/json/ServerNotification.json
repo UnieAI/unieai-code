@@ -516,14 +516,14 @@
       "description": "Authentication mode for OpenAI-backed providers.",
       "oneOf": [
         {
-          "description": "OpenAI API key provided by the caller and stored by Codex.",
+          "description": "OpenAI API key provided by the caller and stored by UnieAI.",
           "enum": [
             "apikey"
           ],
           "type": "string"
         },
         {
-          "description": "ChatGPT OAuth managed by Codex (tokens persisted and refreshed by Codex).",
+          "description": "ChatGPT OAuth managed by UnieAI (tokens persisted and refreshed by UnieAI).",
           "enum": [
             "chatgpt"
           ],
@@ -544,21 +544,21 @@
           "type": "string"
         },
         {
-          "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "description": "Programmatic UnieAI auth backed by a registered Agent Identity.",
           "enum": [
             "agentIdentity"
           ],
           "type": "string"
         },
         {
-          "description": "Programmatic Codex auth backed by a personal access token.",
+          "description": "Programmatic UnieAI auth backed by a personal access token.",
           "enum": [
             "personalAccessToken"
           ],
           "type": "string"
         },
         {
-          "description": "Amazon Bedrock bearer token managed by Codex.",
+          "description": "Amazon Bedrock bearer token managed by UnieAI.",
           "enum": [
             "bedrockApiKey"
           ],
@@ -778,7 +778,7 @@
       "type": "string"
     },
     "CollaborationMode": {
-      "description": "Collaboration mode for a Codex session.",
+      "description": "Collaboration mode for a UnieAI session.",
       "properties": {
         "mode": {
           "$ref": "#/definitions/ModeKind"
@@ -4566,7 +4566,7 @@
             },
             "results": {
               "default": null,
-              "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release.",
+              "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a UnieAI release.",
               "items": true,
               "type": [
                 "array",

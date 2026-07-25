@@ -133,7 +133,6 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
 // style as that repo's prompt.mjs); sync the .md file from there once merged.
 const GATEWAY_BASE_INSTRUCTIONS: &str = include_str!("gateway_instructions.md");
 
-
 /// Build a descriptor for a model served by an external OpenAI-compatible
 /// gateway (e.g. a UnieAI inference gateway). Uses the same conservative
 /// defaults as the fallback path, but the model is picker-visible and not

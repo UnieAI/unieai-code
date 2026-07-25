@@ -59,6 +59,7 @@ impl FeedbackRequestProcessor {
 
         let FeedbackUploadParams {
             classification,
+            rating,
             reason,
             thread_id,
             include_logs,
@@ -231,6 +232,91 @@ impl FeedbackRequestProcessor {
             for (key, value) in doctor_report.tags {
                 upload_tags.entry(key).or_insert(value);
             }
+        }
+
+        // When a webhook is configured, ship feedback there (e.g. a Google Sheet
+        // via Apps Script) as JSON instead of the built-in Sentry upload. The
+        // whole `if let` block diverges, so moves inside it are fine.
+        if let Some(webhook_url) = self.config.feedback_webhook_url.clone() {
+            let mut conversation = String::new();
+            for attachment_path in &attachment_paths {
+                match tokio::fs::read_to_string(&attachment_path.path).await {
+                    Ok(text) => {
+                        let name = attachment_path
+                            .path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        conversation.push_str(&format!("===== {name} =====\n"));
+                        conversation.push_str(&text);
+                        conversation.push('\n');
+                    }
+                    Err(err) => {
+                        warn!(
+                            path = %attachment_path.path.display(),
+                            error = %err,
+                            "failed to read rollout for webhook feedback; skipping"
+                        );
+                    }
+                }
+            }
+
+            let logs_text = match &sqlite_feedback_logs {
+                Some(bytes) => String::from_utf8_lossy(bytes).to_string(),
+                None => String::from_utf8_lossy(snapshot.logs_bytes()).to_string(),
+            };
+
+            let unieai_code_user_id = auth
+                .as_ref()
+                .and_then(codex_login::CodexAuth::get_chatgpt_user_id);
+            let account_id = auth
+                .as_ref()
+                .and_then(codex_login::CodexAuth::get_account_id);
+            let studio_url = std::env::var("UNIEAI_STUDIO_URL")
+                .ok()
+                .filter(|url| !url.trim().is_empty())
+                .unwrap_or_else(|| "https://studio.unieai.com".to_string());
+            let originator = std::env::var("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+                .unwrap_or_else(|_| "unieai_code_cli".to_string());
+
+            let payload = serde_json::json!({
+                "schema": "unieai-feedback-v1",
+                "token": self.config.feedback_webhook_token,
+                "sent_at": chrono::Utc::now().to_rfc3339(),
+                "rating": rating,
+                "classification": classification,
+                "note": reason,
+                "thread_id": thread_id.clone(),
+                "who": {
+                    "unieai_code_user_id": unieai_code_user_id,
+                    "account_id": account_id,
+                    "studio_url": studio_url,
+                },
+                "app": {
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "originator": originator,
+                },
+                "conversation": conversation,
+                "logs": logs_text,
+            });
+
+            let client = reqwest::Client::new();
+            return match client.post(&webhook_url).json(&payload).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    Ok(FeedbackUploadResponse { thread_id })
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    Err(internal_error(format!(
+                        "feedback webhook returned {status}: {body}"
+                    )))
+                }
+                Err(err) => Err(internal_error(format!(
+                    "failed to POST feedback webhook: {err}"
+                ))),
+            };
         }
 
         let session_source = self.thread_manager.session_source();

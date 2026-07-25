@@ -278,7 +278,7 @@ fn bearer_auth_for_provider(
     Ok(None)
 }
 
-/// Builds request-header auth for a first-party Codex auth snapshot.
+/// Builds request-header auth for a first-party UnieAI auth snapshot.
 pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
     match auth {
         CodexAuth::AgentIdentity(auth) => {

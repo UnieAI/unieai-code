@@ -172,8 +172,14 @@ mod tests {
 
     #[test]
     fn placeholder_text_and_pluralization() {
-        assert_eq!(ChipKind::Paste { lines: 12 }.placeholder(), "[Pasted 12 lines]");
-        assert_eq!(ChipKind::Paste { lines: 1 }.placeholder(), "[Pasted 1 line]");
+        assert_eq!(
+            ChipKind::Paste { lines: 12 }.placeholder(),
+            "[Pasted 12 lines]"
+        );
+        assert_eq!(
+            ChipKind::Paste { lines: 1 }.placeholder(),
+            "[Pasted 1 line]"
+        );
         assert_eq!(ChipKind::Image { n: 3 }.placeholder(), "[Image #3]");
     }
 
@@ -254,7 +260,11 @@ mod tests {
         let display = "hi [Pasted 5 lines] bye";
         let ph = "[Pasted 5 lines]";
         let start = display.find(ph).unwrap();
-        let chip = Chip::paste(start..start + ph.len(), 5, "line1\nline2\nline3\nline4\nline5");
+        let chip = Chip::paste(
+            start..start + ph.len(),
+            5,
+            "line1\nline2\nline3\nline4\nline5",
+        );
         let out = expand(display, &[chip]);
         assert_eq!(out, "hi line1\nline2\nline3\nline4\nline5 bye");
     }

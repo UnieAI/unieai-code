@@ -310,6 +310,19 @@ pub(crate) fn feedback_classification(category: FeedbackCategory) -> &'static st
     }
 }
 
+/// Maps a feedback category to a thumbs rating for the feedback webhook.
+/// A positive result is 👍 ("up"); anything that flags a problem is 👎 ("down");
+/// neutral categories carry no rating.
+pub(crate) fn feedback_rating(category: FeedbackCategory) -> Option<&'static str> {
+    match category {
+        FeedbackCategory::GoodResult => Some("up"),
+        FeedbackCategory::BadResult | FeedbackCategory::Bug | FeedbackCategory::SafetyCheck => {
+            Some("down")
+        }
+        FeedbackCategory::Other => None,
+    }
+}
+
 pub(crate) fn feedback_success_cell(
     category: FeedbackCategory,
     include_logs: bool,

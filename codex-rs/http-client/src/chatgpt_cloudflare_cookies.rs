@@ -43,7 +43,7 @@ impl CookieStore for ChatGptCloudflareCookieStore {
     }
 }
 
-/// Adds the process-local ChatGPT Cloudflare cookie jar used by Codex HTTP clients.
+/// Adds the process-local ChatGPT Cloudflare cookie jar used by UnieAI HTTP clients.
 ///
 /// WARNING: this jar is global within the process. It is only acceptable because it hardcodes a
 /// small allowlist of Cloudflare cookie names and refuses all other ChatGPT cookies. Do not store

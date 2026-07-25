@@ -1144,10 +1144,7 @@ mod tests {
             },
             /*animations_enabled*/ false,
         );
-        assert_eq!(
-            skill.verb_group_events()[0].kind,
-            VerbGroupKind::ReadSkill
-        );
+        assert_eq!(skill.verb_group_events()[0].kind, VerbGroupKind::ReadSkill);
     }
 
     #[test]
@@ -1200,9 +1197,9 @@ mod tests {
         cell.calls.push(read_call("c3", "a.rs")); // duplicate read: dedups
         cell.calls.push(search_call("c4", "needle"));
 
-        let rendered = render_lines(
-            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
-        );
+        let rendered = render_lines(&cell.exploring_display_lines_with_verb_groups(
+            /*width*/ 80, /*verb_groups*/ true,
+        ));
         assert_eq!(
             rendered[0], "• Read 2 files, Searched 1 pattern",
             "expected aggregated header, got {rendered:?}"
@@ -1223,9 +1220,9 @@ mod tests {
         running.duration = None;
         cell.calls.push(running);
 
-        let rendered = render_lines(
-            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
-        );
+        let rendered = render_lines(&cell.exploring_display_lines_with_verb_groups(
+            /*width*/ 80, /*verb_groups*/ true,
+        ));
         assert_eq!(rendered[0], "• Reading 3 files");
     }
 
@@ -1240,9 +1237,9 @@ mod tests {
         });
         cell.calls.push(failed);
 
-        let rendered = render_lines(
-            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
-        );
+        let rendered = render_lines(&cell.exploring_display_lines_with_verb_groups(
+            /*width*/ 80, /*verb_groups*/ true,
+        ));
         assert_eq!(rendered[0], "• Read 3 files · 1 failed");
     }
 
@@ -1251,9 +1248,9 @@ mod tests {
         // Two calls: below the >=3 threshold, keep the plain header.
         let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
         cell.calls.push(read_call("c2", "b.rs"));
-        let rendered = render_lines(
-            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ true),
-        );
+        let rendered = render_lines(&cell.exploring_display_lines_with_verb_groups(
+            /*width*/ 80, /*verb_groups*/ true,
+        ));
         assert_eq!(rendered[0], "• Explored");
     }
 
@@ -1263,9 +1260,9 @@ mod tests {
         cell.calls.push(read_call("c2", "b.rs"));
         cell.calls.push(search_call("c3", "needle"));
 
-        let gated_off = render_lines(
-            &cell.exploring_display_lines_with_verb_groups(/*width*/ 80, /*verb_groups*/ false),
-        );
+        let gated_off = render_lines(&cell.exploring_display_lines_with_verb_groups(
+            /*width*/ 80, /*verb_groups*/ false,
+        ));
         assert_eq!(gated_off[0], "• Explored");
         // And the public display path defaults to the gate (off in tests).
         let default_path = render_lines(&cell.display_lines(/*width*/ 80));

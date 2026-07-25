@@ -439,7 +439,10 @@ mod tests {
         // Alias tolerance.
         assert_eq!(ColorLevel::parse("16"), Some(ColorLevel::Basic));
         assert_eq!(ColorLevel::parse("24bit"), Some(ColorLevel::TrueColor));
-        assert_eq!(ColorLevel::parse("  TrueColor "), Some(ColorLevel::TrueColor));
+        assert_eq!(
+            ColorLevel::parse("  TrueColor "),
+            Some(ColorLevel::TrueColor)
+        );
         assert_eq!(ColorLevel::parse("off"), Some(ColorLevel::None));
         assert_eq!(ColorLevel::parse("nonsense"), None);
     }
@@ -455,7 +458,12 @@ mod tests {
         );
         // Force none even when COLORTERM claims truecolor.
         assert_eq!(
-            level_from_env(false, Some("none"), Some("truecolor"), Some("xterm-256color")),
+            level_from_env(
+                false,
+                Some("none"),
+                Some("truecolor"),
+                Some("xterm-256color")
+            ),
             ColorLevel::None
         );
     }
@@ -502,7 +510,10 @@ mod tests {
             level_from_env(false, None, None, Some("dumb")),
             ColorLevel::None
         );
-        assert_eq!(level_from_env(false, None, None, Some("")), ColorLevel::None);
+        assert_eq!(
+            level_from_env(false, None, None, Some("")),
+            ColorLevel::None
+        );
         assert_eq!(level_from_env(false, None, None, None), ColorLevel::None);
     }
 
@@ -541,13 +552,20 @@ mod tests {
             quantize(Color::Rgb(100, 200, 50), ColorLevel::None),
             Color::Reset
         );
-        assert_eq!(quantize(Color::Indexed(111), ColorLevel::None), Color::Reset);
+        assert_eq!(
+            quantize(Color::Indexed(111), ColorLevel::None),
+            Color::Reset
+        );
         assert_eq!(quantize(Color::Red, ColorLevel::None), Color::Reset);
     }
 
     #[test]
     fn named_colors_pass_through_color_levels() {
-        for level in [ColorLevel::TrueColor, ColorLevel::Ansi256, ColorLevel::Basic] {
+        for level in [
+            ColorLevel::TrueColor,
+            ColorLevel::Ansi256,
+            ColorLevel::Basic,
+        ] {
             assert_eq!(quantize(Color::Red, level), Color::Red);
             assert_eq!(quantize(Color::Blue, level), Color::Blue);
         }
@@ -555,8 +573,14 @@ mod tests {
 
     #[test]
     fn basic_quantizes_rgb_to_named() {
-        assert_eq!(quantize(Color::Rgb(255, 0, 0), ColorLevel::Basic), Color::LightRed);
-        assert_eq!(quantize(Color::Rgb(0, 0, 0), ColorLevel::Basic), Color::Black);
+        assert_eq!(
+            quantize(Color::Rgb(255, 0, 0), ColorLevel::Basic),
+            Color::LightRed
+        );
+        assert_eq!(
+            quantize(Color::Rgb(0, 0, 0), ColorLevel::Basic),
+            Color::Black
+        );
         assert_eq!(
             quantize(Color::Rgb(255, 255, 255), ColorLevel::Basic),
             Color::White
@@ -566,7 +590,10 @@ mod tests {
     #[test]
     fn basic_quantizes_indexed_to_named() {
         // Indexed(196) = pure bright red in the cube → LightRed.
-        assert_eq!(quantize(Color::Indexed(196), ColorLevel::Basic), Color::LightRed);
+        assert_eq!(
+            quantize(Color::Indexed(196), ColorLevel::Basic),
+            Color::LightRed
+        );
         // Indexed(0) is black.
         assert_eq!(quantize(Color::Indexed(0), ColorLevel::Basic), Color::Black);
     }
@@ -606,7 +633,11 @@ mod tests {
 
     #[test]
     fn adapt_color_non_rgb_passthrough() {
-        for level in [ColorLevel::TrueColor, ColorLevel::Ansi256, ColorLevel::Basic] {
+        for level in [
+            ColorLevel::TrueColor,
+            ColorLevel::Ansi256,
+            ColorLevel::Basic,
+        ] {
             assert_eq!(adapt_color_for_level(Color::Red, level), Color::Red);
             assert_eq!(adapt_color_for_level(Color::Reset, level), Color::Reset);
         }

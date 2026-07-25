@@ -121,12 +121,12 @@ mod composer_tip;
 // the live input/render path and not calling any revert / git diff API — those
 // integrations are a deferred follow-up. Each module opts out of dead-code
 // warnings internally.
-mod diff_viewer_model;
-mod jump_anchor;
-mod rewind_model;
 mod config_update;
 pub(crate) mod custom_terminal;
+mod diff_viewer_model;
+mod jump_anchor;
 mod pets;
+mod rewind_model;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
@@ -182,7 +182,6 @@ mod resize_reflow_cap;
 mod resume_picker;
 mod scrollback_verb_group;
 mod selection_list;
-mod which_key;
 mod service_tier_resolution;
 mod session_archive_commands;
 mod session_log;
@@ -211,6 +210,7 @@ mod transcript_reflow;
 mod tui;
 mod ui_consts;
 pub(crate) mod update_action;
+mod which_key;
 pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
@@ -248,7 +248,7 @@ pub use public_widgets::composer_input::ComposerAction;
 pub use public_widgets::composer_input::ComposerInput;
 // (tests access modules directly within the crate)
 
-const TUI_LOG_FILE_NAME: &str = "codex-tui.log";
+const TUI_LOG_FILE_NAME: &str = "unieai-tui.log";
 
 #[cfg(unix)]
 const AUTO_CONNECT_DAEMON_CONNECT_TIMEOUT: std::time::Duration =

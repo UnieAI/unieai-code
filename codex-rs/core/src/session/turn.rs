@@ -843,7 +843,7 @@ fn comp_hash_changed(previous: Option<&str>, current: Option<&str>) -> bool {
 
 /// Captures the current model's request-scoped state for retrying previous-model compaction.
 ///
-/// Returns `None` when the active authentication does not use the Codex backend, the provider is
+/// Returns `None` when the active authentication does not use the UnieAI backend, the provider is
 /// not OpenAI, or the previous and current model are the same.
 async fn capture_current_model_fallback_step_context(
     sess: &Arc<Session>,

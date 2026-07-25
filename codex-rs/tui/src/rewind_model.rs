@@ -157,7 +157,10 @@ fn preview_prompt(prompt: &str) -> String {
     if flat.chars().count() <= PROMPT_PREVIEW_MAX {
         return flat;
     }
-    let truncated: String = flat.chars().take(PROMPT_PREVIEW_MAX.saturating_sub(1)).collect();
+    let truncated: String = flat
+        .chars()
+        .take(PROMPT_PREVIEW_MAX.saturating_sub(1))
+        .collect();
     format!("{truncated}…")
 }
 
@@ -189,11 +192,7 @@ impl RewindPreview {
                 conflicts: Vec::new(),
             };
         }
-        let files_to_restore = candidate
-            .snapshots
-            .iter()
-            .map(|s| s.path.clone())
-            .collect();
+        let files_to_restore = candidate.snapshots.iter().map(|s| s.path.clone()).collect();
         let conflicts = candidate
             .snapshots
             .iter()

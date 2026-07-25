@@ -234,7 +234,7 @@ impl MessageProcessor {
         let server_info =
             Implementation::new("codex-mcp-server", env!("CARGO_PKG_VERSION")).with_title("Codex");
 
-        // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
+        // Preserve UnieAI's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
             Ok(value) => value,
             Err(err) => {
@@ -343,7 +343,7 @@ impl MessageProcessor {
         } = params;
 
         match name.as_ref() {
-            "codex" => self.handle_tool_call_codex(id, arguments).await,
+            "codex" => self.handle_tool_call_unieai(id, arguments).await,
             "codex-reply" => {
                 self.handle_tool_call_codex_session_reply(id, arguments)
                     .await
@@ -369,7 +369,7 @@ impl MessageProcessor {
                     Ok(cfg) => cfg,
                     Err(e) => {
                         let result = CallToolResult::error(vec![rmcp::model::Content::text(
-                            format!("Failed to load Codex configuration from overrides: {e}"),
+                            format!("Failed to load UnieAI configuration from overrides: {e}"),
                         )]);
                         self.outgoing.send_response(id, result).await;
                         return;
@@ -377,7 +377,7 @@ impl MessageProcessor {
                 },
                 Err(e) => {
                     let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
-                        "Failed to parse configuration for Codex tool: {e}"
+                        "Failed to parse configuration for UnieAI tool: {e}"
                     ))]);
                     self.outgoing.send_response(id, result).await;
                     return;
@@ -397,10 +397,10 @@ impl MessageProcessor {
         let thread_manager = self.thread_manager.clone();
         let running_requests_id_to_codex_uuid = self.running_requests_id_to_codex_uuid.clone();
 
-        // Spawn an async task to handle the Codex session so that we do not
+        // Spawn an async task to handle the UnieAI session so that we do not
         // block the synchronous message-processing loop.
         task::spawn(async move {
-            // Run the Codex session and stream events back to the client.
+            // Run the UnieAI session and stream events back to the client.
             crate::codex_tool_runner::run_codex_tool_session(
                 id,
                 initial_prompt,
@@ -426,9 +426,9 @@ impl MessageProcessor {
             Some(json_val) => match serde_json::from_value::<CodexToolCallReplyParam>(json_val) {
                 Ok(params) => params,
                 Err(e) => {
-                    tracing::error!("Failed to parse Codex tool call reply parameters: {e}");
+                    tracing::error!("Failed to parse UnieAI tool call reply parameters: {e}");
                     let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
-                        "Failed to parse configuration for Codex tool: {e}"
+                        "Failed to parse configuration for UnieAI tool: {e}"
                     ))]);
                     self.outgoing.send_response(request_id, result).await;
                     return;
@@ -539,7 +539,7 @@ impl MessageProcessor {
         };
         tracing::info!("thread_id: {thread_id}");
 
-        // Obtain the Codex thread from the server.
+        // Obtain the UnieAI thread from the server.
         let codex_arc = match self.thread_manager.get_thread(thread_id).await {
             Ok(c) => c,
             Err(_) => {
@@ -548,7 +548,7 @@ impl MessageProcessor {
             }
         };
 
-        // Submit interrupt to Codex.
+        // Submit interrupt to UnieAI.
         if let Err(e) = codex_arc
             .submit_with_id(Submission {
                 id: request_id_string,
@@ -558,7 +558,7 @@ impl MessageProcessor {
             })
             .await
         {
-            tracing::error!("Failed to submit interrupt to Codex: {e}");
+            tracing::error!("Failed to submit interrupt to UnieAI: {e}");
             return;
         }
         // unregister the id so we don't keep it in the map

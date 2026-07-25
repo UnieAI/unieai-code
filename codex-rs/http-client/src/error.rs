@@ -1,4 +1,4 @@
-//! Errors returned by the shared Codex HTTP transport.
+//! Errors returned by the Shared UnieAI HTTP transport.
 
 use http::HeaderMap;
 use http::StatusCode;

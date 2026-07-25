@@ -867,7 +867,7 @@ impl App {
             .as_ref()
             .is_some_and(|cmd| !cmd.is_empty())
         {
-            session_telemetry.counter("codex.status_line", /*inc*/ 1, &[]);
+            session_telemetry.counter("unieai.status_line", /*inc*/ 1, &[]);
         }
 
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
@@ -972,7 +972,7 @@ impl App {
             }
             SessionSelection::Fork(target_session) => {
                 session_telemetry.counter(
-                    "codex.thread.fork",
+                    "unieai.thread.fork",
                     /*inc*/ 1,
                     &[("source", "cli_subcommand")],
                 );

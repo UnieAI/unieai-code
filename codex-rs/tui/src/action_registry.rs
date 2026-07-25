@@ -194,8 +194,7 @@ pub(crate) fn fuzzy_score(haystack: &str, needle: &str) -> Option<i32> {
         }
         if hc == needle[n] {
             score += 1;
-            let at_word_start =
-                i == 0 || matches!(hay[i - 1], ' ' | '_' | '-' | '/' | '.' | ':');
+            let at_word_start = i == 0 || matches!(hay[i - 1], ' ' | '_' | '-' | '/' | '.' | ':');
             if at_word_start {
                 score += 10;
             }
@@ -289,9 +288,7 @@ mod tests {
                 .needs_arg(),
         );
         r.push(Action::new("new_session", "New Session").with_keywords(["reset", "clear"]));
-        r.push(
-            Action::new("palette", "Command Palette").with_binding(KeyChord::ctrl('p')),
-        );
+        r.push(Action::new("palette", "Command Palette").with_binding(KeyChord::ctrl('p')));
         r.push(Action::new("open_folder", "Open Folder").needs_arg());
         r
     }

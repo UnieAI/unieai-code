@@ -745,16 +745,16 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
     );
     let codex_apps_server = codex_mcp::configured_mcp_servers(&first_resolved.config)
         .remove(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
-        .expect("Codex Apps server should be configured");
+        .expect("UnieAI Apps server should be configured");
     let codex_apps_headers = match codex_apps_server.transport {
         codex_config::McpServerTransportConfig::StreamableHttp { http_headers, .. } => http_headers,
         codex_config::McpServerTransportConfig::Stdio { .. } => {
-            panic!("Codex Apps server should use streamable HTTP")
+            panic!("UnieAI Apps server should use streamable HTTP")
         }
     };
     assert_eq!(
         codex_apps_headers
-            .expect("Codex Apps headers should be configured")
+            .expect("UnieAI Apps headers should be configured")
             .get("originator"),
         Some(&"codex_work_desktop".to_string())
     );

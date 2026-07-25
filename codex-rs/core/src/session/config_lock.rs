@@ -126,7 +126,7 @@ fn save_session_resolved_fields(sc: &SessionConfiguration, lock_config: &mut Con
 /// normalization, defaulting, or feature materialization.
 ///
 /// Persist the resolved representation so replay compares against the behavior
-/// Codex actually ran with, not only the user-authored TOML inputs.
+/// UnieAI actually ran with, not only the user-authored TOML inputs.
 fn save_config_resolved_fields(
     config: &Config,
     lock_config: &mut ConfigToml,

@@ -88,7 +88,7 @@ impl ChatGptEnvironment {
 /// Borrowed durable signing material for a registered agent identity.
 ///
 /// This intentionally does not include a task id. Task ids are scoped to a
-/// single Codex run, while the agent runtime id and private key are the
+/// single UnieAI run, while the agent runtime id and private key are the
 /// reusable identity material used to register and sign that run task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentIdentityKey<'a> {

@@ -7,7 +7,7 @@ use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 
 use super::ContextualUserFragment;
 
-/// Model-context fragment describing the skills available to Codex.
+/// Model-context fragment describing the skills available to UnieAI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableSkillsInstructions {
     skill_root_lines: Vec<String>,

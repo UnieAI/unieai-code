@@ -417,7 +417,7 @@ impl Client {
 
     /// Fetch the selected cloud-managed config bundle from codex-backend.
     ///
-    /// `GET /api/codex/config/bundle` (Codex API style) or
+    /// `GET /api/codex/config/bundle` (UnieAI API style) or
     /// `GET /wham/config/bundle` (ChatGPT backend-api style).
     pub async fn get_config_bundle(
         &self,

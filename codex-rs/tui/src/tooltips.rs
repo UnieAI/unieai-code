@@ -41,7 +41,7 @@ fn experimental_tooltips() -> Vec<&'static str> {
 }
 
 /// Pick a random tooltip to show to the user when starting UnieAI Code.
-/// The upstream promo slots (Codex app, /fast, plan upsells) are removed;
+/// The upstream promo slots (UnieAI app, /fast, plan upsells) are removed;
 /// every session draws from the generic usage-tip pool.
 pub(crate) fn get_tooltip(plan: Option<PlanType>, _fast_mode_enabled: bool) -> Option<String> {
     let mut rng = rand::rng();

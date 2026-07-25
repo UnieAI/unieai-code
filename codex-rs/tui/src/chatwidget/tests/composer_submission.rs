@@ -1679,8 +1679,7 @@ fn user_message_display_from_inputs_hides_prompt_context() {
 async fn committed_user_message_with_hidden_prompt_context_renders_local_images() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let local_image = PathBuf::from("/tmp/context-image.png");
-    let raw_message =
-        "# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for UnieAI Code:\n";
+    let raw_message = "# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for UnieAI Code:\n";
 
     complete_user_message_for_inputs(
         &mut chat,

@@ -117,7 +117,7 @@ fn prepend_path_entry(env: &mut HashMap<String, String>, path_entry: &str) -> Op
     }
 }
 
-/// PATH entries owned by Codex runtime setup.
+/// PATH entries owned by UnieAI runtime setup.
 ///
 /// These are applied to the live exec environment immediately and replayed after
 /// restoring a shell snapshot, unless the user explicitly overrides `PATH`.

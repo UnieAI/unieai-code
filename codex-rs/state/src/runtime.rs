@@ -170,7 +170,7 @@ pub struct StateRuntime {
 }
 
 impl StateRuntime {
-    /// Initialize the state runtime using the provided Codex home and default provider.
+    /// Initialize the state runtime using the provided UnieAI home and default provider.
     ///
     /// This opens (and migrates) the SQLite databases under `codex_home`.
     /// Logs and paginated thread history live in dedicated files to reduce
@@ -333,7 +333,7 @@ impl StateRuntime {
         Ok(runtime)
     }
 
-    /// Return the configured Codex home directory for this runtime.
+    /// Return the configured UnieAI home directory for this runtime.
     pub fn codex_home(&self) -> &Path {
         self.codex_home.as_path()
     }

@@ -24,7 +24,7 @@ pub enum StandalonePlatform {
 pub struct CodexPackageLayout {
     /// The package root that contains the metadata file and layout directories.
     pub package_dir: AbsolutePathBuf,
-    /// Directory containing the Codex entrypoint executable.
+    /// Directory containing the UnieAI entrypoint executable.
     pub bin_dir: AbsolutePathBuf,
     /// Directory containing managed helper binaries and data files, when present.
     pub resources_dir: Option<AbsolutePathBuf>,
@@ -52,18 +52,18 @@ pub enum InstallMethod {
         /// The platform of the standalone release, either `Unix` or `Windows`.
         platform: StandalonePlatform,
     },
-    /// A Codex binary launched through the npm-managed `codex.js` shim.
+    /// A UnieAI binary launched through the npm-managed `codex.js` shim.
     Npm,
-    /// A Codex binary launched through the bun-managed `codex.js` shim.
+    /// A UnieAI binary launched through the bun-managed `codex.js` shim.
     Bun,
-    /// A Codex binary launched through the pnpm-managed `codex.js` shim.
+    /// A UnieAI binary launched through the pnpm-managed `codex.js` shim.
     Pnpm,
-    /// A Codex binary that appears to come from a Homebrew install prefix.
+    /// A UnieAI binary that appears to come from a Homebrew install prefix.
     Brew,
     /// Any other execution environment.
     ///
-    /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
-    /// internal launchers, and tests that execute Codex from an arbitrary path.
+    /// This commonly covers `cargo run`, app-bundled UnieAI binaries, custom
+    /// internal launchers, and tests that execute UnieAI from an arbitrary path.
     Other,
 }
 

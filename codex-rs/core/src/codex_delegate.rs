@@ -66,7 +66,7 @@ struct PendingMcpInvocation {
     metadata: Option<McpToolApprovalMetadata>,
 }
 
-/// Start an interactive sub-Codex thread and return its runtime and IO channels.
+/// Start an interactive sub-UnieAI thread and return its runtime and IO channels.
 ///
 /// The returned IO yields non-approval events emitted by the sub-agent.
 /// Approval requests are handled via `parent_session` and are not surfaced.

@@ -80,7 +80,7 @@ pub(crate) struct SessionConfiguration {
     /// Sticky thread-level environment selections plus the legacy cwd used
     /// when a turn does not select an environment.
     pub(super) environments: TurnEnvironmentSelections,
-    /// Directory containing all Codex state for this session.
+    /// Directory containing all UnieAI state for this session.
     pub(super) codex_home: AbsolutePathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     pub(super) thread_name: Option<String>,

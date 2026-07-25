@@ -33,7 +33,7 @@ fn map_rollout_io_error(io_err: &std::io::Error, codex_home: &Path) -> Option<Co
             codex_home.display()
         ),
         ErrorKind::NotFound => format!(
-            "Session storage missing at {}. Create the directory or choose a different Codex home.",
+            "Session storage missing at {}. Create the directory or choose a different UnieAI home.",
             sessions_dir.display()
         ),
         ErrorKind::AlreadyExists => format!(

@@ -90,7 +90,7 @@ pub(crate) fn parse_unified_diff(input: &str) -> Vec<FileDiff> {
                 Some(b'+') => (LineKind::Add, &raw[1..]),
                 Some(b'-') => (LineKind::Del, &raw[1..]),
                 Some(b' ') => (LineKind::Ctx, &raw[1..]),
-                Some(b'\\') => continue, // "\ No newline at end of file"
+                Some(b'\\') => continue,   // "\ No newline at end of file"
                 _ => (LineKind::Ctx, raw), // bare/empty context line
             };
             match kind {
@@ -497,7 +497,12 @@ new file mode 100644
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "new.txt");
         assert_eq!(files[0].hunks[0].lines.len(), 2);
-        assert!(files[0].hunks[0].lines.iter().all(|l| l.kind == LineKind::Add));
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.kind == LineKind::Add)
+        );
     }
 
     #[test]
@@ -522,12 +527,36 @@ new file mode 100644
         let rows = split_rows(&hunk);
         // ctx row, then two del/add-paired rows, then ctx row.
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0], SplitRow { left: Some("ctx".into()), right: Some("ctx".into()) });
+        assert_eq!(
+            rows[0],
+            SplitRow {
+                left: Some("ctx".into()),
+                right: Some("ctx".into())
+            }
+        );
         // First del pairs with the single add.
-        assert_eq!(rows[1], SplitRow { left: Some("old1".into()), right: Some("new1".into()) });
+        assert_eq!(
+            rows[1],
+            SplitRow {
+                left: Some("old1".into()),
+                right: Some("new1".into())
+            }
+        );
         // Second del has no add → left only.
-        assert_eq!(rows[2], SplitRow { left: Some("old2".into()), right: None });
-        assert_eq!(rows[3], SplitRow { left: Some("tail".into()), right: Some("tail".into()) });
+        assert_eq!(
+            rows[2],
+            SplitRow {
+                left: Some("old2".into()),
+                right: None
+            }
+        );
+        assert_eq!(
+            rows[3],
+            SplitRow {
+                left: Some("tail".into()),
+                right: Some("tail".into())
+            }
+        );
     }
 
     #[test]

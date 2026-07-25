@@ -44,7 +44,9 @@ fn find_codex_home_from_env(
                     std::io::ErrorKind::NotFound,
                     format!("{var} points to {val:?}, but that path does not exist"),
                 ),
-                _ => std::io::Error::new(err.kind(), format!("failed to read {var} {val:?}: {err}")),
+                _ => {
+                    std::io::Error::new(err.kind(), format!("failed to read {var} {val:?}: {err}"))
+                }
             })?;
 
             if !metadata.is_dir() {
@@ -128,8 +130,8 @@ mod tests {
             .to_str()
             .expect("temp codex home path should be valid utf-8");
 
-        let resolved = find_codex_home_from_env(Some(("UNIEAI_HOME", temp_str)))
-            .expect("valid UNIEAI_HOME");
+        let resolved =
+            find_codex_home_from_env(Some(("UNIEAI_HOME", temp_str))).expect("valid UNIEAI_HOME");
         let expected = temp_home
             .path()
             .canonicalize()

@@ -67,23 +67,23 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartParams {
     pub thread_id: String,
-    /// Leaves Codex response handoffs to the client's explicit append calls instead of forwarding
+    /// Leaves UnieAI response handoffs to the client's explicit append calls instead of forwarding
     /// them automatically. Defaults to false.
     #[ts(optional = nullable)]
     pub client_managed_handoffs: Option<bool>,
-    /// Routes any transcript tail remaining at session end through Codex. Defaults to false.
+    /// Routes any transcript tail remaining at session end through UnieAI. Defaults to false.
     /// TODO: Remove this rollout knob once transcript-tail flushing is always enabled.
     #[ts(optional = nullable)]
     pub flush_transcript_tail_on_session_end: Option<bool>,
     // TODO: Remove this experiment-only delivery path after response-item testing is complete.
-    /// Sends automatic Codex responses as realtime conversation items instead of handoff appends.
+    /// Sends automatic UnieAI responses as realtime conversation items instead of handoff appends.
     #[ts(optional = nullable)]
     pub codex_responses_as_items: Option<bool>,
     // TODO: Remove this experiment-only prefix with `codex_responses_as_items`.
-    /// Optional prefix added to automatic Codex response items when `codexResponsesAsItems` is true.
+    /// Optional prefix added to automatic UnieAI response items when `codexResponsesAsItems` is true.
     #[ts(optional = nullable)]
     pub codex_response_item_prefix: Option<String>,
-    /// Selects how automatic Codex responses are routed in Frameless Bidi sessions. Omitted values
+    /// Selects how automatic UnieAI responses are routed in Frameless Bidi sessions. Omitted values
     /// default to `thinking`. Realtime V1 and V2 ignore this setting.
     #[ts(optional = nullable)]
     pub codex_response_handoff_mode: Option<CodexResponseHandoffMode>,
@@ -93,7 +93,7 @@ pub struct ThreadRealtimeStartParams {
     /// Selects text or audio output for the realtime session. Transport and voice stay
     /// independent so clients can choose how they connect separately from what the model emits.
     pub output_modality: RealtimeOutputModality,
-    /// Set to false to start without Codex's startup context. Omitted or null includes it.
+    /// Set to false to start without UnieAI's startup context. Omitted or null includes it.
     #[ts(optional = nullable)]
     pub include_startup_context: Option<bool>,
     /// Adds complete role-bearing text items to the initial Frameless Bidi session history.

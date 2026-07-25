@@ -465,12 +465,11 @@ impl AuthModeWidget {
         let displayed_studio_url = studio_url
             .clone()
             .unwrap_or_else(|| codex_login::unieai::DEFAULT_STUDIO_URL.to_string());
-        *self.sign_in_state.write().unwrap() =
-            SignInState::UnieAIDeviceCode(UnieAIDeviceState {
-                studio_url: displayed_studio_url,
-                verification_uri: None,
-                user_code: None,
-            });
+        *self.sign_in_state.write().unwrap() = SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+            studio_url: displayed_studio_url,
+            verification_uri: None,
+            user_code: None,
+        });
 
         let codex_home = self.codex_home.clone();
         let sign_in_state = self.sign_in_state.clone();
@@ -657,10 +656,7 @@ impl AuthModeWidget {
                 "  ".into(),
                 "Sign in to UnieAI Studio to use UnieAI Code with your".into(),
             ]),
-            Line::from(vec![
-                "  ".into(),
-                "organization's models".into(),
-            ]),
+            Line::from(vec!["  ".into(), "organization's models".into()]),
             "".into(),
         ];
 
@@ -796,8 +792,11 @@ impl AuthModeWidget {
             }
             _ => {
                 lines.push(
-                    Line::from(format!("  Requesting a sign-in code from {}...", state.studio_url))
-                        .dim(),
+                    Line::from(format!(
+                        "  Requesting a sign-in code from {}...",
+                        state.studio_url
+                    ))
+                    .dim(),
                 );
                 lines.push("".into());
                 None

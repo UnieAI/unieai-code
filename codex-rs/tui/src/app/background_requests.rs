@@ -1219,6 +1219,7 @@ pub(super) fn build_feedback_upload_params(
     let tags = turn_id.map(|turn_id| BTreeMap::from([(String::from("turn_id"), turn_id)]));
     FeedbackUploadParams {
         classification: crate::bottom_pane::feedback_classification(category).to_string(),
+        rating: crate::bottom_pane::feedback_rating(category).map(str::to_string),
         reason,
         thread_id: origin_thread_id.map(|thread_id| thread_id.to_string()),
         include_logs,

@@ -70,7 +70,7 @@ use codex_core_api::thread_store_from_config;
 #[derive(Debug, Parser)]
 #[command(
     name = "codex-thread-manager-sample",
-    about = "Run one Codex turn through ThreadManager and print mapped notifications as newline-delimited JSON."
+    about = "Run one UnieAI turn through ThreadManager and print mapped notifications as newline-delimited JSON."
 )]
 struct Args {
     /// Override the model for this run.
@@ -154,7 +154,7 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     } = thread_manager
         .start_thread(config)
         .await
-        .context("start Codex thread")?;
+        .context("start UnieAI thread")?;
 
     let thread_id_string = thread_id.to_string();
     let turn_output = run_turn(&thread, &thread_id_string, prompt).await;
@@ -162,13 +162,13 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let _ = thread_manager.remove_thread(&thread_id).await;
 
     turn_output?;
-    shutdown_result.context("shut down Codex thread")?;
+    shutdown_result.context("shut down UnieAI thread")?;
 
     Ok(())
 }
 
 fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<Config> {
-    let codex_home = find_codex_home().context("find Codex home")?;
+    let codex_home = find_codex_home().context("find UnieAI home")?;
     let cwd = AbsolutePathBuf::current_dir().context("resolve current directory")?;
     let model_provider_id = OPENAI_PROVIDER_ID.to_string();
     let model_providers = built_in_model_providers(/*openai_base_url*/ None);
@@ -304,6 +304,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         disable_paste_burst: false,
         analytics_enabled: Some(false),
         feedback_enabled: false,
+        feedback_webhook_url: None,
+        feedback_webhook_token: None,
         tool_suggest: ToolSuggestConfig::default(),
         otel: OtelConfig::default(),
     };

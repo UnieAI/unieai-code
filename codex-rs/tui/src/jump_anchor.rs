@@ -21,11 +21,7 @@
 /// An empty line still occupies one row; width 0 is treated as 1.
 fn rows_for_len(len: usize, width: usize) -> usize {
     let width = width.max(1);
-    if len == 0 {
-        1
-    } else {
-        len.div_ceil(width)
-    }
+    if len == 0 { 1 } else { len.div_ceil(width) }
 }
 
 /// One turn in the transcript: an ordered list of logical lines.
@@ -47,7 +43,10 @@ impl Turn {
         if self.lines.is_empty() {
             return 1;
         }
-        self.lines.iter().map(|l| rows_for_len(l.chars().count(), width)).sum()
+        self.lines
+            .iter()
+            .map(|l| rows_for_len(l.chars().count(), width))
+            .sum()
     }
 }
 

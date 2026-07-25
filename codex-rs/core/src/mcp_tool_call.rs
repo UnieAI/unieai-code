@@ -714,7 +714,7 @@ async fn refresh_codex_apps_after_connector_auth(
             );
         }
         Err(err) => {
-            tracing::warn!("failed to refresh Codex Apps tools after connector auth: {err:#}");
+            tracing::warn!("failed to refresh UnieAI Apps tools after connector auth: {err:#}");
         }
     }
 }

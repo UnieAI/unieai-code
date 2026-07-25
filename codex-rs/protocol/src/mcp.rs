@@ -1,8 +1,8 @@
 //! Types used when representing Model Context Protocol (MCP) values inside the
-//! Codex protocol.
+//! UnieAI protocol.
 //!
 //! We intentionally keep these types TS/JSON-schema friendly (via `ts-rs` and
-//! `schemars`) so they can be embedded in Codex's own protocol structures.
+//! `schemars`) so they can be embedded in UnieAI's own protocol structures.
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;

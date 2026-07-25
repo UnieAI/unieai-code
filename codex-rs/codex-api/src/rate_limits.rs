@@ -19,7 +19,7 @@ impl Display for RateLimitError {
     }
 }
 
-/// Parses the default Codex rate-limit header family into a `RateLimitSnapshot`.
+/// Parses the default UnieAI rate-limit header family into a `RateLimitSnapshot`.
 pub fn parse_default_rate_limit(headers: &HeaderMap) -> Option<RateLimitSnapshot> {
     parse_rate_limit_for_limit(headers, /*limit_id*/ None)
 }
@@ -175,7 +175,7 @@ fn map_event_window(window: Option<&RateLimitEventWindow>) -> Option<RateLimitWi
     })
 }
 
-/// Parses the bespoke Codex rate-limit headers into a `RateLimitSnapshot`.
+/// Parses the bespoke UnieAI rate-limit headers into a `RateLimitSnapshot`.
 pub fn parse_promo_message(headers: &HeaderMap) -> Option<String> {
     parse_header_str(headers, "x-codex-promo-message")
         .map(str::trim)

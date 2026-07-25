@@ -138,11 +138,7 @@ impl VerbGroupKind {
                 }
             }
             VerbGroupKind::Subagent | VerbGroupKind::McpTool | VerbGroupKind::Execute => {
-                if running {
-                    "Running"
-                } else {
-                    "Ran"
-                }
+                if running { "Running" } else { "Ran" }
             }
             VerbGroupKind::Edit => {
                 if running {
@@ -331,7 +327,9 @@ pub(crate) fn read_kind_for_arg(primary_arg: Option<&str>) -> VerbGroupKind {
     let looks_like_skill = primary_arg.is_some_and(|path| {
         let lower = path.to_ascii_lowercase();
         (lower.contains("/skills/") || lower.contains("\\skills\\"))
-            && (lower.ends_with("skill.md") || lower.ends_with("/skill") || lower.ends_with("skill.yaml"))
+            && (lower.ends_with("skill.md")
+                || lower.ends_with("/skill")
+                || lower.ends_with("skill.yaml"))
     });
     if looks_like_skill {
         VerbGroupKind::ReadSkill
@@ -599,12 +597,8 @@ mod tests {
 
     #[test]
     fn subagent_failed_feeds_suffix() {
-        let failed = ToolEvent::with_sources(
-            VerbGroupKind::Subagent,
-            false,
-            true,
-            vec!["child-A".into()],
-        );
+        let failed =
+            ToolEvent::with_sources(VerbGroupKind::Subagent, false, true, vec!["child-A".into()]);
         let cancelled = ToolEvent::with_sources(
             VerbGroupKind::Subagent,
             false,
@@ -618,12 +612,8 @@ mod tests {
 
     #[test]
     fn running_subagent_flips_group_tense() {
-        let mut started = ToolEvent::with_sources(
-            VerbGroupKind::Subagent,
-            true,
-            false,
-            vec!["child-A".into()],
-        );
+        let mut started =
+            ToolEvent::with_sources(VerbGroupKind::Subagent, true, false, vec!["child-A".into()]);
         started.running = true;
         let l = aggregate(&[read("a.rs"), started]);
         assert_eq!(l.text, "Reading 1 file, Running 1 subagent");
@@ -634,7 +624,10 @@ mod tests {
 
     #[test]
     fn classify_maps_known_tool_names() {
-        assert_eq!(classify_tool("read", Some("a.rs")), Some(VerbGroupKind::Read));
+        assert_eq!(
+            classify_tool("read", Some("a.rs")),
+            Some(VerbGroupKind::Read)
+        );
         assert_eq!(classify_tool("Read", None), Some(VerbGroupKind::Read));
         assert_eq!(
             classify_tool("read", Some("/x/skills/deploy/SKILL.md")),

@@ -88,7 +88,7 @@ fn create_codex_apps_tools_cache_context(
 fn store_current_tools(cache_context: &ConnectorRuntimeContext<ToolInfo>, tools: Vec<ToolInfo>) {
     let _ = cache_context.publish_if_newest_accepted(
         cache_context.begin_fetch(ConnectorRuntimeFetchSource::HardRefresh),
-        &create_test_server_info("Codex Apps"),
+        &create_test_server_info("UnieAI Apps"),
         tools,
     );
 }
@@ -859,7 +859,7 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
     );
-    let server_info = create_test_server_info("Codex Apps");
+    let server_info = create_test_server_info("UnieAI Apps");
     manager.clients.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         AsyncManagedClient {
@@ -1157,7 +1157,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_when_client_startup_fails()
             "calendar_create_event",
         )],
     );
-    let server_info = create_test_server_info("Codex Apps");
+    let server_info = create_test_server_info("UnieAI Apps");
     let failed_client = futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Err(
         StartupOutcomeError::Failed {
             error: "startup failed".to_string(),

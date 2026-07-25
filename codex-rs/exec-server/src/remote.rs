@@ -285,7 +285,7 @@ impl HarnessKeyValidator for RegistryHarnessKeyValidator {
     }
 }
 
-/// Noise connection configuration for a Codex harness.
+/// Noise connection configuration for a UnieAI harness.
 ///
 /// The provider holds the authenticated registry client so every reconnect
 /// receives fresh URL and harness-key authorization material.

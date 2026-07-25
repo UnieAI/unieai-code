@@ -31,7 +31,7 @@ pub use standalone_executable::main;
 
 use crate::invocation::ExtractHeredocError;
 
-/// Special argv[1] flag used when the Codex executable self-invokes to run the
+/// Special argv[1] flag used when the UnieAI executable self-invokes to run the
 /// internal `apply_patch` path.
 ///
 /// Although this constant lives in `codex-apply-patch` (to avoid forcing

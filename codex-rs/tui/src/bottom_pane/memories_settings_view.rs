@@ -116,7 +116,8 @@ impl MemoriesSettingsView {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Memories".bold()));
         header.push(Line::from(
-            "Choose how UnieAI Code uses and creates memories. Changes are saved to config.toml".dim(),
+            "Choose how UnieAI Code uses and creates memories. Changes are saved to config.toml"
+                .dim(),
         ));
         header
     }

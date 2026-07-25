@@ -61,7 +61,10 @@ impl ChatWidget {
     /// palette doesn't produce). So the palette must execute every builtin the
     /// same way; inserting `/name ` instead (the old behavior) left the user
     /// with text in the composer and no action — "the model menu didn't open".
-    pub(crate) fn handle_command_palette_selection(&mut self, item: crate::bottom_pane::CommandItem) {
+    pub(crate) fn handle_command_palette_selection(
+        &mut self,
+        item: crate::bottom_pane::CommandItem,
+    ) {
         match item {
             crate::bottom_pane::CommandItem::Builtin(cmd) => {
                 self.handle_slash_command_dispatch(cmd);
@@ -370,7 +373,7 @@ impl ChatWidget {
                     }
 
                     self.session_telemetry.counter(
-                        "codex.windows_sandbox.setup_elevated_sandbox_command",
+                        "unieai.windows_sandbox.setup_elevated_sandbox_command",
                         /*inc*/ 1,
                         &[],
                     );

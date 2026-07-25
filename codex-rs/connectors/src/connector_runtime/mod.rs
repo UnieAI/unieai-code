@@ -33,7 +33,7 @@ const MCP_TOOLS_CACHE_PUBLISH_DURATION_METRIC: &str = "codex.mcp.tools.cache_pub
 
 /// Values stored in the connector runtime's persisted tool snapshot.
 ///
-/// The runtime uses the connector-owned Codex Apps cache layout for every
+/// The runtime uses the connector-owned UnieAI Apps cache layout for every
 /// serializable, cloneable payload.
 pub trait ConnectorRuntimePayload: Clone + Serialize + DeserializeOwned {}
 
@@ -65,7 +65,7 @@ impl ConnectorRuntimeContextKey {
     }
 }
 
-/// Builds the connector runtime context key for the active Codex auth.
+/// Builds the connector runtime context key for the active UnieAI auth.
 pub fn connector_runtime_context_key(auth: Option<&CodexAuth>) -> ConnectorRuntimeContextKey {
     let account_id = auth.and_then(CodexAuth::get_account_id);
     let chatgpt_user_id = auth.and_then(CodexAuth::get_chatgpt_user_id);

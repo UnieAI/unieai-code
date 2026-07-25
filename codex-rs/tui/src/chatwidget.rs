@@ -597,6 +597,9 @@ pub(crate) struct ChatWidget {
     turn_lifecycle: TurnLifecycleState,
     safety_buffering: SafetyBufferingState,
     task_complete_pending: bool,
+    /// Once-per-session throttle for the proactive 👍/👎 feedback prompt so it
+    /// never nags: it can fire at most once per TUI session.
+    proactive_feedback_prompted: bool,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
     /// Tracks per-server MCP startup state while startup is in progress.
     ///
@@ -995,6 +998,28 @@ impl ChatWidget {
             include_logs,
         );
         self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
+    /// Proactively surface the 👍/👎 feedback picker after a turn ends, at most
+    /// once per session and only when it will not interrupt the user. Callers
+    /// decide *when* (big task done, error, interrupt); this method owns the
+    /// throttle and the "don't nag" guards.
+    pub(crate) fn maybe_prompt_proactive_feedback(&mut self) {
+        if !self.config.feedback_enabled || self.proactive_feedback_prompted {
+            return;
+        }
+        // Never clobber an active overlay, an in-progress turn, or a draft the
+        // user is still typing.
+        if self.bottom_pane.has_active_view()
+            || self.bottom_pane.is_task_running()
+            || !self.bottom_pane.composer_is_empty()
+        {
+            return;
+        }
+        self.proactive_feedback_prompted = true;
+        let params = crate::bottom_pane::feedback_selection_params(self.app_event_tx.clone());
+        self.bottom_pane.show_selection_view(params);
         self.request_redraw();
     }
 

@@ -1,4 +1,4 @@
-//! Typed display items owned by Codex extensions.
+//! Typed display items Owned by UnieAI extensions.
 //!
 //! This crate intentionally sits below `codex-protocol` so core can carry
 //! extension items without owning each extension's display schema.
