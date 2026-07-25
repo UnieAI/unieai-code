@@ -79,6 +79,7 @@ mod headless_chatgpt_login;
 pub(crate) enum SignInState {
     PickMode,
     UnieAIStudioUrlEntry(UnieAIStudioInputState),
+    UnieAIGatewayUrlEntry(UnieAIGatewayInputState),
     UnieAIDeviceCode(UnieAIDeviceState),
     UnieAISuccess(UnieAISuccessState),
     ChatGptContinueInBrowser(ContinueInBrowserState),
@@ -106,6 +107,14 @@ pub(crate) enum SignInOption {
 
 #[derive(Clone, Default)]
 pub(crate) struct UnieAIStudioInputState {
+    value: String,
+}
+
+/// Second step of the company sign-in flow: the API gateway URL. Empty input
+/// means "auto-detect" (Studio `/api/config`, then `studio.` -> `api.` host).
+#[derive(Clone, Default)]
+pub(crate) struct UnieAIGatewayInputState {
+    studio_url: String,
     value: String,
 }
 
@@ -211,6 +220,9 @@ impl KeyboardHandler for AuthModeWidget {
             return;
         }
         if self.handle_unieai_studio_entry_key_event(&key_event) {
+            return;
+        }
+        if self.handle_unieai_gateway_entry_key_event(&key_event) {
             return;
         }
 
@@ -333,12 +345,14 @@ impl AuthModeWidget {
     }
 
     /// Returns whether the auth flow is currently in a text-entry mode
-    /// (API key or UnieAI Studio URL).
+    /// (API key, UnieAI Studio URL, or UnieAI gateway URL).
     pub(crate) fn is_api_key_entry_active(&self) -> bool {
         self.sign_in_state.read().is_ok_and(|guard| {
             matches!(
                 &*guard,
-                SignInState::ApiKeyEntry(_) | SignInState::UnieAIStudioUrlEntry(_)
+                SignInState::ApiKeyEntry(_)
+                    | SignInState::UnieAIStudioUrlEntry(_)
+                    | SignInState::UnieAIGatewayUrlEntry(_)
             )
         })
     }
@@ -348,6 +362,7 @@ impl AuthModeWidget {
         self.sign_in_state.read().is_ok_and(|guard| match &*guard {
             SignInState::ApiKeyEntry(state) => !state.value.is_empty(),
             SignInState::UnieAIStudioUrlEntry(state) => !state.value.is_empty(),
+            SignInState::UnieAIGatewayUrlEntry(state) => !state.value.is_empty(),
             _ => false,
         })
     }
@@ -403,7 +418,7 @@ impl AuthModeWidget {
     fn handle_sign_in_option(&mut self, option: SignInOption) {
         match option {
             SignInOption::UnieAI => {
-                self.start_unieai_login(/*studio_url*/ None);
+                self.start_unieai_login(/*studio_url*/ None, /*gateway_url*/ None);
             }
             SignInOption::UnieAICompany => {
                 self.start_unieai_studio_entry();
@@ -444,7 +459,7 @@ impl AuthModeWidget {
 
     /// Runs the UnieAI Studio device-code login on a background task, driving
     /// the UI through UnieAIDeviceCode -> UnieAISuccess/PickMode.
-    fn start_unieai_login(&mut self, studio_url: Option<String>) {
+    fn start_unieai_login(&mut self, studio_url: Option<String>, gateway_url: Option<String>) {
         self.set_error(/*message*/ None);
 
         let displayed_studio_url = studio_url
@@ -468,7 +483,7 @@ impl AuthModeWidget {
         let join_handle = tokio::spawn(async move {
             let options = codex_login::unieai::UnieAILoginOptions {
                 studio_url,
-                gateway_url: None,
+                gateway_url,
                 on_prompt: Box::new(move |prompt| {
                     *prompt_state.write().unwrap() =
                         SignInState::UnieAIDeviceCode(UnieAIDeviceState {
@@ -507,7 +522,6 @@ impl AuthModeWidget {
     }
 
     fn handle_unieai_studio_entry_key_event(&mut self, key_event: &KeyEvent) -> bool {
-        let mut should_start: Option<String> = None;
         let mut should_request_frame = false;
 
         {
@@ -521,10 +535,16 @@ impl AuthModeWidget {
                     let trimmed = state.value.trim().to_string();
                     if trimmed.is_empty() {
                         self.set_error(Some("Studio URL cannot be empty".to_string()));
-                        should_request_frame = true;
                     } else {
-                        should_start = Some(trimmed);
+                        // Next step: ask for the API gateway URL before
+                        // starting the device-code login.
+                        *guard = SignInState::UnieAIGatewayUrlEntry(UnieAIGatewayInputState {
+                            studio_url: trimmed,
+                            value: String::new(),
+                        });
+                        self.set_error(/*message*/ None);
                     }
+                    should_request_frame = true;
                 } else {
                     match key_event.code {
                         KeyCode::Backspace => {
@@ -550,8 +570,57 @@ impl AuthModeWidget {
             }
         }
 
-        if let Some(studio_url) = should_start {
-            self.start_unieai_login(Some(studio_url));
+        if should_request_frame {
+            self.request_frame.schedule_frame();
+        }
+        true
+    }
+
+    fn handle_unieai_gateway_entry_key_event(&mut self, key_event: &KeyEvent) -> bool {
+        let mut should_start: Option<(String, Option<String>)> = None;
+        let mut should_request_frame = false;
+
+        {
+            let mut guard = self.sign_in_state.write().unwrap();
+            if let SignInState::UnieAIGatewayUrlEntry(state) = &mut *guard {
+                if keys::CANCEL.is_pressed(*key_event) {
+                    // Back to the Studio URL step with the value preserved.
+                    *guard = SignInState::UnieAIStudioUrlEntry(UnieAIStudioInputState {
+                        value: state.studio_url.clone(),
+                    });
+                    self.set_error(/*message*/ None);
+                    should_request_frame = true;
+                } else if keys::CONFIRM.is_pressed(*key_event) {
+                    let trimmed = state.value.trim().to_string();
+                    let gateway_url = (!trimmed.is_empty()).then_some(trimmed);
+                    should_start = Some((state.studio_url.clone(), gateway_url));
+                } else {
+                    match key_event.code {
+                        KeyCode::Backspace => {
+                            state.value.pop();
+                            self.set_error(/*message*/ None);
+                            should_request_frame = true;
+                        }
+                        KeyCode::Char(c)
+                            if key_event.kind == KeyEventKind::Press
+                                && !key_event.modifiers.contains(KeyModifiers::SUPER)
+                                && !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            state.value.push(c);
+                            self.set_error(/*message*/ None);
+                            should_request_frame = true;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                return false;
+            }
+        }
+
+        if let Some((studio_url, gateway_url)) = should_start {
+            self.start_unieai_login(Some(studio_url), gateway_url);
         } else if should_request_frame {
             self.request_frame.schedule_frame();
         }
@@ -565,11 +634,16 @@ impl AuthModeWidget {
         }
 
         let mut guard = self.sign_in_state.write().unwrap();
-        if let SignInState::UnieAIStudioUrlEntry(state) = &mut *guard {
-            state.value.push_str(trimmed);
-            self.set_error(/*message*/ None);
-        } else {
-            return false;
+        match &mut *guard {
+            SignInState::UnieAIStudioUrlEntry(state) => {
+                state.value.push_str(trimmed);
+                self.set_error(/*message*/ None);
+            }
+            SignInState::UnieAIGatewayUrlEntry(state) => {
+                state.value.push_str(trimmed);
+                self.set_error(/*message*/ None);
+            }
+            _ => return false,
         }
 
         drop(guard);
@@ -806,6 +880,70 @@ impl AuthModeWidget {
             .block(
                 Block::default()
                     .title("Studio URL")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .render(input_area, buf);
+
+        let mut footer_lines: Vec<Line> = vec![
+            Line::from(vec![
+                "  Press ".dim(),
+                self.confirm_binding().into(),
+                " to sign in".dim(),
+            ]),
+            Line::from(vec![
+                "  Press ".dim(),
+                self.cancel_binding().into(),
+                " to go back".dim(),
+            ]),
+        ];
+        if let Some(error) = self.error_message() {
+            footer_lines.push("".into());
+            footer_lines.push(error.red().into());
+        }
+        Paragraph::new(footer_lines)
+            .wrap(Wrap { trim: false })
+            .render(footer_area, buf);
+    }
+
+    fn render_unieai_gateway_entry(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &UnieAIGatewayInputState,
+    ) {
+        let [intro_area, input_area, footer_area] = Layout::vertical([
+            Constraint::Min(4),
+            Constraint::Length(3),
+            Constraint::Min(2),
+        ])
+        .areas(area);
+
+        let intro_lines: Vec<Line> = vec![
+            Line::from(vec!["> ".into(), "Enter your API URL".bold()]),
+            "".into(),
+            Line::from(format!(
+                "  The inference API endpoint used with {} (e.g. https://api.demo.unieai.com/v1).",
+                state.studio_url
+            )),
+            "  Leave empty to detect it automatically.".into(),
+            "".into(),
+        ];
+        Paragraph::new(intro_lines)
+            .wrap(Wrap { trim: false })
+            .render(intro_area, buf);
+
+        let content_line: Line = if state.value.is_empty() {
+            vec!["Paste or type your API URL (or press Enter to auto-detect)".dim()].into()
+        } else {
+            Line::from(state.value.clone())
+        };
+        Paragraph::new(content_line)
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title("API URL")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan)),
@@ -1314,6 +1452,7 @@ impl StepStateProvider for AuthModeWidget {
             SignInState::PickMode
             | SignInState::ApiKeyEntry(_)
             | SignInState::UnieAIStudioUrlEntry(_)
+            | SignInState::UnieAIGatewayUrlEntry(_)
             | SignInState::UnieAIDeviceCode(_)
             | SignInState::ChatGptContinueInBrowser(_)
             | SignInState::ChatGptDeviceCode(_)
@@ -1334,6 +1473,9 @@ impl WidgetRef for AuthModeWidget {
             }
             SignInState::UnieAIStudioUrlEntry(state) => {
                 self.render_unieai_studio_entry(area, buf, state);
+            }
+            SignInState::UnieAIGatewayUrlEntry(state) => {
+                self.render_unieai_gateway_entry(area, buf, state);
             }
             SignInState::UnieAIDeviceCode(state) => {
                 self.render_unieai_device_code(area, buf, state);

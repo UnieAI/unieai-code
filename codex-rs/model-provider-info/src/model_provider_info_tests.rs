@@ -377,6 +377,29 @@ fn test_merge_configured_model_providers_adds_custom_provider() {
 }
 
 #[test]
+fn test_merge_configured_model_providers_unieai_override_replaces_built_in() {
+    let custom_unieai = ModelProviderInfo {
+        name: "UnieAI".to_string(),
+        base_url: Some("https://api.demo.unieai.com/v1".to_string()),
+        env_key: Some("UNIEAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers = std::collections::HashMap::from([(
+        UNIEAI_PROVIDER_ID.to_string(),
+        custom_unieai.clone(),
+    )]);
+
+    let merged = merge_configured_model_providers(
+        built_in_model_providers(/*openai_base_url*/ None),
+        configured_model_providers,
+    )
+    .expect("merge should succeed");
+
+    assert_eq!(merged.get(UNIEAI_PROVIDER_ID), Some(&custom_unieai));
+}
+
+#[test]
 fn test_merge_configured_model_providers_applies_amazon_bedrock_profile_override() {
     let configured_model_providers = std::collections::HashMap::from([(
         AMAZON_BEDROCK_PROVIDER_ID.to_string(),

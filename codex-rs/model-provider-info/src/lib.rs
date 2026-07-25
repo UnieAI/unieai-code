@@ -542,6 +542,13 @@ provider fields are not supported"
                         .extend(http_headers_override);
                 }
             }
+        } else if key == UNIEAI_PROVIDER_ID {
+            // A user-defined `[model_providers.unieai]` entry fully replaces
+            // the built-in UnieAI gateway definition. Without this, a custom
+            // `base_url` (e.g. an on-prem or demo deployment) is silently
+            // ignored and every request keeps going to the default gateway,
+            // which surfaces as endless 401 retries in the TUI.
+            model_providers.insert(key, provider);
         } else {
             model_providers.entry(key).or_insert(provider);
         }
