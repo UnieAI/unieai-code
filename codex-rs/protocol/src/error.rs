@@ -124,9 +124,7 @@ pub enum CodexErr {
     ConnectionFailed(ConnectionFailedError),
     #[error("Quota exceeded. Check your plan and billing details.")]
     QuotaExceeded,
-    #[error(
-        "To use UnieAI with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus."
-    )]
+    #[error("To use UnieAI, upgrade your plan: https://studio.unieai.com/plan.")]
     UsageNotIncluded,
     #[error("We're currently experiencing high demand, which may cause temporary errors.")]
     InternalServerError,
@@ -429,6 +427,22 @@ pub struct UsageLimitReachedError {
     pub rate_limit_reached_type: Option<RateLimitReachedType>,
 }
 
+/// Resolve the UnieAI Studio base URL for user-facing upgrade links, honoring a
+/// custom `UNIEAI_STUDIO_URL` (on-prem / self-hosted gateways) and falling back
+/// to the public default.
+fn unieai_studio_url() -> String {
+    std::env::var("UNIEAI_STUDIO_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| "https://studio.unieai.com".to_string())
+}
+
+/// The plan / billing page users are pointed at when they hit a usage limit.
+fn unieai_plan_url() -> String {
+    format!("{}/plan", unieai_studio_url())
+}
+
 impl std::fmt::Display for UsageLimitReachedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(limit_name) = self
@@ -488,7 +502,8 @@ impl std::fmt::Display for UsageLimitReachedError {
 
         let message = match self.plan_type.as_ref() {
             Some(PlanType::Known(KnownPlan::Plus)) => format!(
-                "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits{}",
+                "You've hit your usage limit. Upgrade your plan at {} to continue{}",
+                unieai_plan_url(),
                 retry_suffix_after_or(self.resets_at.as_ref())
             ),
             Some(PlanType::Known(
@@ -504,12 +519,14 @@ impl std::fmt::Display for UsageLimitReachedError {
             }
             Some(PlanType::Known(KnownPlan::Free)) | Some(PlanType::Known(KnownPlan::Go)) => {
                 format!(
-                    "You've hit your usage limit. Upgrade to Plus to continue using UnieAI (https://chatgpt.com/explore/plus),{}",
+                    "You've hit your usage limit. Upgrade to continue using UnieAI at {},{}",
+                    unieai_plan_url(),
                     retry_suffix_after_or(self.resets_at.as_ref())
                 )
             }
             Some(PlanType::Known(KnownPlan::Pro | KnownPlan::ProLite)) => format!(
-                "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits{}",
+                "You've hit your usage limit. Manage your plan at {}{}",
+                unieai_plan_url(),
                 retry_suffix_after_or(self.resets_at.as_ref())
             ),
             Some(PlanType::Known(KnownPlan::Enterprise))
