@@ -2,10 +2,12 @@
 source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
-╭───────────────────────────────────────╮
-│ >_ UnieAI Code (vtest)                │
-│                                       │
-│ model:       gpt-5   /model to change │
-│ directory:   /tmp/project             │
-│ permissions: YOLO mode                │
-╰───────────────────────────────────────╯
+╭────────────────────────────────────────────╮
+│ ████████  Welcome to UnieAI Code!          │
+│ ████████  Send /help for help information. │
+│ ████████  (vtest)                          │
+│                                            │
+│ model:       gpt-5   /model to change      │
+│ directory:   /tmp/project                  │
+│ permissions: YOLO mode                     │
+╰────────────────────────────────────────────╯

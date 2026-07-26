@@ -24,6 +24,12 @@ const MIN_SCANNABLE_NARRATIVE_WIDTH: usize = 12;
 const MIN_SCANNABLE_TOKEN_HEAVY_WIDTH: usize = 12;
 const CRAMPED_EXPANSIVE_CELL_LINES: usize = 4;
 const CATASTROPHIC_NARRATIVE_CELL_LINES: usize = 7;
+/// A row with at least `MULTI_COLUMN_WRAP_COLUMNS` expansive columns that each
+/// wrap to `MULTI_COLUMN_WRAP_LINES`+ lines no longer scans as a grid, even when
+/// every column individually clears its minimum width (common for wide
+/// CJK/prose tables on roomy terminals).
+const MULTI_COLUMN_WRAP_LINES: usize = 2;
+const MULTI_COLUMN_WRAP_COLUMNS: usize = 3;
 const STACKED_VALUE_INDENT: usize = 2;
 
 /// Switch modes after enough records contain values the grid can no longer
@@ -88,6 +94,16 @@ fn expansive_cells_are_starved(
         .filter(|(_, _, height)| *height >= CRAMPED_EXPANSIVE_CELL_LINES)
         .count()
         >= 2
+        // Wide CJK/prose tables: on a roomy terminal every column can clear the
+        // per-column minimum width yet still wrap, so the two checks above never
+        // fire. When three or more expansive columns in a single row each wrap
+        // to multiple lines, the grid is a wall of ragged multi-line cells that
+        // no longer scans as a table — fall back to key/value records.
+        || expansive_cells
+            .iter()
+            .filter(|(_, _, height)| *height >= MULTI_COLUMN_WRAP_LINES)
+            .count()
+            >= MULTI_COLUMN_WRAP_COLUMNS
         || expansive_cells.iter().any(|(kind, width, height)| {
             *kind == TableColumnKind::Narrative
                 && *width < MIN_SCANNABLE_NARRATIVE_WIDTH

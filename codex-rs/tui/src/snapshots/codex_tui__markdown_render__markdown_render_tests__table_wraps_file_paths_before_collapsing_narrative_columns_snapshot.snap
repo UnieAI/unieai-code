@@ -2,24 +2,16 @@
 source: tui/src/markdown_render_tests.rs
 expression: "plain_lines(&text).join(\"\\n\")"
 ---
- Unit                                                Files    Adds    Removes    What It Adds
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━  ━━━━━━  ━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- Suggestion engine and unit coverage        codex-rs/core/     704          0    Sampling workflow, stable-history
-                                                      src/                       checks, tool-flow suppression, fast
-                                          next_prompt_sugg                       reasoning profile, filtering rules,
-                                              estion.rs:1,                       cancellation and timeout.
-                                            codex-rs/core/
-                                                      src/
-                                          next_prompt_sugg
-                                          estion_tests.rs:
-                                                         1
-───────────────────────────────────────  ──────────────────  ──────  ─────────  ────────────────────────────────────────
- Model instruction fragment and             codex-rs/core/      54          0    Synthetic suggestion prompt and an
- contextual isolation                         src/context/                       isolation test for ordinary user text.
-                                          next_prompt_sugg
-                                              estion.rs:1,
-                                            codex-rs/core/
-                                              src/context/
-                                          contextual_user_
-                                          message_tests.rs
-                                                        :1
+ Unit          Suggestion engine and unit coverage
+ Files         codex-rs/core/src/next_prompt_suggestion.rs:1, codex-rs/core/src/next_prompt_suggestion_tests.rs:1
+ Adds          704
+ Removes       0
+ What It Adds  Sampling workflow, stable-history checks, tool-flow suppression, fast reasoning profile, filtering rules,
+               cancellation and timeout.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Unit          Model instruction fragment and contextual isolation
+ Files         codex-rs/core/src/context/next_prompt_suggestion.rs:1, codex-rs/core/src/context/
+               contextual_user_message_tests.rs:1
+ Adds          54
+ Removes       0
+ What It Adds  Synthetic suggestion prompt and an isolation test for ordinary user text.

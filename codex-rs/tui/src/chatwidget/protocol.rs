@@ -251,7 +251,7 @@ impl ChatWidget {
                 );
                 // "After a big task" trigger: only prompt for substantial live
                 // turns, never during replay of a resumed thread.
-                const PROACTIVE_FEEDBACK_MIN_TURN_MS: u64 = 20_000;
+                const PROACTIVE_FEEDBACK_MIN_TURN_MS: i64 = 20_000;
                 if replay_kind.is_none()
                     && notification
                         .turn

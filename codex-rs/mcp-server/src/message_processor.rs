@@ -357,7 +357,7 @@ impl MessageProcessor {
         }
     }
 
-    async fn handle_tool_call_codex(
+    async fn handle_tool_call_unieai(
         &self,
         id: RequestId,
         arguments: Option<rmcp::model::JsonObject>,

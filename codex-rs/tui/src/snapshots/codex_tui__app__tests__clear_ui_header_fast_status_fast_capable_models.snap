@@ -3,7 +3,9 @@ source: tui/src/app/tests.rs
 expression: rendered
 ---
 ╭────────────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>)                        │
+│ ████████  Welcome to UnieAI Code!                  │
+│ ████████  Send /help for help information.         │
+│ ████████  (v<VERSION>)                             │
 │                                                    │
 │ model:     gpt-5.4 xhigh   fast   /model to change │
 │ directory: /tmp/project                            │
