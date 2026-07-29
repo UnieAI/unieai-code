@@ -1,4 +1,5 @@
-import { ChildProcessWithoutNullStreams, spawn } from "node:child_process"
+import { ChildProcessWithoutNullStreams } from "node:child_process"
+import { killTree, spawnCli } from "./processUtil"
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Json = any
@@ -29,7 +30,7 @@ export class AppServerClient {
   }
 
   async start(): Promise<void> {
-    const child = spawn(this.executable, ["app-server"], {
+    const child = spawnCli(this.executable, ["app-server"], {
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
     })
@@ -147,7 +148,7 @@ export class AppServerClient {
   dispose() {
     if (this.child) {
       this.child.removeAllListeners("exit")
-      this.child.kill("SIGTERM")
+      killTree(this.child)
       this.child = undefined
     }
   }

@@ -1,10 +1,11 @@
-import { ChildProcessWithoutNullStreams, spawn } from "node:child_process"
+import { ChildProcessWithoutNullStreams } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { AppServerClient, Json } from "./appServerClient"
 import { AgentCoreBackend } from "./agentCoreBackend"
+import { killTree, spawnCli, terminalCommand } from "./processUtil"
 
 const TERMINAL_NAME = "unieai"
 
@@ -45,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
         env: { UNIEAI_CALLER: "vscode" },
       })
       terminal.show()
-      terminal.sendText(executablePath())
+      terminal.sendText(terminalCommand(executablePath(), vscode.env.shell))
     }),
   )
 }
@@ -277,6 +278,8 @@ function executablePath(): string {
   if (configured) {
     console.warn(`unieai-code.executablePath does not exist: ${configured}; falling back to \`unieai\``)
   }
+  // Deliberately extension-less: on Windows the npm install is `unieai.cmd`,
+  // not `unieai.exe`, so the suffix is resolved via PATHEXT (see processUtil).
   return "unieai"
 }
 
@@ -398,7 +401,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   dispose() {
     this.appServer?.dispose()
-    this.child?.kill("SIGTERM")
+    killTree(this.child)
   }
 
   resolveWebviewView(view: vscode.WebviewView) {
@@ -639,7 +642,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(executablePath(), args, { env: { ...process.env, UNIEAI_CALLER: "vscode" } })
+      child = spawnCli(executablePath(), args, {
+        env: { ...process.env, UNIEAI_CALLER: "vscode" },
+      })
     } catch (err) {
       this.post({ type: "loginError", message: String(err) })
       return
@@ -682,7 +687,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private cancelLogin() {
     if (this.loginChild) {
-      this.loginChild.kill("SIGTERM")
+      killTree(this.loginChild)
       this.loginChild = undefined
     }
   }
@@ -695,7 +700,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.threadId = undefined
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(executablePath(), ["logout"], {
+      child = spawnCli(executablePath(), ["logout"], {
         env: { ...process.env, UNIEAI_CALLER: "vscode" },
       })
     } catch (err) {
@@ -962,7 +967,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
     if (this.child) {
-      this.child.kill("SIGTERM")
+      killTree(this.child)
       this.child = undefined
       this.post({ type: "turnState", state: "interrupted" })
       this.post({ type: "running", value: false })
@@ -1516,7 +1521,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(executablePath(), args, {
+      child = spawnCli(executablePath(), args, {
         env: { ...process.env, UNIEAI_CALLER: "vscode" },
       })
     } catch (err) {

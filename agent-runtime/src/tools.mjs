@@ -5,8 +5,10 @@
  * TOOL'S CONCERN, not the loop's:
  *
  * - bash runs every command under the host sandbox binary
- *   (`$UNIEAI_BIN sandbox -- sh -c <cmd>`, i.e. UnieAI Code's seatbelt/landlock
- *   wrapper). On a sandbox denial it escalates through the loop-provided
+ *   (`$UNIEAI_BIN sandbox -- <system shell> <cmd>`, i.e. UnieAI Code's
+ *   seatbelt/landlock/AppContainer wrapper; the shell is `sh -c` on Unix and
+ *   `cmd.exe /d /s /c` on Windows, which has no `sh` at all — see
+ *   portable-exec.mjs). On a sandbox denial it escalates through the loop-provided
  *   `runCtx.requestApproval` channel and, if the host approves, re-runs
  *   unsandboxed. The loop stays sandbox-agnostic.
  * - edit is OpenCode-style search/replace (oldString must match exactly once)
@@ -22,6 +24,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
+import { prepareExec, shellArgv } from "./portable-exec.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
 // Factored out (and exported) so the guards can be unit-tested without spinning
@@ -184,7 +187,10 @@ function pyInstantChecks(absPath, { oldString = null, fileBody = null } = {}) {
   return notes.length ? `\n${notes.join("\n")}` : "";
 }
 
-const SANDBOX_DENIED = /operation not permitted|permission denied|sandbox/i;
+// "access is denied" is the Windows (AppContainer) wording for the same thing
+// seatbelt/landlock report as EPERM/EACCES; without it a denial on Windows
+// reads as an ordinary non-zero exit and never reaches the approval prompt.
+const SANDBOX_DENIED = /operation not permitted|permission denied|access is denied|sandbox/i;
 
 // --- fuzzy edit matching (ported from grok-build's seek_sequence 4-tier design) ---
 // Models mangle whitespace and typographic punctuation when echoing file text.
@@ -235,8 +241,12 @@ function truncateMiddle(s, max = 8000) {
 }
 
 function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
+  // On Windows the CLI is usually an npm `.cmd` shim, which execFile cannot
+  // launch directly; prepareExec resolves it (and pre-quotes argv when it has
+  // to fall back to cmd.exe, since Node escapes nothing under `shell: true`).
+  const spec = prepareExec(cmd, args);
   return new Promise((done) => {
-    execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(spec.file, spec.args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, shell: spec.shell, windowsHide: true }, (error, stdout, stderr) => {
       // A spawn failure (binary missing / not executable) reports a STRING errno
       // in error.code and never actually ran, so it has no exit status. Keep it
       // distinct from a command that ran and exited non-zero, so the caller can
@@ -344,7 +354,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       async bash(args, runCtx = {}) {
         const cmd = String(args?.cmd || "").trim();
         if (!cmd) return toolResult({ ok: false, modelText: "error: cmd is required" });
-        const sandboxed = await run(sandboxBin, ["sandbox", "--", "sh", "-c", cmd], { cwd: root });
+        const sandboxed = await run(sandboxBin, ["sandbox", "--", ...shellArgv(cmd)], { cwd: root });
         if (sandboxed.spawnError) {
           return toolResult({ ok: false, modelText: `error: could not launch the UnieAI Code sandbox binary \`${sandboxBin}\` (${sandboxed.spawnError}). It is not on PATH for this process. In VS Code set \`unieai-code.executablePath\` to the absolute path of the \`unieai\` binary (\`which unieai\` in a terminal), or set the UNIEAI_BIN environment variable. Until then, use the read/write/edit tools instead of shell commands.` });
         }
@@ -367,7 +377,8 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         if (runCtx.abortSignal?.aborted) {
           return toolResult({ ok: false, modelText: "(approval arrived after the tool call was abandoned — command NOT executed; ask again if still needed)" });
         }
-        const raw = await run("sh", ["-c", cmd], { cwd: root });
+        const [shell, ...shellArgs] = shellArgv(cmd);
+        const raw = await run(shell, shellArgs, { cwd: root });
         return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
       },
       async read(args, runCtx = {}) {
