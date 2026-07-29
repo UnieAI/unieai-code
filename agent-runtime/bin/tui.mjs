@@ -3,7 +3,7 @@
  * unieai-agent — slim terminal UI for UnieAI Code on the agent-core loop.
  *
  * Deliberately minimal (readline, no ratatui parity): streaming replies,
- * dimmed thinking, tool lines, interactive approvals, /model /new /sessions
+ * dimmed thinking, tool lines, interactive approvals, /model /vision-model /new /sessions
  * /resume /quit. The full-featured Rust TUI remains available as `unieai`
  * during the engine transition.
  */
@@ -11,6 +11,14 @@ import readline from "node:readline";
 import { stdin, stdout, argv, exit, cwd } from "node:process";
 import { createEngine } from "../src/engine.mjs";
 import { listSessions } from "../src/session.mjs";
+import { unieaiHome } from "../src/config.mjs";
+import { describeProbe } from "../../third_party/unieai-agent-core/src/vision.mjs";
+import {
+  readVisionState,
+  setVisionModel as setStoredVisionModel,
+  visionStatePath,
+  writeVisionState,
+} from "../../third_party/unieai-agent-core/src/vision-store.mjs";
 
 const DIM = "\x1b[2m", CYAN = "\x1b[36m", YELLOW = "\x1b[33m", RED = "\x1b[31m", BOLD = "\x1b[1m", RESET = "\x1b[0m";
 
@@ -41,12 +49,18 @@ const truthy = (v) => ["1", "true", "on", "yes"].includes(String(v ?? "").toLowe
 let webAccess =
   args.web === true || truthy(args.web) || truthy(process.env.UNIEAI_WEB_ACCESS) || truthy(process.env.UNIEAI_WEB);
 
+// The chosen vision model persists across runs — probing costs a real model
+// call, so re-picking every session would make the feature not worth using.
+const visionPath = visionStatePath(unieaiHome());
+let visionModel = (await readVisionState(visionPath)).model;
+
 function makeEngine(resume = null, model = null) {
   return createEngine({
     workspace: cwd(),
     model,
     resume,
     webAccess,
+    visionModel,
     onText: (d) => {
       closeReasoning();
       stdout.write(d);
@@ -89,7 +103,7 @@ try {
 }
 
 console.log(`${BOLD}UnieAI Code${RESET} ${DIM}(agent-core engine · ${engine.model} · session ${engine.sessionId}${webAccess ? " · web on" : ""})${RESET}`);
-console.log(`${DIM}/model /new /sessions /resume <id> /web /quit${RESET}\n`);
+console.log(`${DIM}/model /vision-model /new /sessions /resume <id> /web /quit${RESET}\n`);
 
 async function repl() {
   for (;;) {
@@ -116,6 +130,35 @@ async function repl() {
       webAccess = !webAccess;
       engine.setWebAccess(webAccess); // keeps the current session; retools next turn
       console.log(`${DIM}web access ${webAccess ? "on — fetch tool available" : "off"}${RESET}`);
+      continue;
+    }
+    if (line === "/vision-model" || line === "/vlm") {
+      if (visionModel) console.log(`${DIM}current: ${visionModel}${RESET}`);
+      engine.models.forEach((m, i) => console.log(`${DIM}${i + 1}.${RESET} ${m.id}`));
+      const pick = Number((await question("vision model # (blank to cancel): ")).trim());
+      const chosen = engine.models[pick - 1];
+      if (!chosen) { console.log(`${DIM}cancelled${RESET}`); continue; }
+
+      // Verify rather than trust: the catalog says nothing about image support,
+      // and a gateway can accept an image, drop it, and let the model guess.
+      console.log(`${DIM}testing ${chosen.id} with a sample image…${RESET}`);
+      const outcome = await engine.probeVision(chosen.id);
+      if (outcome.result !== "ok") {
+        // Not saved on failure — remembering a model that cannot see just moves
+        // the failure to later, mid-task, when it is harder to diagnose.
+        console.log(RED + describeProbe(outcome) + RESET);
+        continue;
+      }
+
+      visionModel = chosen.id;
+      engine.setVisionModel(visionModel); // keeps the session; retools next turn
+      try {
+        const state = await readVisionState(visionPath);
+        await writeVisionState(visionPath, setStoredVisionModel(state, visionModel));
+      } catch (e) {
+        console.log(`${YELLOW}chosen for this session, but could not save: ${e.message}${RESET}`);
+      }
+      console.log(`${DIM}${describeProbe(outcome)}${RESET}`);
       continue;
     }
     if (line === "/model") {

@@ -15,6 +15,7 @@ import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/promp
 import { callModelJson } from "../../third_party/unieai-agent-core/src/upstream.mjs";
 import { compactWithSummary } from "../../third_party/unieai-agent-core/src/compaction.mjs";
 import { pickSmallModel } from "../../third_party/unieai-agent-core/src/model-picker.mjs";
+import { makeVisionCaller, probeVisionModel } from "../../third_party/unieai-agent-core/src/vision.mjs";
 import {
   dateSource,
   agentsMdSource,
@@ -284,7 +285,8 @@ export function createEngine({
   onReview = () => {},
   onPlan = () => {},
   expectsMutation = false,
-  webAccess = false
+  webAccess = false,
+  visionModel = null
 } = {}) {
   // Goal mode: false = off, "gate" = verification blocks turn completion so
   // the model fixes its own gaps in-turn, "review" = the turn ends immediately
@@ -424,12 +426,22 @@ export function createEngine({
   // engine — messages and session survive. Rebuilding the whole engine would
   // start a fresh conversation, which is the wrong behaviour for a toggle.
   let webAccessState = webAccess;
+  let visionModelState = visionModel;
   let toolsetPromise = null;
   function toolset(ctx) {
     toolsetPromise ||= buildToolset({
       runtimeContext: { workspace: {} },
       ctx,
-      domainToolBuilders: [buildCodingTools({ workspace, sandboxBin: sandboxBin(), webAccess: webAccessState })]
+      domainToolBuilders: [buildCodingTools({
+        workspace,
+        sandboxBin: sandboxBin(),
+        webAccess: webAccessState,
+        // Vision is DELEGATED: read_media_file hands the image to this model and
+        // returns its prose, so the main model never needs image support.
+        visionModel: visionModelState,
+        callModelJson,
+        visionOptions: { callerKey: credentials.gatewayApiKey },
+      })]
     });
     return toolsetPromise;
   }
@@ -511,6 +523,37 @@ export function createEngine({
         webAccessState = next;
         toolsetPromise = null;
       }
+    },
+
+    get visionModel() {
+      return visionModelState;
+    },
+
+    /**
+     * Point read_media_file at a different vision model, keeping the session.
+     *
+     * Like setWebAccess, this drops the memoized toolset so the next turn is
+     * built with the new model — leaving it cached would silently keep using
+     * the old one for the rest of the conversation.
+     */
+    setVisionModel(value) {
+      const next = value ? String(value) : null;
+      if (next !== visionModelState) {
+        visionModelState = next;
+        toolsetPromise = null;
+      }
+    },
+
+    /**
+     * Check that `model` can genuinely see an image, using this session's
+     * credentials. Returns the structured probe outcome (ok / refused / wrong /
+     * error) so a UI can explain a failure instead of just refusing the pick.
+     */
+    probeVision(model) {
+      return probeVisionModel({
+        model,
+        callModel: makeVisionCaller(callModelJson, { callerKey: credentials.gatewayApiKey }),
+      });
     },
 
     /**

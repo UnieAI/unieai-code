@@ -20,6 +20,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
+import { describeImage } from "../../third_party/unieai-agent-core/src/vision.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -282,7 +283,65 @@ function htmlToText(html) {
     .trim();
 }
 
-export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false, allowExternal = false, externalAllowlist = [] } = {}) {
+/**
+ * Search backends for `web_search`, keyed by `UNIEAI_SEARCH_PROVIDER`.
+ *
+ * Each adapter normalizes its vendor's payload to `{ title, url, snippet }` so
+ * the tool's own output shape does not change when a consumer switches vendor.
+ * Adding a provider means adding an entry here — nothing else moves.
+ */
+export const SEARCH_PROVIDERS = {
+  async brave({ query, limit, apiKey, signal }) {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${limit}`;
+    const res = await globalThis.fetch(url, {
+      signal,
+      headers: { accept: "application/json", "x-subscription-token": apiKey },
+    });
+    if (!res.ok) throw new Error(`Brave search returned HTTP ${res.status} ${res.statusText}`);
+    const body = await res.json();
+    return (body?.web?.results || []).slice(0, limit).map((r) => ({
+      title: String(r?.title || "(untitled)"),
+      url: String(r?.url || ""),
+      snippet: htmlToText(String(r?.description || "")).slice(0, 500),
+    }));
+  },
+  async tavily({ query, limit, apiKey, signal }) {
+    const res = await globalThis.fetch("https://api.tavily.com/search", {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey, query, max_results: limit }),
+    });
+    if (!res.ok) throw new Error(`Tavily search returned HTTP ${res.status} ${res.statusText}`);
+    const body = await res.json();
+    return (body?.results || []).slice(0, limit).map((r) => ({
+      title: String(r?.title || "(untitled)"),
+      url: String(r?.url || ""),
+      snippet: String(r?.content || "").slice(0, 500),
+    }));
+  },
+};
+
+/** Extensions `read_media_file` will hand to the vision model, and their MIME types. */
+export const IMAGE_MIME_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+};
+
+/**
+ * Largest image handed to a vision model.
+ *
+ * Base64 inflates by a third and the result rides in the request body, so a
+ * generous cap here turns into a very expensive call. Refusing with a clear
+ * message beats silently truncating an image into something unreadable.
+ */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false, allowExternal = false, externalAllowlist = [], visionModel = null, callModelJson = null, visionOptions = {} } = {}) {
   const root = resolve(workspace || process.cwd());
 
   // §2.1 content-hash staleness guard: resolved abs path → SHA-1 of the exact
@@ -330,6 +389,14 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // no network reach beyond what bash's sandbox already governs.
   const fetchSchema = { type: "function", function: { name: "fetch", description: "Fetch an http(s) URL and return its content as readable text (HTML is reduced to text). Use to read documentation pages or HTTP APIs the task references.", parameters: { type: "object", properties: { url: { type: "string", description: "absolute http(s) URL" } }, required: ["url"] } } };
 
+  // web_search finds URLs; `fetch` reads them. Keeping them separate means the
+  // model pays for a full page only once it has picked a promising result.
+  //
+  // No provider is bundled: a search API means a vendor account and a per-query
+  // bill, which is the consumer's decision, not the runtime's. The provider is
+  // selected by env so adding one is configuration rather than a code change.
+  const searchSchema = { type: "function", function: { name: "web_search", description: "Search the web and return result titles, URLs, and snippets. Use it to FIND pages; then call fetch on the URLs worth reading.", parameters: { type: "object", properties: { query: { type: "string", description: "the search query" }, maxResults: { type: "number", description: "how many results to return (1-10, default 5)" } }, required: ["query"] } } };
+
   // `ask` is a structured elicitation primitive, distinct from approval: it lets
   // the model put a real choice to the user (multiple options) and block on the
   // answer. The host renders it (TUI menu / VS Code card) via runCtx.requestQuestion.
@@ -341,9 +408,18 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
     { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
     { type: "function", function: { name: "read_output", description: "Retrieve the full text of a large tool output that was spilled to storage (its preview showed an id). Optionally filter to matching lines.", parameters: { type: "object", properties: { id: { type: "string", description: "the output id from the preview marker" }, grep: { type: "string", description: "optional substring or /regex/ to filter lines" } }, required: ["id"] } } },
+    // grep/glob are first-class rather than left to `bash`+rg for the same reason
+    // `edit` is search/replace: open models compose a JSON argument object far
+    // more reliably than a correctly-quoted shell pipeline. They also return
+    // structured, spillable output and never need the sandbox escalation path.
+    { type: "function", function: { name: "grep", description: "Search file contents for a regular expression and return matching lines with their file and line number. Respects .gitignore. Prefer this over running rg through bash.", parameters: { type: "object", properties: { pattern: { type: "string", description: "regular expression to search for" }, path: { type: "string", description: "optional workspace-relative directory or file to search (defaults to the workspace root)" }, glob: { type: "string", description: "optional file filter, e.g. *.ts" }, ignoreCase: { type: "boolean", description: "case-insensitive match (default false)" } }, required: ["pattern"] } } },
+    { type: "function", function: { name: "glob", description: "List workspace files whose paths match a glob pattern, e.g. src/**/*.rs. Respects .gitignore. Use to discover files before reading them.", parameters: { type: "object", properties: { pattern: { type: "string", description: "glob pattern to match against file paths" }, path: { type: "string", description: "optional workspace-relative directory to list under (defaults to the workspace root)" } }, required: ["pattern"] } } },
+    // read_media_file DELEGATES: the vision model looks, and only prose comes
+    // back. That is why this tool exists even when the main model is text-only.
+    { type: "function", function: { name: "read_media_file", description: "Look at an image file (png/jpg/gif/webp/bmp) and get a written description of it. Use for screenshots, diagrams, and error dialogs. Ask a specific question when you need one detail rather than a full description.", parameters: { type: "object", properties: { filePath: { type: "string", description: "workspace-relative path to the image" }, prompt: { type: "string", description: "optional question about the image; omit for a full description" } }, required: ["filePath"] } } },
     askSchema,
   ];
-  if (webAccess) schemas.push(fetchSchema);
+  if (webAccess) schemas.push(fetchSchema, searchSchema);
 
   return async () => ({
     label: "coding",
@@ -401,6 +477,66 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       async read_output(args) {
         const r = readSpilled(String(args?.id || ""), { grep: String(args?.grep || "") });
         return toolResult({ ok: r.ok, modelText: r.text });
+      },
+      async grep(args, runCtx = {}) {
+        const pattern = String(args?.pattern || "");
+        if (!pattern) return toolResult({ ok: false, modelText: "error: pattern is required" });
+        const rel = String(args?.path || "");
+        const abs = resolve(root, rel);
+        const gate = await gateExternal(abs, rel || ".", runCtx);
+        if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+
+        const rgArgs = ["--line-number", "--no-heading", "--color", "never", "--max-count", "200"];
+        if (args?.ignoreCase) rgArgs.push("--ignore-case");
+        if (args?.glob) rgArgs.push("--glob", String(args.glob));
+        // `--` keeps a pattern that starts with `-` from being read as a flag.
+        rgArgs.push("--regexp", pattern, "--", abs);
+
+        const res = await run("rg", rgArgs, { cwd: root });
+        if (res.spawnError) {
+          return toolResult({ ok: false, modelText: `error: could not run ripgrep (${res.spawnError}). Install rg, or fall back to the bash tool.` });
+        }
+        // rg exits 1 for "no matches", which is a successful search, not a failure.
+        if (res.code === 1 && !res.stderr.trim()) {
+          return toolResult({ ok: true, modelText: `No matches for /${pattern}/.` });
+        }
+        if (res.code !== 0 && res.code !== 1) {
+          return toolResult({ ok: false, modelText: `error: ripgrep exited ${res.code}\n${res.stderr.slice(0, 2000)}` });
+        }
+        // Paths come back absolute because we searched an absolute root; make them
+        // workspace-relative so they line up with what read/edit expect.
+        const body = res.stdout.split("\n").map((l) => (l.startsWith(root + sep) ? l.slice(root.length + 1) : l)).join("\n");
+        const matches = body.split("\n").filter(Boolean).length;
+        const out = spillIfLarge(body, { id: "grep", fallbackTruncate: () => truncateMiddle(body) });
+        return toolResult({
+          modelText: `${matches} matching line(s)\n${out.modelText}`,
+          metadata: { timelineEvent: { type: "grep", pattern, matches } }
+        });
+      },
+      async glob(args, runCtx = {}) {
+        const pattern = String(args?.pattern || "");
+        if (!pattern) return toolResult({ ok: false, modelText: "error: pattern is required" });
+        const rel = String(args?.path || "");
+        const abs = resolve(root, rel);
+        const gate = await gateExternal(abs, rel || ".", runCtx);
+        if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+
+        const res = await run("rg", ["--files", "--glob", pattern, "--", abs], { cwd: root });
+        if (res.spawnError) {
+          return toolResult({ ok: false, modelText: `error: could not run ripgrep (${res.spawnError}). Install rg, or fall back to the bash tool.` });
+        }
+        if (res.code !== 0 && res.code !== 1) {
+          return toolResult({ ok: false, modelText: `error: ripgrep exited ${res.code}\n${res.stderr.slice(0, 2000)}` });
+        }
+        const files = res.stdout.split("\n").filter(Boolean)
+          .map((p) => (p.startsWith(root + sep) ? p.slice(root.length + 1) : p));
+        if (!files.length) return toolResult({ ok: true, modelText: `No files match ${pattern}.` });
+        const body = files.join("\n");
+        const out = spillIfLarge(body, { id: "glob", fallbackTruncate: () => truncateMiddle(body) });
+        return toolResult({
+          modelText: `${files.length} file(s)\n${out.modelText}`,
+          metadata: { timelineEvent: { type: "glob", pattern, files: files.length } }
+        });
       },
       async write(args, runCtx = {}) {
         try {
@@ -534,6 +670,92 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           return toolResult({ ok: res.ok, modelText: `HTTP ${res.status} ${res.statusText} · ${contentType}\n\n${truncateMiddle(text, 24_000)}` });
         } catch (e) {
           const msg = e?.name === "AbortError" ? "request timed out after 30s" : (e?.message || String(e));
+          return toolResult({ ok: false, modelText: `error: ${msg}` });
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      async read_media_file(args, runCtx = {}) {
+        const filePath = String(args?.filePath || "");
+        if (!filePath) return toolResult({ ok: false, modelText: "error: filePath is required" });
+
+        const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
+        const mime = IMAGE_MIME_TYPES[ext];
+        if (!mime) {
+          return toolResult({ ok: false, modelText: `error: ${filePath} is not a supported image (${Object.keys(IMAGE_MIME_TYPES).join(", ")}). Use read for text files.` });
+        }
+
+        // Check the vision model BEFORE touching the file: telling the model to
+        // go configure one is more useful than a read error it cannot act on.
+        if (!visionModel) {
+          return toolResult({ ok: false, modelText: "error: no vision model is configured, so images cannot be read. Tell the user to run /vision-model (or /vlm) to pick and verify one, then try again." });
+        }
+        if (typeof callModelJson !== "function") {
+          return toolResult({ ok: false, modelText: "error: image reading is unavailable in this environment." });
+        }
+
+        const abs = resolve(root, filePath);
+        const gate = await gateExternal(abs, filePath, runCtx);
+        if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+
+        let bytes;
+        try {
+          bytes = await readFile(abs);
+        } catch (e) {
+          return toolResult({ ok: false, modelText: `error: ${e.message}` });
+        }
+        if (bytes.length > MAX_IMAGE_BYTES) {
+          const mb = (bytes.length / 1024 / 1024).toFixed(1);
+          return toolResult({ ok: false, modelText: `error: ${filePath} is ${mb}MB, over the ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit for images. Resize it first.` });
+        }
+
+        const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
+        const described = await describeImage({
+          model: visionModel,
+          dataUrl,
+          prompt: args?.prompt,
+          callModelJson,
+          options: visionOptions,
+        });
+        if (!described.ok) return toolResult({ ok: false, modelText: `error: ${described.text}` });
+
+        return toolResult({
+          modelText: `${filePath} (described by ${described.model}):\n\n${described.text}`,
+          metadata: { timelineEvent: { type: "media_read", path: filePath, bytes: bytes.length, model: described.model } },
+        });
+      },
+      async web_search(args) {
+        if (!webAccess) return toolResult({ ok: false, modelText: "error: web access is disabled — enable the 上網 toggle to search the web" });
+        const query = String(args?.query || "").trim();
+        if (!query) return toolResult({ ok: false, modelText: "error: query is required" });
+        const limit = Math.min(10, Math.max(1, Number(args?.maxResults) || 5));
+
+        const provider = String(process.env.UNIEAI_SEARCH_PROVIDER || "").trim().toLowerCase();
+        const apiKey = String(process.env.UNIEAI_SEARCH_API_KEY || "").trim();
+        if (!provider || !apiKey) {
+          return toolResult({
+            ok: false,
+            modelText: "error: web search is not configured. Set UNIEAI_SEARCH_PROVIDER (brave or tavily) and UNIEAI_SEARCH_API_KEY. Until then, use fetch on a URL you already know."
+          });
+        }
+        if (!SEARCH_PROVIDERS[provider]) {
+          return toolResult({ ok: false, modelText: `error: unknown UNIEAI_SEARCH_PROVIDER "${provider}" — supported: ${Object.keys(SEARCH_PROVIDERS).join(", ")}` });
+        }
+
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 20_000);
+        try {
+          const results = await SEARCH_PROVIDERS[provider]({ query, limit, apiKey, signal: ctrl.signal });
+          if (!results.length) return toolResult({ ok: true, modelText: `No results for "${query}".` });
+          const body = results
+            .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+            .join("\n\n");
+          return toolResult({
+            modelText: `${results.length} result(s) for "${query}"\n\n${truncateMiddle(body, 12_000)}`,
+            metadata: { timelineEvent: { type: "web_search", query, results: results.length } }
+          });
+        } catch (e) {
+          const msg = e?.name === "AbortError" ? "search timed out after 20s" : (e?.message || String(e));
           return toolResult({ ok: false, modelText: `error: ${msg}` });
         } finally {
           clearTimeout(timer);
