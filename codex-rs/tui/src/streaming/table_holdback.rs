@@ -140,6 +140,16 @@ impl TableHoldbackScanner {
             self.pending_header_start = None;
         }
 
+        // A confirmed table ends at the first line that is no longer part of it
+        // -- a blank line, or a line without pipe-table structure. Closing the
+        // table out matters because the tail budget spans from `table_start` to
+        // the end of the render: leaving it confirmed keeps every later line
+        // mutable for the rest of the message, so anything past the viewport
+        // stays hidden until the stream finalizes.
+        if self.confirmed_table_start.is_some() && candidate_text.is_none() {
+            self.confirmed_table_start = None;
+        }
+
         if self.confirmed_table_start.is_none() && !line.trim().is_empty() {
             if fence_kind != FenceKind::Other && is_header {
                 self.pending_header_start = Some(source_start);
@@ -184,17 +194,20 @@ fn parse_lines_with_fence_state(source: &str) -> Vec<ParsedLine<'_>> {
     let mut lines = Vec::new();
     let mut source_start = 0usize;
 
-    for raw_line in source.split('\n') {
+    // Split the same way `push_line` does. `split('\n')` would append a phantom
+    // empty line for newline-terminated source, and that line reads as "not a
+    // table row", which would close a table the incremental scanner still holds
+    // open.
+    for raw_line in source.split_inclusive('\n') {
+        let text = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         lines.push(ParsedLine {
-            text: raw_line,
+            text,
             fence_context: tracker.kind(),
             source_start,
         });
 
-        tracker.advance(raw_line);
-        source_start = source_start
-            .saturating_add(raw_line.len())
-            .saturating_add(1);
+        tracker.advance(text);
+        source_start = source_start.saturating_add(raw_line.len());
     }
 
     lines
@@ -205,38 +218,46 @@ fn parse_lines_with_fence_state(source: &str) -> Vec<ParsedLine<'_>> {
 #[cfg(test)]
 pub(super) fn table_holdback_state(source: &str) -> TableHoldbackState {
     let lines = parse_lines_with_fence_state(source);
-    for pair in lines.windows(2) {
-        let [header_line, delimiter_line] = pair else {
-            continue;
+    let mut confirmed_table_start: Option<usize> = None;
+    let mut pending_header_start: Option<usize> = None;
+    let mut previous_header_start: Option<usize> = None;
+
+    for line in &lines {
+        let candidate_text = if line.fence_context == FenceKind::Other {
+            None
+        } else {
+            table_candidate_text(line.text)
         };
-        if header_line.fence_context == FenceKind::Other
-            || delimiter_line.fence_context == FenceKind::Other
+        let is_header = candidate_text.is_some_and(is_table_header_line);
+        let is_delimiter = candidate_text.is_some_and(is_table_delimiter_line);
+
+        if confirmed_table_start.is_none()
+            && is_delimiter
+            && let Some(header_start) = previous_header_start
         {
-            continue;
+            confirmed_table_start = Some(header_start);
+            pending_header_start = None;
         }
 
-        let Some(header_text) = table_candidate_text(header_line.text) else {
-            continue;
-        };
-        let Some(delimiter_text) = table_candidate_text(delimiter_line.text) else {
-            continue;
-        };
-
-        if is_table_header_line(header_text) && is_table_delimiter_line(delimiter_text) {
-            return TableHoldbackState::Confirmed {
-                table_start: header_line.source_start,
-            };
+        // A confirmed table stays open only while its rows keep arriving; the
+        // first blank or non-pipe line closes it. See `push_line` for why the
+        // table must not stay confirmed to the end of the message.
+        if confirmed_table_start.is_some() && candidate_text.is_none() {
+            confirmed_table_start = None;
         }
+
+        if confirmed_table_start.is_none() && !line.text.trim().is_empty() {
+            pending_header_start = is_header.then_some(line.source_start);
+        }
+
+        previous_header_start = is_header.then_some(line.source_start);
     }
 
-    let pending_header = lines.iter().rev().find(|line| !line.text.trim().is_empty());
-    if let Some(line) = pending_header
-        && line.fence_context != FenceKind::Other
-        && table_candidate_text(line.text).is_some_and(is_table_header_line)
-    {
-        return TableHoldbackState::PendingHeader {
-            header_start: line.source_start,
-        };
+    if let Some(table_start) = confirmed_table_start {
+        TableHoldbackState::Confirmed { table_start }
+    } else if let Some(header_start) = pending_header_start {
+        TableHoldbackState::PendingHeader { header_start }
+    } else {
+        TableHoldbackState::None
     }
-    TableHoldbackState::None
 }

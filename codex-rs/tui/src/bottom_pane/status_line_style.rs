@@ -25,6 +25,7 @@ enum StatusLineAccent {
     Mode,
     Thread,
     Progress,
+    Update,
 }
 
 impl StatusLineAccent {
@@ -46,6 +47,7 @@ impl StatusLineAccent {
             | StatusLineItem::TotalOutputTokens => Self::Usage,
             StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => Self::Limit,
             StatusLineItem::CodexVersion | StatusLineItem::SessionId => Self::Metadata,
+            StatusLineItem::UpdateAvailable => Self::Update,
             StatusLineItem::FastMode | StatusLineItem::RawOutput => Self::Mode,
             StatusLineItem::Permissions => Self::Mode,
             StatusLineItem::ApprovalMode => Self::Mode,
@@ -66,13 +68,14 @@ impl StatusLineAccent {
             Self::Mode => &["storage.modifier", "keyword.operator"],
             Self::Thread => &["markup.heading", "entity.name.section"],
             Self::Progress => &["markup.inserted", "constant.numeric"],
+            Self::Update => &["markup.inserted", "entity.name.function"],
         }
     }
 
     fn fallback_style(self) -> Style {
         match self {
             Self::Model | Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
-            Self::Path | Self::Usage | Self::Progress => Style::default().green(),
+            Self::Path | Self::Usage | Self::Progress | Self::Update => Style::default().green(),
             Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
         }
     }

@@ -554,6 +554,11 @@ pub(crate) struct ChatWidget {
     initial_user_message: Option<UserMessage>,
     status_account_display: Option<StatusAccountDisplay>,
     runtime_model_provider_base_url: Option<String>,
+    /// Newer released version, when the startup update check found one.
+    ///
+    /// Drives the `update-available` status-line item, which stays visible for
+    /// the whole session rather than scrolling away like the startup notice.
+    available_update_version: Option<String>,
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
@@ -1595,6 +1600,15 @@ impl ChatWidget {
                 Some(crate::width::usable_content_width(width, reserved_cols).unwrap_or(1))
             }
         })
+    }
+
+    /// Record the newer version found by the startup update check.
+    ///
+    /// The only production caller is behind `cfg(not(debug_assertions))`, so a
+    /// debug build sees this as dead code; tests still exercise it.
+    #[cfg_attr(debug_assertions, allow(dead_code))]
+    pub(crate) fn set_available_update_version(&mut self, version: Option<String>) {
+        self.available_update_version = version;
     }
 
     pub(crate) fn raw_output_mode(&self) -> bool {

@@ -2736,6 +2736,41 @@ async fn status_line_context_remaining_renders_labeled_percent() {
 }
 
 #[tokio::test]
+async fn status_line_update_available_renders_when_a_newer_version_exists() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.tui_status_line = Some(vec!["update-available".to_string()]);
+    chat.set_available_update_version(Some("9.9.9".to_string()));
+
+    chat.refresh_status_line();
+
+    assert_eq!(status_line_text(&chat), Some("update 9.9.9".to_string()));
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "update-available should remain a valid status line item"
+    );
+}
+
+#[tokio::test]
+async fn status_line_update_available_is_omitted_when_up_to_date() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.tui_status_line = Some(vec!["update-available".to_string()]);
+
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        None,
+        "no update means the item contributes nothing"
+    );
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "an omitted value is not an invalid item"
+    );
+}
+
+#[tokio::test]
 async fn status_line_legacy_context_usage_renders_context_used_percent() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

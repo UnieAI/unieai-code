@@ -1160,6 +1160,10 @@ See the UnieAI Code keymap documentation for supported actions and examples."
 
         #[cfg(not(debug_assertions))]
         let pre_loop_exit_reason = if let Some(latest_version) = upgrade_version {
+            // The history cell scrolls away; the status-line item keeps the
+            // notice reachable for the rest of the session.
+            app.chat_widget
+                .set_available_update_version(Some(latest_version.clone()));
             let control = Box::pin(app.handle_event(
                 tui,
                 &mut app_server,

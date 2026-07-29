@@ -112,6 +112,10 @@ pub(crate) enum StatusLineItem {
     /// UnieAI Code application version.
     CodexVersion,
 
+    /// A newer released version, shown only while one is available.
+    #[strum(to_string = "update-available", serialize = "update")]
+    UpdateAvailable,
+
     /// Total context window size in tokens.
     ContextWindowSize,
 
@@ -176,6 +180,9 @@ impl StatusLineItem {
                 "Remaining usage on the secondary usage limit (omitted when unavailable)"
             }
             StatusLineItem::CodexVersion => "UnieAI Code application version",
+            StatusLineItem::UpdateAvailable => {
+                "Newer released version (omitted when already up to date)"
+            }
             StatusLineItem::ContextWindowSize => {
                 "Total context window size in tokens (omitted when unknown)"
             }
@@ -215,6 +222,7 @@ impl StatusLineItem {
             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
             StatusLineItem::WeeklyLimit => StatusSurfacePreviewItem::WeeklyLimit,
             StatusLineItem::CodexVersion => StatusSurfacePreviewItem::CodexVersion,
+            StatusLineItem::UpdateAvailable => StatusSurfacePreviewItem::UpdateAvailable,
             StatusLineItem::ContextWindowSize => StatusSurfacePreviewItem::ContextWindowSize,
             StatusLineItem::UsedTokens => StatusSurfacePreviewItem::UsedTokens,
             StatusLineItem::TotalInputTokens => StatusSurfacePreviewItem::TotalInputTokens,

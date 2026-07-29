@@ -956,6 +956,28 @@ mod tests {
     }
 
     #[test]
+    fn controller_live_tail_releases_content_after_table_ends() {
+        let mut ctrl = stream_controller(Some(80));
+        ctrl.push("| A | B |\n");
+        ctrl.push("| --- | --- |\n");
+        ctrl.push("| 1 | 2 |\n");
+        ctrl.push("\n");
+        for i in 0..40 {
+            ctrl.push(&format!("prose line {i}\n"));
+        }
+
+        let tail = hyperlink_lines_to_plain_strings(&ctrl.current_tail_lines()).join("\n");
+        assert!(
+            !tail.contains("prose line 39"),
+            "prose after a finished table must not stay in the mutable tail: {tail:?}",
+        );
+        assert!(
+            !ctrl.has_live_tail(),
+            "expected no live tail once the table closed",
+        );
+    }
+
+    #[test]
     fn controller_live_tail_requires_table_holdback_state() {
         let mut ctrl = stream_controller(Some(80));
         ctrl.push("plain text without newline");
@@ -1816,6 +1838,33 @@ mod tests {
             table_holdback_state(source),
             TableHoldbackState::Confirmed { .. }
         ));
+    }
+
+    #[test]
+    fn table_holdback_state_keeps_an_unfinished_table_confirmed() {
+        let source = "| Key | Description |\n| --- | --- |\n| a | b |\n";
+        assert!(matches!(
+            table_holdback_state(source),
+            TableHoldbackState::Confirmed { .. }
+        ));
+    }
+
+    #[test]
+    fn table_holdback_state_closes_confirmed_table_at_blank_line() {
+        let source = "| Key | Description |\n| --- | --- |\n| a | b |\n\nProse after the table.\n";
+        assert!(
+            matches!(table_holdback_state(source), TableHoldbackState::None),
+            "a finished table must not hold back the prose that follows it",
+        );
+    }
+
+    #[test]
+    fn table_holdback_state_closes_confirmed_table_at_non_table_line() {
+        let source = "| Key | Description |\n| --- | --- |\n| a | b |\nProse right after the table.\n";
+        assert!(
+            matches!(table_holdback_state(source), TableHoldbackState::None),
+            "a non-pipe line ends the table region",
+        );
     }
 
     #[test]
