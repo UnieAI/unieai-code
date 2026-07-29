@@ -59,6 +59,14 @@
       {
         "command": "unieai-code.openTerminal",
         "title": "UnieAI Code: Open in Terminal (TUI)"
+      },
+      {
+        "command": "unieai-code.selectVisionModel",
+        "title": "UnieAI Code: Select Vision Model"
+      },
+      {
+        "command": "unieai-code.showUpdateInfo",
+        "title": "UnieAI Code: Show Update Info"
       }
     ],
     "menus": {
@@ -139,7 +147,8 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "bun run check-types && bun run lint && node esbuild.js --production",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "node --test src/*.test.cjs"
   },
   "devDependencies": {
     "@types/vscode": "^1.94.0",

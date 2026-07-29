@@ -6,6 +6,9 @@ import * as vscode from "vscode"
 import { AppServerClient, Json } from "./appServerClient"
 import { AgentCoreBackend } from "./agentCoreBackend"
 import { killTree, spawnCli, terminalCommand } from "./processUtil"
+import { UpdateStatusBarItem, VisionStatusBarItem } from "./statusBar"
+import { readVisionState, selectVisionModel } from "./visionModel"
+import { parseCliVersion } from "./versionCompare.cjs"
 
 const TERMINAL_NAME = "unieai"
 
@@ -15,7 +18,40 @@ type StoredModel = { id: string; name?: string }
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatViewProvider(context)
 
+  // Reads the cache the CLI already maintains rather than polling npm itself,
+  // so both surfaces agree on the latest version and only one of them fetches.
+  const updateStatus = new UpdateStatusBarItem({
+    home: unieaiHome(),
+    currentVersion: readCliVersion,
+  })
+  updateStatus.start()
+
+  const visionStatus = new VisionStatusBarItem()
+  visionStatus.set(readVisionState(unieaiHome()).model)
+
   context.subscriptions.push(
+    updateStatus,
+    visionStatus,
+    vscode.commands.registerCommand("unieai-code.selectVisionModel", async () => {
+      const chosen = await selectVisionModel({
+        home: unieaiHome(),
+        models: () => loadStoredModels().models,
+        probe: (model) => provider.probeVision(model),
+      })
+      if (chosen) {
+        provider.setVisionModel(chosen)
+        visionStatus.set(chosen)
+      }
+    }),
+    vscode.commands.registerCommand("unieai-code.showUpdateInfo", async () => {
+      const action = await vscode.window.showInformationMessage(
+        "A newer UnieAI Code is available.",
+        "Open Terminal to Update",
+      )
+      if (action) {
+        await vscode.commands.executeCommand("unieai-code.openTerminal")
+      }
+    }),
     { dispose: () => provider.dispose() },
     vscode.window.registerWebviewViewProvider("unieai-code.chatView", provider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -267,6 +303,40 @@ function t<K extends keyof (typeof EXT_I18N)["zh-TW"]>(key: K): (typeof EXT_I18N
   return (EXT_I18N[resolveLocale()] ?? EXT_I18N.en)[key]
 }
 
+/**
+ * Resolve the installed CLI's version by asking it.
+ *
+ * Resolves to null on any failure — a missing or unlaunchable binary must leave
+ * the status bar silent rather than claim an update is available.
+ */
+function readCliVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    let output = ""
+    let settled = false
+    const done = (value: string | null) => {
+      if (!settled) {
+        settled = true
+        resolve(value)
+      }
+    }
+    try {
+      const child = spawnCli(executablePath(), ["--version"])
+      child.stdout.on("data", (d: Buffer) => {
+        output += d.toString()
+      })
+      child.on("error", () => done(null))
+      child.on("close", () => done(parseCliVersion(output)))
+      // A hung binary must not leave the promise pending for the session.
+      setTimeout(() => {
+        killTree(child)
+        done(null)
+      }, 5000).unref?.()
+    } catch {
+      done(null)
+    }
+  })
+}
+
 function executablePath(): string {
   const configured = vscode.workspace.getConfiguration("unieai-code").get<string>("executablePath")
   // A stale absolute path (e.g. a deleted dev-build binary) must not brick every
@@ -351,6 +421,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.getConfiguration("unieai-code").get<string>("engine") === "app-server"
       ? "app-server"
       : "agent-core"
+  }
+
+  /** Test a candidate vision model against the gateway (see visionModel.ts). */
+  probeVision(model: string): Promise<Json> {
+    return this.ensureAgentCore().probeVision(model)
+  }
+
+  /** Point image reading at `model` for this and subsequent chats. */
+  setVisionModel(model: string | null): void {
+    this.ensureAgentCore().setVisionModel(model)
   }
 
   private ensureAgentCore(): AgentCoreBackend {

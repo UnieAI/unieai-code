@@ -95,6 +95,9 @@ export class AgentCoreBackend {
       model,
       resume: resume ?? null,
       webAccess: this.webAccess,
+      // Carried into every rebuilt engine so switching model or starting a new
+      // chat does not quietly drop a vision model the user already verified.
+      visionModel: this.visionModelValue,
       onText: (d: string) => {
         this.blockText += d
         this.cb.post({ type: "turnDelta", kind: "agent", itemKey: this.agentItemId, text: d })
@@ -243,6 +246,33 @@ export class AgentCoreBackend {
     this.engine?.setGoalMode(value)
   }
   private goalMode: false | "review" | "gate" = false
+
+  /** Model that reads images on the main model's behalf (null = images unavailable). */
+  get visionModel(): string | null {
+    return this.visionModelValue
+  }
+
+  setVisionModel(model: string | null): void {
+    this.visionModelValue = model
+    // Held here as well as on the engine: a new chat rebuilds the engine, and
+    // the choice must survive that rather than silently reverting.
+    this.engine?.setVisionModel(model)
+  }
+  private visionModelValue: string | null = null
+
+  /**
+   * Ask the gateway whether `model` can really see an image.
+   *
+   * Needs a live engine for its credentials; without one the caller is told so
+   * rather than shown a probe failure that looks like the model's fault.
+   */
+  async probeVision(model: string): Promise<Json> {
+    this.ensureEngine()
+    if (!this.engine) {
+      return { result: "error", model, detail: "not signed in" }
+    }
+    return this.engine.probeVision(model)
+  }
 
   async send(text: string, model?: string, webAccess = false): Promise<void> {
     this.webAccess = webAccess
