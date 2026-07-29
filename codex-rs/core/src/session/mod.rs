@@ -2299,7 +2299,7 @@ impl Session {
                 });
             }
             AskForApproval::Granular(granular_config)
-                if !granular_config.allows_request_permissions() =>
+                if !granular_config.may_prompt_for_request_permissions() =>
             {
                 return Some(RequestPermissionsResponse {
                     permissions: RequestPermissionProfile::default(),

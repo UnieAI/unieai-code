@@ -937,41 +937,73 @@ pub enum AskForApproval {
     Never,
 }
 
+/// Per-category control over which approval prompts may reach the user.
+///
+/// Each field selects between exactly two outcomes for its category:
+///
+/// * `true` — the request is **shown to the user** as an approval prompt.
+/// * `false` — the request is **rejected automatically**, without being shown.
+///
+/// There is deliberately no third "approve automatically" outcome here, so a
+/// field being `true` does not mean the underlying action is permitted; it means
+/// you will be asked about it. Running without prompts is
+/// [`AskForApproval::Never`], which declines to ask and returns the failure to
+/// the model instead.
+///
+/// Each field also accepts a `prompt_on_*` alias in configuration, which reads
+/// the way the flag actually behaves. The original names remain the serialized
+/// form so existing configs and protocol clients keep working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 pub struct GranularApprovalConfig {
-    /// Whether to allow shell command approval requests, including inline
+    /// Prompt on shell commands needing escalation, including inline
     /// `with_additional_permissions` and `require_escalated` requests.
+    /// When `false`, those commands are refused rather than raised.
+    #[serde(alias = "prompt_on_sandbox_escalation")]
     pub sandbox_approval: bool,
-    /// Whether to allow prompts triggered by execpolicy `prompt` rules.
+    /// Prompt when an execpolicy `prompt` rule matches.
+    /// When `false`, matching commands are refused rather than raised.
+    #[serde(alias = "prompt_on_execpolicy_rules")]
     pub rules: bool,
-    /// Whether to allow approval prompts triggered by skill script execution.
-    #[serde(default)]
+    /// Prompt before running a skill script.
+    /// When `false`, skill scripts are refused rather than raised.
+    #[serde(default, alias = "prompt_on_skill_execution")]
     pub skill_approval: bool,
-    /// Whether to allow prompts triggered by the `request_permissions` tool.
-    #[serde(default)]
+    /// Prompt when the `request_permissions` tool asks to widen access.
+    /// When `false`, the request is refused rather than raised.
+    #[serde(default, alias = "prompt_on_request_permissions")]
     pub request_permissions: bool,
-    /// Whether to allow MCP elicitation prompts.
+    /// Prompt on MCP elicitations.
+    /// When `false`, elicitations are refused rather than raised.
+    #[serde(alias = "prompt_on_mcp_elicitations")]
     pub mcp_elicitations: bool,
 }
 
 impl GranularApprovalConfig {
-    pub const fn allows_sandbox_approval(self) -> bool {
+    /// Whether a sandbox-escalation request may be raised to the user.
+    ///
+    /// A `false` here means such requests are refused outright — it is not a
+    /// statement about whether escalation itself is permitted.
+    pub const fn may_prompt_for_sandbox_escalation(self) -> bool {
         self.sandbox_approval
     }
 
-    pub const fn allows_rules_approval(self) -> bool {
+    /// Whether an execpolicy `prompt` rule may be raised to the user.
+    pub const fn may_prompt_for_execpolicy_rules(self) -> bool {
         self.rules
     }
 
-    pub const fn allows_skill_approval(self) -> bool {
+    /// Whether skill-script execution may be raised to the user.
+    pub const fn may_prompt_for_skill_execution(self) -> bool {
         self.skill_approval
     }
 
-    pub const fn allows_request_permissions(self) -> bool {
+    /// Whether a `request_permissions` tool call may be raised to the user.
+    pub const fn may_prompt_for_request_permissions(self) -> bool {
         self.request_permissions
     }
 
-    pub const fn allows_mcp_elicitations(self) -> bool {
+    /// Whether an MCP elicitation may be raised to the user.
+    pub const fn may_prompt_for_mcp_elicitations(self) -> bool {
         self.mcp_elicitations
     }
 }
@@ -4427,6 +4459,72 @@ pub struct CollabResumeEndEvent {
 }
 
 #[cfg(test)]
+mod granular_approval_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    const ORIGINAL_KEYS: &str = r#"{
+        "sandbox_approval": true,
+        "rules": false,
+        "skill_approval": true,
+        "request_permissions": false,
+        "mcp_elicitations": true
+    }"#;
+
+    const PROMPT_ON_ALIASES: &str = r#"{
+        "prompt_on_sandbox_escalation": true,
+        "prompt_on_execpolicy_rules": false,
+        "prompt_on_skill_execution": true,
+        "prompt_on_request_permissions": false,
+        "prompt_on_mcp_elicitations": true
+    }"#;
+
+    #[test]
+    fn prompt_on_aliases_parse_to_the_same_config_as_the_original_keys() {
+        let original: GranularApprovalConfig =
+            serde_json::from_str(ORIGINAL_KEYS).expect("original keys parse");
+        let aliased: GranularApprovalConfig =
+            serde_json::from_str(PROMPT_ON_ALIASES).expect("prompt_on aliases parse");
+
+        assert_eq!(original, aliased);
+    }
+
+    #[test]
+    fn serialized_form_keeps_the_original_keys() {
+        let config: GranularApprovalConfig =
+            serde_json::from_str(PROMPT_ON_ALIASES).expect("prompt_on aliases parse");
+        let value = serde_json::to_value(config).expect("serializes");
+
+        // Protocol clients and existing configs read these names; an alias must
+        // not become the wire format.
+        for key in [
+            "sandbox_approval",
+            "rules",
+            "skill_approval",
+            "request_permissions",
+            "mcp_elicitations",
+        ] {
+            assert!(value.get(key).is_some(), "missing wire key {key}");
+        }
+        for alias in ["prompt_on_sandbox_escalation", "prompt_on_execpolicy_rules"] {
+            assert!(value.get(alias).is_none(), "alias {alias} leaked into wire");
+        }
+    }
+
+    #[test]
+    fn accessors_report_whether_the_prompt_may_be_raised() {
+        let config: GranularApprovalConfig =
+            serde_json::from_str(ORIGINAL_KEYS).expect("original keys parse");
+
+        assert!(config.may_prompt_for_sandbox_escalation());
+        assert!(!config.may_prompt_for_execpolicy_rules());
+        assert!(config.may_prompt_for_skill_execution());
+        assert!(!config.may_prompt_for_request_permissions());
+        assert!(config.may_prompt_for_mcp_elicitations());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::items::CommandExecutionItem;
@@ -4803,7 +4901,7 @@ mod tests {
                 request_permissions: false,
                 mcp_elicitations: true,
             }
-            .allows_mcp_elicitations()
+            .may_prompt_for_mcp_elicitations()
         );
         assert!(
             !GranularApprovalConfig {
@@ -4813,7 +4911,7 @@ mod tests {
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .allows_mcp_elicitations()
+            .may_prompt_for_mcp_elicitations()
         );
     }
 
@@ -4827,7 +4925,7 @@ mod tests {
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .allows_skill_approval()
+            .may_prompt_for_skill_execution()
         );
         assert!(
             !GranularApprovalConfig {
@@ -4837,7 +4935,7 @@ mod tests {
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .allows_skill_approval()
+            .may_prompt_for_skill_execution()
         );
     }
 
@@ -4851,7 +4949,7 @@ mod tests {
                 request_permissions: true,
                 mcp_elicitations: false,
             }
-            .allows_request_permissions()
+            .may_prompt_for_request_permissions()
         );
         assert!(
             !GranularApprovalConfig {
@@ -4861,7 +4959,7 @@ mod tests {
                 request_permissions: false,
                 mcp_elicitations: false,
             }
-            .allows_request_permissions()
+            .may_prompt_for_request_permissions()
         );
     }
 

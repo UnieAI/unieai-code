@@ -93,7 +93,7 @@ fn default_exec_approval_requirement_rejects_sandbox_prompt_when_granular_disabl
 }
 
 #[test]
-fn default_exec_approval_requirement_keeps_prompt_when_granular_allows_sandbox_approval() {
+fn default_exec_approval_requirement_keeps_prompt_when_granular_may_prompt_for_sandbox_escalation() {
     let policy = AskForApproval::Granular(GranularApprovalConfig {
         sandbox_approval: true,
         rules: false,

@@ -376,24 +376,24 @@ fn granular_instructions(
     exec_permission_approvals_enabled: bool,
     request_permissions_tool_enabled: bool,
 ) -> String {
-    let sandbox_approval_prompts_allowed = granular_config.allows_sandbox_approval();
+    let sandbox_approval_prompts_allowed = granular_config.may_prompt_for_sandbox_escalation();
     let shell_permission_requests_available =
         exec_permission_approvals_enabled && sandbox_approval_prompts_allowed;
     let request_permissions_tool_prompts_allowed =
-        request_permissions_tool_enabled && granular_config.allows_request_permissions();
+        request_permissions_tool_enabled && granular_config.may_prompt_for_request_permissions();
     let categories = [
         Some((
-            granular_config.allows_sandbox_approval(),
+            granular_config.may_prompt_for_sandbox_escalation(),
             "`sandbox_approval`",
         )),
-        Some((granular_config.allows_rules_approval(), "`rules`")),
-        Some((granular_config.allows_skill_approval(), "`skill_approval`")),
+        Some((granular_config.may_prompt_for_execpolicy_rules(), "`rules`")),
+        Some((granular_config.may_prompt_for_skill_execution(), "`skill_approval`")),
         request_permissions_tool_enabled.then_some((
-            granular_config.allows_request_permissions(),
+            granular_config.may_prompt_for_request_permissions(),
             "`request_permissions`",
         )),
         Some((
-            granular_config.allows_mcp_elicitations(),
+            granular_config.may_prompt_for_mcp_elicitations(),
             "`mcp_elicitations`",
         )),
     ];

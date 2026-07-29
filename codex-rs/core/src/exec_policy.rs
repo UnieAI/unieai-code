@@ -182,12 +182,12 @@ pub(crate) fn prompt_is_rejected_by_policy(
         AskForApproval::UnlessTrusted => None,
         AskForApproval::Granular(granular_config) => {
             if prompt_is_rule {
-                if !granular_config.allows_rules_approval() {
+                if !granular_config.may_prompt_for_execpolicy_rules() {
                     Some(REJECT_RULES_APPROVAL_REASON)
                 } else {
                     None
                 }
-            } else if !granular_config.allows_sandbox_approval() {
+            } else if !granular_config.may_prompt_for_sandbox_escalation() {
                 Some(REJECT_SANDBOX_APPROVAL_REASON)
             } else {
                 None

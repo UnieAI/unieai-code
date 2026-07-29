@@ -388,12 +388,12 @@ fn execve_prompt_is_rejected_by_policy(
     match (approval_policy, decision_source) {
         (AskForApproval::Never, _) => Some(PROMPT_CONFLICT_REASON),
         (AskForApproval::Granular(granular_config), DecisionSource::PrefixRule)
-            if !granular_config.allows_rules_approval() =>
+            if !granular_config.may_prompt_for_execpolicy_rules() =>
         {
             Some(REJECT_RULES_APPROVAL_REASON)
         }
         (AskForApproval::Granular(granular_config), DecisionSource::UnmatchedCommandFallback)
-            if !granular_config.allows_sandbox_approval() =>
+            if !granular_config.may_prompt_for_sandbox_escalation() =>
         {
             Some(REJECT_SANDBOX_APPROVAL_REASON)
         }

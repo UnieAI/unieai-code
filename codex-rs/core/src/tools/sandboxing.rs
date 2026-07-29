@@ -214,7 +214,7 @@ pub(crate) fn default_exec_approval_requirement(
         && matches!(
             policy,
             AskForApproval::Granular(granular_config)
-                if !granular_config.allows_sandbox_approval()
+                if !granular_config.may_prompt_for_sandbox_escalation()
         )
     {
         ExecApprovalRequirement::Forbidden {

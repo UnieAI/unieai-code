@@ -310,7 +310,7 @@ pub(crate) fn elicitation_is_rejected_by_policy(approval_policy: AskForApproval)
         AskForApproval::Never => true,
         AskForApproval::OnRequest => false,
         AskForApproval::UnlessTrusted => false,
-        AskForApproval::Granular(granular_config) => !granular_config.allows_mcp_elicitations(),
+        AskForApproval::Granular(granular_config) => !granular_config.may_prompt_for_mcp_elicitations(),
     }
 }
 
