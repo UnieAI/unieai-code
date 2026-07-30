@@ -98,6 +98,7 @@ export class AgentCoreBackend {
       // Carried into every rebuilt engine so switching model or starting a new
       // chat does not quietly drop a vision model the user already verified.
       visionModel: this.visionModelValue,
+      subagents: this.subagentsValue,
       onText: (d: string) => {
         this.blockText += d
         this.cb.post({ type: "turnDelta", kind: "agent", itemKey: this.agentItemId, text: d })
@@ -136,9 +137,52 @@ export class AgentCoreBackend {
   }
 
   private mapToolEvent(e: Json): void {
+    // The `task` tool runs a sub-agent loop whose own tool events bubble up
+    // here tagged {taskId, depth}. Give the delegation itself a card so the
+    // user can see what was handed off and when it came back.
+    const taskId = e.taskId ? String(e.taskId) : ""
+    if (e.type === "task_start") {
+      this.flushTextBlock()
+      const description = String(e.description ?? "subtask")
+      this.toolCommands.set(taskId, `task ${description}`)
+      this.cb.post({
+        type: "itemUpsert",
+        item: {
+          id: taskId,
+          type: "command_execution",
+          tool_name: "task",
+          command: `task ${description}`,
+          aggregated_output: "",
+          status: "in_progress",
+        },
+        done: false,
+      })
+      return
+    }
+    if (e.type === "task_end") {
+      const state = String(e.state ?? "completed")
+      this.cb.post({
+        type: "itemUpsert",
+        item: {
+          id: taskId,
+          type: "command_execution",
+          tool_name: "task",
+          command: this.toolCommands.get(taskId) ?? "task",
+          aggregated_output: state === "completed" ? "" : `sub-agent ${state}`,
+          status: state === "completed" ? "completed" : "failed",
+        },
+        done: true,
+      })
+      this.toolCommands.delete(taskId)
+      return
+    }
+
     // agent-core tool events → webview itemUpsert. Tool ids aren't stable
-    // per-item the way app-server's are, so use the event's own id.
-    const id = e.tool_use_id || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    // per-item the way app-server's are, so use the event's own id. Sub-agent
+    // ids are namespaced: two sub-agents running in parallel would otherwise
+    // overwrite each other's cards, and the parent's too.
+    const rawId = e.tool_use_id || `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const id = taskId ? `${taskId}:${rawId}` : rawId
     const tool = String(e.tool_name ?? "tool")
     // agent-core does not forward tool args on the event (loop.mjs emits only
     // {tool_use_id, tool_name}), so `args_preview` is usually empty. We still
@@ -151,7 +195,9 @@ export class AgentCoreBackend {
       const argsPreview = e.args_preview ? String(e.args_preview) : ""
       // For bash the args preview IS the command line, so don't prefix "bash".
       // For file/other tools show "<tool> <arg>" (e.g. "read src/foo.ts").
-      const command = tool === "bash" ? argsPreview || tool : `${tool} ${argsPreview}`.trim()
+      const label = tool === "bash" ? argsPreview || tool : `${tool} ${argsPreview}`.trim()
+      // Mark sub-agent work so it does not read as something the main thread did.
+      const command = taskId ? `↳ ${label}` : label
       this.toolCommands.set(String(id), command)
       this.cb.post({
         type: "itemUpsert",
@@ -259,6 +305,15 @@ export class AgentCoreBackend {
     this.engine?.setVisionModel(model)
   }
   private visionModelValue: string | null = null
+
+  /** Whether the model may delegate subtasks to a sub-agent (`task` tool). */
+  setSubagents(enabled: boolean): void {
+    this.subagentsValue = enabled
+    // Same reason as visionModel: a new chat rebuilds the engine, so the
+    // setting has to live here too or it reverts behind the user's back.
+    this.engine?.setSubagents(enabled)
+  }
+  private subagentsValue = false
 
   /**
    * Ask the gateway whether `model` can really see an image.

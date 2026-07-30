@@ -459,6 +459,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         formatReview: (finding) => t("reviewGaps")(finding),
       })
     }
+    // Read every time rather than at construction: the setting can be flipped
+    // mid-session, and the backend only rebuilds its toolset on the next turn.
+    this.agentCore.setSubagents(
+      vscode.workspace.getConfiguration("unieai-code").get<boolean>("subagents") ?? true,
+    )
     return this.agentCore
   }
   private agentCoreApprovals = new Map<string, (d: Json) => void>()

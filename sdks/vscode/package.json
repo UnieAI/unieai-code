@@ -136,6 +136,11 @@
           ],
           "default": "agent-core",
           "description": "Which agent engine the chat panel runs."
+        },
+        "unieai-code.subagents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let the agent delegate exploration-heavy subtasks to a sub-agent. The sub-agent has the same tools but its own context, and returns only a conclusion — keeping long searches out of the main conversation. Costs extra tokens. (agent-core engine only.)"
         }
       }
     }

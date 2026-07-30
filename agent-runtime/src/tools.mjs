@@ -421,11 +421,17 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   ];
   if (webAccess) schemas.push(fetchSchema, searchSchema);
 
-  return async () => ({
+  // A sub-agent runs off the main thread with no channel to the user: `ask`
+  // there would either hang or be auto-declined, and the user would be answering
+  // a question they never saw asked. Everything else — files, shell, search —
+  // is exactly what a sub-agent is delegated to do, so it all carries over.
+  return async ({ forSubagent = false } = {}) => ({
     label: "coding",
-    schemas,
+    schemas: forSubagent
+      ? schemas.filter((s) => s.function?.name !== "ask")
+      : schemas,
     // `ask` blocks on the user; the loop exempts it from the tool timeout.
-    interactiveTools: ["ask"],
+    interactiveTools: forSubagent ? [] : ["ask"],
     executors: {
       async bash(args, runCtx = {}) {
         const cmd = String(args?.cmd || "").trim();

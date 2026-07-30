@@ -286,7 +286,8 @@ export function createEngine({
   onPlan = () => {},
   expectsMutation = false,
   webAccess = false,
-  visionModel = null
+  visionModel = null,
+  subagents = false
 } = {}) {
   // Goal mode: false = off, "gate" = verification blocks turn completion so
   // the model fixes its own gaps in-turn, "review" = the turn ends immediately
@@ -427,10 +428,14 @@ export function createEngine({
   // start a fresh conversation, which is the wrong behaviour for a toggle.
   let webAccessState = webAccess;
   let visionModelState = visionModel;
+  let subagentsState = subagents;
   let toolsetPromise = null;
   function toolset(ctx) {
     toolsetPromise ||= buildToolset({
-      runtimeContext: { workspace: {} },
+      // `agent.subagent` gates agent-core's `task` tool: with it on the model
+      // can delegate exploration-heavy work to a sub-loop that reports back
+      // only a conclusion, keeping the transcript out of this context.
+      runtimeContext: { workspace: { agent: { subagent: subagentsState } } },
       ctx,
       domainToolBuilders: [buildCodingTools({
         workspace,
@@ -521,6 +526,19 @@ export function createEngine({
       const next = Boolean(value);
       if (next !== webAccessState) {
         webAccessState = next;
+        toolsetPromise = null;
+      }
+    },
+
+    get subagents() {
+      return subagentsState;
+    },
+
+    /** Flip the `task` delegation tool on/off for subsequent turns. */
+    setSubagents(value) {
+      const next = Boolean(value);
+      if (next !== subagentsState) {
+        subagentsState = next;
         toolsetPromise = null;
       }
     },
