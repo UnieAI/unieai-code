@@ -843,11 +843,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let exposure = if search_tool_enabled(turn_context) {
-                ToolExposure::Deferred
-            } else {
-                ToolExposure::Direct
-            };
+            // Always direct, never deferred behind `tool_search`. Deferring
+            // these traded prompt size for discoverability, and discoverability
+            // lost: a model that does not think to search reports it has no way
+            // to spawn a sub-agent and quietly does the work inline instead —
+            // there is no error to notice, just a capability that goes unused.
+            // The five V1 tools also have to arrive together, since spawning
+            // without wait_agent/close_agent leaves the model unable to finish
+            // what it started.
+            let exposure = ToolExposure::Direct;
             planned_tools.add_with_exposure(
                 SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),

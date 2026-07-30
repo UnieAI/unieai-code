@@ -764,102 +764,55 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
+async fn v1_multi_agent_tools_are_offered_directly_even_with_tool_search() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let call_id = "tool-search-spawn-agent";
     let mock = mount_sse_sequence(
         &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                ev_tool_search_call(
-                    call_id,
-                    &json!({
-                        "query": "spawn agent",
-                        "limit": 1,
-                    }),
-                ),
-                ev_completed("resp-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-1", "done"),
-                ev_completed("resp-2"),
-            ]),
-        ],
+        vec![sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ])],
     )
     .await;
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let test = builder.build(&server).await?;
     test.submit_turn_with_approval_and_permission_profile(
-        "Find the spawn agent tool",
+        "Delegate part of this to a sub-agent",
         AskForApproval::Never,
         PermissionProfile::Disabled,
     )
     .await?;
 
     let requests = mock.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
 
-    let first_request_body = requests[0].body_json();
-    let first_request_tools = tool_names(&first_request_body);
+    // These used to be deferred behind tool_search for a search-capable model.
+    // A model that did not think to search then reported having no way to spawn
+    // a sub-agent and quietly did the work inline instead -- no error, just an
+    // unused capability -- so they are advertised up front now.
+    let body = requests[0].body_json();
+    let tools = tool_names(&body);
     assert!(
-        first_request_tools
-            .iter()
-            .any(|name| name == TOOL_SEARCH_TOOL_NAME),
-        "first request should advertise tool_search: {first_request_tools:?}"
-    );
-    for tool_name in [
-        "spawn_agent",
-        "send_input",
-        "resume_agent",
-        "wait_agent",
-        "close_agent",
-    ] {
-        assert!(
-            !first_request_tools.iter().any(|name| name == tool_name),
-            "v1 multi-agent tools should be hidden before search: {first_request_tools:?}"
-        );
-    }
-    assert!(
-        !first_request_body
-            .to_string()
-            .contains("### When to delegate vs. do the subtask yourself"),
-        "deferred v1 multi-agent guidance should stay out of initial developer context"
+        tools.iter().any(|name| name == "multi_agent_v1"),
+        "v1 multi-agent namespace should be in the first request: {tools:?}"
     );
 
-    let tools = tool_search_output_tools(&requests[1], call_id);
-    assert!(
-        !tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) == Some("function")
-                && tool.get("name").and_then(Value::as_str) == Some("spawn_agent")
-        }),
-        "spawn_agent should be returned as a namespace child, not a flat function: {tools:?}"
-    );
-    assert!(
-        tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) == Some("namespace")
-                && tool.get("name").and_then(Value::as_str) == Some("multi_agent_v1")
-        }),
-        "expected tool_search to return multi_agent_v1 namespace: {tools:?}"
-    );
-    let output = tool_search_output_item(&requests[1], call_id);
-    let spawn_agent = namespace_child_tool(&output, "multi_agent_v1", "spawn_agent")
-        .expect("tool_search should return multi_agent_v1.spawn_agent");
-    assert_eq!(
+    let spawn_agent = namespace_child_tool(&body, "multi_agent_v1", "spawn_agent")
+        .expect("multi_agent_v1 should carry spawn_agent");
+    assert_ne!(
         spawn_agent.get("defer_loading").and_then(Value::as_bool),
-        Some(true)
+        Some(true),
+        "spawn_agent must not be marked for deferred loading"
     );
+
     let description = spawn_agent
         .get("description")
         .and_then(Value::as_str)
         .expect("spawn_agent description should be present");
-    assert!(description.contains(
-        "Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work."
-    ));
     assert!(description.contains("### Designing delegated subtasks"));
     assert!(description.contains("### When to delegate vs. do the subtask yourself"));
 
