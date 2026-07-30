@@ -1521,6 +1521,8 @@ impl Config {
             personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
+            unknown_models_are_gateway_models: self.model_provider_id
+                == codex_model_provider_info::UNIEAI_PROVIDER_ID,
         }
     }
 

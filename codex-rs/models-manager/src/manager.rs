@@ -630,6 +630,12 @@ pub(crate) fn construct_model_info_from_candidates(
             used_fallback_model_metadata: false,
             ..remote
         }
+    } else if config.unknown_models_are_gateway_models {
+        // Not "unknown" — just not in the login snapshot. Give it the gateway
+        // profile it would have had, so it keeps the UnieAI identity, stays
+        // pinned to direct tool calls, and does not get sent the reasoning
+        // parameter open-model gateways ignore.
+        model_info::model_info_for_gateway_model(model, model, None)
     } else {
         model_info::model_info_from_slug(model)
     };

@@ -1,5 +1,6 @@
 use super::*;
 use crate::ModelsManagerConfig;
+use codex_protocol::openai_models::ToolMode;
 use chrono::Utc;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -407,6 +408,49 @@ async fn get_model_info_tracks_fallback_usage() {
         .await;
     assert!(unknown.used_fallback_model_metadata);
     assert_eq!(unknown.slug, "model-that-does-not-exist");
+}
+
+#[tokio::test]
+async fn off_catalog_slugs_get_the_gateway_profile_when_the_provider_is_a_gateway() {
+    let codex_home = tempdir().expect("temp dir");
+    let manager = openai_manager_for_tests(
+        codex_home.path().to_path_buf(),
+        TestModelsEndpoint::new(Vec::new()),
+    );
+
+    // The catalog is a snapshot of the models saved at login; the gateway routes
+    // by slug and can serve models that snapshot never saw.
+    let off_catalog = "GLM-5.2";
+
+    let generic = manager
+        .get_model_info(off_catalog, &ModelsManagerConfig::default())
+        .await;
+    assert!(generic.used_fallback_model_metadata);
+
+    let gateway = manager
+        .get_model_info(
+            off_catalog,
+            &ModelsManagerConfig {
+                unknown_models_are_gateway_models: true,
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+
+    assert_eq!(gateway.slug, off_catalog);
+    assert!(
+        !gateway.used_fallback_model_metadata,
+        "a model the gateway serves is not an unknown model"
+    );
+    assert!(
+        gateway.base_instructions.starts_with("You are UnieAI Code"),
+        "off-catalog models kept introducing themselves as OpenAI's Codex CLI"
+    );
+    assert_eq!(gateway.tool_mode, Some(ToolMode::Direct));
+    assert!(
+        !gateway.supports_reasoning_summary_parameter,
+        "open-model gateways ignore the reasoning-summary parameter"
+    );
 }
 
 #[tokio::test]
