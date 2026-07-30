@@ -181,6 +181,21 @@ impl StatusIndicatorWidget {
         self.frame_requester.schedule_frame();
     }
 
+    /// Adopt elapsed working time accumulated before this widget existed.
+    ///
+    /// The status line is torn down and rebuilt whenever a streamed message
+    /// takes over the bottom pane, so the turn's clock has to be handed back
+    /// in — otherwise it restarts from zero in the middle of a turn.
+    pub(crate) fn seed_elapsed(&mut self, elapsed: Duration) {
+        self.elapsed_running = elapsed;
+        self.last_resume_at = Instant::now();
+        self.is_paused = false;
+    }
+
+    pub(crate) fn elapsed_duration(&self) -> Duration {
+        self.elapsed_duration_at(Instant::now())
+    }
+
     fn elapsed_duration_at(&self, now: Instant) -> Duration {
         let mut elapsed = self.elapsed_running;
         if !self.is_paused {

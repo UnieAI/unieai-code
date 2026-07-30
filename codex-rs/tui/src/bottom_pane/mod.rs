@@ -237,6 +237,13 @@ pub(crate) struct BottomPane {
 
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
+    /// Working time accumulated by `status` before it was last torn down.
+    ///
+    /// The indicator is dropped and rebuilt several times within a single turn
+    /// — every streamed assistant message takes the bottom pane over and hands
+    /// it back — so the elapsed clock has to outlive the widget or it restarts
+    /// from zero mid-turn. Reset only when a genuinely new task starts.
+    status_elapsed_carry: Duration,
     /// Unified exec session summary source.
     ///
     /// When a status row exists, this summary is mirrored inline in that row;
@@ -298,6 +305,7 @@ impl BottomPane {
             disable_paste_burst,
             is_task_running: false,
             status: None,
+            status_elapsed_carry: Duration::ZERO,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
@@ -478,6 +486,11 @@ impl BottomPane {
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
         self.status.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_widget_mut(&mut self) -> Option<&mut StatusIndicatorWidget> {
+        self.status.as_mut()
     }
 
     pub fn skills(&self) -> Option<&Vec<SkillMetadata>> {
@@ -1013,6 +1026,8 @@ impl BottomPane {
 
         if running {
             if !was_running {
+                // A new task, so the previous turn's clock does not carry over.
+                self.status_elapsed_carry = Duration::ZERO;
                 if self.status.is_none() {
                     self.status = Some(StatusIndicatorWidget::new(
                         self.app_event_tx.clone(),
@@ -1039,7 +1054,9 @@ impl BottomPane {
 
     /// Hide the status indicator while leaving task-running state untouched.
     pub(crate) fn hide_status_indicator(&mut self) {
-        if self.status.take().is_some() {
+        if let Some(status) = self.status.take() {
+            // Keep the turn's clock; the indicator usually comes straight back.
+            self.status_elapsed_carry = status.elapsed_duration();
             self.request_redraw();
         }
     }
@@ -1052,6 +1069,7 @@ impl BottomPane {
                 self.animations_enabled,
             ));
             if let Some(status) = self.status.as_mut() {
+                status.seed_elapsed(self.status_elapsed_carry);
                 status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
             }
             self.sync_status_inline_message();
@@ -2581,6 +2599,44 @@ mod tests {
             "queued_messages_visible_when_status_hidden_snapshot",
             render_snapshot(&pane, area)
         );
+    }
+
+    #[test]
+    fn status_indicator_clock_survives_hide_and_show_within_a_turn() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask UnieAI Code to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(/*running*/ true);
+        // Bank 7s of working time without depending on the wall clock.
+        let status = pane.status_widget_mut().expect("status indicator");
+        status.pause_timer_at(Instant::now() + Duration::from_secs(7));
+        status.resume_timer();
+        assert_eq!(pane.status_widget().unwrap().elapsed_seconds(), 7);
+
+        // A streamed assistant message takes the pane over and hands it back.
+        pane.hide_status_indicator();
+        pane.ensure_status_indicator();
+
+        assert_eq!(
+            pane.status_widget().unwrap().elapsed_seconds(),
+            7,
+            "the turn's clock must not restart when the indicator is rebuilt"
+        );
+
+        // A genuinely new task does start from zero.
+        pane.set_task_running(/*running*/ false);
+        pane.set_task_running(/*running*/ true);
+        assert_eq!(pane.status_widget().unwrap().elapsed_seconds(), 0);
     }
 
     #[test]
