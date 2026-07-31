@@ -14,6 +14,7 @@ import { runAgentLoop } from "../../third_party/unieai-agent-core/src/loop.mjs";
 import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/prompt.mjs";
 import { callModelJson } from "../../third_party/unieai-agent-core/src/upstream.mjs";
 import { compactWithSummary } from "../../third_party/unieai-agent-core/src/compaction.mjs";
+import { createCompactionArchive } from "./compaction-archive.mjs";
 import { pickSmallModel } from "../../third_party/unieai-agent-core/src/model-picker.mjs";
 import { makeVisionCaller, probeVisionModel } from "../../third_party/unieai-agent-core/src/vision.mjs";
 import {
@@ -723,6 +724,10 @@ export function createEngine({
           messages,
           prevSummary: rollingSummary,
           ctx: { requestId: `${sessionId}-summary` },
+          // Keep the folded originals. What the summary omits is otherwise
+          // unrecoverable, and this is the only point where the originals and
+          // their replacement exist together.
+          archive: createCompactionArchive({ sessionId }),
           summarize: ({ system, user }) =>
             callModelJson({
               baseModelSlug: auxModel,
