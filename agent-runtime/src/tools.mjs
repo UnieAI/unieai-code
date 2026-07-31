@@ -21,10 +21,12 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { describeImage } from "../../third_party/unieai-agent-core/src/vision.mjs";
+import { DEFAULT_MAX_LINES, truncateOutput } from "../../third_party/unieai-agent-core/src/truncate-output.mjs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
+import { createFileMutationQueue } from "./file-mutation-queue.mjs";
 import { prepareExec, shellArgv } from "./portable-exec.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
@@ -235,10 +237,15 @@ function seekLines(fileLines, patternLines) {
 // (what ran, first errors) and the tail (final result, summary line) — the
 // middle is the expendable part. Head-only slicing hides exactly the part the
 // model usually needs (the outcome).
-function truncateMiddle(s, max = 8000) {
-  if (s.length <= max) return s;
-  const half = Math.floor((max - 80) / 2);
-  return `${s.slice(0, half)}\n[... output truncated (${s.length} chars total) ...]\n${s.slice(-half)}`;
+/**
+ * Truncate to whole lines within a line AND a byte budget.
+ *
+ * A character slice cut through the middle of a line, which for code or a log
+ * hands the model a fragment it cannot distinguish from real content. `mode`
+ * defaults to keeping both ends; callers reading a log want `tail`.
+ */
+function truncateMiddle(s, max = 8000, mode = "middle") {
+  return truncateOutput(s, { maxBytes: max, maxLines: DEFAULT_MAX_LINES, mode }).content;
 }
 
 function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
@@ -349,6 +356,13 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // A write/edit that finds a different on-disk hash refuses — the model raced
   // an external change and must re-read before mutating.
   const readHashes = new Map();
+
+  // Per-file serialization for write/edit. The loop runs a step's tool calls
+  // concurrently, so two edits to one file can overlap; the staleness guard
+  // then refuses the second one even though it was perfectly valid. Queuing per
+  // canonical path lets both apply in order. Scoped to this toolset instance so
+  // concurrent requests never share locks.
+  const mutations = createFileMutationQueue();
 
   // §2.3 external-directory gate: an explicit opt-in allowlist of absolute paths
   // the host has pre-approved outside the workspace root.
@@ -555,6 +569,10 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const abs = resolve(root, filePath);
           const gate = await gateExternal(abs, filePath, runCtx);
           if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+          // Serialized per file: a concurrent edit landing between the read
+          // below and the write would trip the staleness guard and lose an
+          // otherwise valid change.
+          return await mutations.run(abs, async () => {
           // When OVERWRITING an existing file, apply the same staleness guard and
           // newline/BOM fidelity as `edit` (a create-new write skips both).
           let existing = null;
@@ -585,6 +603,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
               }
             }
           });
+          });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       async edit(args, runCtx = {}) {
@@ -593,6 +612,9 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const abs = resolve(root, filePath);
           const gate = await gateExternal(abs, filePath, runCtx);
           if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
+          // Serialized per file — see `write`. Two edits to one file in the same
+          // step used to race, and the staleness guard rejected the loser.
+          return await mutations.run(abs, async () => {
           const rawBefore = await readFile(abs, "utf8");
           // §2.1: refuse if the file drifted on disk since the model last read it.
           const stale = staleGuard(abs, filePath, rawBefore);
@@ -655,6 +677,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           fileLines.splice(found.indices[0], patternLines.length, ...newString.split("\n"));
           const note = found.tier === "exact" ? "" : ` (matched ${found.tier})`;
           return commit(fileLines.join("\n"), note);
+          });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       // Registered only when webAccess is on (see schemas above); if the model
