@@ -407,7 +407,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
     { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
     { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
-    { type: "function", function: { name: "read_output", description: "Retrieve the full text of a large tool output that was spilled to storage (its preview showed an id). Optionally filter to matching lines.", parameters: { type: "object", properties: { id: { type: "string", description: "the output id from the preview marker" }, grep: { type: "string", description: "optional substring or /regex/ to filter lines" } }, required: ["id"] } } },
+    { type: "function", function: { name: "read_output", description: "Query a large tool output that was spilled to storage (its preview showed an id). For record data (a JSON array), filter and page through RECORDS — never try to pull it all into the conversation. For plain text, filter to matching lines.", parameters: { type: "object", properties: { id: { type: "string", description: "the output id from the preview marker" }, grep: { type: "string", description: "substring or /regex/; keeps matching records (or lines, for text)" }, fields: { type: "string", description: "for records: comma-separated keys to keep, e.g. \"id,name\" — the main way to shrink a page" }, offset: { type: "number", description: "for records: index of the first record to return (default 0)" }, limit: { type: "number", description: "for records: how many records to return (default 50)" } }, required: ["id"] } } },
     // grep/glob are first-class rather than left to `bash`+rg for the same reason
     // `edit` is search/replace: open models compose a JSON argument object far
     // more reliably than a correctly-quoted shell pipeline. They also return
@@ -481,7 +481,12 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
       async read_output(args) {
-        const r = readSpilled(String(args?.id || ""), { grep: String(args?.grep || "") });
+        const r = readSpilled(String(args?.id || ""), {
+          grep: String(args?.grep || ""),
+          fields: String(args?.fields || ""),
+          offset: Number(args?.offset) || 0,
+          limit: Number(args?.limit) || 0,
+        });
         return toolResult({ ok: r.ok, modelText: r.text });
       },
       async grep(args, runCtx = {}) {
@@ -673,7 +678,12 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           const contentType = res.headers.get("content-type") || "";
           const body = await res.text();
           const text = /html/i.test(contentType) ? htmlToText(body) : body;
-          return toolResult({ ok: res.ok, modelText: `HTTP ${res.status} ${res.statusText} · ${contentType}\n\n${truncateMiddle(text, 24_000)}` });
+          // Spill rather than truncate. A hard cut here DESTROYED the middle of
+          // every large response — an API page of 10k records came back as two
+          // fragments with no way to recover the rest. Spilling keeps the whole
+          // body and lets read_output page through it.
+          const out = spillIfLarge(text, { id: "fetch", limit: 24_000, fallbackTruncate: () => truncateMiddle(text, 24_000) });
+          return toolResult({ ok: res.ok, modelText: `HTTP ${res.status} ${res.statusText} · ${contentType}\n\n${out.modelText}` });
         } catch (e) {
           const msg = e?.name === "AbortError" ? "request timed out after 30s" : (e?.message || String(e));
           return toolResult({ ok: false, modelText: `error: ${msg}` });
