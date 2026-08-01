@@ -15,6 +15,8 @@ import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/promp
 import { callModelJson } from "../../third_party/unieai-agent-core/src/upstream.mjs";
 import { compactWithSummary } from "../../third_party/unieai-agent-core/src/compaction.mjs";
 import { createCompactionArchive } from "./compaction-archive.mjs";
+import { coreMemoryWriter, readCoreMemorySync } from "./memory-store.mjs";
+import { renderCoreMemoryBlock } from "../../third_party/unieai-agent-core/src/memory-core.mjs";
 import { pickSmallModel } from "../../third_party/unieai-agent-core/src/model-picker.mjs";
 import { makeVisionCaller, probeVisionModel } from "../../third_party/unieai-agent-core/src/vision.mjs";
 import {
@@ -389,11 +391,24 @@ export function createEngine({
   const dateNow = (contextEpoch.date || "").replace(/^Current date:\s*/, "");
   const agentsMdText = contextEpoch["agents-md"] || "";
 
+  // Memory is scoped to the PROJECT, not the model. agent-core names the key
+  // `customModelId` after Studio's concept, but for a coding agent the thing
+  // worth remembering is what is true about this repo — carrying it between
+  // unrelated checkouts would leak one project's conventions into another.
+  const memoryScope = `ws-${workspace}`;
+  const coreMemoryBlock = renderCoreMemoryBlock(readCoreMemorySync(memoryScope), { toolEnabled: true });
+
   const messages = resumed?.messages || [
     {
       role: "system",
       content: buildSystemPrompt({
-        runtimeContext: { knowledgeBases: [], workspace: {} },
+        // Enabling memory here is what mounts the tool; without it buildToolset
+        // skips memory entirely and writes silently go nowhere.
+        runtimeContext: { knowledgeBases: [], workspace: { memory: { enabled: true } } },
+        // Rendered once, at session start: agent-core's frozen-snapshot rule
+        // keeps mid-turn writes out of the live prompt so the prefix cache holds.
+        coreMemoryBlock,
+        capabilities: { memory: true },
         identity: CODE_IDENTITY,
         runtime: "UnieAI Code (agent-core loop, sandboxed shell tools)",
         now: dateNow,
@@ -436,8 +451,16 @@ export function createEngine({
       // `agent.subagent` gates agent-core's `task` tool: with it on the model
       // can delegate exploration-heavy work to a sub-loop that reports back
       // only a conclusion, keeping the transcript out of this context.
-      runtimeContext: { workspace: { agent: { subagent: subagentsState } } },
-      ctx,
+      runtimeContext: { workspace: { agent: { subagent: subagentsState }, memory: { enabled: true } } },
+      // Storage is injected explicitly rather than through
+      // configureCoreMemoryStorage(): that is module-level state whose effect
+      // depends on import order, and the fallback it would otherwise reach for
+      // resolves against a path this package does not own.
+      //
+      // `customModelId` is agent-core's name for the memory scope key; here it
+      // is the project, so what is learned about one repo stays with it.
+      memoryWrite: coreMemoryWriter(),
+      ctx: { ...ctx, customModelId: memoryScope },
       domainToolBuilders: [buildCodingTools({
         workspace,
         sandboxBin: sandboxBin(),
