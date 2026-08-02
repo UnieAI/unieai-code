@@ -27,6 +27,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
 import { createFileMutationQueue } from "./file-mutation-queue.mjs";
+import { killTree } from "./process-manager.mjs";
 import { prepareExec, shellArgv } from "./portable-exec.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
@@ -248,13 +249,22 @@ function truncateMiddle(s, max = 8000, mode = "middle") {
   return truncateOutput(s, { maxBytes: max, maxLines: DEFAULT_MAX_LINES, mode }).content;
 }
 
-function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
+export function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
   // On Windows the CLI is usually an npm `.cmd` shim, which execFile cannot
   // launch directly; prepareExec resolves it (and pre-quotes argv when it has
   // to fall back to cmd.exe, since Node escapes nothing under `shell: true`).
   const spec = prepareExec(cmd, args);
   return new Promise((done) => {
-    execFile(spec.file, spec.args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, shell: spec.shell, windowsHide: true }, (error, stdout, stderr) => {
+    // Node's own `timeout` calls child.kill() on the DIRECT child only — the
+    // sandbox wrapper — leaving the `sh -c` beneath it and everything it
+    // started running, unowned, with nothing left to report or stop them.
+    // Spawning as a process-group leader and killing the group on timeout
+    // reaches the whole tree. The cost is that an abrupt death of THIS process
+    // mid-command now leaves a detached group behind; a timeout leaking the
+    // real work is the worse of the two, and it happens far more often.
+    let timer = null;
+    const child = execFile(spec.file, spec.args, { cwd, maxBuffer: 4 * 1024 * 1024, shell: spec.shell, windowsHide: true, detached: process.platform !== "win32" }, (error, stdout, stderr) => {
+      if (timer) clearTimeout(timer);
       // A spawn failure (binary missing / not executable) reports a STRING errno
       // in error.code and never actually ran, so it has no exit status. Keep it
       // distinct from a command that ran and exited non-zero, so the caller can
@@ -267,6 +277,15 @@ function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
         spawnError,
       });
     });
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        // SIGKILL rather than a graceful escalation: this path already waited
+        // the full budget, and the caller is about to report a timeout either
+        // way, so a second grace period only delays the answer.
+        killTree(child, "SIGKILL");
+      }, timeoutMs);
+      timer.unref?.();
+    }
   });
 }
 

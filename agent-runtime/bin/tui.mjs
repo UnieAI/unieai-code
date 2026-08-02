@@ -49,6 +49,12 @@ const truthy = (v) => ["1", "true", "on", "yes"].includes(String(v ?? "").toLowe
 let webAccess =
   args.web === true || truthy(args.web) || truthy(process.env.UNIEAI_WEB_ACCESS) || truthy(process.env.UNIEAI_WEB);
 
+// Delegation is off by default: a sub-agent spends its own tokens on a context
+// the user never sees, so it should be an explicit choice rather than a default
+// the model can reach for. New engines from /new, /resume and /model inherit
+// this the same way webAccess does.
+let subagents = args.subagents === true || truthy(args.subagents) || truthy(process.env.UNIEAI_SUBAGENTS);
+
 // The chosen vision model persists across runs — probing costs a real model
 // call, so re-picking every session would make the feature not worth using.
 const visionPath = visionStatePath(unieaiHome());
@@ -61,6 +67,7 @@ function makeEngine(resume = null, model = null) {
     resume,
     webAccess,
     visionModel,
+    subagents,
     onText: (d) => {
       closeReasoning();
       stdout.write(d);
@@ -76,6 +83,14 @@ function makeEngine(resume = null, model = null) {
       closeReasoning();
       if (e.type === "tool_use_started") stdout.write(`${CYAN}• ${e.tool_name}${RESET} ${DIM}${String(e.args_preview ?? "").slice(0, 80)}${RESET}\n`);
       if (e.type === "tool_use_failed") stdout.write(`${RED}✗ ${e.tool_name} ${String(e.error ?? "").slice(0, 120)}${RESET}\n`);
+      // A sub-agent runs in its own context and only reports a conclusion, so
+      // without these two lines a delegation looked like the session had simply
+      // stopped responding for however long it took.
+      if (e.type === "task_start") stdout.write(`${CYAN}⑂ 子代理 ${e.taskId ?? ""}${RESET} ${DIM}${String(e.description ?? "").slice(0, 80)}${RESET}\n`);
+      if (e.type === "task_end") {
+        const summary = String(e.result ?? e.summary ?? "").replace(/\s+/g, " ").slice(0, 160);
+        stdout.write(`${CYAN}⑂ 子代理 ${e.taskId ?? ""} 完成${RESET}${summary ? ` ${DIM}${summary}${RESET}` : ""}\n`);
+      }
     },
     requestApproval: async ({ tool, action, detail }) => {
       closeReasoning();
@@ -103,7 +118,7 @@ try {
 }
 
 console.log(`${BOLD}UnieAI Code${RESET} ${DIM}(agent-core engine · ${engine.model} · session ${engine.sessionId}${webAccess ? " · web on" : ""})${RESET}`);
-console.log(`${DIM}/model /vision-model /new /sessions /resume <id> /web /quit${RESET}\n`);
+console.log(`${DIM}/model /vision-model /new /sessions /resume <id> /web /subagents /quit${RESET}\n`);
 
 async function repl() {
   for (;;) {
@@ -130,6 +145,12 @@ async function repl() {
       webAccess = !webAccess;
       engine.setWebAccess(webAccess); // keeps the current session; retools next turn
       console.log(`${DIM}web access ${webAccess ? "on — fetch tool available" : "off"}${RESET}`);
+      continue;
+    }
+    if (line === "/subagents") {
+      subagents = !subagents;
+      engine.setSubagents(subagents); // keeps the current session; retools next turn
+      console.log(`${DIM}sub-agents ${subagents ? "on — the model can delegate with the task tool" : "off"}${RESET}`);
       continue;
     }
     if (line === "/vision-model" || line === "/vlm") {
