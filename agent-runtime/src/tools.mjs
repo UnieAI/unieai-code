@@ -27,7 +27,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
 import { createFileMutationQueue } from "./file-mutation-queue.mjs";
-import { killTree } from "./process-manager.mjs";
+import { createProcessManager, killTree } from "./process-manager.mjs";
 import { prepareExec, shellArgv } from "./portable-exec.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
@@ -383,6 +383,12 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // concurrent requests never share locks.
   const mutations = createFileMutationQueue();
 
+  // One manager per toolset instance, so a session can never see or stop
+  // another session's jobs. Created lazily: most sessions never start a
+  // background process, and an unused manager still installs an exit hook.
+  let processesInstance = null;
+  const processes = () => (processesInstance ||= createProcessManager({ workspace: root, sandboxBin }));
+
   // §2.3 external-directory gate: an explicit opt-in allowlist of absolute paths
   // the host has pre-approved outside the workspace root.
   const externalAllow = new Set((Array.isArray(externalAllowlist) ? externalAllowlist : []).map((p) => resolve(root, p)));
@@ -450,6 +456,13 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     // read_media_file DELEGATES: the vision model looks, and only prose comes
     // back. That is why this tool exists even when the main model is text-only.
     { type: "function", function: { name: "read_media_file", description: "Look at an image file (png/jpg/gif/webp/bmp) and get a written description of it. Use for screenshots, diagrams, and error dialogs. Ask a specific question when you need one detail rather than a full description.", parameters: { type: "object", properties: { filePath: { type: "string", description: "workspace-relative path to the image" }, prompt: { type: "string", description: "optional question about the image; omit for a full description" } }, required: ["filePath"] } } },
+    // Background execution. `bash` blocks and times out, so a dev server, a
+    // watch build, or a long test run could not be started at all — the model
+    // had to either avoid them or watch one eat its whole timeout budget.
+    { type: "function", function: { name: "run_background", description: "Start a long-running command in the background and get a handle back immediately. Use for dev servers, watch builds, and test runs that outlive a normal bash call. Poll it with read_process; stop it with stop_process.", parameters: { type: "object", properties: { command: { type: "string", description: "the command line to run" }, label: { type: "string", description: "optional short name to recognise it by later" } }, required: ["command"] } } },
+    { type: "function", function: { name: "list_processes", description: "List background processes with their status, exit code, uptime, and how much output is buffered.", parameters: { type: "object", properties: { includeExited: { type: "boolean", description: "include processes that have already finished (default true)" } } } } },
+    { type: "function", function: { name: "read_process", description: "Read a background process's output. Pass the cursor from a previous read to get ONLY what is new since then — that is the cheap way to poll for progress.", parameters: { type: "object", properties: { id: { type: "string", description: "the process handle from run_background" }, cursor: { type: "number", description: "cursor from a previous read; omit to get the most recent output" }, tail: { type: "number", description: "how many recent lines to return when no cursor is given" } }, required: ["id"] } } },
+    { type: "function", function: { name: "stop_process", description: "Stop a background process and everything it started, or all of them at once.", parameters: { type: "object", properties: { id: { type: "string", description: "the process handle; omit together with all=true to stop everything" }, all: { type: "boolean", description: "stop every background process" } } } } },
     askSchema,
   ];
   if (webAccess) schemas.push(fetchSchema, searchSchema);
@@ -781,6 +794,49 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           modelText: `${filePath} (described by ${described.model}):\n\n${described.text}`,
           metadata: { timelineEvent: { type: "media_read", path: filePath, bytes: bytes.length, model: described.model } },
         });
+      },
+      async run_background(args) {
+        const started = processes().start({ command: String(args?.command || ""), label: String(args?.label || "") });
+        if (!started.ok) return toolResult({ ok: false, modelText: `error: ${started.error}` });
+        return toolResult({
+          modelText: `Started ${started.id} (pid ${started.pid}). It runs until it exits or you call stop_process. Poll it with read_process("${started.id}").`,
+          metadata: { timelineEvent: { type: "process_start", id: started.id, command: String(args?.command || "").slice(0, 200) } },
+        });
+      },
+      async list_processes(args) {
+        const rows = processes().list({ includeExited: args?.includeExited !== false });
+        if (!rows.length) return toolResult({ ok: true, modelText: "No background processes." });
+        const body = rows.map((r) => {
+          const life = r.exitedAt ? `exit ${r.exitCode ?? r.signal ?? "?"}` : `up ${Math.round(r.uptimeMs / 1000)}s`;
+          return `${r.id}  ${r.status.padEnd(7)} ${life.padEnd(12)} ${r.outputLines} line(s)  ${String(r.command).slice(0, 80)}`;
+        }).join("\n");
+        return toolResult({ modelText: `${rows.length} process(es)\n${body}` });
+      },
+      async read_process(args) {
+        const out = processes().read(String(args?.id || ""), {
+          cursor: Number.isFinite(Number(args?.cursor)) ? Number(args.cursor) : undefined,
+          tail: Number(args?.tail) || undefined,
+        });
+        if (!out.ok) return toolResult({ ok: false, modelText: `error: ${out.error}` });
+        const state = out.running ? "running" : `${out.status} (${out.exitCode ?? out.signal ?? "?"})`;
+        // The dropped count is reported rather than hidden: output is a bounded
+        // ring, so an error that scrolled past is genuinely gone and the model
+        // should know to look in a redirected log instead of assuming it saw all.
+        const dropped = out.droppedLines ? ` — ${out.droppedLines} earlier line(s) dropped from the buffer` : "";
+        const text = out.text ? `\n${truncateMiddle(out.text, 16_000, "tail")}` : "\n(no new output)";
+        return toolResult({ modelText: `${out.id} ${state}, cursor ${out.cursor}${dropped}${text}` });
+      },
+      async stop_process(args) {
+        const manager = processes();
+        if (args?.all) {
+          const results = await manager.stopAll();
+          return toolResult({ modelText: `Stopped ${results.length} process(es).` });
+        }
+        const id = String(args?.id || "").trim();
+        if (!id) return toolResult({ ok: false, modelText: "error: stop_process needs an `id`, or `all: true`" });
+        const result = await manager.stop(id);
+        if (!result.ok) return toolResult({ ok: false, modelText: `error: ${result.error ?? `could not stop ${id}`}` });
+        return toolResult({ modelText: `Stopped ${id}${result.forced ? " (it ignored the polite signal and was killed)" : ""}.` });
       },
       async web_search(args) {
         if (!webAccess) return toolResult({ ok: false, modelText: "error: web access is disabled — enable the 上網 toggle to search the web" });
