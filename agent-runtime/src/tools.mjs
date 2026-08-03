@@ -797,7 +797,16 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       },
       async run_background(args) {
         const started = processes().start({ command: String(args?.command || ""), label: String(args?.label || "") });
-        if (!started.ok) return toolResult({ ok: false, modelText: `error: ${started.error}` });
+        if (!started.ok) {
+          // A refused start (a bad command, or the running-process cap) left no
+          // trace on the timeline, so the surfaces showed a tool call and then
+          // nothing — indistinguishable from a start that worked.
+          return toolResult({
+            ok: false,
+            modelText: `error: ${started.error}`,
+            metadata: { timelineEvent: { type: "process_failed", command: String(args?.command || "").slice(0, 200), error: started.error } },
+          });
+        }
         return toolResult({
           modelText: `Started ${started.id} (pid ${started.pid}). It runs until it exits or you call stop_process. Poll it with read_process("${started.id}").`,
           metadata: { timelineEvent: { type: "process_start", id: started.id, command: String(args?.command || "").slice(0, 200) } },
@@ -830,13 +839,22 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const manager = processes();
         if (args?.all) {
           const results = await manager.stopAll();
-          return toolResult({ modelText: `Stopped ${results.length} process(es).` });
+          // Stops emit a timeline event too. Without one, a process the MODEL
+          // killed stayed on screen as running until something else happened to
+          // refresh — the user would still be looking for a port that was free.
+          return toolResult({
+            modelText: `Stopped ${results.length} process(es).`,
+            metadata: { timelineEvent: { type: "process_stop", all: true, count: results.length } },
+          });
         }
         const id = String(args?.id || "").trim();
         if (!id) return toolResult({ ok: false, modelText: "error: stop_process needs an `id`, or `all: true`" });
         const result = await manager.stop(id);
         if (!result.ok) return toolResult({ ok: false, modelText: `error: ${result.error ?? `could not stop ${id}`}` });
-        return toolResult({ modelText: `Stopped ${id}${result.forced ? " (it ignored the polite signal and was killed)" : ""}.` });
+        return toolResult({
+          modelText: `Stopped ${id}${result.forced ? " (it ignored the polite signal and was killed)" : ""}.`,
+          metadata: { timelineEvent: { type: "process_stop", id, forced: Boolean(result.forced) } },
+        });
       },
       async web_search(args) {
         if (!webAccess) return toolResult({ ok: false, modelText: "error: web access is disabled — enable the 上網 toggle to search the web" });

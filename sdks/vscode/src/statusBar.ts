@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as vscode from "vscode"
+import { summarizeProcesses, type ProcessSnapshot } from "./backgroundProcesses.cjs"
 import { parseCliVersion, updateNotice, type VersionInfo } from "./versionCompare.cjs"
 
 /**
@@ -102,6 +103,71 @@ export class VisionStatusBarItem {
   }
 
   dispose(): void {
+    this.item.dispose()
+  }
+}
+
+/**
+ * How often to recount background processes.
+ *
+ * Polled rather than driven by events because nothing tells the host when a
+ * background job EXITS — the manager only ever reports a start, and a dev server
+ * that crashed on its own would otherwise leave the badge claiming it is still
+ * up. Cheap enough to do on a short cadence: it walks a handful of in-memory
+ * records and touches no disk or network.
+ */
+const PROCESS_REFRESH_MS = 3000
+
+export type BackgroundProcessDeps = {
+  /** Snapshots from every live process manager — injected so it can be faked. */
+  list: () => ProcessSnapshot[]
+}
+
+/**
+ * Status bar entry for background processes (run_background).
+ *
+ * Hidden whenever nothing is running, like the vision entry: the great majority
+ * of sessions never start a background job, and a permanent "0" would be noise
+ * in the one place the user looks to find out that something IS happening.
+ */
+export class BackgroundProcessStatusBarItem {
+  private readonly item: vscode.StatusBarItem
+  private timer: NodeJS.Timeout | undefined
+
+  constructor(private readonly deps: BackgroundProcessDeps) {
+    this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98)
+    this.item.name = "UnieAI Code Background Processes"
+    this.item.command = "unieai-code.showBackgroundProcesses"
+  }
+
+  /** Begin showing the indicator and keep it current. */
+  start(): void {
+    this.refresh()
+    this.timer = setInterval(() => this.refresh(), PROCESS_REFRESH_MS)
+  }
+
+  refresh(): void {
+    let summary: ReturnType<typeof summarizeProcesses> = null
+    try {
+      summary = summarizeProcesses(this.deps.list())
+    } catch {
+      // The engine may not be loaded yet, or may have been torn down. Neither is
+      // worth an error notification over a status bar count.
+      summary = null
+    }
+    if (!summary) {
+      this.item.hide()
+      return
+    }
+    this.item.text = summary.text
+    this.item.tooltip = summary.tooltip
+    this.item.show()
+  }
+
+  dispose(): void {
+    if (this.timer) {
+      clearInterval(this.timer)
+    }
     this.item.dispose()
   }
 }

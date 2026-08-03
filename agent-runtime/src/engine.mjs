@@ -10,10 +10,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildToolset } from "../../third_party/unieai-agent-core/src/toolset.mjs";
-import { runAgentLoop } from "../../third_party/unieai-agent-core/src/loop.mjs";
+import { runAgentLoop, repairHistory } from "../../third_party/unieai-agent-core/src/loop.mjs";
 import { buildSystemPrompt } from "../../third_party/unieai-agent-core/src/prompt.mjs";
 import { callModelJson } from "../../third_party/unieai-agent-core/src/upstream.mjs";
-import { compactWithSummary } from "../../third_party/unieai-agent-core/src/compaction.mjs";
+import { compactWithSummary, ensureLoopBudget } from "../../third_party/unieai-agent-core/src/compaction.mjs";
 import { createCompactionArchive } from "./compaction-archive.mjs";
 import { coreMemoryWriter, readCoreMemorySync } from "./memory-store.mjs";
 import { renderCoreMemoryBlock } from "../../third_party/unieai-agent-core/src/memory-core.mjs";
@@ -26,9 +26,24 @@ import {
   applyEpoch,
   renderContextUpdate,
 } from "../../third_party/unieai-agent-core/src/context-sources.mjs";
+import {
+  ENTRY_TYPES,
+  append,
+  createTree,
+  currentPath,
+  deriveState,
+} from "../../third_party/unieai-agent-core/src/session-tree.mjs";
 import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
-import { newSessionId, saveSession, loadSession, snapshotDir } from "./session.mjs";
+import { newSessionId, saveSession, snapshotDir } from "./session.mjs";
+import { loadSessionTree, saveSessionTree } from "./session-tree-store.mjs";
+import {
+  appendFold,
+  appendMessages,
+  deriveEngineContext,
+  makeEntryIdFactory,
+  messageIndexFor,
+} from "./session-tree-context.mjs";
 import { initShadow, snapshotWorkspaceAsync, listChangedPaths, previewRestore, restoreToTree } from "./snapshot.mjs";
 import { createTurnCoordinator } from "./turn-coordinator.mjs";
 import { ruleSignature, loadApprovals } from "./approval-rules.mjs";
@@ -303,12 +318,42 @@ export function createEngine({
   }
   applyUpstreamEnv(credentials);
 
-  const resumed = resume ? loadSession(resume) : null;
+  // The session is a TREE (see session-tree-context.mjs): entries are appended
+  // and the messages we send are DERIVED by walking root → leaf, so a fold hides
+  // history from the prompt instead of deleting it. `loadSessionTree` reads
+  // either store — this session's tree file when it has one, otherwise the
+  // legacy `{messages:[...]}` file converted on read — so an old session resumes
+  // with exactly the messages the array loader produced.
+  const resumed = resume ? loadSessionTree(resume) : null;
+  if (resume && !resumed) {
+    // The array loader threw ENOENT here. Starting a fresh session instead would
+    // silently discard the id the user asked to resume.
+    throw new Error(`session ${resume} not found`);
+  }
   const sessionId = resumed?.id || newSessionId();
-  const activeModel = model || resumed?.model || credentials.models[0]?.id;
+  const resumedMeta = resumed?.meta || {};
+  // A migrated legacy file records model/cwd as a leading state_change, and a
+  // tree written here does the same, so one lookup answers for both shapes.
+  const resumedState = resumed ? deriveState(currentPath(resumed.tree)) : {};
+  const activeModel = model || resumedState.model || credentials.models[0]?.id;
   if (!activeModel) {
     throw new Error(`no models available — add models in UnieAI Studio (${credentials.studioUrl}/models)`);
   }
+
+  let sessionTree = resumed?.tree || createTree({ now: Date.now() });
+  const nextEntryId = makeEntryIdFactory(sessionTree);
+  /** The prompt as it currently derives from the tree, plus the entry per message. */
+  const derive = () => deriveEngineContext(sessionTree);
+  /** Append messages as one entry each; returns their ids, in order. */
+  const record = (list) => {
+    const { tree, ids } = appendMessages(sessionTree, list, { nextId: nextEntryId });
+    sessionTree = tree;
+    return ids;
+  };
+  /** Record a change of what is answering, as history rather than a variable. */
+  const recordState = (patch) => {
+    sessionTree = append(sessionTree, { type: ENTRY_TYPES.STATE_CHANGE, patch }, { id: nextEntryId(), now: Date.now() });
+  };
 
   // A cheap model for auxiliary calls (summary/compaction) so they don't burn the
   // main model's budget. Falls back to the active model when the catalog has no
@@ -318,16 +363,28 @@ export function createEngine({
   // Rolling structured summary of folded-away turns (see compaction.mjs). Kept
   // in the engine (stateful) so the summarizer model call happens BETWEEN turns,
   // off the request critical path; restored on resume.
-  let rollingSummary = resumed?.summary || "";
+  let rollingSummary = resumedMeta.summary || "";
 
   // Workspace checkpoints in a shadow git repo (see snapshot.mjs). One per turn,
-  // keyed by the message index at snapshot time, so a future revert can restore
-  // the workspace to any past turn. Best-effort — a git failure never breaks a
-  // turn. The destructive apply is not implemented here (see session-checkpoint-
-  // revert / tui-rewind-diff); this just accumulates the checkpoints.
+  // keyed by the ENTRY that was the leaf at snapshot time, so a future revert can
+  // restore the workspace to any past turn. An entry id survives compaction; the
+  // message index this used to store did not, and had to be renumbered against
+  // the geometry of every fold. Hosts still speak in message counts, so the index
+  // is DERIVED on read (see describeCheckpoints). Best-effort — a git failure
+  // never breaks a turn.
   const shadowGitDir = snapshotDir(sessionId);
   const shadowReady = initShadow(shadowGitDir, workspace);
-  const checkpoints = Array.isArray(resumed?.checkpoints) ? resumed.checkpoints.slice() : [];
+  // A checkpoint resumed from a legacy file only carries the count, so it is
+  // converted once, here, against the migrated tree: index N was taken after N
+  // messages, i.e. at the entry that produced the Nth one.
+  const resumedEntryIds = resumed ? derive().entryIds : [];
+  const checkpoints = (Array.isArray(resumedMeta.checkpoints) ? resumedMeta.checkpoints : [])
+    .filter((cp) => cp && typeof cp === "object")
+    .map((cp) => {
+      if (cp.entryId) return { ...cp };
+      const at = Number.isFinite(cp.messageIndex) ? cp.messageIndex - 1 : -1;
+      return { ...cp, entryId: at >= 0 ? resumedEntryIds[at] ?? null : null };
+    });
   // Snapshots run in the BACKGROUND, serialized on this chain, so a turn's
   // completion never waits on a whole-workspace `git add -A` (the first one on
   // a large repo takes seconds). The warm-up below also pre-hashes the tree at
@@ -337,7 +394,7 @@ export function createEngine({
     snapshotChain = snapshotChain
       .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
       .then((tree) => {
-        if (tree && checkpoints.length === 0) checkpoints.push({ messageIndex: messages.length, tree, at: Date.now() });
+        if (tree && checkpoints.length === 0) checkpoints.push({ entryId: sessionTree.leafId, tree, at: Date.now() });
       })
       .catch(() => {});
   }
@@ -346,10 +403,11 @@ export function createEngine({
   // contextEpoch): the last turn's gap fingerprint (so repeated identical gaps
   // stop the re-nudge loop), the escalation counter, the lightweight task plan
   // (goal-harness §3), and one-shot latches for plan derivation + summarizer.
-  const goalState = { lastGapFingerprint: "", plan: resumed?.plan || null, planAttempted: Boolean(resumed?.plan) };
+  const goalState = { lastGapFingerprint: "", plan: resumedMeta.plan || null, planAttempted: Boolean(resumedMeta.plan) };
 
-  // Serialize turns for this conversation so a double-send never interleaves and
-  // corrupts the shared `messages` array (see turn-coordinator.mjs).
+  // Serialize turns for this conversation so a double-send never interleaves
+  // (see turn-coordinator.mjs). Two turns would derive from the same leaf and
+  // then both append their own, forking the session behind the user's back.
   const turnCoordinator = createTurnCoordinator();
 
   // Steer: mid-turn interjections the running turn folds in (the loop drains
@@ -386,7 +444,7 @@ export function createEngine({
   ];
   // Seed against the saved epoch so a change made while a resumed session was
   // away surfaces as a delta on the next turn.
-  const seed = applyEpoch(resumed?.contextEpoch || {}, resolveSources(contextSources));
+  const seed = applyEpoch(resumedMeta.contextEpoch || {}, resolveSources(contextSources));
   let contextEpoch = seed.epoch;
   const dateNow = (contextEpoch.date || "").replace(/^Current date:\s*/, "");
   const agentsMdText = contextEpoch["agents-md"] || "";
@@ -398,37 +456,70 @@ export function createEngine({
   const memoryScope = `ws-${workspace}`;
   const coreMemoryBlock = renderCoreMemoryBlock(readCoreMemorySync(memoryScope), { toolEnabled: true });
 
-  const messages = resumed?.messages || [
-    {
-      role: "system",
-      content: buildSystemPrompt({
-        // Enabling memory here is what mounts the tool; without it buildToolset
-        // skips memory entirely and writes silently go nowhere.
-        runtimeContext: { knowledgeBases: [], workspace: { memory: { enabled: true } } },
-        // Rendered once, at session start: agent-core's frozen-snapshot rule
-        // keeps mid-turn writes out of the live prompt so the prefix cache holds.
-        coreMemoryBlock,
-        capabilities: { memory: true },
-        identity: CODE_IDENTITY,
-        runtime: "UnieAI Code (agent-core loop, sandboxed shell tools)",
-        now: dateNow,
-        extraToolGuidance: webAccess
-          ? [...CODE_TOOL_GUIDANCE, "- fetch — read a web page or HTTP API by URL (returns readable text). Use it to consult docs or fetch data the task references; prefer it over shelling out to curl."]
-          : CODE_TOOL_GUIDANCE
-      })
-    },
-    // AGENTS.md rides as a user message (not the system prompt) so compaction
-    // keeps it verbatim, matching how project instructions are meant to persist.
-    ...(agentsMdText
-      ? [{ role: "user", content: `<project_instructions>\n${agentsMdText}\n</project_instructions>` }]
-      : [])
-  ];
-
-  // A resumed session already carries its baseline; if a source changed while it
-  // was away, inject that change up front so this turn sees it.
-  if (resumed?.messages) {
+  // A new session's opening messages become the tree's first entries; a resumed
+  // one already carries them on its path.
+  if (!resumed) {
+    recordState({ model: activeModel, cwd: workspace });
+    record([
+      {
+        role: "system",
+        content: buildSystemPrompt({
+          // Enabling memory here is what mounts the tool; without it buildToolset
+          // skips memory entirely and writes silently go nowhere.
+          runtimeContext: { knowledgeBases: [], workspace: { memory: { enabled: true } } },
+          // Rendered once, at session start: agent-core's frozen-snapshot rule
+          // keeps mid-turn writes out of the live prompt so the prefix cache holds.
+          coreMemoryBlock,
+          capabilities: { memory: true },
+          identity: CODE_IDENTITY,
+          runtime: "UnieAI Code (agent-core loop, sandboxed shell tools)",
+          now: dateNow,
+          extraToolGuidance: webAccess
+            ? [...CODE_TOOL_GUIDANCE, "- fetch — read a web page or HTTP API by URL (returns readable text). Use it to consult docs or fetch data the task references; prefer it over shelling out to curl."]
+            : CODE_TOOL_GUIDANCE
+        })
+      },
+      // AGENTS.md rides as a user message (not the system prompt) so compaction
+      // keeps it verbatim, matching how project instructions are meant to persist.
+      ...(agentsMdText
+        ? [{ role: "user", content: `<project_instructions>\n${agentsMdText}\n</project_instructions>` }]
+        : [])
+    ]);
+  } else {
+    // Resuming under a different model (or from another checkout) is a change of
+    // what is answering, which the tree records rather than overwrites.
+    if (resumedState.model !== activeModel || resumedState.cwd !== workspace) {
+      recordState({ model: activeModel, cwd: workspace });
+    }
+    // If a source changed while the session was away, inject that change up
+    // front so this turn sees it.
     const awayUpdate = renderContextUpdate(seed.deltas);
-    if (awayUpdate) messages.push({ role: "user", content: awayUpdate });
+    if (awayUpdate) record([{ role: "user", content: awayUpdate }]);
+  }
+
+  /**
+   * Write the session to BOTH stores.
+   *
+   * The tree is the engine's own state, but the session picker and the VS Code
+   * panel read the legacy `{messages:[...]}` file directly, so it keeps being
+   * written — from the DERIVED messages, which are what the array engine would
+   * have held. The tree goes first: it is what a resume reads, and a legacy file
+   * newer than the tree beside it would mean a resume silently losing the last
+   * turn.
+   */
+  function persist() {
+    const meta = { summary: rollingSummary, contextEpoch, checkpoints, plan: goalState.plan };
+    saveSessionTree({ id: sessionId, tree: sessionTree, meta });
+    saveSession({
+      id: sessionId,
+      messages: derive().messages,
+      model: activeModel,
+      cwd: workspace,
+      summary: rollingSummary,
+      contextEpoch,
+      checkpoints,
+      plan: goalState.plan,
+    });
   }
 
   const emitter = {
@@ -460,6 +551,11 @@ export function createEngine({
       // `customModelId` is agent-core's name for the memory scope key; here it
       // is the project, so what is learned about one repo stays with it.
       memoryWrite: coreMemoryWriter(),
+      // Mounts the `thread` tool. An accessor rather than the tree itself: the
+      // toolset is built once and the tree is replaced on every append, so a
+      // captured value would go stale after the first turn and the model would
+      // branch off a session that had moved on.
+      sessionTree: { get: () => sessionTree, set: (next) => { sessionTree = next; } },
       ctx: { ...ctx, customModelId: memoryScope },
       domainToolBuilders: [buildCodingTools({
         workspace,
@@ -479,13 +575,27 @@ export function createEngine({
     sessionId,
     model: activeModel,
     models: credentials.models,
-    messages,
+
+    /**
+     * The messages this session would send right now.
+     *
+     * Derived, not stored: it is a fresh array off the tree on every read, so a
+     * caller reading it holds a snapshot rather than the engine's live state.
+     */
+    get messages() {
+      return derive().messages;
+    },
+
+    /** The session tree itself — history, folds and branches. Read-only. */
+    get sessionTree() {
+      return sessionTree;
+    },
 
     get webAccess() {
       return webAccessState;
     },
 
-    /** Workspace checkpoints (message index → shadow-git tree) for revert. */
+    /** Workspace checkpoints (leaf entry → shadow-git tree) for revert. */
     get checkpoints() {
       return checkpoints.slice();
     },
@@ -501,7 +611,15 @@ export function createEngine({
         const cp = checkpoints[i];
         const prev = i > 0 ? checkpoints[i - 1] : null;
         const files = prev && shadowReady ? listChangedPaths(shadowGitDir, workspace, prev.tree, cp.tree) : [];
-        out.push({ index: i, at: cp.at || null, messageIndex: cp.messageIndex, files });
+        out.push({
+          index: i,
+          at: cp.at || null,
+          // Derived from the checkpoint's entry, because a fold moves where that
+          // entry sits in the prompt — and hosts still speak in message counts.
+          messageIndex: messageIndexFor(sessionTree, cp.entryId, { fallback: cp.messageIndex ?? 0 }),
+          entryId: cp.entryId ?? null,
+          files,
+        });
       }
       return out;
     },
@@ -536,9 +654,9 @@ export function createEngine({
         const r = restoreToTree(shadowGitDir, workspace, cp.tree);
         if (!r) return null;
         if (checkpoints[checkpoints.length - 1]?.tree !== r.undoTree) {
-          checkpoints.push({ messageIndex: messages.length, tree: r.undoTree, at: Date.now() });
+          checkpoints.push({ entryId: sessionTree.leafId, tree: r.undoTree, at: Date.now() });
         }
-        saveSession({ id: sessionId, messages, model: activeModel, cwd: workspace, summary: rollingSummary, contextEpoch, checkpoints, plan: goalState.plan });
+        persist();
         return { index, restored: r.restored, deleted: r.deleted };
       });
       snapshotChain = run.catch(() => {});
@@ -642,9 +760,27 @@ export function createEngine({
   };
 
   async function runTurn(text, { abortSignal = null } = {}) {
-      // Message index at the turn's start, so afterward we can tell whether this
-      // turn used any file-mutating tool (and thus whether the costly workspace
-      // snapshot below is worth taking).
+      // This turn's prompt, derived fresh from the tree, with `ids` parallel to
+      // it so the fold at the end can name entries instead of indices.
+      const { messages, entryIds } = derive();
+      const idOf = new Map(messages.map((m, i) => [m, entryIds[i]]));
+      // Repair BEFORE measuring the turn's boundary. The loop repairs on entry
+      // too, and if it were the first to drop an unpaired tool message every
+      // index here would shift under us; running it now makes the loop's own
+      // pass a no-op (it is idempotent). A message the repair SYNTHESIZED
+      // belongs to no entry, hence the null.
+      repairHistory(messages);
+      const ids = messages.map((m) => idOf.get(m) ?? null);
+      // The tree keeps every tool result in full, so a derived prompt starts the
+      // turn unpruned. The array engine persisted its pruning and so never
+      // re-sent what it had dropped; pruning here sends the same first request it
+      // would have, while the originals stay in the tree.
+      ensureLoopBudget(messages);
+      // Everything appended past this point belongs to this turn and becomes
+      // entries when it ends. The boundary holds because the loop only appends
+      // and pruning replaces message slots without changing the array's length.
+      // It also tells us afterwards whether this turn used any file-mutating tool
+      // (and thus whether the costly workspace snapshot below is worth taking).
       const turnStart = messages.length;
       // Re-resolve context sources; if the date rolled over or AGENTS.md changed
       // since last turn, inject a compact delta (not the whole prompt) before the
@@ -712,7 +848,19 @@ export function createEngine({
         requestQuestion,
         drainSteer
       };
-      const result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
+      let result;
+      try {
+        result = await runAgentLoop({ messages, toolset: await toolset(ctx), emitter, ctx });
+      } finally {
+        // Fold the turn into the tree even when it threw: an aborted turn's
+        // messages stayed in the array engine's history and the next turn saw
+        // them, so dropping them here would change what an abort means.
+        const produced = messages.slice(turnStart);
+        if (produced.length) ids.push(...record(produced));
+      }
+      // The leaf as of this turn's last message — the point a checkpoint taken
+      // now refers to, chosen before any compaction entry lands on top of it.
+      const turnLeafId = sessionTree.leafId;
 
       // "review" goal mode: run the SAME verifier in the background AFTER the
       // turn ends — zero added latency; findings surface via onReview and the
@@ -727,8 +875,8 @@ export function createEngine({
           .catch(() => {}); // review is advisory — never let it break anything
       }
 
-      // Decide NOW — before compaction can splice/renumber `messages` — whether
-      // this turn ran a file-mutating tool (drives the workspace snapshot below).
+      // Did this turn run a file-mutating tool? (Drives the workspace snapshot
+      // below.) Only this turn's messages are examined, hence turnStart.
       const MUTATING_TOOLS = new Set(["write", "edit", "apply_patch", "bash"]);
       let touchedWorkspace = false;
       for (let i = turnStart; i < messages.length && !touchedWorkspace; i++) {
@@ -742,6 +890,10 @@ export function createEngine({
       // the history grows past budget, fold the older turns into one rolling
       // structured summary instead of letting the per-request mechanical path
       // truncate them. A no-op below budget. Never blocks the turn's result.
+      //
+      // In the tree this is an ENTRY, not a replacement: it says "from here, use
+      // this summary", and the turns it replaced stay on the path where recovery
+      // and the archive can still reach them.
       try {
         const folded = await compactWithSummary({
           messages,
@@ -760,18 +912,14 @@ export function createEngine({
               maxTokens: 1500,
             }),
         });
-        if (folded.changed) {
-          messages.splice(0, messages.length, ...folded.messages);
+        // `ids` is parallel to `messages`, which is what turns the fold's
+        // geometry (indices into the array it was given) back into the entry the
+        // summary should keep from. Nothing is spliced and no checkpoint needs
+        // renumbering: they name entries, and the entries have not moved.
+        const fold = appendFold(sessionTree, { folded, entryIds: ids, nextId: nextEntryId });
+        if (fold.applied) {
+          sessionTree = fold.tree;
           rollingSummary = folded.summary;
-          // The splice renumbered history: [systemCount, systemCount+foldedCount)
-          // became one summary message. Remap checkpoint boundaries (message
-          // counts) so revert planning still lines up with the live array —
-          // checkpoints inside the folded span clamp to just after the summary.
-          const { systemCount, foldedCount } = folded;
-          for (const cp of checkpoints) {
-            if (cp.messageIndex >= systemCount + foldedCount) cp.messageIndex += 1 - foldedCount;
-            else if (cp.messageIndex > systemCount) cp.messageIndex = systemCount + 1;
-          }
         }
       } catch {
         // fail-open: a summarization hiccup must never drop the turn's result;
@@ -785,27 +933,17 @@ export function createEngine({
       // that ran a file-mutating tool snapshot at all; a pure Q&A or read-only
       // turn cannot have changed files.
       if (shadowReady && touchedWorkspace) {
-        const msgIdx = messages.length;
         snapshotChain = snapshotChain
           .then(() => snapshotWorkspaceAsync(shadowGitDir, workspace))
           .then((tree) => {
             if (tree && checkpoints[checkpoints.length - 1]?.tree !== tree) {
-              checkpoints.push({ messageIndex: msgIdx, tree, at: Date.now() });
+              checkpoints.push({ entryId: turnLeafId, tree, at: Date.now() });
             }
           })
           .catch(() => {});
       }
 
-      saveSession({
-        id: sessionId,
-        messages,
-        model: activeModel,
-        cwd: workspace,
-        summary: rollingSummary,
-        contextEpoch,
-        checkpoints,
-        plan: goalState.plan,
-      });
+      persist();
       return result;
   }
 }

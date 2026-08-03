@@ -10,9 +10,59 @@
  */
 // @ts-expect-error — JS ESM from the agent-runtime package (bundled by esbuild)
 import { createEngine } from "../../../agent-runtime/src/engine.mjs"
+// @ts-expect-error — JS ESM from the agent-runtime package (bundled by esbuild)
+import { liveProcessManagers } from "../../../agent-runtime/src/process-manager.mjs"
+import type { ProcessSnapshot } from "./backgroundProcesses.cjs"
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any
+
+/** The half of a process manager the host UI uses. */
+type ProcessManager = {
+  list: () => ProcessSnapshot[]
+  status: (id: string) => ProcessSnapshot | null
+  stop: (id: string) => Promise<{ ok: boolean; forced?: boolean; error?: string }>
+  stopAll: () => Promise<unknown[]>
+}
+
+function managers(): ProcessManager[] {
+  return liveProcessManagers() as ProcessManager[]
+}
+
+/**
+ * Every background process alive in this extension host.
+ *
+ * The manager is created inside a toolset closure and neither the toolset nor
+ * the engine hands it back, so process-manager.mjs keeps a registry of itself
+ * and this reads it. Host-wide rather than per-backend on purpose: a dev server
+ * started before "New Chat" is still holding its port, and scoping the list to
+ * the current engine would leave the user with no way left to see or stop it.
+ */
+export function listBackgroundProcesses(): ProcessSnapshot[] {
+  return managers().flatMap((m) => m.list())
+}
+
+/**
+ * Stop one process wherever it lives.
+ *
+ * Ids are unique only within the manager that issued them (`bg_1` exists in
+ * every one), so each manager is asked whether it owns this id rather than
+ * assuming a single global table.
+ */
+export async function stopBackgroundProcess(id: string): Promise<boolean> {
+  const owners = managers().filter((m) => m.status(id))
+  if (owners.length === 0) {
+    return false
+  }
+  const results = await Promise.all(owners.map((m) => m.stop(id)))
+  return results.every((r) => r.ok)
+}
+
+/** Stop everything still running, across every engine. Returns how many. */
+export async function stopAllBackgroundProcesses(): Promise<number> {
+  const results = await Promise.all(managers().map((m) => m.stopAll()))
+  return results.reduce((total, r) => total + r.length, 0)
+}
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel"
 
@@ -235,6 +285,30 @@ export class AgentCoreBackend {
       this.cb.post({
         type: "itemUpsert",
         item: { id, type: "command_execution", tool_name: tool, command, aggregated_output: "", status: "completed" },
+        done: true,
+      })
+    } else if (e.type === "process_start") {
+      // Same replacement semantics as file_diff/file_read: this event arrives
+      // INSTEAD OF tool_use_completed, so it is the only chance to settle the
+      // run_background card — left alone it would spin in_progress forever.
+      //
+      // Settled as "completed" the moment the spawn succeeds, even though the
+      // job is still running, because there is no matching end event to close
+      // it with. A background job's liveness belongs to the status bar, which
+      // polls; this card is the permanent record that it was STARTED.
+      this.toolCommands.delete(String(id))
+      const started = String(e.id ?? "")
+      const command = e.command ? `${tool} ${String(e.command)}` : tool
+      this.cb.post({
+        type: "itemUpsert",
+        item: {
+          id,
+          type: "command_execution",
+          tool_name: tool,
+          command,
+          aggregated_output: `${started} is running in the background — see the status bar to read or stop it.`,
+          status: "completed",
+        },
         done: true,
       })
     } else if (e.type === "tool_use_completed" || e.type === "tool_use_failed") {

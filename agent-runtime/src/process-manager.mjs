@@ -40,7 +40,17 @@ export const DEFAULTS = Object.freeze({
   readTail: 200,
 });
 
-/** Every live manager, so one process-exit hook can cover all of them. */
+/**
+ * Every manager alive in this process. Two consumers, one set.
+ *
+ * The exit hook below needs it so a single hook covers every manager. An
+ * in-process UI needs it for a different reason: the manager is created inside
+ * a toolset closure and neither the toolset nor the engine hands it back, so a
+ * host that wants to SHOW what it started (the TUI's /ps, the extension's
+ * status bar) has no other honest route to it. Registration happens at
+ * construction rather than at first spawn, so a command that failed to spawn is
+ * visible too — that is precisely the case a monitor exists to surface.
+ */
 const LIVE_MANAGERS = new Set();
 let exitHookInstalled = false;
 
@@ -360,7 +370,6 @@ export function createProcessManager({
       rec.child = child;
       rec.pid = child.pid ?? null;
       installExitHook();
-      LIVE_MANAGERS.add(manager);
 
       // stdout and stderr are merged in ARRIVAL order rather than kept apart:
       // a server's request log and the stack trace that interrupts it only make
@@ -527,5 +536,23 @@ export function createProcessManager({
     },
   };
 
+  LIVE_MANAGERS.add(manager);
   return manager;
+}
+
+/**
+ * Every manager still live in this process, oldest first.
+ *
+ * Returns the MANAGERS rather than a flattened process list on purpose: ids are
+ * only unique within one manager (`bg_1` exists in every one of them), so a
+ * caller that wants to stop something needs the owner, not just the id. A
+ * caller that only wants to display can flatMap `list()` over the result.
+ *
+ * Entries are dropped by dispose(); a host that abandons a manager without
+ * disposing it keeps that manager — and any process still running under it —
+ * visible here, which is the useful behaviour: a dev server started before
+ * "new chat" is still holding its port and the user still needs a way to see it.
+ */
+export function liveProcessManagers() {
+  return [...LIVE_MANAGERS];
 }

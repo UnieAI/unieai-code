@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProcessManager, DEFAULTS } from "./process-manager.mjs";
+import { createProcessManager, DEFAULTS, liveProcessManagers } from "./process-manager.mjs";
 
 // Everything here launches REAL processes, so a failed assertion must never be
 // able to leave a `sleep 30` behind. Managers and temp dirs are registered on
@@ -407,6 +407,14 @@ test("two managers never see each other's processes", { skip: !POSIX }, async ()
   assert.equal(b.list().length, 0);
   assert.equal(b.status(started.id), null, "ids are scoped to the manager that issued them");
   assert.equal(a.list().length, 1);
+});
+
+test("the live registry is how a host UI finds managers it was never handed", async () => {
+  const m = manager();
+  assert.ok(liveProcessManagers().includes(m), "registered at construction, before anything is spawned");
+
+  await m.dispose({ graceMs: 200 });
+  assert.equal(liveProcessManagers().includes(m), false, "and released by dispose");
 });
 
 test("the documented defaults are the ones actually applied", () => {

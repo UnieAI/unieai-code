@@ -65,6 +65,11 @@
         "title": "UnieAI Code: Select Vision Model"
       },
       {
+        "command": "unieai-code.showBackgroundProcesses",
+        "title": "UnieAI Code: Background Processes",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "unieai-code.showUpdateInfo",
         "title": "UnieAI Code: Show Update Info"
       }

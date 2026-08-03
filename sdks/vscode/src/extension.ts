@@ -4,9 +4,15 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { AppServerClient, Json } from "./appServerClient"
-import { AgentCoreBackend } from "./agentCoreBackend"
+import {
+  AgentCoreBackend,
+  listBackgroundProcesses,
+  stopAllBackgroundProcesses,
+  stopBackgroundProcess,
+} from "./agentCoreBackend"
+import { describeProcess } from "./backgroundProcesses.cjs"
 import { killTree, spawnCli, terminalCommand } from "./processUtil"
-import { UpdateStatusBarItem, VisionStatusBarItem } from "./statusBar"
+import { BackgroundProcessStatusBarItem, UpdateStatusBarItem, VisionStatusBarItem } from "./statusBar"
 import { readVisionState, selectVisionModel } from "./visionModel"
 import { parseCliVersion } from "./versionCompare.cjs"
 
@@ -29,9 +35,45 @@ export function activate(context: vscode.ExtensionContext) {
   const visionStatus = new VisionStatusBarItem()
   visionStatus.set(readVisionState(unieaiHome()).model)
 
+  // A background job outlives the turn that started it and reports nothing when
+  // it dies, so without a live indicator a running dev server is invisible until
+  // the model happens to poll it.
+  const backgroundStatus = new BackgroundProcessStatusBarItem({ list: listBackgroundProcesses })
+  backgroundStatus.start()
+
   context.subscriptions.push(
     updateStatus,
     visionStatus,
+    backgroundStatus,
+    vscode.commands.registerCommand("unieai-code.showBackgroundProcesses", async () => {
+      const processes = listBackgroundProcesses()
+      if (processes.length === 0) {
+        void vscode.window.showInformationMessage("No background processes.")
+        return
+      }
+      const STOP_ALL = "$(stop-circle) Stop all"
+      const picked = await vscode.window.showQuickPick(
+        [
+          ...processes.map((p) => ({ label: p.id, description: describeProcess(p), id: p.id })),
+          { label: STOP_ALL, description: "", id: STOP_ALL },
+        ],
+        { title: "Background processes", placeHolder: "Pick one to stop it" },
+      )
+      if (!picked) {
+        return
+      }
+      if (picked.id === STOP_ALL) {
+        const stopped = await stopAllBackgroundProcesses()
+        void vscode.window.showInformationMessage(`Stopped ${stopped} background process(es).`)
+      } else if (await stopBackgroundProcess(picked.id)) {
+        void vscode.window.showInformationMessage(`Stopped ${picked.id}.`)
+      } else {
+        // Between opening the picker and choosing, the process can have exited
+        // and been reaped. Say so rather than report a stop that never happened.
+        void vscode.window.showWarningMessage(`${picked.id} is no longer running.`)
+      }
+      backgroundStatus.refresh()
+    }),
     vscode.commands.registerCommand("unieai-code.selectVisionModel", async () => {
       const chosen = await selectVisionModel({
         home: unieaiHome(),
