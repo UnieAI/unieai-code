@@ -47,8 +47,8 @@ async function until(check, { timeoutMs = 5000, stepMs = 20 } = {}) {
 /** A stand-in for the sandbox binary that runs the wrapped command unchanged. */
 function passthroughSandbox(dir) {
   const bin = join(dir, "passthrough-sandbox");
-  // argv is `sandbox -- sh -c CMD`; drop the first two and exec the rest.
-  writeFileSync(bin, '#!/bin/sh\nshift 2\nexec "$@"\n');
+  // argv is `sandbox [opts] -- sh -c CMD`; drop everything up to `--`.
+  writeFileSync(bin, '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
   chmodSync(bin, 0o755);
   return bin;
 }
@@ -322,7 +322,7 @@ test("commands go through the sandbox wrapper in the same shape the bash tool us
     return r.lines.some((l) => l.startsWith("ARGV:")) ? r : null;
   });
   assert.ok(read, "the sandbox binary was the thing actually launched");
-  assert.equal(read.lines[0], "ARGV:sandbox -- sh -c echo hi");
+  assert.equal(read.lines[0], 'ARGV:sandbox -c sandbox_mode="workspace-write" -- sh -c echo hi');
 });
 
 test("a sandboxed command still runs and its output is captured", { skip: !POSIX }, async () => {

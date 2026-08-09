@@ -19,16 +19,18 @@ async function until(check, budgetMs = 4000) {
 /**
  * A stand-in for the host sandbox binary that runs the command it is handed.
  *
- * The tool always wraps commands as `<sandboxBin> sandbox -- <shell> <cmd>`, and
- * deliberately offers no way to skip that. Pointing sandboxBin at a real shell
- * makes every command die with "sandbox: No such file or directory" (exit 127)
- * — which still looks like a process that started and exited, so assertions
- * about listing and stopping pass while nothing was ever actually run.
+ * The tool always wraps commands as `<sandboxBin> sandbox [opts] -- <shell> <cmd>`,
+ * and deliberately offers no way to skip that. Pointing sandboxBin at a real
+ * shell makes every command die with "sandbox: No such file or directory"
+ * (exit 127) — which still looks like a process that started and exited, so
+ * assertions about listing and stopping pass while nothing was ever actually
+ * run. The stub drops everything up to `--` so it stays correct as sandbox
+ * options are added.
  */
 async function tools() {
   const root = await mkdtemp(join(tmpdir(), "unieai-bg-"));
   const stub = join(root, "sandbox-stub.sh");
-  await writeFile(stub, '#!/bin/sh\nshift 2\nexec "$@"\n', "utf8");
+  await writeFile(stub, '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n', "utf8");
   await chmod(stub, 0o755);
   return { root, t: await buildCodingTools({ workspace: root, sandboxBin: stub })() };
 }

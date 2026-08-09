@@ -224,12 +224,15 @@ function readRecords(shape, { grep, fields, offset, limit, maxChars }) {
 
 export function readSpilled(id, { grep = "", maxChars = 24_000, fields = "", offset = 0, limit = 0 } = {}) {
   const clean = String(id || "").trim();
-  if (!ID_RE.test(clean)) return { ok: false, text: `error: invalid output id "${id}"` };
+  if (!ID_RE.test(clean)) return { ok: false, text: `error: invalid output id "${id}".${availableHint()}` };
   let body;
   try {
     body = readFileSync(join(storeDir(), `${clean}.txt`), "utf8");
   } catch {
-    return { ok: false, text: `error: no stored output for id "${clean}" (it may have expired)` };
+    // A bare "not found" is a dead end: models reliably mangle these ids and
+    // then retry the same wrong one. Hand back the ids that DO exist so the
+    // next call can be right.
+    return { ok: false, text: `error: no stored output for id "${clean}".${availableHint()}` };
   }
   // Record arrays are queried, not scanned line by line. An API array is often
   // one enormous line, which makes a line filter either return everything or
@@ -246,6 +249,25 @@ export function readSpilled(id, { grep = "", maxChars = 24_000, fields = "", off
   }
   if (out.length > maxChars) out = `${out.slice(0, maxChars)}\n[... ${out.length} chars, truncated to ${maxChars}; narrow with grep ...]`;
   return { ok: true, text: out };
+}
+
+/** Ids currently in the store, newest first. */
+export function listSpilled(max = 8) {
+  try {
+    const dir = storeDir();
+    return readdirSync(dir)
+      .filter((n) => n.endsWith(".txt"))
+      .map((n) => ({ id: n.slice(0, -4), t: (() => { try { return statSync(join(dir, n)).mtimeMs; } catch { return 0; } })() }))
+      .sort((a, b) => b.t - a.t)
+      .slice(0, max)
+      .map((e) => e.id);
+  } catch { return []; }
+}
+
+function availableHint() {
+  const ids = listSpilled();
+  if (!ids.length) return " No outputs are stored for this session — read the file or re-run the command instead.";
+  return ` Available ids (newest first): ${ids.map((i) => `"${i}"`).join(", ")}.`;
 }
 
 export const _internals = { headTailPreview, storeDir, DEFAULT_LIMIT };

@@ -121,3 +121,19 @@ export function shellArgv(cmd) {
     ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", cmd]
     : ["sh", "-c", cmd];
 }
+
+/**
+ * argv for running `cmd` inside the sandbox helper.
+ *
+ * The sandbox defaults to a read-only filesystem, which is the wrong policy for
+ * a coding agent: the `edit`/`write` tools already mutate the workspace, so a
+ * bash tool that cannot write is not safer — it just breaks the half of the job
+ * that needs a shell (repro scripts, `pip install -e .`, test runs that write
+ * artifacts) and teaches the model that the workspace is read-only, at which
+ * point it stops trying to fix anything at all. `workspace-write` keeps the
+ * boundary that matters (outside the workspace stays read-only, and denials
+ * still escalate through the approval channel).
+ */
+export function sandboxArgv(sandboxBin, cmd) {
+  return [sandboxBin, "sandbox", "-c", 'sandbox_mode="workspace-write"', "--", ...shellArgv(cmd)];
+}

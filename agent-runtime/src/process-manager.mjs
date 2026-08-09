@@ -18,7 +18,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { IS_WIN, prepareExec, shellArgv } from "./portable-exec.mjs";
+import { IS_WIN, prepareExec, shellArgv, sandboxArgv } from "./portable-exec.mjs";
 
 /**
  * Defaults, all overridable per manager.
@@ -328,7 +328,7 @@ export function createProcessManager({
         };
       }
 
-      const argv = sandbox ? [sandboxBin, "sandbox", "--", ...shellArgv(cmd)] : shellArgv(cmd);
+      const argv = sandbox ? sandboxArgv(sandboxBin, cmd) : shellArgv(cmd);
       const spec = prepareExec(argv[0], argv.slice(1));
       const workdir = cwd ? String(cwd) : workspace;
       const id = nextId();
