@@ -26,9 +26,13 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
+import { grepFiles, globFiles } from "./search-fallback.mjs";
 import { createFileMutationQueue } from "./file-mutation-queue.mjs";
 import { createProcessManager, killTree } from "./process-manager.mjs";
-import { prepareExec, shellArgv } from "./portable-exec.mjs";
+import { detectRunner, buildTestCommand, summarizeTestOutput, verdictFrom, guessTestTarget } from "./test-runner.mjs";
+import { unprecedentedSymbolNote, inconsistentReturnNote } from "./edit-signals.mjs";
+import { prepareExec, shellArgv, sandboxArgv } from "./portable-exec.mjs";
+import { resolveBackend } from "./exec-backend.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
 // Factored out (and exported) so the guards can be unit-tested without spinning
@@ -191,6 +195,30 @@ function pyInstantChecks(absPath, { oldString = null, fileBody = null } = {}) {
   return notes.length ? `\n${notes.join("\n")}` : "";
 }
 
+// Pointing at the verification route AT THE MOMENT OF THE EDIT, rather than
+// leaving the model to rediscover how this repo runs its tests. Without it the
+// model hand-rolls an invocation through bash, gets it wrong on any repo with a
+// custom runner, and after a couple of failures stops verifying altogether.
+// Once per session: it is a signpost, not a nag.
+// Deterministic post-edit signals (see edit-signals.mjs). Best-effort: a check
+// that throws must never turn a successful edit into a failed tool call.
+function editSignals(root, relPath, oldString, newString, fileBody) {
+  try {
+    return unprecedentedSymbolNote(root, oldString, newString) + inconsistentReturnNote(relPath, fileBody, newString);
+  } catch { return ""; }
+}
+
+function testRouteHint(root, relPath, state) {
+  if (state.testHintGiven) return "";
+  if (!/\.(py|js|mjs|ts|tsx|jsx|rs|go)$/.test(relPath)) return "";
+  const runner = detectRunner(root);
+  if (!runner.kind) return "";
+  state.testHintGiven = true;
+  const target = guessTestTarget(root, relPath);
+  const example = target ? ` e.g. \`run_tests({"target": "${target}"})\`` : "";
+  return `\nnote: this project's tests run via ${runner.why} — verify this change with the run_tests tool rather than composing the command yourself.${example}`;
+}
+
 // "access is denied" is the Windows (AppContainer) wording for the same thing
 // seatbelt/landlock report as EPERM/EACCES; without it a denial on Windows
 // reads as an ordinary non-zero exit and never reaches the approval prompt.
@@ -249,6 +277,10 @@ function truncateMiddle(s, max = 8000, mode = "middle") {
   return truncateOutput(s, { maxBytes: max, maxLines: DEFAULT_MAX_LINES, mode }).content;
 }
 
+// Test suites are legitimately slower than any other command the agent runs; the
+// 60s default would report a timeout for a suite that was about to pass.
+const TEST_TIMEOUT_MS = Math.max(30_000, Number(process.env.UNIEAI_TEST_TIMEOUT_MS || 300_000));
+
 export function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
   // On Windows the CLI is usually an npm `.cmd` shim, which execFile cannot
   // launch directly; prepareExec resolves it (and pre-quotes argv when it has
@@ -263,6 +295,7 @@ export function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
     // mid-command now leaves a detached group behind; a timeout leaking the
     // real work is the worse of the two, and it happens far more often.
     let timer = null;
+    let timedOut = false;
     const child = execFile(spec.file, spec.args, { cwd, maxBuffer: 4 * 1024 * 1024, shell: spec.shell, windowsHide: true, detached: process.platform !== "win32" }, (error, stdout, stderr) => {
       if (timer) clearTimeout(timer);
       // A spawn failure (binary missing / not executable) reports a STRING errno
@@ -275,10 +308,15 @@ export function run(cmd, args, { cwd, timeoutMs = 60_000 } = {}) {
         stdout: String(stdout || ""),
         stderr: String(stderr || ""),
         spawnError,
+        // A killed-on-timeout child is indistinguishable from a normal non-zero
+        // exit downstream unless we say so; callers word very different messages
+        // for "your tests failed" and "your tests never finished".
+        timedOut,
       });
     });
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
+        timedOut = true;
         // SIGKILL rather than a graceful escalation: this path already waited
         // the full budget, and the caller is about to report a timeout either
         // way, so a second grace period only delays the answer.
@@ -367,14 +405,19 @@ export const IMAGE_MIME_TYPES = {
  */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", webAccess = false, allowExternal = false, externalAllowlist = [], visionModel = null, callModelJson = null, visionOptions = {} } = {}) {
+export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", execBackend = null, webAccess = false, allowExternal = false, externalAllowlist = [], visionModel = null, callModelJson = null, visionOptions = {} } = {}) {
   const root = resolve(workspace || process.cwd());
+  // Where shell commands run. Local sandbox unless the host supplied a backend
+  // (e.g. a prepared container holding this checkout's toolchain).
+  const backend = resolveBackend(execBackend, sandboxBin);
 
   // §2.1 content-hash staleness guard: resolved abs path → SHA-1 of the exact
   // bytes the model last saw (via `read`, or the last successful write/edit).
   // A write/edit that finds a different on-disk hash refuses — the model raced
   // an external change and must re-read before mutating.
   const readHashes = new Map();
+  // One-shot signposts, scoped to this toolset instance (i.e. this session).
+  const hintState = { testHintGiven: false };
 
   // Per-file serialization for write/edit. The loop runs a step's tool calls
   // concurrently, so two edits to one file can overlap; the staleness guard
@@ -443,9 +486,10 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
 
   const schemas = [
     { type: "function", function: { name: "bash", description: "Run a shell command in the workspace (sandboxed). Prefer `rg` for searching.", parameters: { type: "object", properties: { cmd: { type: "string", description: "the command line to run" } }, required: ["cmd"] } } },
-    { type: "function", function: { name: "read", description: "Read a file (workspace-relative path).", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } } },
+    { type: "function", function: { name: "read", description: "Read a file (workspace-relative path). Pass offset/limit to read a line window of a large file — the whole file is returned only when they are omitted.", parameters: { type: "object", properties: { filePath: { type: "string" }, offset: { type: "number", description: "1-based line to start at (default 1)" }, limit: { type: "number", description: "how many lines to return from offset (default: to end of file)" } }, required: ["filePath"] } } },
     { type: "function", function: { name: "write", description: "Create or overwrite a file with the given content.", parameters: { type: "object", properties: { filePath: { type: "string" }, content: { type: "string" } }, required: ["filePath", "content"] } } },
     { type: "function", function: { name: "edit", description: "Edit a file by exact search/replace. oldString must appear exactly once.", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } },
+    { type: "function", function: { name: "run_tests", description: "Run THIS project's own test suite. Works out the correct runner for the repository (pytest, Django's tests/runtests.py, unittest, jest/vitest, cargo, go) so you do not have to guess the invocation. Always pass a target — the tests covering the code you changed — a whole-repo run is slow and its failures are mostly unrelated to your change. Use this to verify a fix rather than reasoning about whether it works.", parameters: { type: "object", properties: { target: { type: "string", description: "what to run: a test file path, a dotted test label, or a file::test id. Omit only when the suite is small." }, keyword: { type: "string", description: "optional name filter within the target (pytest -k / jest -t)" } } } } },
     { type: "function", function: { name: "read_output", description: "Query a large tool output that was spilled to storage (its preview showed an id). For record data (a JSON array), filter and page through RECORDS — never try to pull it all into the conversation. For plain text, filter to matching lines.", parameters: { type: "object", properties: { id: { type: "string", description: "the output id from the preview marker" }, grep: { type: "string", description: "substring or /regex/; keeps matching records (or lines, for text)" }, fields: { type: "string", description: "for records: comma-separated keys to keep, e.g. \"id,name\" — the main way to shrink a page" }, offset: { type: "number", description: "for records: index of the first record to return (default 0)" }, limit: { type: "number", description: "for records: how many records to return (default 50)" } }, required: ["id"] } } },
     // grep/glob are first-class rather than left to `bash`+rg for the same reason
     // `edit` is search/replace: open models compose a JSON argument object far
@@ -482,7 +526,8 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       async bash(args, runCtx = {}) {
         const cmd = String(args?.cmd || "").trim();
         if (!cmd) return toolResult({ ok: false, modelText: "error: cmd is required" });
-        const sandboxed = await run(sandboxBin, ["sandbox", "--", ...shellArgv(cmd)], { cwd: root });
+        const [bin, ...sandboxArgs] = backend.argv(cmd);
+        const sandboxed = await run(bin, sandboxArgs, { cwd: root });
         if (sandboxed.spawnError) {
           return toolResult({ ok: false, modelText: `error: could not launch the UnieAI Code sandbox binary \`${sandboxBin}\` (${sandboxed.spawnError}). It is not on PATH for this process. In VS Code set \`unieai-code.executablePath\` to the absolute path of the \`unieai\` binary (\`which unieai\` in a terminal), or set the UNIEAI_BIN environment variable. Until then, use the read/write/edit tools instead of shell commands.` });
         }
@@ -495,6 +540,9 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const decision = runCtx.requestApproval
           ? await runCtx.requestApproval({ tool: "bash", action: "run outside the sandbox", detail: cmd })
           : "decline";
+        if (!backend.escalatedArgv) {
+          return toolResult({ ok: false, modelText: `exit ${sandboxed.code}\n(denied by the ${backend.describe()} boundary, which has no escalation path)\n${sandboxed.stderr.slice(0, 2000)}` });
+        }
         if (decision !== "accept" && decision !== "acceptForSession") {
           return toolResult({ ok: false, modelText: `exit ${sandboxed.code}\n(blocked by sandbox; escalation ${runCtx.requestApproval ? "declined by user" : "unavailable"})\n${sandboxed.stderr.slice(0, 2000)}` });
         }
@@ -505,9 +553,39 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         if (runCtx.abortSignal?.aborted) {
           return toolResult({ ok: false, modelText: "(approval arrived after the tool call was abandoned — command NOT executed; ask again if still needed)" });
         }
-        const [shell, ...shellArgs] = shellArgv(cmd);
+        const [shell, ...shellArgs] = backend.escalatedArgv(cmd);
         const raw = await run(shell, shellArgs, { cwd: root });
         return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
+      },
+      async run_tests(args) {
+        const runner = detectRunner(root);
+        if (!runner.kind) {
+          return toolResult({ ok: false, modelText: `error: no test runner detected in this workspace (${runner.why}). Use bash if you know how this project runs its tests.` });
+        }
+        const target = String(args?.target || "").trim();
+        const keyword = String(args?.keyword || "").trim();
+        const cmd = buildTestCommand(runner, target, { keyword });
+        const cwd = runner.cwd === "." ? root : join(root, runner.cwd);
+        const [bin, ...sandboxArgs] = backend.argv(cmd);
+        const res = await run(bin, sandboxArgs, { cwd, timeoutMs: TEST_TIMEOUT_MS });
+        if (res.spawnError) return toolResult({ ok: false, modelText: `error: could not launch the sandbox (${res.spawnError})` });
+        const raw = `${res.stdout || ""}${res.stderr || ""}`;
+        if (res.timedOut) {
+          return toolResult({ ok: false, modelText: `\`${cmd}\` did not finish within ${Math.round(TEST_TIMEOUT_MS / 1000)}s — narrow the target to a single test file or test id and run it again.\n${summarizeTestOutput(raw)}` });
+        }
+        const verdict = verdictFrom(res.code, raw);
+        // The command is echoed on purpose: when detection picks the wrong runner
+        // the model can see why and fall back to bash instead of trusting a bogus
+        // "failed" verdict.
+        const head = `${verdict} — \`${cmd}\` (detected via ${runner.why}, exit ${res.code})`;
+        const body = summarizeTestOutput(raw);
+        const out = spillIfLarge(body, { id: "run_tests", fallbackTruncate: () => truncateMiddle(body) });
+        // `ok` answers "did this tool do its job", NOT "did the tests pass". A red
+        // test run is a successful, productive tool call — the verdict is in the
+        // text. Conflating them made the loop treat verification as flailing: a
+        // failed result carries double the doom-streak weight of a normal one, so
+        // the more diligently the model tested, the faster it was pushed to wrap up.
+        return toolResult({ ok: verdict !== "no-runner", modelText: `${head}\n${out.modelText}` });
       },
       async read(args, runCtx = {}) {
         try {
@@ -517,12 +595,30 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
           const body = await readFile(abs, "utf8");
           // §2.1: remember exactly what the model saw, so a later edit/write can
-          // detect an intervening on-disk change.
+          // detect an intervening on-disk change. Hash the WHOLE file even for a
+          // windowed read: the window is what was displayed, the hash is what the
+          // staleness check compares against.
           readHashes.set(abs, hashContent(body));
-          const out = spillIfLarge(body, { id: "read", limit: 32_000, fallbackTruncate: () => body.slice(0, 32_000) });
+          // A line window is the only way to see past the size cap on a big file.
+          // Without offset/limit a model asking for line 4000 gets the same head of
+          // the file on every call, concludes the tool is broken, and falls back to
+          // `sed -n` through bash for the rest of the session — which bloats context
+          // and trips the doom guard's consecutive-bash streak.
+          const all = body.split("\n");
+          const offset = Math.max(1, Math.floor(Number(args?.offset) || 1));
+          const limit = Math.max(0, Math.floor(Number(args?.limit) || 0));
+          const windowed = offset > 1 || limit > 0;
+          const start = Math.min(offset - 1, all.length);
+          const end = limit > 0 ? Math.min(start + limit, all.length) : all.length;
+          if (windowed && start >= end) {
+            return toolResult({ ok: false, modelText: `error: offset ${offset} is past the end of ${filePath} (${all.length} lines)` });
+          }
+          const text = windowed ? all.slice(start, end).join("\n") : body;
+          const header = windowed ? `[lines ${start + 1}-${end} of ${all.length}]\n` : "";
+          const out = spillIfLarge(text, { id: "read", limit: 32_000, fallbackTruncate: () => text.slice(0, 32_000) });
           return toolResult({
-            modelText: out.modelText,
-            metadata: { timelineEvent: { type: "file_read", path: filePath, lines: body.split("\n").length } }
+            modelText: header + out.modelText,
+            metadata: { timelineEvent: { type: "file_read", path: filePath, lines: all.length } }
           });
         } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
       },
@@ -549,9 +645,31 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         // `--` keeps a pattern that starts with `-` from being read as a flag.
         rgArgs.push("--regexp", pattern, "--", abs);
 
-        const res = await run("rg", rgArgs, { cwd: root });
+        let res = await run("rg", rgArgs, { cwd: root });
+        // ripgrep's default engine has no lookaround, but every language the model
+        // writes regexes in does — so a perfectly reasonable pattern like
+        // `foo(?=bar)` came back as a bare "ripgrep exited 2" with no way to act on
+        // it. PCRE2 understands those, so retry with it rather than making the
+        // model guess which construct offended us. Only on a parse error: -P is
+        // slower, so the fast engine stays the default.
+        if (res.code === 2 && /regex parse error|unrecognized|look-?(around|ahead|behind)|not supported/i.test(res.stderr || "")) {
+          const pcre = await run("rg", ["--pcre2", ...rgArgs], { cwd: root });
+          if (!pcre.spawnError && pcre.code !== 2) res = pcre;
+        }
+        // No ripgrep on this host: answer the question in JS rather than handing
+        // the model an error it cannot act on (it would just retry and give up).
         if (res.spawnError) {
-          return toolResult({ ok: false, modelText: `error: could not run ripgrep (${res.spawnError}). Install rg, or fall back to the bash tool.` });
+          let found;
+          try {
+            found = grepFiles(root, abs, { pattern, ignoreCase: !!args?.ignoreCase, glob: args?.glob ? String(args.glob) : "" });
+          } catch (e) { return toolResult({ ok: false, modelText: `error: ${e.message}` }); }
+          if (!found.lines.length) return toolResult({ ok: true, modelText: `No matches for /${pattern}/.` });
+          const body = found.lines.map((l) => (l.startsWith(root + sep) ? l.slice(root.length + 1) : l)).join("\n");
+          const out = spillIfLarge(body, { id: "grep", fallbackTruncate: () => truncateMiddle(body) });
+          return toolResult({
+            modelText: `${found.lines.length} matching line(s)${found.truncated ? " (capped)" : ""}\n${out.modelText}`,
+            metadata: { timelineEvent: { type: "grep", pattern, matches: found.lines.length } }
+          });
         }
         // rg exits 1 for "no matches", which is a successful search, not a failure.
         if (res.code === 1 && !res.stderr.trim()) {
@@ -580,7 +698,14 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
 
         const res = await run("rg", ["--files", "--glob", pattern, "--", abs], { cwd: root });
         if (res.spawnError) {
-          return toolResult({ ok: false, modelText: `error: could not run ripgrep (${res.spawnError}). Install rg, or fall back to the bash tool.` });
+          const files = globFiles(root, abs, pattern).map((p) => (p.startsWith(root + sep) ? p.slice(root.length + 1) : p));
+          if (!files.length) return toolResult({ ok: true, modelText: `No files match ${pattern}.` });
+          const body = files.join("\n");
+          const out = spillIfLarge(body, { id: "glob", fallbackTruncate: () => truncateMiddle(body) });
+          return toolResult({
+            modelText: `${files.length} file(s)\n${out.modelText}`,
+            metadata: { timelineEvent: { type: "glob", pattern, files: files.length } }
+          });
         }
         if (res.code !== 0 && res.code !== 1) {
           return toolResult({ ok: false, modelText: `error: ripgrep exited ${res.code}\n${res.stderr.slice(0, 2000)}` });
@@ -625,7 +750,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           await writeFile(abs, content, "utf8");
           readHashes.set(abs, hashContent(content));
           return toolResult({
-            modelText: `wrote ${args.filePath}${pyInstantChecks(abs)}`,
+            modelText: `wrote ${args.filePath}${pyInstantChecks(abs)}${testRouteHint(root, args.filePath, hintState)}`,
             metadata: {
               timelineEvent: {
                 type: "file_diff",
@@ -664,7 +789,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
             await writeFile(abs, rawResult, "utf8");
             readHashes.set(abs, hashContent(rawResult));
             return toolResult({
-              modelText: `edited ${args.filePath}${pyInstantChecks(abs, { oldString: oldRaw, fileBody: rawResult })}`,
+              modelText: `edited ${args.filePath}${pyInstantChecks(abs, { oldString: oldRaw, fileBody: rawResult })}${editSignals(root, args.filePath, oldRaw, String(args.newString ?? ""), rawResult)}${testRouteHint(root, args.filePath, hintState)}`,
               metadata: { timelineEvent: { type: "file_diff", path: filePath, kind: "update", diff: makeDiff(rawBefore, rawResult) } }
             });
           }
@@ -685,7 +810,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
             await writeFile(abs, encoded, "utf8");
             readHashes.set(abs, hashContent(encoded)); // keep the snapshot current for the next edit
             return toolResult({
-              modelText: `edited ${args.filePath}${extraNote}${pyInstantChecks(abs, { oldString, fileBody: lfResult })}`,
+              modelText: `edited ${args.filePath}${extraNote}${pyInstantChecks(abs, { oldString, fileBody: lfResult })}${editSignals(root, args.filePath, oldString, String(args.newString ?? ""), lfResult)}${testRouteHint(root, args.filePath, hintState)}`,
               metadata: { timelineEvent: { type: "file_diff", path: filePath, kind: "update", diff: makeDiff(rawBefore, encoded) } }
             });
           };

@@ -163,7 +163,7 @@ try {
 }
 
 console.log(`${BOLD}UnieAI Code${RESET} ${DIM}(agent-core engine · ${engine.model} · session ${engine.sessionId}${webAccess ? " · web on" : ""})${RESET}`);
-console.log(`${DIM}/model /vision-model /new /sessions /resume <id> /web /subagents /threads /ps /kill <id> /quit${RESET}\n`);
+console.log(`${DIM}/model /vision-model /context /new /sessions /resume <id> /web /subagents /threads /ps /kill <id> /quit${RESET}\n`);
 
 async function repl() {
   for (;;) {
@@ -214,6 +214,26 @@ async function repl() {
         // its port or write its report, and may leave something half-written.
         else console.log(`${DIM}stopped ${target}${result.forced ? " (it ignored the polite signal and was killed)" : ""}${RESET}`);
       }
+      continue;
+    }
+    if (line === "/context" || line.startsWith("/context ")) {
+      const arg = line.slice("/context".length).trim();
+      if (!arg) {
+        console.log(`${DIM}context budget ${engine.contextTokens.toLocaleString()} tokens — history is kept up to this size before old tool outputs are replaced by placeholders.`);
+        console.log(`  /context <tokens>   set it (e.g. /context 200000)`);
+        console.log(`  /context default    back to 128,000`);
+        console.log(`  /context small      32,000 — agent-core's original default; only for a genuinely small model${RESET}`);
+        continue;
+      }
+      const wanted = arg === "default" ? 128_000 : arg === "small" ? 32_000 : Number(arg.replace(/[_,]/g, ""));
+      if (!Number.isFinite(wanted) || wanted <= 0) {
+        console.log(`${DIM}not a token count: ${arg}${RESET}`);
+        continue;
+      }
+      const applied = engine.setContextTokens(wanted);
+      // Takes effect on the next turn — the loop reads the budget per request,
+      // so no retooling is needed and the current session is preserved.
+      console.log(`${DIM}context budget ${applied.toLocaleString()} tokens${applied !== wanted ? ` (raised from ${wanted.toLocaleString()}; below 8k the model cannot hold one file)` : ""} — applies from the next message${RESET}`);
       continue;
     }
     if (line === "/web") {

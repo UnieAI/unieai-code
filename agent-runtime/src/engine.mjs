@@ -52,6 +52,18 @@ import { buildNudge } from "./completion-escalation.mjs";
 import { buildPlanRequest, parsePlan, reconcilePlan, planNudgeBlock } from "./goal-plan.mjs";
 import { changedFilesFromStatus, buildSummaryRequest, clampSummary } from "./goal-summarizer.mjs";
 
+// A caller's deadline is when it will ABORT, so the loop must aim earlier: the
+// wrap-up it triggers still costs one model call (and the verifier may want one
+// more), and on the degraded gateway that made this necessary those calls are the
+// slow ones. Reserve a fifth of the budget, floored at 90s, capped at half — so a
+// short turn is not reduced to nothing and a long one is not over-reserved.
+export function landingDeadline(abortAtMs) {
+  const total = Number(abortAtMs) || 0;
+  if (total <= 0) return 0;
+  const reserve = Math.min(total / 2, Math.max(90_000, total * 0.2));
+  return Math.max(1, Math.round(total - reserve));
+}
+
 const CODE_IDENTITY =
   "You are UnieAI Code, a coding agent running in a CLI harness attached to the user's workspace.";
 
@@ -66,6 +78,7 @@ const CODE_TOOL_GUIDANCE = [
   "- After a tool call that changes state (edits, writes, installs), confirm the result before reporting success — never claim an action worked without evidence.",
   "- When a tool call fails, adapt: don't retry the identical call unchanged, and don't paper over the failure.",
   "- ask — put a real decision to the user as fixed options ONLY when the answer is not inferable from the repo or the task and picking wrong would waste real work. Never ask to confirm something you can verify yourself.",
+  "- run_tests — run THIS project's tests. It already knows the right invocation for the repo (pytest, Django's runtests.py, unittest, jest, cargo, go), so use it instead of composing a test command through bash; pass the target covering what you changed.",
   "- Verify with the project's own checks (tests/lint/typecheck) when they exist. Never commit unless the user explicitly asks."
 ];
 
@@ -79,6 +92,29 @@ const CODE_TOOL_GUIDANCE = [
 // Only used when the host declares the turn expects mutation — interactive Q&A
 // must never be nudged into editing files.
 const MID = (s, max) => (s.length <= max ? s : `${s.slice(0, max / 2)}\n[...truncated...]\n${s.slice(-max / 2)}`);
+
+// New files, rendered so the skeptic can judge them alongside `git diff` (which
+// only ever shows tracked edits). Capped hard: a verification prompt is not the
+// place to paste a build output or a vendored directory that happens to be
+// untracked, and a file's opening lines are enough to say what it is.
+export function untrackedDigest(workspace, porcelain) {
+  const paths = String(porcelain || "")
+    .split("\n")
+    .filter((l) => l.startsWith("??"))
+    .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+  if (!paths.length) return "";
+  let out = "\n\n## New (untracked) files\n";
+  for (const p of paths.slice(0, 5)) {
+    let body = "";
+    try {
+      body = readFileSync(join(workspace, p), "utf8").split("\n").slice(0, 60).join("\n");
+    } catch { continue; } // a directory or an unreadable blob — the name still tells the reviewer it exists
+    out += `\n### ${p}\n${MID(body, 1500)}\n`;
+  }
+  if (paths.length > 5) out += `\n(+${paths.length - 5} more untracked paths)\n`;
+  return out;
+}
 
 // Deterministic pre-gates over the changed files (v0.3.0, from SWE-bench
 // failure-mode analysis: most applied-but-failed patches die on errors a single
@@ -231,7 +267,14 @@ function workspaceCompletionCheck({ workspace, model, auxModel, callerKey, goalS
     skepticRan = true;
     try {
       const diff = spawnSync("git", ["-C", workspace, "diff"], { encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
-      if (diff.status !== 0 || !String(diff.stdout || "").trim()) return null;
+      if (diff.status !== 0) return null;
+      // `git diff` shows tracked edits only, so a turn whose only output was a new
+      // untracked file (a repro script, most often) used to reach here with an empty
+      // diff and skip verification entirely — while `git status` above was non-empty,
+      // so the mutation gate had already passed it. That pair let "wrote a scratch
+      // file, changed nothing" end a turn unchallenged. Show new files to the skeptic.
+      const diffText = String(diff.stdout || "") + untrackedDigest(workspace, st.stdout);
+      if (!diffText.trim()) return null;
       // Judge against THIS turn's request (set by runTurn), not the session's
       // first user message — after compaction or in a multi-task session the
       // first message is stale or gone, and the skeptic would review the diff
@@ -255,18 +298,18 @@ function workspaceCompletionCheck({ workspace, model, auxModel, callerKey, goalS
           "4. REGRESSIONS: module-level imports that could be circular, API signatures changed under existing " +
           "callers, behavior changes that break the unchanged default path.\n" +
           'Reply with exactly "ACHIEVED" if complete; otherwise list the concrete gaps (max 5 short bullets, each actionable, no preamble).',
-        user: `## Task\n${MID(task, 3000)}\n\n## Workspace diff\n${MID(diff.stdout, 6000)}\n\n## Agent's final report\n${MID(String(answerText || ""), 1500)}`
+        user: `## Task\n${MID(task, 3000)}\n\n## Workspace diff\n${MID(diffText, 6000)}\n\n## Agent's final report\n${MID(String(answerText || ""), 1500)}`
       });
       const text = String(verdict || "").trim();
       if (!text || /^achieved\b/i.test(text.replace(/^[*#\s]+/, ""))) {
         goalState.consecutiveNotAchieved = 0; // achieved → reset the escalation ladder
         // ACHIEVED: kick the one-shot closing summarizer (non-blocking, fail-open).
-        maybeSummarize({ task, files: changedFilesFromStatus(st.stdout), diff: diff.stdout });
+        maybeSummarize({ task, files: changedFilesFromStatus(st.stdout), diff: diffText });
         return null;
       }
       // NotAchieved: check off any plan steps the diff now covers, so the nudge
       // only surfaces items that are genuinely still open (goal-harness §3).
-      reconcilePlan(goalState.plan, `${changedFilesFromStatus(st.stdout).join(" ")}\n${diff.stdout}`);
+      reconcilePlan(goalState.plan, `${changedFilesFromStatus(st.stdout).join(" ")}\n${diffText}`);
       // Stall exit (grok-build gap-fingerprint): if this turn's gaps match the
       // previous turn's, re-nudging only spins on the same blocker — accept the
       // turn and let the user/next turn take over instead of looping.
@@ -303,6 +346,18 @@ export function createEngine({
   onReview = () => {},
   onPlan = () => {},
   expectsMutation = false,
+  // Default wall clock for every turn, when the host has one (0 = none).
+  deadlineMs: engineDeadlineMs = 0,
+  // How much history the loop may keep before it starts pruning tool outputs.
+  // agent-core's own default is 32k — the size of the models it was written
+  // against — which on a 60-step coding turn discards what the model just read
+  // and makes it re-read the same files. Coding declares the real budget.
+  contextTokens: initialContextTokens = Number(process.env.UNIEAI_CONTEXT_TOKENS) || 128_000,
+  // Where the model's shell commands run. Null = this machine, inside the local
+  // sandbox. A host whose workspace is a checkout whose toolchain lives
+  // elsewhere (a prepared container, a devcontainer) passes a backend from
+  // exec-backend.mjs; file tools still operate on the local path.
+  execBackend = null,
   webAccess = false,
   visionModel = null,
   subagents = false
@@ -534,6 +589,7 @@ export function createEngine({
   // engine — messages and session survive. Rebuilding the whole engine would
   // start a fresh conversation, which is the wrong behaviour for a toggle.
   let webAccessState = webAccess;
+  let contextTokensState = Math.max(8_000, Number(initialContextTokens) || 128_000);
   let visionModelState = visionModel;
   let subagentsState = subagents;
   let toolsetPromise = null;
@@ -560,6 +616,7 @@ export function createEngine({
       domainToolBuilders: [buildCodingTools({
         workspace,
         sandboxBin: sandboxBin(),
+        execBackend,
         webAccess: webAccessState,
         // Vision is DELEGATED: read_media_file hands the image to this model and
         // returns its prose, so the main model never needs image support.
@@ -664,6 +721,17 @@ export function createEngine({
     },
 
     /** Flip the fetch tool on/off for subsequent turns, keeping the session. */
+    /**
+     * How much history to keep before pruning tool outputs. Unlike the toolset
+     * settings this needs no retooling — the loop reads it fresh each turn — so
+     * a change takes effect on the very next turn. Floored: below ~8k the model
+     * cannot hold even one file, and the pruning would thrash.
+     */
+    get contextTokens() { return contextTokensState; },
+    setContextTokens(value) {
+      contextTokensState = Math.max(8_000, Number(value) || 128_000);
+      return contextTokensState;
+    },
     setWebAccess(value) {
       const next = Boolean(value);
       if (next !== webAccessState) {
@@ -733,10 +801,10 @@ export function createEngine({
     },
 
     /** Run one user turn; resolves when the turn ends. */
-    send(text, { abortSignal = null } = {}) {
+    send(text, { abortSignal = null, deadlineMs = 0 } = {}) {
       // Turns run one at a time per conversation; a send while another is in
       // flight waits its turn rather than interleaving.
-      return turnCoordinator.run(sessionId, () => runTurn(text, { abortSignal }));
+      return turnCoordinator.run(sessionId, () => runTurn(text, { abortSignal, deadlineMs }));
     },
 
     isBusy() {
@@ -759,7 +827,7 @@ export function createEngine({
     }
   };
 
-  async function runTurn(text, { abortSignal = null } = {}) {
+  async function runTurn(text, { abortSignal = null, deadlineMs = 0 } = {}) {
       // This turn's prompt, derived fresh from the tree, with `ids` parallel to
       // it so the fold at the end can name entries instead of indices.
       const { messages, entryIds } = derive();
@@ -835,14 +903,26 @@ export function createEngine({
         // gates instead; we keep a high backstop cap (runaway insurance) and let
         // the completion contract + doom guards govern. Simple tasks still end
         // early — this is a cap, not a target.
-        maxSteps: 96,
+        maxSteps: 128,
+        contextTokens: contextTokensState,
         // Consecutive bash calls are normal coding exploration, not flailing;
         // raise the layer-2 doom thresholds (failures still count double vs
         // novel successful calls — see loop.mjs progress-aware weights).
         doomStreakWarn: 10,
         doomStreakForce: 14,
         completionCheck: goalMode === "gate" ? completionCheck : null,
-        completionCheckMax: 3, // mutation gate + deterministic gates + one skeptic gap-replay round
+        completionCheckMax: 5, // mutation + deterministic + announce gates, plus skeptic gap-replay rounds
+        // A coding turn is long and expensive: an hour of tool work is not worth
+        // discarding because the gateway dropped one stream. Re-streaming may
+        // repeat a fragment on screen; the history only ever keeps one attempt.
+        retryOnPartialStream: true,
+        // A caller that will kill this turn at a wall clock (a benchmark harness,
+        // a CI job, a user's patience) must say so. Without it the loop cannot
+        // budget against the deadline: it keeps retrying a degraded gateway until
+        // it is SIGKILLed mid-edit and the work is lost. With it, `deadlineHit()`
+        // triggers the normal wrap-up, retries stop short of the cliff, and the
+        // turn lands with whatever it achieved. 0 = no deadline (interactive use).
+        deadlineMs: landingDeadline(Number(deadlineMs) || Number(engineDeadlineMs) || 0),
         abortSignal,
         requestApproval: requestApprovalWrapped,
         requestQuestion,

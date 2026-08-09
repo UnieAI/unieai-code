@@ -96,3 +96,9 @@ __pycache__/
 *.pyc
 benchmarks/mirrors/
 benchmarks/results/traj-*/
+
+# SWE-bench harness artifacts: evaluation logs and the per-run reports the
+# official harness writes into the repo root. Reproducible from the predictions.
+/logs/
+/unieai-agent-core-*.json
+/unieai-codex-*.json
