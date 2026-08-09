@@ -129,4 +129,55 @@ act-don't-announce prompt 紀律、maxSteps 24→96。詳見 `docs/grok-build-re
 
 （評分於 AWS 以官方 `swebench==4.1.0` harness、`princeton-nlp/SWE-bench_Lite` dataset 完成，2026-07-18。）
 
+### SWE-bench Verified — GLM-5.2(2026-08-09)
+
+Verified 是 OpenAI 找專業開發者逐題人工驗證的 500 題子集(確認 issue 敘述足以推導
+修法、FAIL_TO_PASS 測試正確且不 flaky),是目前業界報數字的標準。以下用其中 **100 題
+分層抽樣子集**(repo 分布與全量一致:django 46%、sympy 15%、sphinx 9%…),
+pass@1、bare clone、獨佔 gateway。
+
+| harness | resolved | 空手 | per-patch 修對率 | tokens/題 | 秒/題 |
+|---|---|---|---|---|---|
+| codex-stock | **85** | 4 | 89% | 1224k | 451s |
+| **agent-core(本輪最終)** | **83** | 2 | 85% | 1259k | 382s |
+| agent-core(起點 uc0.4.0) | 67 | 15 | 79% | 790k | 359s |
+
+83 vs 85 在 n=100 的二項標準誤(±3.6)內 → **統計上持平,未超越 codex**。
+實測 run-to-run 變異約 ±5 題,所以單輪差 2 分不具意義。
+
+**67 → 83 的來源(每一項都從失敗軌跡反推,非猜測):**
+
+| 修正 | 症狀 |
+|---|---|
+| `read` 加 offset/limit | 沒有行視窗時,模型要第 4000 行卻永遠拿到同一段檔頭,判定工具壞掉後改用 `sed -n` 走 bash —— 帶視窗的 read 從 0% 升到 95% |
+| context 預算 32k → 128k | agent-core 的預設是它初期對應的模型尺寸;coding 層從未覆寫。60 步的回合每題剪 15 次工具輸出、只留最近 2 輪,模型 **68% 的檔案讀取是在重讀**,而剪枝只省該回合 **0.5%** token |
+| turn deadline 接線 | `deadlineHit()` 與 `deadlineAt` 早已寫好卻從沒被設定,gateway 不穩時一路重試到被外部 SIGKILL(單題 240 秒燒在 3 次 retry),交出空 patch |
+| doom 收尾不繞過完成契約 | 強制收尾會跳過「你還沒改任何東西」的檢查 |
+| mutation gate 的 untracked 破口 | `git status` 算 untracked、`git diff` 不算 → 只寫了 repro 腳本的回合既過關又跳過驗證 |
+| 串流中斷自動重試 | 一次 gateway 中斷報銷整個回合:14 題 → 0 題 |
+| 紅色測試不再算工具失敗 / 編輯後清空重複守衛 | 跑測試看到紅字被當成打轉(doom 權重加倍),改完想重跑同一測試被拒絕(最重懲罰)—— **模型愈認真驗證愈快被切斷** |
+
+**失敗的方向(記錄下來避免重做):**
+
+- **容器模式**:把生成階段搬進官方 `sweb.eval` image 讓 agent 真能跑測試 —— 直覺該提升
+  per-patch 修對率,實測**下降**(85%→76%,74 vs 83)且貴 23%。已保留但預設關閉。
+- **`edit-signals`**:依 5 個失敗個案反推的兩個編輯檢查,100 題**零觸發**。純過度擬合。
+- **多次採樣的選擇器**:多數決無鑑別力(有共識 86% vs 無共識 85%);LLM 評審 63% 命中,
+  換算總分與單次持平。註:該次驗證的候選池混入了有工具缺陷的 run,結論不可信,待重測。
+
+**方法論教訓:**
+
+1. **絕不讓兩組 arm 同時打同一個 gateway。** 平行跑讓每次模型呼叫從 6.5s 拖到 8.6s,
+   四分之一題目撞上 900s 上限,分數被吃掉 6 分,並一度讓我誤判成「框架往返成本比
+   codex 高 43%」(獨佔後是 6.5 vs 6.0,差距接近 0)。
+2. **機制要從失敗的分布導出,不要從個案反推**(見 edit-signals)。
+3. **子集會騙人。** 30 題子集顯示 context 修正 +6 分,全量 100 題是持平 —— 與 Lite 時代
+   flask 3 題的教訓同一類。
+
+**剩下 17 題的失敗結構:** 11 題定位 100% 正確、patch 大小與官方相當、PASS_TO_PASS 全綠,
+差在具體實作與隱藏測試的期待不一致(往往只差一個函式呼叫或一組括號)。codex 的失敗結構
+相同(85% 屬同一類),這也是兩邊分數接近的原因。工具與流程的優化在此已接近飽和。
+
+（評分於官方 `swebench==4.1.0` harness、`princeton-nlp/SWE-bench_Verified` dataset 完成。）
+
 _資料集: [HumanEval](https://github.com/openai/human-eval) · [SWE-bench Lite](https://www.swebench.com)。模型: UnieAI gateway 上的 Qwen3.6-35B-A3B / GLM-5.2 / MiniMax-M2。_
