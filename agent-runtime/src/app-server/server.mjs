@@ -140,7 +140,7 @@ export function createHandlers({ createEngineFor, codexHome, version = "0.0.0", 
       const text = textOf(params?.input);
       if (!thread.preview) thread.preview = text.slice(0, 120);
       if (!thread.engine) {
-        thread.engine = createEngineFor({ cwd: thread.cwd, model: thread.model, emit: ctx.emit });
+        thread.engine = createEngineFor({ cwd: thread.cwd, model: thread.model, emit: ctx.emit, request: ctx.request });
       }
       const turnId = randomUUID();
       thread.activeTurn = { id: turnId, abort: new AbortController() };
@@ -213,13 +213,51 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
     socketPath,
     onError,
     onConnection: (conn) => {
+      // Approvals run the other way: the server asks, the client answers. Ids are
+      // ours to allocate and ours to correlate, and they must not collide with
+      // the client's — negative numbers keep the two namespaces apart.
+      const pending = new Map();
+      let nextRequestId = -1;
       const ctx = {
         // Engine progress reaches the client as notifications, which carry no id.
         emit: (method, params) => conn.send({ method, params }),
+        request: (method, params, { timeoutMs = 0 } = {}) =>
+          new Promise((resolve, reject) => {
+            const id = nextRequestId--;
+            const timer = timeoutMs > 0
+              ? setTimeout(() => { pending.delete(id); resolve({ decision: "timed_out" }); }, timeoutMs)
+              : null;
+            timer?.unref?.();
+            pending.set(id, { resolve, reject, timer });
+            if (!conn.send({ id, method, params })) {
+              pending.delete(id);
+              if (timer) clearTimeout(timer);
+              // No client to ask: refuse rather than proceed unapproved.
+              resolve({ decision: "denied" });
+            }
+          }),
       };
       conn.onMessage(async (message) => {
+        // A response to something WE asked — route it to its waiter, not the
+        // dispatcher, which only knows about client-initiated traffic.
+        if (message?.id !== undefined && pending.has(message.id)) {
+          const { resolve, reject, timer } = pending.get(message.id);
+          pending.delete(message.id);
+          if (timer) clearTimeout(timer);
+          if (message.error) reject(new Error(message.error.message || "client refused the request"));
+          else resolve(message.result ?? {});
+          return;
+        }
         const reply = await dispatch(message, ctx);
         if (reply) conn.send(reply);
+      });
+      // A dropped connection must not leave a turn waiting on an answer forever.
+      conn.onClose(() => {
+        for (const { resolve, timer } of pending.values()) {
+          if (timer) clearTimeout(timer);
+          resolve({ decision: "abort" });
+        }
+        pending.clear();
       });
     },
   });

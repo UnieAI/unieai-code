@@ -149,3 +149,91 @@ test("the server listens on the socket the CLI probes", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a server-initiated request is answered by the client and routed back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "as-req-"));
+  const socketPath = join(dir, "s.sock");
+  let capturedRequest = null;
+  const server = await startAppServer({
+    socketPath, codexHome: dir, version: "0.1.0",
+    createEngineFor: ({ request }) => ({
+      send: async () => { capturedRequest = await request("item/commandExecution/requestApproval", { callId: "c1" }); },
+    }),
+  });
+  try {
+    const { connect } = await import("node:net");
+    const { decodeFrames, encodeFrame, newClientKey } = await import("./ws.mjs");
+    await new Promise((resolve, reject) => {
+      const socket = connect(socketPath);
+      let buf = Buffer.alloc(0); let up = false; let carry = { opcode: null, chunks: [] };
+      const mask = (text) => {
+        const body = Buffer.from(text); const m = Buffer.from([9, 8, 7, 6]);
+        const out = Buffer.from(body); for (let i = 0; i < out.length; i++) out[i] ^= m[i % 4];
+        return Buffer.concat([Buffer.from([0x81, 0x80 | body.length]), m, out]);
+      };
+      socket.on("connect", () => socket.write(`GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${newClientKey()}\r\n\r\n`));
+      socket.on("data", (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (!up) {
+          const end = buf.indexOf("\r\n\r\n"); if (end < 0) return;
+          buf = buf.subarray(end + 4); up = true;
+          socket.write(mask(JSON.stringify({ id: 1, method: "thread/start", params: { cwd: dir } })));
+        }
+        const d = decodeFrames(buf, carry); buf = d.rest; carry = d.carry;
+        for (const f of d.frames) {
+          const msg = JSON.parse(f.data.toString());
+          if (msg.id === 1 && msg.result) {
+            socket.write(mask(JSON.stringify({ id: 2, method: "turn/start", params: { threadId: msg.result.thread.id, input: "go" } })));
+          } else if (msg.method === "item/commandExecution/requestApproval") {
+            // The server asked us; answer with its own (negative) id.
+            socket.write(mask(JSON.stringify({ id: msg.id, result: { decision: "approved" } })));
+            setTimeout(() => { socket.destroy(); resolve(); }, 60);
+          }
+        }
+      });
+      socket.on("error", reject);
+      setTimeout(() => reject(new Error("timed out")), 4000).unref?.();
+    });
+    assert.deepEqual(capturedRequest, { decision: "approved" });
+  } finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a dropped connection releases a waiting approval instead of hanging the turn", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "as-drop-"));
+  const socketPath = join(dir, "s.sock");
+  let answer = null;
+  const server = await startAppServer({
+    socketPath, codexHome: dir, version: "0.1.0",
+    createEngineFor: ({ request }) => ({
+      send: async () => { answer = await request("item/commandExecution/requestApproval", { callId: "c1" }); },
+    }),
+  });
+  try {
+    const { connect } = await import("node:net");
+    const { decodeFrames, newClientKey } = await import("./ws.mjs");
+    await new Promise((resolve, reject) => {
+      const socket = connect(socketPath);
+      let buf = Buffer.alloc(0); let up = false; let carry = { opcode: null, chunks: [] };
+      const mask = (text) => {
+        const body = Buffer.from(text); const m = Buffer.from([1, 2, 3, 4]);
+        const out = Buffer.from(body); for (let i = 0; i < out.length; i++) out[i] ^= m[i % 4];
+        return Buffer.concat([Buffer.from([0x81, 0x80 | body.length]), m, out]);
+      };
+      socket.on("connect", () => socket.write(`GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${newClientKey()}\r\n\r\n`));
+      socket.on("data", (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (!up) { const e = buf.indexOf("\r\n\r\n"); if (e < 0) return; buf = buf.subarray(e + 4); up = true;
+          socket.write(mask(JSON.stringify({ id: 1, method: "thread/start", params: { cwd: dir } }))); }
+        const d = decodeFrames(buf, carry); buf = d.rest; carry = d.carry;
+        for (const f of d.frames) {
+          const msg = JSON.parse(f.data.toString());
+          if (msg.id === 1 && msg.result) socket.write(mask(JSON.stringify({ id: 2, method: "turn/start", params: { threadId: msg.result.thread.id, input: "go" } })));
+          else if (msg.method === "item/commandExecution/requestApproval") { socket.destroy(); setTimeout(resolve, 80); }
+        }
+      });
+      socket.on("error", () => {});
+      setTimeout(() => reject(new Error("timed out")), 4000).unref?.();
+    });
+    assert.deepEqual(answer, { decision: "abort" }, "the waiter is released, and not as an approval");
+  } finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -21,6 +21,7 @@ import { startAppServer } from "../src/app-server/server.mjs";
 import { createForwarder } from "../src/app-server/forward.mjs";
 import { createEngine } from "../src/engine.mjs";
 import { createItemBridge } from "../src/app-server/items.mjs";
+import { createApprovalBridge } from "../src/app-server/approval.mjs";
 import { sandboxBin } from "../src/config.mjs";
 
 const require = createRequire(import.meta.url);
@@ -49,7 +50,7 @@ const server = await startAppServer({
   version,
   forward: (method, params) => forwarder.forward(method, params),
   onError: (error) => log("[app-server]", error.message),
-  createEngineFor: ({ cwd, model, emit }) => {
+  createEngineFor: ({ cwd, model, emit, request }) => {
     // Engine events carry our vocabulary; the client only renders the protocol's.
     const onToolEvent = createItemBridge(emit);
     return createEngine({
@@ -59,10 +60,13 @@ const server = await startAppServer({
       onText: (delta) => emit("item/agentMessage/delta", { delta }),
       onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
       onToolEvent,
-      // Approvals travel server->client in this protocol; until that round trip
-      // is wired, auto-accept so a turn cannot hang waiting for an answer that
-      // nothing will send.
-      requestApproval: async () => "accept",
+      // The user decides, through the client. Fails closed: an unanswered or
+      // errored request declines rather than running unapproved.
+      requestApproval: createApprovalBridge({
+        request,
+        cwd,
+        timeoutMs: Number(process.env.UNIEAI_APPROVAL_TIMEOUT_MS) || 0,
+      }),
     });
   },
 });
