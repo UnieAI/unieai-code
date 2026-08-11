@@ -64,9 +64,15 @@ test("a turn answers immediately and reports progress as notifications", async (
   const { thread } = await h["thread/start"]({ cwd: "/repo" });
   const res = await h["turn/start"]({ threadId: thread.id, input: "fix the bug" }, ctx);
   assert.ok(res.turnId, "turn/start returns immediately with an id");
-  await new Promise((r) => setImmediate(r)); // let the detached turn run
+  await new Promise((r) => setTimeout(r, 10)); // let the detached turn run
   assert.deepEqual(engine.calls, ["fix the bug"]);
-  assert.deepEqual(emitted.map(([m]) => m), ["item/started", "item/completed"]);
+  const methods = emitted.map(([m]) => m);
+  // The lifecycle the client watches, in the order the Rust server sends it.
+  assert.deepEqual(methods.slice(0, 4), [
+    "thread/status/changed", "turn/started", "item/started", "item/completed",
+  ]);
+  assert.ok(methods.includes("turn/completed"), "the turn reports it finished");
+  assert.equal(methods.at(-1), "thread/status/changed", "and the thread goes back to idle");
 });
 
 test("the thread preview is the first thing the user asked", async () => {
@@ -87,8 +93,11 @@ test("an engine failure surfaces as an error notification, not an unhandled reje
   const { thread } = await h["thread/start"]({});
   await h["turn/start"]({ threadId: thread.id, input: "x" }, { emit: (m, p) => emitted.push([m, p]) });
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(emitted[0][0], "error");
-  assert.match(emitted[0][1].message, /gateway down/);
+  const error = emitted.find(([m]) => m === "error");
+  assert.ok(error, "the failure is reported to the client");
+  assert.match(error[1].error.message, /gateway down/);
+  // Even a failed turn must close its lifecycle, or the client stays "running".
+  assert.ok(emitted.some(([m]) => m === "turn/completed"));
 });
 
 test("interrupting a turn aborts the engine's signal", async () => {

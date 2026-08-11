@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import { startAppServer } from "../src/app-server/server.mjs";
 import { createForwarder } from "../src/app-server/forward.mjs";
 import { createEngine } from "../src/engine.mjs";
+import { createItemBridge } from "../src/app-server/items.mjs";
 import { sandboxBin } from "../src/config.mjs";
 
 const require = createRequire(import.meta.url);
@@ -48,19 +49,22 @@ const server = await startAppServer({
   version,
   forward: (method, params) => forwarder.forward(method, params),
   onError: (error) => log("[app-server]", error.message),
-  createEngineFor: ({ cwd, model, emit }) =>
-    createEngine({
+  createEngineFor: ({ cwd, model, emit }) => {
+    // Engine events carry our vocabulary; the client only renders the protocol's.
+    const onToolEvent = createItemBridge(emit);
+    return createEngine({
       workspace: cwd,
       model: model || process.env.UNIEAI_MODEL || undefined,
       expectsMutation: true,
       onText: (delta) => emit("item/agentMessage/delta", { delta }),
       onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
-      onToolEvent: (event) => emit("item/started", { item: event }),
+      onToolEvent,
       // Approvals travel server->client in this protocol; until that round trip
       // is wired, auto-accept so a turn cannot hang waiting for an answer that
       // nothing will send.
       requestApproval: async () => "accept",
-    }),
+    });
+  },
 });
 
 log(`unieai agent-runtime app-server ${version} listening on ${socketPath}`);

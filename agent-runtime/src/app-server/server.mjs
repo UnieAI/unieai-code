@@ -17,6 +17,7 @@
 import { serveJsonOverUnixSocket } from "./ws.mjs";
 import { createDispatcher, RpcError, RPC } from "./rpc.mjs";
 import { randomUUID } from "node:crypto";
+import { createItemBridge, userMessageItem, agentMessageItem, newItemId } from "./items.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -40,19 +41,39 @@ export const userAgent = (version) => `unieai-agent-runtime/${version} (node ${p
  * `createEngineFor({ cwd, model })` returns something with agent-runtime's
  * engine shape; injected so the protocol can be tested without a gateway.
  */
-export function createHandlers({ createEngineFor, codexHome, version = "0.0.0", now = () => new Date().toISOString() }) {
+export function createHandlers({ createEngineFor, codexHome, version = "0.0.0", defaultModel = null, defaultProvider = "unieai", now = () => new Date().toISOString() }) {
   // Thread state lives here, not in the Rust process: its ThreadStateManager
   // keeps threads in an in-process HashMap, so a thread created there is not
   // reachable from here. One owner is the only coherent choice.
   const threads = new Map();
 
+  // Mirrors what the Rust app-server actually returns (captured from a live
+  // `thread/start`), not what the generated TypeScript suggests is optional —
+  // the TUI reads more of this than the types imply, and a missing field shows
+  // up as a blank pane rather than an error.
   const threadShape = (t) => ({
     id: t.id,
+    extra: null,
     sessionId: t.sessionId,
     forkedFromId: null,
     parentThreadId: null,
     preview: t.preview,
     ephemeral: Boolean(t.ephemeral),
+    historyMode: "legacy",
+    modelProvider: t.modelProvider,
+    createdAt: t.createdAtEpoch,
+    updatedAt: t.updatedAtEpoch,
+    recencyAt: t.updatedAtEpoch,
+    status: { type: t.activeTurn ? "running" : "idle" },
+    path: t.path,
+    cwd: t.cwd,
+    cliVersion: version,
+    source: "vscode",
+    threadSource: null,
+    agentNickname: null,
+    agentRole: null,
+    gitInfo: null,
+    name: null,
     turns: [],
   });
 
@@ -66,21 +87,45 @@ export function createHandlers({ createEngineFor, codexHome, version = "0.0.0", 
       };
     },
 
-    async "thread/start"(params) {
+    async "thread/start"(params, ctx) {
       const id = randomUUID();
       const cwd = params?.cwd || process.cwd();
+      const epoch = Math.floor(Date.now() / 1000);
       const thread = {
         id,
-        sessionId: randomUUID(),
+        sessionId: id, // the Rust server uses the same id for a fresh thread
         cwd,
-        model: params?.model || null,
+        model: params?.model || defaultModel,
+        modelProvider: params?.modelProvider || defaultProvider,
         preview: "",
         ephemeral: params?.ephemeral ?? false,
         engine: null,
+        activeTurn: null,
+        createdAtEpoch: epoch,
+        updatedAtEpoch: epoch,
+        path: null,
         startedAt: now(),
       };
       threads.set(id, thread);
-      return { thread: threadShape(thread), cwd };
+      const shape = threadShape(thread);
+      // The TUI expects the notification as well as the response; without it the
+      // session list and header stay empty.
+      ctx?.emit?.("thread/started", { thread: shape });
+      return {
+        thread: shape,
+        model: thread.model,
+        modelProvider: thread.modelProvider,
+        serviceTier: null,
+        cwd,
+        runtimeWorkspaceRoots: [cwd],
+        instructionSources: [],
+        approvalPolicy: params?.approvalPolicy || "on-request",
+        approvalsReviewer: params?.approvalsReviewer || "user",
+        sandbox: { type: "readOnly", networkAccess: false },
+        activePermissionProfile: { id: ":read-only", extends: null },
+        reasoningEffort: "none",
+        multiAgentMode: "explicitRequestOnly",
+      };
     },
 
     async "thread/read"(params) {
@@ -99,12 +144,34 @@ export function createHandlers({ createEngineFor, codexHome, version = "0.0.0", 
       }
       const turnId = randomUUID();
       thread.activeTurn = { id: turnId, abort: new AbortController() };
+      thread.updatedAtEpoch = Math.floor(Date.now() / 1000);
+
+      // The lifecycle the client actually watches, in the order the Rust server
+      // sends it: status, turn/started, the echoed user message, then items.
+      ctx.emit("thread/status/changed", { threadId: thread.id, status: { type: "running" } });
+      ctx.emit("turn/started", { threadId: thread.id, turnId });
+      const userItemId = newItemId();
+      ctx.emit("item/started", { item: userMessageItem(userItemId, text) });
+      ctx.emit("item/completed", { item: userMessageItem(userItemId, text) });
+
+      const answerId = newItemId();
+      let answer = "";
+      thread.pendingAnswer = { id: answerId, onDelta: (d) => { answer += d; } };
+
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
         .send(text, { abortSignal: thread.activeTurn.abort.signal })
-        .catch((error) => ctx.emit("error", { message: String(error?.message || error) }))
-        .finally(() => { thread.activeTurn = null; });
+        .then(() => {
+          if (answer) ctx.emit("item/completed", { item: agentMessageItem(answerId, answer) });
+        })
+        .catch((error) => ctx.emit("error", { error: { message: String(error?.message || error) } }))
+        .finally(() => {
+          thread.activeTurn = null;
+          thread.updatedAtEpoch = Math.floor(Date.now() / 1000);
+          ctx.emit("turn/completed", { threadId: thread.id, turnId });
+          ctx.emit("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
+        });
       return { turnId };
     },
 
