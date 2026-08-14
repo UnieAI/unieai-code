@@ -26,7 +26,9 @@ process.stdin.on("data", (c) => {
     const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
     if (!line.trim()) continue;
     const msg = JSON.parse(line);
-    if (msg.method === "boom") {
+    if (msg.method === "initialize") {
+      process.stdout.write(JSON.stringify({ id: msg.id, result: { userAgent: "stub/0" } }) + "\\n");
+    } else if (msg.method === "boom") {
       process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32000, message: "platform said no" } }) + "\\n");
     } else {
       process.stdout.write(JSON.stringify({ id: msg.id, result: { method: msg.method, params: msg.params } }) + "\\n");
@@ -89,6 +91,27 @@ test("notifications from the platform half reach the handler", async () => {
   try {
     await f.forward("config/read", {});
     assert.deepEqual(seen, [["fs/changed", { path: "/a" }]]);
+  } finally { f.close(); rmSync(stub.dir, { recursive: true, force: true }); }
+});
+
+test("the child is initialized before anything is forwarded", async () => {
+  // The real app-server answers every other method with "Not initialized"
+  // (-32600) until the handshake is done, which is exactly how the TUI failed.
+  const stub = stubServer(ECHO);
+  const f = createForwarder({ bin: process.execPath, args: [stub.path] });
+  try {
+    await f.ready;
+    const result = await f.forward("config/read", {});
+    assert.equal(result.method, "config/read");
+  } finally { f.close(); rmSync(stub.dir, { recursive: true, force: true }); }
+});
+
+test("a forward issued before the handshake completes still waits for it", async () => {
+  const stub = stubServer(ECHO);
+  const f = createForwarder({ bin: process.execPath, args: [stub.path] });
+  try {
+    // No `await f.ready` — the forward must serialise behind it on its own.
+    assert.equal((await f.forward("config/read", {})).method, "config/read");
   } finally { f.close(); rmSync(stub.dir, { recursive: true, force: true }); }
 });
 

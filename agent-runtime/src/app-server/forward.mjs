@@ -19,7 +19,7 @@ import { spawn } from "node:child_process";
  * child's namespace, so every forwarded call gets a fresh id and the answer is
  * matched back by it.
  */
-export function createForwarder({ bin, args = ["app-server"], cwd, env = process.env, onError = () => {}, onNotification = null }) {
+export function createForwarder({ bin, args = ["app-server"], cwd, env = process.env, onError = () => {}, onNotification = null, clientInfo = { name: "unieai-agent-runtime", title: null, version: "0" } }) {
   const child = spawn(bin, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map();
   let nextId = 1;
@@ -54,19 +54,34 @@ export function createForwarder({ bin, args = ["app-server"], cwd, env = process
     pending.clear();
   });
 
+  const call = (method, params) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject });
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      } catch (error) {
+        pending.delete(id);
+        reject(error);
+      }
+    });
+
+  // The app-server refuses every other method until it has been initialized
+  // ("Not initialized", -32600). Do the handshake once, up front, and make every
+  // forwarded call wait for it — otherwise the first request through races it.
+  const ready = call("initialize", { clientInfo, capabilities: null })
+    .then((result) => {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
+      return result;
+    })
+    .catch((error) => { onError(error); throw error; });
+
   return {
     child,
-    forward(method, params) {
-      return new Promise((resolve, reject) => {
-        const id = nextId++;
-        pending.set(id, { resolve, reject });
-        try {
-          child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-        } catch (error) {
-          pending.delete(id);
-          reject(error);
-        }
-      });
+    ready,
+    async forward(method, params) {
+      await ready;
+      return call(method, params);
     },
     close() {
       try { child.stdin.end(); } catch { /* already gone */ }

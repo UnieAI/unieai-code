@@ -38,25 +38,35 @@ if (existsSync(socketPath)) rmSync(socketPath, { force: true });
 
 const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
 
+// The server does not exist yet, and the forwarder needs to reach it: the Rust
+// child starts pushing notifications as soon as it is initialized. A ref keeps
+// the wiring one-directional without ordering the two constructions by hand.
+let appServer = null;
 const forwarder = createForwarder({
   bin: sandboxBin(),
   cwd: process.cwd(),
   onError: (error) => log("[forward]", error.message),
+  // fs/changed, account/updated, mcpServer/startupStatus/updated and the rest
+  // of the platform's own notifications. Nothing was listening for these, so
+  // the client never learned about anything the Rust side noticed.
+  onNotification: (method, params) => appServer?.broadcast(method, params),
 });
 
-const server = await startAppServer({
+const server = appServer = await startAppServer({
   socketPath,
   codexHome,
   version,
   forward: (method, params) => forwarder.forward(method, params),
   onError: (error) => log("[app-server]", error.message),
-  createEngineFor: ({ cwd, model, emit, request }) => {
+  onTrace: (line) => log("[trace]", line),
+  createEngineFor: ({ cwd, model, emit, request, sandboxMode, ids, newItemId }) => {
     // Engine events carry our vocabulary; the client only renders the protocol's.
     const onToolEvent = createItemBridge(emit);
     return createEngine({
       workspace: cwd,
       model: model || process.env.UNIEAI_MODEL || undefined,
       expectsMutation: true,
+      sandboxMode,
       onText: (delta) => emit("item/agentMessage/delta", { delta }),
       onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
       onToolEvent,
@@ -65,6 +75,8 @@ const server = await startAppServer({
       requestApproval: createApprovalBridge({
         request,
         cwd,
+        ids,
+        newItemId,
         timeoutMs: Number(process.env.UNIEAI_APPROVAL_TIMEOUT_MS) || 0,
       }),
     });
