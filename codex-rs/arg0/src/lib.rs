@@ -105,6 +105,14 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     if argv1 == CODEX_WINDOWS_SANDBOX_ARG1 {
         codex_windows_sandbox::run_windows_sandbox_wrapper_main();
     }
+    // The completion contract, run as codex's `Stop` hook. Dispatched here for
+    // the same reason apply_patch is: the hook must be the same binary and the
+    // same version as the agent it is gating, with no second runtime to install
+    // and nothing to keep in step with the release.
+    if argv1 == codex_completion_contract::hook::ARG1 {
+        codex_completion_contract::hook::main();
+    }
+
     if argv1 == CODEX_CORE_APPLY_PATCH_ARG1 {
         let patch_arg = args.next().and_then(|s| s.to_str().map(str::to_owned));
         let exit_code = match patch_arg {

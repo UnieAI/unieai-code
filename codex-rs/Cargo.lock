@@ -2209,6 +2209,7 @@ version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-apply-patch",
+ "codex-completion-contract",
  "codex-exec-server",
  "codex-install-context",
  "codex-linux-sandbox",
@@ -2518,6 +2519,16 @@ dependencies = [
 [[package]]
 name = "codex-collaboration-mode-templates"
 version = "0.0.22-dev-uc0.5.0-ac0.4.0"
+
+[[package]]
+name = "codex-completion-contract"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "codex-config"
