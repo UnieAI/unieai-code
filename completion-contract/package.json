@@ -1,0 +1,38 @@
+{
+  "name": "@unieai/completion-contract",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference implementation of the completion contract. The shipping version is Rust (codex-rs/completion-contract), dispatched from the codex binary; this is kept as the executable spec the SWE-bench numbers were measured with.",
+  "keywords": [
+    "codex",
+    "swe-bench",
+    "coding-agent",
+    "hook",
+    "llm"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "unieai-stop-hook": "bin/stop-hook.mjs"
+  },
+  "files": [
+    "src/*.mjs",
+    "!src/*.test.mjs",
+    "bin",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test src"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UnieAI/unieai-code.git",
+    "directory": "completion-contract"
+  }
+}
