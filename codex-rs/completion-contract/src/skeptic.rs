@@ -93,18 +93,12 @@ fn normalize_bullet(line: &str) -> String {
         }
     }
 
-    // Digits (line numbers and anything else volatile) and punctuation.
+    // Everything volatile becomes a space: digits (line numbers and the like),
+    // punctuation, and whitespace itself. Only letters survive, which is what
+    // makes the fingerprint insensitive to how the same complaint is phrased.
     let out: String = out
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() && !c.is_numeric() {
-                c
-            } else if c.is_whitespace() {
-                ' '
-            } else {
-                ' '
-            }
-        })
+        .map(|c| if c.is_alphanumeric() && !c.is_numeric() { c } else { ' ' })
         .collect();
 
     out.split_whitespace().collect::<Vec<_>>().join(" ")

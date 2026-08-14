@@ -4,6 +4,11 @@
 //!
 //! Deliberately end-to-end over a real temporary git repository: the gates read
 //! the workspace through `git`, and mocking that would test the mock.
+//!
+//! In a test binary a panic IS the failure signal, so `expect` is the clearest
+//! way to say "this must have worked" — the same allowance app-server/tests
+//! makes, for the same reason.
+#![allow(clippy::expect_used)]
 
 use codex_completion_contract::ContractState;
 use codex_completion_contract::NO_MUTATION_NUDGE;
@@ -163,7 +168,7 @@ fn escalation_climbs_while_the_gaps_keep_changing() {
     let dir = repo("def f():\n    return 1\n");
     std::fs::write(dir.path().join("a.py"), "def f():\n    return 2\n").expect("write");
     let mut state = ContractState::default();
-    let mut round = |gaps: &str, state: &mut ContractState| {
+    let round = |gaps: &str, state: &mut ContractState| {
         state.skeptic_ran = false;
         evaluate(&turn(&dir, true), state, SkepticMode::Nudged, |_, _| Some(gaps.to_string()))
     };
