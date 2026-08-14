@@ -143,7 +143,37 @@ function tearDownContainer(ws) {
 }
 
 // Control arm: upstream codex harness with the stock prompt, same model + gateway.
-function runCodexAsync(repo, inst, stock, trajDir, container = null) {
+/**
+ * A CODEX_HOME carrying our Stop hook, built once and reused by every instance.
+ *
+ * The hook arm and the stock arm must differ in EXACTLY one thing — the hook —
+ * or the comparison measures something else. Same binary, same prompt file,
+ * same sandbox, same model; this home is a copy of the real one with the hook
+ * appended, so even the model/provider config is identical.
+ *
+ * `--dangerously-bypass-hook-trust` is required because a hook declared in a
+ * user config is Untrusted until a hash is recorded, and an untrusted hook is
+ * silently skipped — which would make the arm a duplicate of the baseline and
+ * report "the hook does nothing".
+ */
+let HOOK_HOME = null;
+function hookHome() {
+  if (HOOK_HOME) return HOOK_HOME;
+  const home = `/tmp/swebench-hook-home-${RUN_TAG}`;
+  mkdirSync(home, { recursive: true });
+  for (const f of ["unieai.json", "config.toml", "auth.json"]) {
+    try { writeFileSync(join(home, f), readFileSync(join(UNIEAI_HOME, f), "utf8")); } catch { /* optional */ }
+  }
+  const hookBin = join(REPO, "completion-contract/bin/stop-hook.mjs");
+  appendFileSync(
+    join(home, "config.toml"),
+    `\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "node ${hookBin}"\n`
+  );
+  HOOK_HOME = home;
+  return home;
+}
+
+function runCodexAsync(repo, inst, stock, trajDir, container = null, withHook = false) {
   return new Promise((resolve) => {
     // Inside the container, codex's own sandbox is redundant and its user
     // namespaces are unavailable — the container IS the boundary, which is also
@@ -153,10 +183,14 @@ function runCodexAsync(repo, inst, stock, trajDir, container = null) {
       : ["--sandbox", "workspace-write"];
     const args = ["exec", "--experimental-json", ...sandboxArgs, "--skip-git-repo-check", "-C", container ? "/testbed" : repo, "-m", MODEL];
     if (stock) args.push("-c", `model_instructions_file="${container ? "/testbed/.stock-prompt.md" : STOCK_PROMPT}"`);
+    if (withHook) args.push("--dangerously-bypass-hook-trust");
     const [cmdBin, cmdArgs] = container
       ? ["docker", ["exec", "-i", "-w", "/testbed", container, "/usr/local/bin/codex", ...args]]
       : [BIN, args];
-    const p = spawn(cmdBin, cmdArgs, { stdio: ["pipe", "pipe", "pipe"] });
+    const p = spawn(cmdBin, cmdArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: withHook ? { ...process.env, CODEX_HOME: hookHome() } : process.env,
+    });
     let out = "", errB = "";
     const killer = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, TIMEOUT_MS);
     p.stdout.on("data", (d) => { out += d; });
@@ -238,9 +272,12 @@ async function worker(wid) {
       else {
         // The prompt file has to be reachable from inside the container; the
         // workspace is the only path both sides agree on.
-        if (CONTAINER && arm === "codex-stock") writeFileSync(join(ws.repo, ".stock-prompt.md"), readFileSync(STOCK_PROMPT, "utf8"));
-        await runCodexAsync(ws.repo, inst, arm === "codex-stock", trajDir, ws.container || null);
-        if (CONTAINER && arm === "codex-stock") rmSync(join(ws.repo, ".stock-prompt.md"), { force: true });
+        // The hook arm carries the stock prompt too: the two codex arms must
+        // differ in the hook and nothing else.
+        const useStock = arm === "codex-stock" || arm === "codex-hook";
+        if (CONTAINER && useStock) writeFileSync(join(ws.repo, ".stock-prompt.md"), readFileSync(STOCK_PROMPT, "utf8"));
+        await runCodexAsync(ws.repo, inst, useStock, trajDir, ws.container || null, arm === "codex-hook");
+        if (CONTAINER && useStock) rmSync(join(ws.repo, ".stock-prompt.md"), { force: true });
       }
     } catch (e) { err = String(e.message).slice(0, 120); appendFileSync(join(trajDir, "error.txt"), String(e.stack || e) + "\n"); }
     // Read the diff even when the run threw. A mid-turn gateway abort used to
