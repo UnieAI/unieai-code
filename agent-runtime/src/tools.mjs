@@ -22,16 +22,19 @@ import { createHash } from "node:crypto";
 import { toolResult } from "../../third_party/unieai-agent-core/src/tools/_util.mjs";
 import { describeImage } from "../../third_party/unieai-agent-core/src/vision.mjs";
 import { DEFAULT_MAX_LINES, truncateOutput } from "../../third_party/unieai-agent-core/src/truncate-output.mjs";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { spillIfLarge, readSpilled } from "./tool-output-store.mjs";
 import { grepFiles, globFiles } from "./search-fallback.mjs";
 import { createFileMutationQueue } from "./file-mutation-queue.mjs";
+import { createWritePolicy } from "./write-policy.mjs";
+import { createShellSession } from "./shell-session.mjs";
+import { parsePatch, APPLY_PATCH_ARG } from "./apply-patch.mjs";
 import { createProcessManager, killTree } from "./process-manager.mjs";
 import { detectRunner, buildTestCommand, summarizeTestOutput, verdictFrom, guessTestTarget } from "./test-runner.mjs";
 import { unprecedentedSymbolNote, inconsistentReturnNote } from "./edit-signals.mjs";
-import { prepareExec, shellArgv, sandboxArgv } from "./portable-exec.mjs";
+import { prepareExec, shellArgv, sandboxArgv, sandboxSessionArgv } from "./portable-exec.mjs";
 import { resolveBackend } from "./exec-backend.mjs";
 
 // --- edit-safety pure helpers (§2 of the coding-tools change) -----------------
@@ -405,7 +408,7 @@ export const IMAGE_MIME_TYPES = {
  */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", execBackend = null, webAccess = false, allowExternal = false, externalAllowlist = [], visionModel = null, callModelJson = null, visionOptions = {} } = {}) {
+export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BIN || "unieai", execBackend = null, webAccess = false, allowExternal = false, externalAllowlist = [], sandboxMode = "workspace-write", writableRoots = [], applyPatch = false, sharedState = null, visionModel = null, callModelJson = null, visionOptions = {} } = {}) {
   const root = resolve(workspace || process.cwd());
   // Where shell commands run. Local sandbox unless the host supplied a backend
   // (e.g. a prepared container holding this checkout's toolchain).
@@ -415,7 +418,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // bytes the model last saw (via `read`, or the last successful write/edit).
   // A write/edit that finds a different on-disk hash refuses — the model raced
   // an external change and must re-read before mutating.
-  const readHashes = new Map();
+  const readHashes = (sharedState ??= {}).readHashes ||= new Map();
   // One-shot signposts, scoped to this toolset instance (i.e. this session).
   const hintState = { testHintGiven: false };
 
@@ -424,13 +427,25 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // then refuses the second one even though it was perfectly valid. Queuing per
   // canonical path lets both apply in order. Scoped to this toolset instance so
   // concurrent requests never share locks.
-  const mutations = createFileMutationQueue();
+  // Held by the CALLER when it supplies one, so state survives a toolset
+  // rebuild. The engine rebuilds whenever web access, sub-agents or the vision
+  // model is toggled; without this, that would silently drop the persistent
+  // shell, every background process, and the record of what the model has read
+  // — turning a settings change into an invisible loss of context.
+  const shared = sharedState ?? {};
+  const mutations = (shared.mutations ||= createFileMutationQueue());
 
   // One manager per toolset instance, so a session can never see or stop
   // another session's jobs. Created lazily: most sessions never start a
   // background process, and an unused manager still installs an exit hook.
-  let processesInstance = null;
-  const processes = () => (processesInstance ||= createProcessManager({ workspace: root, sandboxBin }));
+  const processes = () => (shared.processes ||= createProcessManager({ workspace: root, sandboxBin }));
+
+  // The persistent shell, created on first use for the same reason: most
+  // sessions never ask for one, and an unused shell is a live process.
+  // `sessionArgv` is null where the platform has no persistent shell worth
+  // running, and the tools are simply not mounted there.
+  const sessionArgv = backend.sessionArgv ? backend.sessionArgv() : sandboxSessionArgv(sandboxBin);
+  const shell = () => (shared.shell ||= createShellSession({ argv: sessionArgv, cwd: root }));
 
   // §2.3 external-directory gate: an explicit opt-in allowlist of absolute paths
   // the host has pre-approved outside the workspace root.
@@ -440,6 +455,10 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // that resolves outside the workspace. A distinct `external_directory` kind so
   // the host can gate it separately from normal in-workspace edits. Returns
   // { ok:true } when allowed, else { ok:false, message } with a clear refusal.
+  //
+  // READS use this. WRITES use `gateWrite` below, which asks a policy rather
+  // than only a boundary — being inside the workspace is not on its own a
+  // licence to write, and this gate could not express that.
   async function gateExternal(abs, filePath, runCtx = {}) {
     if (!isExternalPath(root, filePath)) return { ok: true };
     if (allowExternal || externalAllow.has(abs)) return { ok: true };
@@ -452,6 +471,38 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
       if (decision === "accept") return { ok: true };
     }
     return { ok: false, message: `error: ${filePath} resolves outside the workspace root (${abs}); external-directory access requires a separate approval that was not granted. Work inside the workspace instead.` };
+  }
+
+  // Every write goes through one policy, so "read-only" means read-only whether
+  // the model reaches for the shell or for `edit`. Fails CLOSED: no approval
+  // channel means a write the policy wanted to ask about does not happen.
+  const writePolicy = createWritePolicy({ workspace: root, mode: sandboxMode, writableRoots, allowExternal, externalAllowlist });
+  async function gateWrite(abs, filePath, runCtx = {}) {
+    const verdict = writePolicy.assess(abs);
+    if (verdict.decision === "allow") return { ok: true };
+    if (typeof runCtx?.requestApproval === "function") {
+      const decision = await runCtx.requestApproval({
+        tool: "fs",
+        kind: verdict.kind,
+        action: `write to ${filePath}`,
+        detail: abs,
+        reason: verdict.reason,
+      });
+      if (decision === "acceptForSession") {
+        writePolicy.remember(abs);
+        if (verdict.kind === "external_directory") externalAllow.add(abs);
+        return { ok: true };
+      }
+      if (decision === "accept") return { ok: true };
+    }
+    return {
+      ok: false,
+      message: `error: writing ${filePath} was not permitted — ${verdict.reason}. ${
+        verdict.kind === "read_only_write"
+          ? "Report what you would change instead of changing it."
+          : "Work inside the workspace instead."
+      }`,
+    };
   }
 
   // §2.1: compare current on-disk bytes to what the model last saw. Returns a
@@ -470,6 +521,18 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
   // the loop stays unaware of it. Off by default so a plain coding session has
   // no network reach beyond what bash's sandbox already governs.
   const fetchSchema = { type: "function", function: { name: "fetch", description: "Fetch an http(s) URL and return its content as readable text (HTML is reduced to text). Use to read documentation pages or HTTP APIs the task references.", parameters: { type: "object", properties: { url: { type: "string", description: "absolute http(s) URL" } }, required: ["url"] } } };
+
+  // exec_command keeps ONE shell alive for the session, so state a command sets
+  // up is still there for the next one. write_stdin feeds something that command
+  // left waiting for input.
+  const execCommandSchema = { type: "function", function: { name: "exec_command", description: "Run a shell command in a PERSISTENT shell: the working directory, activated environments and exported variables set by one call are still in effect for the next. Prefer this over bash when a command depends on what an earlier one set up (cd into a package, activate a venv, export a flag).", parameters: { type: "object", properties: { cmd: { type: "string", description: "the command line to run" }, timeoutMs: { type: "number", description: "how long to wait before giving up on this command (default 120000)" } }, required: ["cmd"] } } };
+  const writeStdinSchema = { type: "function", function: { name: "write_stdin", description: "Send text to the persistent shell's stdin, for a command that is waiting for input (a prompt, a REPL). Include the trailing newline yourself.", parameters: { type: "object", properties: { text: { type: "string", description: "exactly what to send, newline included" }, waitMs: { type: "number", description: "how long to collect output afterwards (default 500)" } }, required: ["text"] } } };
+
+  // apply_patch changes several files in one call, in the envelope codex-trained
+  // models write natively. Mounted per MODEL, the same basis codex uses
+  // (`apply_patch_tool_type.is_some()`), because `edit` remains the better tool
+  // for models that were not trained on a patch grammar.
+  const applyPatchSchema = { type: "function", function: { name: "apply_patch", description: "Apply a patch that adds, deletes, updates or moves one or more files in a single call. Format: `*** Begin Patch` / `*** Add File: p` with `+` lines / `*** Delete File: p` / `*** Update File: p` with optional `*** Move to: p2`, `@@` chunk headers and ` `/`-`/`+` lines / `*** End Patch`. Quote existing lines exactly as they are on disk.", parameters: { type: "object", properties: { patch: { type: "string", description: "the complete patch, including the Begin/End Patch markers" } }, required: ["patch"] } } };
 
   // web_search finds URLs; `fetch` reads them. Keeping them separate means the
   // model pays for a full page only once it has picked a promising result.
@@ -510,6 +573,12 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
     askSchema,
   ];
   if (webAccess) schemas.push(fetchSchema, searchSchema);
+  // A persistent shell, when the platform has one. `bash` starts a fresh
+  // process per command, so `cd`, an activated venv and every export are gone
+  // by the next call — the model has to rebuild its context in every command
+  // it writes, and when it forgets, the command runs somewhere else.
+  if (sessionArgv) schemas.push(execCommandSchema, writeStdinSchema);
+  if (applyPatch) schemas.push(applyPatchSchema);
 
   // A sub-agent runs off the main thread with no channel to the user: `ask`
   // there would either hang or be auto-declined, and the user would be answering
@@ -556,6 +625,117 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         const [shell, ...shellArgs] = backend.escalatedArgv(cmd);
         const raw = await run(shell, shellArgs, { cwd: root });
         return toolResult({ ok: raw.code === 0, modelText: `exit ${raw.code} (approved, unsandboxed)\n${truncateMiddle(raw.stdout + raw.stderr)}` });
+      },
+      async apply_patch(args, runCtx = {}) {
+        const patch = String(args?.patch ?? "");
+        let hunks;
+        try {
+          hunks = parsePatch(patch);
+        } catch (e) {
+          return toolResult({ ok: false, modelText: `error: ${e.message}` });
+        }
+        // Parsing here is a PREFLIGHT, not the applier: it tells us which paths
+        // the patch touches so our gates can run before anything is written.
+        // The application itself is codex's own `apply_patch`, invoked through
+        // the same binary that provides the sandbox. Reimplementing it in JS
+        // meant reimplementing its fuzzy context matching too, badly — a model
+        // one space out got a refusal from ours and a clean apply from theirs.
+        const before = new Map();
+        for (const h of hunks) {
+          for (const rel of [h.path, h.moveTo].filter(Boolean)) {
+            const abs = resolve(root, rel);
+            const gate = await gateWrite(abs, rel, runCtx);
+            if (!gate.ok) return toolResult({ ok: false, modelText: `${gate.message} (no part of the patch was applied)` });
+          }
+          if (h.kind === "add") continue;
+          const abs = resolve(root, h.path);
+          try {
+            const text = await readFile(abs, "utf8");
+            const stale = staleGuard(abs, h.path, text);
+            if (stale) return toolResult({ ok: false, modelText: `${stale} (no part of the patch was applied)` });
+            before.set(h.path, text);
+          } catch {
+            before.set(h.path, null); // it does not exist; let apply_patch say so
+          }
+        }
+
+        const argv = backend.applyPatchArgv
+          ? backend.applyPatchArgv(patch)
+          : [sandboxBin, APPLY_PATCH_ARG, patch];
+        const [bin, ...rest] = argv;
+        const res = await run(bin, rest, { cwd: root });
+        if (res.spawnError) {
+          return toolResult({ ok: false, modelText: `error: could not launch \`${sandboxBin}\` to apply the patch (${res.spawnError}). Use the edit tool instead.` });
+        }
+        if (res.code !== 0) {
+          return toolResult({ ok: false, modelText: `${(res.stderr || res.stdout || "apply_patch failed").trim()}` });
+        }
+
+        // codex prints `A|M|D <path>` per file; that is the authoritative list of
+        // what it did, so the timeline reports its result rather than our
+        // prediction of it.
+        const events = [];
+        const touched = [];
+        for (const line of String(res.stdout || "").split("\n")) {
+          const m = /^\s*([AMD])\s+(.+?)\s*$/.exec(line);
+          if (!m) continue;
+          const [, flag, path] = m;
+          touched.push(`${flag} ${path}`);
+          const abs = resolve(root, path);
+          let after = "";
+          if (flag !== "D") {
+            try {
+              after = await readFile(abs, "utf8");
+              readHashes.set(abs, hashContent(after));
+            } catch { /* reported by apply_patch already */ }
+          } else {
+            readHashes.delete(abs);
+          }
+          events.push({
+            type: "file_diff",
+            path,
+            kind: flag === "A" ? "add" : flag === "D" ? "delete" : "update",
+            diff: makeDiff(before.get(path) ?? "", after),
+          });
+        }
+        return toolResult({
+          modelText: `${String(res.stdout || "").trim()}${pyInstantChecks(resolve(root, hunks[0]?.path ?? ""))}`,
+          metadata: { timelineEvent: events[0] ?? null, timelineEvents: events },
+        });
+      },
+      async exec_command(args) {
+        const cmd = String(args?.cmd || "").trim();
+        if (!cmd) return toolResult({ ok: false, modelText: "error: cmd is required" });
+        const timeoutMs = Number(args?.timeoutMs) > 0 ? Number(args.timeoutMs) : undefined;
+        const res = await shell().run(cmd, timeoutMs ? { timeoutMs } : {});
+        if (res.spawnError) {
+          return toolResult({ ok: false, modelText: `error: could not start the persistent shell (${res.spawnError}). Use bash instead.` });
+        }
+        const out = spillIfLarge(res.output, { id: "exec_command", fallbackTruncate: () => truncateMiddle(res.output) });
+        if (res.timedOut) {
+          // Saying so matters more than the output: the command is still
+          // running somewhere, and the shell it ran in is not the one the next
+          // call will get.
+          return toolResult({
+            ok: false,
+            modelText: `timed out — the command was still running and has been killed, and the shell was restarted (working directory and exported variables are back to their defaults).\n${out.modelText}`,
+          });
+        }
+        if (res.restarted) {
+          return toolResult({
+            ok: false,
+            modelText: `the shell exited during this command and has been restarted (working directory and exported variables are back to their defaults).\n${out.modelText}`,
+          });
+        }
+        return toolResult({ ok: res.exitCode === 0, modelText: `exit ${res.exitCode}\n${out.modelText}` });
+      },
+      async write_stdin(args) {
+        const text = String(args?.text ?? "");
+        if (!text) return toolResult({ ok: false, modelText: "error: text is required" });
+        const waitMs = Number(args?.waitMs) > 0 ? Number(args.waitMs) : undefined;
+        const res = await shell().writeStdin(text, waitMs ? { waitMs } : {});
+        const out = spillIfLarge(res.output, { id: "write_stdin", fallbackTruncate: () => truncateMiddle(res.output) });
+        return toolResult({ ok: true, modelText: out.modelText || "(no output yet)" });
       },
       async run_tests(args) {
         const runner = detectRunner(root);
@@ -724,7 +904,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         try {
           const filePath = String(args?.filePath || "");
           const abs = resolve(root, filePath);
-          const gate = await gateExternal(abs, filePath, runCtx);
+          const gate = await gateWrite(abs, filePath, runCtx);
           if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
           // Serialized per file: a concurrent edit landing between the read
           // below and the write would trip the staleness guard and lose an
@@ -767,7 +947,7 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
         try {
           const filePath = String(args?.filePath || "");
           const abs = resolve(root, filePath);
-          const gate = await gateExternal(abs, filePath, runCtx);
+          const gate = await gateWrite(abs, filePath, runCtx);
           if (!gate.ok) return toolResult({ ok: false, modelText: gate.message });
           // Serialized per file — see `write`. Two edits to one file in the same
           // step used to race, and the staleness guard rejected the loser.

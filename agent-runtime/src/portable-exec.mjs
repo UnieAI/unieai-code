@@ -137,3 +137,26 @@ export function shellArgv(cmd) {
 export function sandboxArgv(sandboxBin, cmd) {
   return [sandboxBin, "sandbox", "-c", 'sandbox_mode="workspace-write"', "--", ...shellArgv(cmd)];
 }
+
+/**
+ * argv for a PERSISTENT shell that reads commands from stdin.
+ *
+ * The one-shot `sh -c` form above starts a fresh process per command, so `cd`,
+ * an activated virtualenv, and every exported variable are gone by the next
+ * call. A session shell keeps them, which is what `exec_command` is for.
+ *
+ * POSIX only, deliberately. `cmd.exe /k` echoes a prompt banner and its own
+ * command line into stdout, and has no equivalent of `$?` that survives the
+ * same way — a persistent Windows shell is a different design, not a flag. On
+ * Windows the caller keeps using the one-shot `bash` tool.
+ */
+export function shellSessionArgv() {
+  return IS_WIN ? null : ["sh"];
+}
+
+/** The session shell, wrapped by the sandbox helper. Null where unsupported. */
+export function sandboxSessionArgv(sandboxBin) {
+  const shell = shellSessionArgv();
+  if (!shell) return null;
+  return [sandboxBin, "sandbox", "-c", 'sandbox_mode="workspace-write"', "--", ...shell];
+}

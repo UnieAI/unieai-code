@@ -13,13 +13,15 @@
  * argv that runs it. Everything else — sandbox denial handling, approval
  * escalation, timeouts — is unchanged and lives in the tool.
  */
-import { shellArgv, sandboxArgv } from "./portable-exec.mjs";
+import { shellArgv, sandboxArgv, sandboxSessionArgv } from "./portable-exec.mjs";
 
 /** Commands run on this machine, inside the UnieAI sandbox. The default. */
 export function localSandboxBackend(sandboxBin) {
   return {
     kind: "local",
     argv: (cmd) => sandboxArgv(sandboxBin, cmd),
+    // The persistent shell, for exec_command. Null on platforms without one.
+    sessionArgv: () => sandboxSessionArgv(sandboxBin),
     // The unsandboxed rerun used after the user approves an escalation.
     escalatedArgv: (cmd) => shellArgv(cmd),
     describe: () => "local sandbox",
@@ -49,6 +51,10 @@ export function dockerExecBackend({ container, workdir = "/testbed", shell = "/b
   return {
     kind: "docker",
     argv: (cmd) => [docker, "exec", "-w", workdir, ...envArgs, container, shell, "-lc", wrap(cmd)],
+    // `docker exec` starts a fresh process per call, so there is no session to
+    // keep: exec_command would promise persistence it cannot deliver. Better
+    // absent than lying.
+    sessionArgv: () => null,
     escalatedArgv: null,
     describe: () => `docker exec ${container}`,
   };

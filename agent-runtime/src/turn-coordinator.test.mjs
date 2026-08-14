@@ -54,3 +54,47 @@ test("queueNext coalesces a single follow-up that drains after the active run", 
   await tick(10);
   assert.deepEqual(order, ["active-start", "active-end", "keep-me"], "coalesced to the last follow-up");
 });
+
+// ── task kinds ───────────────────────────────────────────────────────────────
+// Not everything on the chain is a conversation. A mid-turn interjection belongs
+// to a regular turn; folding it into a compaction or a review would hand it to
+// something that cannot act on it, and the turn it was meant for never sees it.
+
+test("the active kind is whatever is actually running, not what is queued", async () => {
+  const c = createTurnCoordinator();
+  const seen = [];
+  let release;
+  const held = new Promise((r) => { release = r; });
+
+  const first = c.run("s", async () => { seen.push(c.activeKind("s")); await held; }, { kind: "regular" });
+  // Chained behind the first: it must not claim the slot before it starts.
+  const second = c.run("s", async () => { seen.push(c.activeKind("s")); }, { kind: "compact" });
+  // The chain starts on a microtask, so let the first run reach its thunk. The
+  // second is now queued behind it and must not have claimed the slot.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(c.activeKind("s"), "regular", "a queued run took the active slot");
+
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(seen, ["regular", "compact"]);
+});
+
+test("the kind clears when the chain drains", async () => {
+  const c = createTurnCoordinator();
+  await c.run("s", async () => {}, { kind: "compact" });
+  assert.equal(c.activeKind("s"), null);
+  assert.equal(c.isBusy("s"), false);
+});
+
+test("a run with no kind is a regular turn", async () => {
+  const c = createTurnCoordinator();
+  let kind = null;
+  await c.run("s", async () => { kind = c.activeKind("s"); });
+  assert.equal(kind, "regular");
+});
+
+test("a failed run still clears its kind", async () => {
+  const c = createTurnCoordinator();
+  await assert.rejects(() => c.run("s", async () => { throw new Error("boom"); }, { kind: "review" }));
+  assert.equal(c.activeKind("s"), null);
+});

@@ -37,6 +37,7 @@ import { buildCodingTools } from "./tools.mjs";
 import { loadCredentials, applyUpstreamEnv, sandboxBin } from "./config.mjs";
 import { newSessionId, saveSession, snapshotDir } from "./session.mjs";
 import { loadSessionTree, saveSessionTree } from "./session-tree-store.mjs";
+import { appendRollout, rolloutEntry, rolloutLeaf, rolloutMeta, readRollout, replayRollout, treeFromRollout } from "./session-rollout.mjs";
 import {
   appendFold,
   appendMessages,
@@ -62,6 +63,25 @@ export function landingDeadline(abortAtMs) {
   if (total <= 0) return 0;
   const reserve = Math.min(total / 2, Math.max(90_000, total * 0.2));
   return Math.max(1, Math.round(total - reserve));
+}
+
+/**
+ * Does this model get `apply_patch`?
+ *
+ * codex asks its model registry (`apply_patch_tool_type.is_some()`); we have no
+ * registry, so the list is configuration. Empty by default — `edit` is the
+ * better tool for the open models this harness targets, and that was measured,
+ * not assumed.
+ */
+export function modelWantsApplyPatch(model, env = process.env) {
+  const list = String(env.UNIEAI_APPLY_PATCH_MODELS || "").trim();
+  if (!list) return false;
+  const id = String(model || "").toLowerCase();
+  return list
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .some((want) => id.includes(want));
 }
 
 const CODE_IDENTITY =
@@ -358,6 +378,11 @@ export function createEngine({
   // elsewhere (a prepared container, a devcontainer) passes a backend from
   // exec-backend.mjs; file tools still operate on the local path.
   execBackend = null,
+  // What the host says this session may touch. Named as the app-server protocol
+  // names it, so a client's declared sandbox and the engine's enforcement cannot
+  // drift apart in translation.
+  sandboxMode = "workspace-write",
+  writableRoots = [],
   webAccess = false,
   visionModel = null,
   subagents = false
@@ -379,13 +404,22 @@ export function createEngine({
   // either store — this session's tree file when it has one, otherwise the
   // legacy `{messages:[...]}` file converted on read — so an old session resumes
   // with exactly the messages the array loader produced.
-  const resumed = resume ? loadSessionTree(resume) : null;
+  // The log is the last resort, not the first: a snapshot carries session meta
+  // (rolling summary, checkpoints, plan) that the log deliberately does not.
+  const resumed = resume ? loadSessionTree(resume) || treeFromRollout(resume) : null;
   if (resume && !resumed) {
     // The array loader threw ENOENT here. Starting a fresh session instead would
     // silently discard the id the user asked to resume.
     throw new Error(`session ${resume} not found`);
   }
   const sessionId = resumed?.id || newSessionId();
+  // The snapshot is written when a turn ends; the rollout is written as entries
+  // happen. A session killed mid-turn therefore has entries in the log that the
+  // snapshot never saw, and this is where they come back.
+  if (resumed?.tree) {
+    const { tree, replayed } = replayRollout(resumed.tree, readRollout(sessionId));
+    if (replayed > 0) resumed.tree = tree;
+  }
   const resumedMeta = resumed?.meta || {};
   // A migrated legacy file records model/cwd as a leading state_change, and a
   // tree written here does the same, so one lookup answers for both shapes.
@@ -397,17 +431,42 @@ export function createEngine({
 
   let sessionTree = resumed?.tree || createTree({ now: Date.now() });
   const nextEntryId = makeEntryIdFactory(sessionTree);
+
+  /**
+   * The one place the tree is replaced — so every new entry reaches the rollout
+   * the moment it exists, rather than at the end of the turn.
+   *
+   * `persist()` writes a whole-file snapshot when a turn ends; until then, a
+   * crash used to lose the entire turn. The log is append-only and the tree is
+   * append-only, so appending the difference is exact: no diffing heuristics,
+   * and replay on load dedups by entry id.
+   */
+  const setTree = (next) => {
+    const added = next.entries.length - sessionTree.entries.length;
+    const movedLeaf = next.leafId !== sessionTree.leafId;
+    sessionTree = next;
+    if (added > 0 || movedLeaf) {
+      const records = added > 0 ? next.entries.slice(-added).map(rolloutEntry) : [];
+      // The leaf is only worth logging when it is NOT the entry just appended —
+      // that is the branch case, and it is the only case replay cannot infer.
+      if (movedLeaf && next.leafId !== next.entries[next.entries.length - 1]?.id) {
+        records.push(rolloutLeaf(next.leafId));
+      }
+      appendRollout(sessionId, records);
+    }
+  };
+
   /** The prompt as it currently derives from the tree, plus the entry per message. */
   const derive = () => deriveEngineContext(sessionTree);
   /** Append messages as one entry each; returns their ids, in order. */
   const record = (list) => {
     const { tree, ids } = appendMessages(sessionTree, list, { nextId: nextEntryId });
-    sessionTree = tree;
+    setTree(tree);
     return ids;
   };
   /** Record a change of what is answering, as history rather than a variable. */
   const recordState = (patch) => {
-    sessionTree = append(sessionTree, { type: ENTRY_TYPES.STATE_CHANGE, patch }, { id: nextEntryId(), now: Date.now() });
+    setTree(append(sessionTree, { type: ENTRY_TYPES.STATE_CHANGE, patch }, { id: nextEntryId(), now: Date.now() }));
   };
 
   // A cheap model for auxiliary calls (summary/compaction) so they don't burn the
@@ -514,6 +573,9 @@ export function createEngine({
   // A new session's opening messages become the tree's first entries; a resumed
   // one already carries them on its path.
   if (!resumed) {
+    // Opens the log with what the session IS, so a rollout can be read on its
+    // own — by a recovery tool, or by us, without the snapshot beside it.
+    appendRollout(sessionId, rolloutMeta({ id: sessionId, cwd: workspace, model: activeModel, startedAt: Date.now() }));
     recordState({ model: activeModel, cwd: workspace });
     record([
       {
@@ -592,6 +654,9 @@ export function createEngine({
   let contextTokensState = Math.max(8_000, Number(initialContextTokens) || 128_000);
   let visionModelState = visionModel;
   let subagentsState = subagents;
+  // Survives the rebuilds below: a toggle must not cost the session its shell,
+  // its background processes, or the record of what the model has read.
+  const codingToolState = {};
   let toolsetPromise = null;
   function toolset(ctx) {
     toolsetPromise ||= buildToolset({
@@ -611,13 +676,25 @@ export function createEngine({
       // toolset is built once and the tree is replaced on every append, so a
       // captured value would go stale after the first turn and the model would
       // branch off a session that had moved on.
-      sessionTree: { get: () => sessionTree, set: (next) => { sessionTree = next; } },
+      sessionTree: { get: () => sessionTree, set: (next) => setTree(next) },
       ctx: { ...ctx, customModelId: memoryScope },
       domainToolBuilders: [buildCodingTools({
         workspace,
         sandboxBin: sandboxBin(),
         execBackend,
         webAccess: webAccessState,
+        // A read-only session has to mean read-only for `write`/`edit` too, not
+        // just for the shell — the file tools used to bypass the boundary the
+        // client had been told was in force.
+        sandboxMode,
+        writableRoots,
+        // Per MODEL, like codex's `apply_patch_tool_type`: a model trained on
+        // the patch envelope writes it well and gets to change several files at
+        // once; one that was not does better with `edit`, and mounting both
+        // just gives it a way to fail. UNIEAI_APPLY_PATCH_MODELS is a
+        // comma-separated list of model-id substrings.
+        applyPatch: modelWantsApplyPatch(activeModel),
+        sharedState: codingToolState,
         // Vision is DELEGATED: read_media_file hands the image to this model and
         // returns its prose, so the main model never needs image support.
         visionModel: visionModelState,
@@ -804,7 +881,7 @@ export function createEngine({
     send(text, { abortSignal = null, deadlineMs = 0 } = {}) {
       // Turns run one at a time per conversation; a send while another is in
       // flight waits its turn rather than interleaving.
-      return turnCoordinator.run(sessionId, () => runTurn(text, { abortSignal, deadlineMs }));
+      return turnCoordinator.run(sessionId, () => runTurn(text, { abortSignal, deadlineMs }), { kind: "regular" });
     },
 
     isBusy() {
@@ -821,9 +898,58 @@ export function createEngine({
     steer(text) {
       const t = String(text ?? "").trim();
       if (!t) return false;
-      const busy = turnCoordinator.isBusy(sessionId);
+      // Only a regular turn can receive an interjection. A compaction or a
+      // review is not a conversation — folding the user's next instruction into
+      // one would deliver it to something that cannot act on it, and the loop it
+      // was meant for would never see it.
+      const busy = turnCoordinator.isBusy(sessionId) && turnCoordinator.activeKind(sessionId) === "regular";
       if (busy) steerQueue.push(t);
       return busy;
+    },
+
+    /**
+     * Fold the history now, rather than waiting for it to outgrow the budget.
+     *
+     * Runs as its own task on the same chain as turns, so it cannot interleave
+     * with one and the user cannot steer into it. Returns whether anything was
+     * folded. Fail-open, like every other compaction path: a summarizer hiccup
+     * leaves the history whole.
+     */
+    async compact() {
+      return turnCoordinator.run(
+        sessionId,
+        async () => {
+          const { messages, entryIds } = derive();
+          const folded = await compactWithSummary({
+            messages,
+            prevSummary: rollingSummary,
+            ctx: { requestId: `${sessionId}-compact`, contextTokens: contextTokensState },
+            // Asked for explicitly, so neither the budget check nor the
+            // keep-window gets a veto: fold everything but the newest round.
+            force: true,
+            split: "rounds",
+            keepTokens: 0,
+            archive: createCompactionArchive({ sessionId }),
+            summarize: ({ system, user }) =>
+              callModelJson({
+                baseModelSlug: auxModel,
+                callerKey: credentials.gatewayApiKey,
+                system,
+                user,
+                maxTokens: 1500,
+              }),
+          });
+          if (!folded.changed) return false;
+          const fold = appendFold(sessionTree, { folded, entryIds, nextId: nextEntryId });
+          if (!fold.applied) return false;
+          setTree(fold.tree);
+          rollingSummary = folded.summary;
+          onToolEvent({ type: "context_compaction", reason: "requested", before: messages.length, after: folded.messages.length });
+          persist();
+          return true;
+        },
+        { kind: "compact" },
+      );
     }
   };
 
@@ -843,13 +969,22 @@ export function createEngine({
       // turn unpruned. The array engine persisted its pruning and so never
       // re-sent what it had dropped; pruning here sends the same first request it
       // would have, while the originals stay in the tree.
-      ensureLoopBudget(messages);
+      //
+      // The budget has to be passed explicitly: ensureLoopBudget falls back to
+      // agent-core's env default (32k, sized for the model it shipped against),
+      // and this was the one call site that let it. A turn could therefore open
+      // by pruning against 32k what the rest of the loop then measured at 128k.
+      ensureLoopBudget(messages, { contextTokens: contextTokensState });
       // Everything appended past this point belongs to this turn and becomes
       // entries when it ends. The boundary holds because the loop only appends
       // and pruning replaces message slots without changing the array's length.
       // It also tells us afterwards whether this turn used any file-mutating tool
       // (and thus whether the costly workspace snapshot below is worth taking).
-      const turnStart = messages.length;
+      //
+      // Not const: a mid-turn fold (below) collapses part of the array, and the
+      // boundary has to move with it or the turn would be recorded from the
+      // wrong offset.
+      let turnStart = messages.length;
       // Re-resolve context sources; if the date rolled over or AGENTS.md changed
       // since last turn, inject a compact delta (not the whole prompt) before the
       // user's message so this turn sees the current state.
@@ -893,10 +1028,68 @@ export function createEngine({
       const completionCheck = goalMode
         ? workspaceCompletionCheck({ workspace, model: activeModel, auxModel, callerKey: credentials.gatewayApiKey, goalState, onSummary })
         : null;
+
+      /**
+       * Fold the history mid-turn, when the loop reports it is near the budget
+       * (or a request has already overflowed). Returns the folded array, or null
+       * to leave it alone — the loop then falls back to mechanical pruning.
+       *
+       * The tree is the source of truth, so the order here is what keeps it
+       * honest: record what this turn has produced so far (the fold is about to
+       * make some of it unreachable, and a fold entry may only reference entries
+       * that exist), fold, then move the turn boundary and the parallel `ids` to
+       * match the array the loop is now holding.
+       */
+      const compactHistory = async (current) => {
+        const producedSoFar = current.slice(turnStart);
+        if (producedSoFar.length) ids.push(...record(producedSoFar));
+        turnStart = current.length;
+
+        const folded = await compactWithSummary({
+          messages: current,
+          prevSummary: rollingSummary,
+          ctx: { requestId: `${sessionId}-midturn`, contextTokens: contextTokensState },
+          // The loop already decided, at a lower threshold than this function's
+          // own. Letting it re-decide would mean never folding mid-turn.
+          force: true,
+          // Fold by round: a single turn has one user message, at the front, so
+          // the between-turns split would put the whole history in "recent".
+          split: "rounds",
+          archive: createCompactionArchive({ sessionId }),
+          summarize: ({ system, user }) =>
+            callModelJson({
+              baseModelSlug: auxModel,
+              callerKey: credentials.gatewayApiKey,
+              system,
+              user,
+              maxTokens: 1500,
+            }),
+        });
+        if (!folded.changed) return null;
+
+        const fold = appendFold(sessionTree, { folded, entryIds: ids, nextId: nextEntryId });
+        if (fold.applied) {
+          setTree(fold.tree);
+          rollingSummary = folded.summary;
+        }
+        // The folded span collapses into one summary message, which belongs to
+        // no entry of its own — hence the null, the same way a repaired message
+        // has none.
+        ids.splice(folded.systemCount, folded.foldedCount, null);
+        turnStart = folded.messages.length;
+        return folded.messages;
+      };
+
       const ctx = {
         baseModelSlug: activeModel,
         callerKey: credentials.gatewayApiKey,
         requestId: `${sessionId}-${messages.length}`,
+        // Stable for the life of the session, unlike requestId: the upstream
+        // keys its prompt cache on this, and a coding session re-sends a long,
+        // mostly-unchanged prefix on every step. A per-step key would report a
+        // cache hit rate of zero, which is what we were measuring.
+        promptCacheKey: sessionId,
+        compactHistory,
         // Coding needs a longer leash than the Studio default: real-repo work is
         // exploration-heavy (many bash steps before the first edit). Both codex-rs
         // and grok-build run their primary loops UNCAPPED and rely on quality
@@ -948,7 +1141,9 @@ export function createEngine({
       // judges this turn, not whatever a later turn mutated the array into.
       if (goalMode === "review" && completionCheck) {
         const messagesAtEnd = messages.slice();
-        const answerText = String(result?.text ?? "");
+        // runAgentLoop returns `answerText`, never `text` — reading the wrong
+        // field handed the background verifier an empty final report to judge.
+        const answerText = String(result?.answerText ?? "");
         Promise.resolve()
           .then(() => completionCheck({ answerText, messages: messagesAtEnd, nudges: 0 }))
           .then((finding) => { if (finding) onReview(String(finding)); })
@@ -998,7 +1193,7 @@ export function createEngine({
         // renumbering: they name entries, and the entries have not moved.
         const fold = appendFold(sessionTree, { folded, entryIds: ids, nextId: nextEntryId });
         if (fold.applied) {
-          sessionTree = fold.tree;
+          setTree(fold.tree);
           rollingSummary = folded.summary;
         }
       } catch {
