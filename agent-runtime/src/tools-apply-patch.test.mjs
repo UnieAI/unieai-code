@@ -111,7 +111,13 @@ test("each changed file gets its own timeline event", async () => {
   });
   assert.equal(res.ok, true, res.modelText);
   assert.equal(res.metadata.timelineEvents.length, 2);
-  assert.deepEqual(res.metadata.timelineEvents.map((e) => e.kind), ["update", "add"]);
+  // Order is codex's, not the patch's — it reports adds before modifications.
+  // Since it is the one applying, its account of what happened is the honest
+  // one; pinning our own order here would be asserting a fiction.
+  assert.deepEqual(
+    res.metadata.timelineEvents.map((e) => `${e.kind} ${e.path}`).sort(),
+    ["add b.txt", "update a.txt"]
+  );
   // The loop reads `timelineEvent` to know a tool mutated something; without it
   // the doom guard would treat a successful patch as no progress.
   assert.equal(res.metadata.timelineEvent.type, "file_diff");

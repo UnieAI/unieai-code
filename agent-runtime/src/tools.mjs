@@ -668,7 +668,26 @@ export function buildCodingTools({ workspace, sandboxBin = process.env.UNIEAI_BI
           return toolResult({ ok: false, modelText: `error: could not launch \`${sandboxBin}\` to apply the patch (${res.spawnError}). Use the edit tool instead.` });
         }
         if (res.code !== 0) {
-          return toolResult({ ok: false, modelText: `${(res.stderr || res.stdout || "apply_patch failed").trim()}` });
+          // codex's apply_patch is NOT atomic: it writes file by file, so a
+          // patch that fails on its third hunk leaves the first two applied.
+          // The model then gets an error while the workspace holds a state
+          // nobody described, and its next action is based on that state.
+          // Restoring from the contents captured above gives back the
+          // all-or-nothing guarantee without giving up its fuzzy matching.
+          let restored = 0;
+          for (const [rel, text] of before) {
+            if (text == null) continue;
+            try {
+              await writeFile(resolve(root, rel), text, "utf8");
+              readHashes.set(resolve(root, rel), hashContent(text));
+              restored += 1;
+            } catch { /* best effort; reported below */ }
+          }
+          const note = restored > 0 ? " (no part of the patch was applied)" : "";
+          return toolResult({
+            ok: false,
+            modelText: `${(res.stderr || res.stdout || "apply_patch failed").trim()}${note}`,
+          });
         }
 
         // codex prints `A|M|D <path>` per file; that is the authoritative list of
