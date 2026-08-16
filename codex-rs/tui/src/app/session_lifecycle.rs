@@ -214,9 +214,16 @@ impl App {
             agent_nickname.clone(),
             agent_role.clone(),
         );
+        // First sighting starts the clock. Recorded here rather than at spawn
+        // because this is the one place every thread passes through, including
+        // ones adopted from a resumed session.
+        self.agent_started_at
+            .entry(thread_id)
+            .or_insert_with(std::time::Instant::now);
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
         self.sync_active_agent_label();
+        self.refresh_agent_tree();
     }
 
     /// Persists the app-server's authoritative ownership flag and updates the active composer.

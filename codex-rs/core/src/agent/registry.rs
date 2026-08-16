@@ -225,6 +225,17 @@ impl AgentRegistry {
     }
 
     fn reserve_agent_path(&self, agent_path: &AgentPath) -> Result<()> {
+        // Peers belong to other processes and must never enter this registry.
+        // If they did they would count against `reserve_spawn_slot`, so opening
+        // a second terminal would make your own `spawn_agent` fail with
+        // `AgentLimitReached`, and `maybe_start_completion_watcher` would try to
+        // derive a parent from `/peer`, which names nobody.
+        if agent_path.is_peer() {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "agent path `{agent_path}` names a peer session and cannot be registered as a local agent"
+            )));
+        }
+
         let mut active_agents = self
             .active_agents
             .lock()

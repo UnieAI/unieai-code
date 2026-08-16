@@ -17,10 +17,33 @@ pub struct AgentPath(String);
 impl AgentPath {
     pub const ROOT: &str = "/root";
     pub const MORPHEUS: &str = "/morpheus";
+    /// Namespace for sessions owned by other processes. Reserved, never
+    /// spawnable.
+    pub const PEER_ROOT: &str = "/peer";
     const ROOT_SEGMENT: &str = "root";
+    const PEER_SEGMENT: &str = "peer";
 
     pub fn root() -> Self {
         Self(Self::ROOT.to_string())
+    }
+
+    /// Path used as the author of a message from another CLI process.
+    ///
+    /// Peers are given their own namespace rather than reusing `/root`, which
+    /// every top-level session already occupies: a receiving model must be able
+    /// to tell "someone else's session sent me this" from "my own sub-agent
+    /// sent me this", because only one of those carries the user's authority.
+    /// Peer paths are never registered as live agents.
+    pub fn peer(short_ref: &str) -> Result<Self, String> {
+        Self::from_string(format!("{}/{short_ref}", Self::PEER_ROOT))
+    }
+
+    /// Whether this path names another process's session rather than an agent
+    /// in the local tree.
+    pub fn is_peer(&self) -> bool {
+        self.as_str()
+            .strip_prefix(Self::PEER_ROOT)
+            .is_some_and(|rest| rest.starts_with('/'))
     }
 
     pub fn morpheus() -> Self {
@@ -158,14 +181,24 @@ fn validate_absolute_path(path: &str) -> Result<(), String> {
     let Some(root) = segments.next() else {
         return Err("absolute agent path must not be empty".to_string());
     };
-    if root != AgentPath::ROOT_SEGMENT {
-        return Err("absolute agent paths must start with `/root` or be `/morpheus`".to_string());
+    if root != AgentPath::ROOT_SEGMENT && root != AgentPath::PEER_SEGMENT {
+        return Err(
+            "absolute agent paths must start with `/root` or `/peer`, or be `/morpheus`"
+                .to_string(),
+        );
     }
     if stripped.ends_with('/') {
         return Err("absolute agent path must not end with `/`".to_string());
     }
+    let mut segment_count = 0;
     for segment in segments {
         validate_agent_name(segment)?;
+        segment_count += 1;
+    }
+    // `/peer` alone names no session. Requiring a segment keeps the namespace
+    // from ever being confused with a real agent root.
+    if root == AgentPath::PEER_SEGMENT && segment_count == 0 {
+        return Err("peer agent paths must name a peer, for example `/peer/k2f8`".to_string());
     }
     Ok(())
 }
@@ -230,11 +263,57 @@ mod tests {
         );
         assert_eq!(
             AgentPath::try_from("/not-root"),
-            Err("absolute agent paths must start with `/root` or be `/morpheus`".to_string())
+            Err(
+                "absolute agent paths must start with `/root` or `/peer`, or be `/morpheus`"
+                    .to_string()
+            )
         );
         assert_eq!(
             AgentPath::root().resolve("../sibling"),
             Err("agent_name `..` is reserved".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_path_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn a_peer_path_is_valid_and_identifiable() {
+        let peer = AgentPath::peer("k2f8").expect("peer path should be valid");
+
+        assert_eq!(peer.as_str(), "/peer/k2f8");
+        assert!(peer.is_peer());
+        assert!(!peer.is_root());
+        assert_eq!(peer.name(), "k2f8");
+    }
+
+    #[test]
+    fn root_and_sub_agent_paths_are_not_peers() {
+        // A receiving model must be able to tell a peer's message from its own
+        // sub-agent's, so these must never be confused.
+        assert!(!AgentPath::root().is_peer());
+        assert!(
+            !AgentPath::root()
+                .join("worker")
+                .expect("sub-agent path")
+                .is_peer()
+        );
+        assert!(!AgentPath::morpheus().is_peer());
+    }
+
+    #[test]
+    fn the_peer_namespace_alone_names_nobody() {
+        assert!(AgentPath::from_string("/peer".to_string()).is_err());
+        assert!(AgentPath::from_string("/peer/".to_string()).is_err());
+    }
+
+    #[test]
+    fn a_peer_path_round_trips_through_parsing() {
+        let parsed = AgentPath::from_string("/peer/k2f8".to_string()).expect("should parse");
+
+        assert_eq!(parsed, AgentPath::peer("k2f8").expect("peer path"));
     }
 }

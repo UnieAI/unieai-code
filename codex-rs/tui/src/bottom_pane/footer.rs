@@ -565,14 +565,23 @@ pub(crate) fn status_line_right_indicator_line(
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     goal_status_indicator: Option<&GoalStatusIndicator>,
     ide_context_active: bool,
+    unread_peer_messages: usize,
     show_cycle_hint: bool,
 ) -> Option<Line<'static>> {
     let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint)
         .or_else(|| goal_status_indicator_line(goal_status_indicator));
     let ide_context_indicator = ide_context_active.then(|| Line::from(vec!["IDE context".cyan()]));
+    // Peer messages can start a turn here, so an unacknowledged one is worth a
+    // persistent marker rather than a notification the user may have missed.
+    let peer_indicator = (unread_peer_messages > 0).then(|| {
+        Line::from(vec![
+            format!("{unread_peer_messages}").cyan().bold(),
+            " unread".cyan(),
+        ])
+    });
     let mut line: Option<Line<'static>> = None;
 
-    for indicator in [primary_indicator, ide_context_indicator]
+    for indicator in [primary_indicator, ide_context_indicator, peer_indicator]
         .into_iter()
         .flatten()
     {
@@ -1367,12 +1376,14 @@ mod tests {
                         collaboration_mode_indicator,
                         /*goal_status_indicator*/ None,
                         ide_context_active,
+                        /*unread_peer_messages*/ 0,
                         show_cycle_hint,
                     );
                     let compact = status_line_right_indicator_line(
                         collaboration_mode_indicator,
                         /*goal_status_indicator*/ None,
                         ide_context_active,
+                        /*unread_peer_messages*/ 0,
                         /*show_cycle_hint*/ false,
                     );
                     let full_width = full.as_ref().map(|line| line.width() as u16).unwrap_or(0);

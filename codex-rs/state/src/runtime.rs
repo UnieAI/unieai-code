@@ -62,6 +62,8 @@ mod logs;
 mod memories;
 mod recovery;
 mod remote_control;
+mod session_mesh;
+mod session_mesh_tasks;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod threads;
@@ -82,6 +84,11 @@ pub use recovery::runtime_db_path_for_corruption_error;
 pub use recovery::sqlite_error_detail_is_corruption;
 pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use session_mesh::SessionMeshMessageRecord;
+pub use session_mesh::SessionMeshPeerRecord;
+pub use session_mesh::SessionMeshPeerWithName;
+pub use session_mesh_tasks::SessionMeshTaskRecord;
+pub use session_mesh_tasks::TaskReportOutcome;
 pub use threads::ThreadFilterOptions;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:

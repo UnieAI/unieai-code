@@ -2375,6 +2375,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-segmentation",
+ "unieai-session-mesh",
  "url",
  "which 8.0.0",
  "windows-sys 0.52.0",
@@ -2739,6 +2740,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
+ "unieai-session-mesh",
  "url",
  "uuid",
  "walkdir",
@@ -4205,6 +4207,8 @@ dependencies = [
  "two-face",
  "unicode-segmentation",
  "unicode-width 0.2.1",
+ "unieai-session-mesh",
+ "unieai-utils-process-liveness",
  "url",
  "urlencoding",
  "uuid",
@@ -13912,6 +13916,36 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unieai-session-mesh"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
+dependencies = [
+ "anyhow",
+ "codex-protocol",
+ "codex-state",
+ "codex-uds",
+ "libc",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unieai-utils-process-liveness",
+ "uuid",
+]
+
+[[package]]
+name = "unieai-utils-process-liveness"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
+dependencies = [
+ "libc",
+ "pretty_assertions",
+ "tokio",
+]
 
 [[package]]
 name = "universal-hash"

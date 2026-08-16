@@ -327,6 +327,12 @@ impl ChatWidget {
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
+            SlashCommand::Peers => {
+                self.app_event_tx.send(AppEvent::OpenPeersPicker);
+            }
+            SlashCommand::Peer => {
+                self.add_error_message(PEER_USAGE.to_string());
+            }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
                 self.defer_input_until_settings_applied();
@@ -736,6 +742,19 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Peer if !trimmed.is_empty() => {
+                // `/peer api [k2f8] hello` — the handle may contain a space, so
+                // split after the bracketed ref when there is one.
+                match split_peer_command(trimmed) {
+                    Some((target, message)) => {
+                        self.app_event_tx.send(AppEvent::SendPeerMessage {
+                            target: target.to_string(),
+                            message: message.to_string(),
+                        });
+                    }
+                    None => self.add_error_message(PEER_USAGE.to_string()),
+                }
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -1068,7 +1087,9 @@ impl ChatWidget {
             return QueueDrain::Stop;
         }
         match cmd {
-            SlashCommand::Ide
+            SlashCommand::Peers
+            | SlashCommand::Peer
+            | SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Usage
             | SlashCommand::DebugConfig
@@ -1174,5 +1195,53 @@ impl ChatWidget {
         ));
         self.bottom_pane.drain_pending_submission_state();
         false
+    }
+}
+
+const PEER_USAGE: &str =
+    "Usage: /peer <handle> <message>  (run /peers to see handles, for example `api [k2f8]`)";
+
+/// Splits `/peer` arguments into a handle and a message.
+///
+/// A handle contains a space (`api [k2f8]`), so splitting on the first space
+/// would send the message to `api`. Splitting after the closing bracket keeps
+/// the bracketed form usable, which matters because it is the form that
+/// disambiguates duplicate names.
+fn split_peer_command(args: &str) -> Option<(&str, &str)> {
+    if let Some(close) = args.find(']') {
+        let (target, rest) = args.split_at(close + 1);
+        let message = rest.trim_start();
+        return (!message.is_empty()).then_some((target.trim(), message));
+    }
+    let (target, message) = args.split_once(char::is_whitespace)?;
+    let message = message.trim_start();
+    (!message.is_empty()).then_some((target.trim(), message))
+}
+
+#[cfg(test)]
+mod peer_command_tests {
+    use super::split_peer_command;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn a_bracketed_handle_survives_the_split() {
+        assert_eq!(
+            split_peer_command("api [k2f8] run the tests"),
+            Some(("api [k2f8]", "run the tests"))
+        );
+    }
+
+    #[test]
+    fn a_bare_name_splits_on_the_first_space() {
+        assert_eq!(
+            split_peer_command("api run the tests"),
+            Some(("api", "run the tests"))
+        );
+    }
+
+    #[test]
+    fn a_handle_with_no_message_is_rejected() {
+        assert_eq!(split_peer_command("api [k2f8]   "), None);
+        assert_eq!(split_peer_command("api"), None);
     }
 }

@@ -262,6 +262,18 @@ impl ModelProvider for ConfiguredModelProvider {
         &self.info
     }
 
+    /// Honours the provider's declared capabilities.
+    ///
+    /// The default assumes the OpenAI backend, which is wrong for a gateway
+    /// implementing only the published Responses API: it would keep offering
+    /// namespaced tools that the model can see but never successfully call.
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            namespace_tools: self.info.namespace_tools.unwrap_or(true),
+            ..ProviderCapabilities::default()
+        }
+    }
+
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -432,6 +444,7 @@ mod tests {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            namespace_tools: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -650,6 +663,7 @@ mod tests {
                 name: "Custom".to_string(),
                 base_url: Some("http://localhost:1234/v1".to_string()),
                 wire_api: WireApi::Responses,
+                namespace_tools: None,
                 requires_openai_auth: false,
                 ..Default::default()
             },

@@ -180,6 +180,36 @@ pub(crate) enum KeymapEditIntent {
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+
+    /// A refresh of the machine-local session mesh: who is reachable, and what
+    /// arrived since the last poll.
+    ///
+    /// Carries both halves because they are read together: a message is
+    /// attributed using the peer list from the same instant, so a peer that
+    /// left between the two would otherwise render as an unknown sender.
+    /// Open the full-screen peers browser.
+    OpenPeersPicker,
+
+    /// Send a message to a peer, resolved by handle.
+    SendPeerMessage {
+        target: String,
+        message: String,
+    },
+
+    /// A peer was chosen in the browser.
+    PeerPickerSelected {
+        target: String,
+    },
+
+    /// Outcome of a `/peer` send, reported back to the transcript.
+    PeerMessageSent {
+        result: Result<String, String>,
+    },
+
+    PeerBusUpdated {
+        peers: Vec<crate::peers::PeerRow>,
+        new_messages: Vec<codex_state::SessionMeshMessageRecord>,
+    },
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 

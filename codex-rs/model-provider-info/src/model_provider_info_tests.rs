@@ -26,6 +26,7 @@ base_url = "http://localhost:11434/v1"
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -60,6 +61,7 @@ query_params = { api-version = "2025-04-01-preview" }
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -97,6 +99,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -174,6 +177,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -199,6 +203,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -307,6 +312,7 @@ fn test_create_amazon_bedrock_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            namespace_tools: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -383,6 +389,7 @@ fn test_merge_configured_model_providers_unieai_override_replaces_built_in() {
         base_url: Some("https://api.demo.unieai.com/v1".to_string()),
         env_key: Some("UNIEAI_API_KEY".to_string()),
         wire_api: WireApi::Responses,
+        namespace_tools: None,
         ..ModelProviderInfo::default()
     };
     let configured_model_providers =
@@ -507,6 +514,7 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
                 region: None,
             }),
             wire_api: WireApi::Responses,
+            namespace_tools: None,
             ..ModelProviderInfo::default()
         },
     )]);
@@ -575,4 +583,32 @@ refresh_interval_ms = 0
     let auth = provider.auth.expect("auth config should deserialize");
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
+}
+
+#[test]
+fn the_unieai_gateway_offers_tools_individually() {
+    let provider = built_in_model_providers(/*unieai_base_url*/ None)
+        .get(UNIEAI_PROVIDER_ID)
+        .cloned()
+        .expect("the unieai provider is built in");
+
+    // The gateway implements the published Responses API, which has no
+    // `{"type":"namespace"}` tool. Leaving this at the default made every
+    // sub-agent tool visible to the model and impossible to call.
+    assert_eq!(provider.namespace_tools, Some(false));
+}
+
+#[test]
+fn other_built_in_providers_keep_the_default() {
+    let providers = built_in_model_providers(/*unieai_base_url*/ None);
+
+    // Only the gateway is known to lack the extension; assuming the same of
+    // every provider would silently drop namespacing where it works.
+    assert_eq!(
+        providers
+            .get("openai")
+            .expect("openai provider is built in")
+            .namespace_tools,
+        None
+    );
 }

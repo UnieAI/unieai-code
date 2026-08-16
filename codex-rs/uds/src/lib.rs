@@ -25,6 +25,73 @@ pub async fn is_stale_socket_path(socket_path: impl AsRef<Path>) -> IoResult<boo
     platform::is_stale_socket_path(socket_path.as_ref()).await
 }
 
+/// Prepares `socket_path` for binding, reclaiming it when a previous owner died
+/// without cleaning up.
+///
+/// `description` names the socket in error messages, for example
+/// `"app-server control socket"`.
+///
+/// Liveness is decided by probing rather than by inspecting timestamps: a
+/// successful connect means another process still owns the path, so this
+/// returns [`ErrorKind::AddrInUse`] instead of stealing it. `ConnectionRefused`
+/// means the path outlived its owner and is safe to unlink.
+///
+/// Callers that must not race one another should hold an advisory lock across
+/// this call; the probe-then-unlink sequence is not atomic on its own.
+pub async fn reclaim_stale_socket_path(
+    socket_path: impl AsRef<Path>,
+    description: &str,
+) -> IoResult<()> {
+    let socket_path = socket_path.as_ref();
+    if let Some(parent) = socket_path.parent() {
+        prepare_private_socket_directory(parent).await?;
+    }
+
+    match UnixStream::connect(socket_path).await {
+        Ok(_stream) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!(
+                    "{description} is already in use at {}",
+                    socket_path.display()
+                ),
+            ));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {}
+        Err(err) => {
+            if !socket_path.exists() {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
+
+    if !socket_path.try_exists()? {
+        return Ok(());
+    }
+
+    if !is_stale_socket_path(socket_path).await? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{description} path exists and is not a socket: {}",
+                socket_path.display()
+            ),
+        ));
+    }
+    tokio::fs::remove_file(socket_path).await
+}
+
+/// Restricts a bound socket to owner-only access where the platform exposes
+/// Unix permissions.
+///
+/// Binding creates the socket with the process umask applied, so this must run
+/// after [`UnixListener::bind`] rather than before it.
+pub async fn restrict_socket_permissions(socket_path: impl AsRef<Path>) -> IoResult<()> {
+    platform::restrict_socket_permissions(socket_path.as_ref()).await
+}
+
 /// Async Unix domain socket listener.
 pub struct UnixListener {
     inner: platform::Listener,
@@ -55,6 +122,17 @@ impl UnixStream {
         platform::connect_stream(socket_path.as_ref())
             .await
             .map(|inner| Self { inner })
+    }
+
+    /// Returns the uid of the process on the other end, where the platform can
+    /// prove it.
+    ///
+    /// Filesystem permissions on the socket are advisory in a way this is not:
+    /// they describe who *could* have connected, while this reports who
+    /// actually did, as attested by the kernel at connect time. Callers that
+    /// cannot get an answer should refuse rather than assume.
+    pub fn peer_uid(&self) -> IoResult<u32> {
+        platform::peer_uid(&self.inner)
     }
 }
 
@@ -99,6 +177,9 @@ mod platform {
     /// preserving owner traversal and socket path creation.
     const SOCKET_DIR_MODE: u32 = 0o700;
     const SOCKET_DIR_PERMISSION_BITS: u32 = 0o777;
+    /// Owner-only access on the socket itself, so a permissive umask cannot
+    /// widen what the 0700 directory already restricts.
+    const SOCKET_MODE: u32 = 0o600;
 
     pub(super) type Stream = UnixStream;
 
@@ -156,6 +237,14 @@ mod platform {
             .await?
             .file_type()
             .is_socket())
+    }
+
+    pub(super) async fn restrict_socket_permissions(socket_path: &Path) -> IoResult<()> {
+        fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_MODE)).await
+    }
+
+    pub(super) fn peer_uid(stream: &Stream) -> IoResult<u32> {
+        stream.peer_cred().map(|cred| cred.uid())
     }
 }
 
@@ -217,6 +306,22 @@ mod platform {
 
     pub(super) async fn is_stale_socket_path(socket_path: &Path) -> IoResult<bool> {
         tokio::fs::try_exists(socket_path).await
+    }
+
+    pub(super) async fn restrict_socket_permissions(_socket_path: &Path) -> IoResult<()> {
+        // `uds_windows` backs the rendezvous with a regular path and Windows
+        // does not expose Unix permission bits, so the 0700 directory is the
+        // only restriction available.
+        Ok(())
+    }
+
+    pub(super) fn peer_uid(_stream: &Stream) -> IoResult<u32> {
+        // No peer-credential equivalent is exposed here, so callers must treat
+        // the absence as a refusal rather than as permission.
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "peer credentials are unavailable on this platform",
+        ))
     }
 
     async fn spawn_blocking_io<T>(

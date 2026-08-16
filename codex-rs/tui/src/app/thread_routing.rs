@@ -923,6 +923,25 @@ impl App {
             self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
                 .await;
         }
+        // Token usage arrives per thread but was previously only kept for the
+        // thread on screen, which is why the resident tree can show a cost per
+        // agent that the rest of the UI cannot.
+        if let ServerNotification::ThreadTokenUsageUpdated(notification) = &notification {
+            self.agent_tokens.insert(
+                thread_id,
+                notification.token_usage.total.total_tokens.max(0) as u64,
+            );
+            self.refresh_agent_tree();
+        }
+        // The same summaries the `/agent` card shows, kept as one line per
+        // thread so the resident tree can say what each agent is doing rather
+        // than only that it is busy.
+        if let ServerNotification::ItemStarted(event) = &notification
+            && let Some(summary) = crate::app::agent_status_feed::activity_summary(&event.item)
+        {
+            self.agent_activity.insert(thread_id, summary);
+            self.refresh_agent_tree();
+        }
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
@@ -1188,6 +1207,9 @@ impl App {
     ) -> Result<()> {
         let thread_id = session.thread_id;
         self.primary_thread_id = Some(thread_id);
+        // The mesh inbox is addressed to this thread, so the poller can only
+        // start once the primary thread is known.
+        self.spawn_peer_bus_poller(thread_id);
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,

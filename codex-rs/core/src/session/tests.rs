@@ -4156,7 +4156,7 @@ fn text_block(s: &str) -> serde_json::Value {
 }
 
 async fn build_test_config(codex_home: &Path) -> Config {
-    ConfigBuilder::without_managed_config_for_tests()
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.to_path_buf())
         .harness_overrides(ConfigOverrides {
             model: Some("gpt-5.5".to_string()),
@@ -4164,7 +4164,14 @@ async fn build_test_config(codex_home: &Path) -> Config {
         })
         .build()
         .await
-        .expect("load default test config")
+        .expect("load default test config");
+    // The default provider does not support `{"type":"namespace"}`, and a
+    // provider without it drops every namespaced spec rather than flattening
+    // it. Tests that assert on namespaced tools need a provider that has the
+    // extension; ones that are about its absence set the capability
+    // themselves.
+    config.model_provider.namespace_tools = Some(true);
+    config
 }
 
 fn session_telemetry(
@@ -5319,6 +5326,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.background_terminal_max_timeout,
         ),
         elicitations: crate::elicitation::ElicitationService::new(),
+        session_mesh: Mutex::new(None),
+        session_mesh_policy: Default::default(),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
         analytics_events_client: AnalyticsEventsClient::new(
@@ -7477,6 +7486,8 @@ where
             config.background_terminal_max_timeout,
         ),
         elicitations: crate::elicitation::ElicitationService::new(),
+        session_mesh: Mutex::new(None),
+        session_mesh_policy: Default::default(),
         shell_zsh_path: None,
         main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
         analytics_events_client: AnalyticsEventsClient::new(

@@ -1,3 +1,4 @@
+pub mod debug_peers;
 pub(crate) mod debug_sandbox;
 mod exit_status;
 pub(crate) mod login;

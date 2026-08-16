@@ -514,6 +514,20 @@ pub(crate) struct App {
     pub(crate) config: Config,
     launch_cwd: PathBuf,
     pub(crate) state_db: Option<StateDbHandle>,
+    /// Drives every passive peer surface. `None` until a session starts, or
+    /// permanently when the mesh cannot work on this host.
+    peer_bus_poller: Option<tokio::task::JoinHandle<()>>,
+    /// Peer messages seen but not yet acknowledged by the user.
+    pub(crate) unread_peer_messages: usize,
+    /// Latest peer listing, used by the picker and the tree.
+    pub(crate) peer_rows: Vec<crate::peers::PeerRow>,
+    /// When each thread first appeared, for the resident tree's elapsed column.
+    pub(crate) agent_started_at: HashMap<ThreadId, std::time::Instant>,
+    /// Tokens accumulated per thread, so the tree can show cost per agent
+    /// rather than only for the thread currently on screen.
+    pub(crate) agent_tokens: HashMap<ThreadId, u64>,
+    /// Latest one-line activity per thread.
+    pub(crate) agent_activity: HashMap<ThreadId, String>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,
@@ -1070,6 +1084,12 @@ See the UnieAI Code keymap documentation for supported actions and examples."
             active_thread_id: None,
             active_thread_rx: None,
             primary_thread_id: None,
+            peer_bus_poller: None,
+            unread_peer_messages: 0,
+            peer_rows: Vec::new(),
+            agent_started_at: HashMap::new(),
+            agent_tokens: HashMap::new(),
+            agent_activity: HashMap::new(),
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),

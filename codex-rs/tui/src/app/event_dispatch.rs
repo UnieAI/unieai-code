@@ -22,6 +22,28 @@ impl App {
         event: AppEvent,
     ) -> Result<AppRunControl> {
         match event {
+            AppEvent::OpenPeersPicker => {
+                self.open_peers_picker();
+            }
+            AppEvent::SendPeerMessage { target, message } => {
+                self.send_peer_message(target, message);
+            }
+            AppEvent::PeerPickerSelected { target } => {
+                self.chat_widget.add_info_message(
+                    format!("Selected {target}"),
+                    Some(format!("send with /peer {target} <message>")),
+                );
+            }
+            AppEvent::PeerMessageSent { result } => match result {
+                Ok(summary) => self.chat_widget.add_info_message(summary, None),
+                Err(err) => self.chat_widget.add_error_message(err),
+            },
+            AppEvent::PeerBusUpdated {
+                peers,
+                new_messages,
+            } => {
+                self.handle_peer_bus_update(peers, new_messages);
+            }
             AppEvent::NewSession => {
                 self.start_fresh_session_with_summary_hint(
                     tui, app_server, /*session_start_source*/ None,

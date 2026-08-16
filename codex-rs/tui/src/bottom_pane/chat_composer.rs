@@ -602,6 +602,7 @@ impl ChatComposer {
                 collaboration_mode_indicator: None,
                 goal_status_indicator: None,
                 ide_context_active: false,
+                unread_peer_messages: 0,
                 status_line_value: None,
                 status_line_hyperlink_url: None,
                 status_line_enabled: false,
@@ -783,6 +784,10 @@ impl ChatComposer {
 
     pub fn set_ide_context_active(&mut self, active: bool) {
         self.footer.ide_context_active = active;
+    }
+
+    pub fn set_unread_peer_messages(&mut self, unread: usize) {
+        self.footer.unread_peer_messages = unread;
     }
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
@@ -1223,6 +1228,7 @@ impl ChatComposer {
             self.footer.collaboration_mode_indicator,
             self.footer.goal_status_indicator.as_ref(),
             self.footer.ide_context_active,
+            self.footer.unread_peer_messages,
             show_cycle_hint,
         ) {
             if !spans.is_empty() {

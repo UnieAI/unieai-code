@@ -71,6 +71,10 @@ pub enum SlashCommand {
     TestApproval,
     #[strum(serialize = "subagents")]
     MultiAgents,
+    /// Browse other UnieAI Code sessions on this machine.
+    Peers,
+    /// Message another session: `/peer <handle> <message>`.
+    Peer,
     // Debugging commands.
     #[strum(serialize = "debug-m-drop")]
     MemoryDrop,
@@ -121,6 +125,8 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::Peers => "browse other UnieAI Code sessions on this machine",
+            SlashCommand::Peer => "message another session on this machine",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -167,6 +173,7 @@ impl SlashCommand {
                 | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Peer
         )
     }
 
@@ -239,6 +246,9 @@ impl SlashCommand {
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Agent | SlashCommand::MultiAgents => true,
+            // Both stay available mid-turn: the point of the mesh is to reach a
+            // session that is already working.
+            SlashCommand::Peers | SlashCommand::Peer => true,
             SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }

@@ -608,6 +608,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_resource_tools(context, planned_tools);
     add_core_utility_tools(context, planned_tools);
     add_collaboration_tools(context, planned_tools);
+    add_session_mesh_tools(context, planned_tools);
     for runtime in context.tool_runtimes {
         planned_tools.add_arc(Arc::clone(runtime));
     }
@@ -783,6 +784,30 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 }
 
 #[instrument(level = "trace", skip_all)]
+/// Adds the machine-local session mesh tools.
+///
+/// Gated on the feature flag alone: a session with the mesh off publishes no
+/// registry row and binds no socket, so offering the tools would only let the
+/// model discover that it has no way to use them.
+fn add_session_mesh_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let turn_context = context.step_context.turn.as_ref();
+    if !turn_context
+        .config
+        .features
+        .get()
+        .enabled(Feature::SessionMesh)
+    {
+        return;
+    }
+    planned_tools.add(crate::tools::handlers::session_mesh::ListPeersHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::SendPeerMessageHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::PublishTaskHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::ClaimTaskHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::ReportTaskHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::ListTasksHandler);
+    planned_tools.add(crate::tools::handlers::session_mesh::SpawnPeerSessionHandler);
+}
+
 fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.step_context.turn.as_ref();
     if collab_tools_enabled(turn_context) {
@@ -852,23 +877,45 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             // without wait_agent/close_agent leaves the model unable to finish
             // what it started.
             let exposure = ToolExposure::Direct;
-            planned_tools.add_with_exposure(
-                SpawnAgentHandler::new(SpawnAgentToolOptions {
+            let namespaced = namespace_tools_enabled(turn_context);
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v1_handler(
+                    SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
                     expose_agent_type: !turn_context.config.agent_roles.is_empty(),
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
-                    usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                }),
+                        usage_hint_text: turn_context
+                            .config
+                            .multi_agent_v2
+                            .usage_hint_text
+                            .clone(),
+                    }),
+                    namespaced,
+                ),
                 exposure,
-            );
-            planned_tools.add_with_exposure(SendInputHandler, exposure);
-            planned_tools.add_with_exposure(ResumeAgentHandler, exposure);
-            planned_tools
-                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
-            planned_tools.add_with_exposure(CloseAgentHandler, exposure);
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v1_handler(SendInputHandler, namespaced),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v1_handler(ResumeAgentHandler, namespaced),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v1_handler(
+                    WaitAgentHandler::new(context.wait_agent_timeouts),
+                    namespaced,
+                ),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v1_handler(CloseAgentHandler, namespaced),
+                exposure,
+            ));
         }
     }
 
@@ -1011,6 +1058,74 @@ fn append_extension_tool_executors(
         planned_tools.add(ExtensionToolAdapter::new(executor));
     }
 }
+
+/// V1 builds its specs already wrapped in `multi_agent_v1`, the inverse of V2's
+/// opt-in wrapper. Providers without the `{"type":"namespace"}` extension need
+/// that undone, or the five tools are advertised inside a container the API
+/// rejects — visible to the model and impossible to call.
+fn multi_agent_v1_handler(
+    handler: impl CoreToolRuntime + 'static,
+    namespaced: bool,
+) -> Arc<dyn CoreToolRuntime> {
+    if namespaced {
+        Arc::new(handler)
+    } else {
+        Arc::new(MultiAgentV1NamespaceFlattened {
+            handler: Arc::new(handler),
+        })
+    }
+}
+
+struct MultiAgentV1NamespaceFlattened {
+    handler: Arc<dyn CoreToolRuntime>,
+}
+
+impl ToolExecutor<ToolInvocation> for MultiAgentV1NamespaceFlattened {
+    fn tool_name(&self) -> ToolName {
+        // The name has to move in lockstep with the spec: leaving it
+        // namespaced would advertise `spawn_agent` and then fail to route the
+        // call the model makes back to this handler.
+        ToolName::plain(self.handler.tool_name().name)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        match self.handler.spec() {
+            ToolSpec::Namespace(namespace) => namespace
+                .tools
+                .into_iter()
+                .next()
+                .map_or_else(
+                    || None,
+                    |tool| match tool {
+                        ResponsesApiNamespaceTool::Function(function) => {
+                            Some(ToolSpec::Function(function))
+                        }
+                        _ => None,
+                    },
+                )
+                .unwrap_or_else(|| self.handler.spec()),
+            spec => spec,
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.handler.exposure()
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.handler.supports_parallel_tool_calls()
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        self.handler.search_info()
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        self.handler.handle(invocation)
+    }
+}
+
+impl CoreToolRuntime for MultiAgentV1NamespaceFlattened {}
 
 fn multi_agent_v2_handler(
     handler: impl CoreToolRuntime + 'static,

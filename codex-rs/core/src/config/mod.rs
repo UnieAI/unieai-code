@@ -864,6 +864,8 @@ pub struct Config {
 
     /// Whether multi-agent tools are enabled through `[agents]`.
     pub agents_enabled: bool,
+    /// Per-session policy for the machine-local session mesh.
+    pub session_mesh: SessionMeshConfig,
 
     /// User-configured maximum number of spawned agent threads per session.
     pub agent_max_threads: Option<usize>,
@@ -2860,6 +2862,31 @@ fn multi_agent_v2_toml_config(features: Option<&FeaturesToml>) -> Option<&MultiA
     }
 }
 
+fn session_mesh_toml_config(
+    features: Option<&FeaturesToml>,
+) -> Option<&codex_features::SessionMeshConfigToml> {
+    match features?.session_mesh.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
+/// Resolves the session mesh's per-session policy.
+pub(crate) fn resolve_session_mesh_config(features: Option<&FeaturesToml>) -> SessionMeshConfig {
+    let base = session_mesh_toml_config(features);
+    SessionMeshConfig {
+        closed: matches!(
+            base.and_then(|config| config.accept),
+            Some(codex_features::SessionMeshAcceptToml::Closed)
+        ),
+        allow_peer_turn_start: base
+            .and_then(|config| config.allow_peer_turn_start)
+            .unwrap_or(true),
+        trigger_turn_min_interval_ms: base.and_then(|config| config.trigger_turn_min_interval_ms),
+        max_hops: base.and_then(|config| config.max_hops),
+    }
+}
+
 fn token_budget_toml_config(features: Option<&FeaturesToml>) -> Option<&TokenBudgetConfigToml> {
     match features?.token_budget.as_ref()? {
         FeatureToml::Enabled(_) => None,
@@ -3581,6 +3608,9 @@ impl Config {
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
 
+        // Borrows only `features`, so it composes with the surrounding code
+        // moving other fields out of `cfg`.
+        let session_mesh = resolve_session_mesh_config(cfg.features.as_ref());
         let history = cfg.history.unwrap_or_default();
 
         if multi_agent_v2.max_concurrent_threads_per_session == 0 {
@@ -4034,6 +4064,7 @@ impl Config {
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
             agents_enabled,
+            session_mesh,
             agent_max_threads,
             agent_default_subagent_model,
             agent_default_subagent_reasoning_effort,
@@ -4551,3 +4582,28 @@ mod tests;
 #[cfg(test)]
 #[path = "config_loader_tests.rs"]
 mod config_loader_tests;
+
+/// How this session participates in the machine-local mesh.
+///
+/// Two independent switches rather than one: `closed` answers "can peers reach
+/// me at all", `allow_peer_turn_start` answers "can they make me work". A user
+/// who wants discovery and an inbox without anyone spending their tokens needs
+/// the second without the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMeshConfig {
+    pub closed: bool,
+    pub allow_peer_turn_start: bool,
+    pub trigger_turn_min_interval_ms: Option<u64>,
+    pub max_hops: Option<u32>,
+}
+
+impl Default for SessionMeshConfig {
+    fn default() -> Self {
+        Self {
+            closed: false,
+            allow_peer_turn_start: true,
+            trigger_turn_min_interval_ms: None,
+            max_hops: None,
+        }
+    }
+}

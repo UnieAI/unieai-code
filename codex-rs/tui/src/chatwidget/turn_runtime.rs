@@ -497,6 +497,11 @@ impl ChatWidget {
             .count();
         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
         self.refresh_status_surfaces();
+        // Also kept resident above the composer: the transcript card scrolls
+        // away with the next message, which made "what am I working on" a
+        // question the user had to re-ask.
+        self.bottom_pane
+            .set_agent_tree_todos(crate::bottom_pane::todo_rows_from_plan(&update));
         self.add_to_history(history_cell::new_plan_update(update));
     }
 

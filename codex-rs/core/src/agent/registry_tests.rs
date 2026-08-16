@@ -348,3 +348,32 @@ fn committed_agent_path_is_indexed_until_release() {
         None
     );
 }
+
+#[test]
+fn a_peer_path_cannot_be_registered_as_a_local_agent() {
+    let registry = AgentRegistry::default();
+
+    // Peers are other processes' sessions. Admitting one here would make it
+    // count against this session's sub-agent budget, so opening a second
+    // terminal would start failing your own `spawn_agent` calls.
+    let err = registry
+        .reserve_agent_path(&agent_path("/peer/k2f8"))
+        .expect_err("a peer path must be rejected");
+
+    assert!(err.to_string().contains("peer session"), "{err}");
+}
+
+#[test]
+fn ordinary_agent_paths_are_still_reservable() {
+    let registry = AgentRegistry::default();
+
+    registry
+        .reserve_agent_path(&agent_path("/root/worker"))
+        .expect("a normal agent path should reserve");
+    assert!(
+        registry
+            .reserve_agent_path(&agent_path("/root/worker"))
+            .is_err(),
+        "reserving the same path twice must still fail"
+    );
+}

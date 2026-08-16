@@ -130,6 +130,16 @@ pub struct ModelProviderInfo {
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
+    /// Whether this provider understands namespaced tools (`{"type":"namespace"}`).
+    ///
+    /// That shape is an OpenAI-backend extension, not part of the public
+    /// Responses API, so a gateway that implements the published spec will
+    /// advertise the namespace to the model and then reject every call into it
+    /// — the tools inside look available and are not. Set this to `false` for
+    /// such gateways and the tools are offered individually instead.
+    ///
+    /// Defaults to `true`, matching the historical behaviour.
+    pub namespace_tools: Option<bool>,
     /// Maximum time (in milliseconds) to wait for a websocket connection attempt before treating
     /// it as failed.
     pub websocket_connect_timeout_ms: Option<u64>,
@@ -366,6 +376,13 @@ impl ModelProviderInfo {
             // within a couple of minutes instead of tens of minutes.
             stream_max_retries: Some(3),
             stream_idle_timeout_ms: Some(75_000),
+            // `{"type":"namespace"}` is an OpenAI-backend extension, not part
+            // of the published Responses API, so this gateway advertises the
+            // namespace to the model and then rejects every call into it. The
+            // sub-agent tools live inside one, which made `spawn_agent` and
+            // `wait_agent` visible but uncallable. Offering them individually
+            // is what makes sub-agents work here at all.
+            namespace_tools: Some(false),
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -403,6 +420,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            namespace_tools: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
@@ -436,6 +454,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            namespace_tools: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -592,6 +611,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,

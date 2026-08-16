@@ -70,6 +70,58 @@ pub struct MultiAgentV2ConfigToml {
     pub non_code_mode_only: Option<bool>,
 }
 
+/// What this session lets other sessions on the machine do to it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMeshAcceptToml {
+    /// Reachable: peers may message this session, subject to hop and rate
+    /// limits.
+    #[default]
+    Open,
+    /// Unreachable. No socket is bound and no registry row is published, so the
+    /// session is neither listed nor addressable — the same state as having the
+    /// feature off, chosen per session rather than globally.
+    Closed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionMeshConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Whether this session can be reached by other sessions at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accept: Option<SessionMeshAcceptToml>,
+    /// Whether a peer's message may start a turn here.
+    ///
+    /// Separate from `accept` because the two answer different questions:
+    /// `accept` is "can they reach me", this is "can they make me work".
+    /// Turning it off keeps discovery and the inbox while removing the only
+    /// way a peer can spend your tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_peer_turn_start: Option<bool>,
+    /// Minimum gap between turn-starting deliveries from one peer, in
+    /// milliseconds. Messages arriving faster are queued instead of dropped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = 3600000))]
+    pub trigger_turn_min_interval_ms: Option<u64>,
+    /// How many times a message may be relayed before it is refused. Stops two
+    /// sessions from answering each other forever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 16))]
+    pub max_hops: Option<u32>,
+}
+
+impl FeatureConfig for SessionMeshConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = Some(enabled);
+    }
+}
+
 impl FeatureConfig for MultiAgentV2ConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled

@@ -656,6 +656,9 @@
             "secret_auth_storage": {
               "type": "boolean"
             },
+            "session_mesh": {
+              "$ref": "#/definitions/FeatureToml_for_SessionMeshConfigToml"
+            },
             "shell_snapshot": {
               "type": "boolean"
             },
@@ -1014,6 +1017,16 @@
         },
         {
           "$ref": "#/definitions/RolloutBudgetConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_SessionMeshConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/SessionMeshConfigToml"
         }
       ]
     },
@@ -1708,6 +1721,10 @@
           "default": "",
           "description": "Friendly display name.",
           "type": "string"
+        },
+        "namespace_tools": {
+          "description": "Whether this provider understands namespaced tools (`{\"type\":\"namespace\"}`).\n\nThat shape is an OpenAI-backend extension, not part of the public Responses API, so a gateway that implements the published spec will advertise the namespace to the model and then reject every call into it — the tools inside look available and are not. Set this to `false` for such gateways and the tools are offered individually instead.\n\nDefaults to `true`, matching the historical behaviour.",
+          "type": "boolean"
         },
         "query_params": {
           "additionalProperties": {
@@ -2843,6 +2860,60 @@
             "$ref": "#/definitions/AbsolutePathBuf"
           },
           "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SessionMeshAcceptToml": {
+      "description": "What this session lets other sessions on the machine do to it.",
+      "oneOf": [
+        {
+          "description": "Reachable: peers may message this session, subject to hop and rate limits.",
+          "enum": [
+            "open"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Unreachable. No socket is bound and no registry row is published, so the session is neither listed nor addressable — the same state as having the feature off, chosen per session rather than globally.",
+          "enum": [
+            "closed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SessionMeshConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "accept": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionMeshAcceptToml"
+            }
+          ],
+          "description": "Whether this session can be reached by other sessions at all."
+        },
+        "allow_peer_turn_start": {
+          "description": "Whether a peer's message may start a turn here.\n\nSeparate from `accept` because the two answer different questions: `accept` is \"can they reach me\", this is \"can they make me work\". Turning it off keeps discovery and the inbox while removing the only way a peer can spend your tokens.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_hops": {
+          "description": "How many times a message may be relayed before it is refused. Stops two sessions from answering each other forever.",
+          "format": "uint32",
+          "maximum": 16.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "trigger_turn_min_interval_ms": {
+          "description": "Minimum gap between turn-starting deliveries from one peer, in milliseconds. Messages arriving faster are queued instead of dropped.",
+          "format": "uint64",
+          "maximum": 3600000.0,
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -5096,6 +5167,9 @@
         },
         "secret_auth_storage": {
           "type": "boolean"
+        },
+        "session_mesh": {
+          "$ref": "#/definitions/FeatureToml_for_SessionMeshConfigToml"
         },
         "shell_snapshot": {
           "type": "boolean"

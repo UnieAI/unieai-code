@@ -266,6 +266,15 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
     );
 }
 
+fn use_namespace_free_provider(turn: &mut TurnContext) {
+    let mut provider_info = turn.config.model_provider.clone();
+    provider_info.namespace_tools = Some(false);
+    update_config(turn, |config| {
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
 fn use_bedrock_provider(turn: &mut TurnContext) {
     let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
     update_config(turn, |config| {
@@ -1657,4 +1666,99 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     })
     .await;
     unsupported_provider.assert_visible_lacks(&["web_search"]);
+}
+
+#[tokio::test]
+async fn session_mesh_tools_follow_the_feature_flag() {
+    // The flag is the consent gate: with it off a session publishes no registry
+    // row and binds no socket, so offering the tools would only let the model
+    // discover it has no way to use them.
+    let disabled = probe(|_| {}).await;
+    disabled.assert_visible_lacks(&[
+        "list_peers",
+        "send_peer_message",
+        "publish_task",
+        "claim_task",
+        "report_task",
+        "list_tasks",
+    ]);
+
+    let enabled = probe(|turn| {
+        set_feature(turn, Feature::SessionMesh, /*enabled*/ true);
+    })
+    .await;
+    enabled.assert_visible_contains(&[
+        "list_peers",
+        "send_peer_message",
+        "publish_task",
+        "claim_task",
+        "report_task",
+        "list_tasks",
+        "spawn_peer_session",
+    ]);
+}
+
+#[tokio::test]
+async fn session_mesh_tools_are_independent_of_the_sub_agent_tools() {
+    // Peers and sub-agents are separate surfaces on purpose. Turning the mesh
+    // on must not change which collaboration tools a session gets, and vice
+    // versa, or a user who enables one silently changes the other.
+    let mesh_only = probe(|turn| {
+        set_feature(turn, Feature::SessionMesh, /*enabled*/ true);
+    })
+    .await;
+    mesh_only.assert_visible_contains(&["list_peers"]);
+    mesh_only.assert_visible_lacks(&["list_agents"]);
+}
+
+#[tokio::test]
+async fn v1_agent_tools_are_offered_individually_without_namespace_support() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        use_namespace_free_provider(turn);
+    })
+    .await;
+
+    // `{"type":"namespace"}` is an OpenAI-backend extension. Advertising the
+    // five tools inside one on a provider that lacks it left them visible to
+    // the model and impossible to call, so sub-agents never worked at all.
+    plan.assert_visible_lacks(&[MULTI_AGENT_V1_NAMESPACE]);
+    plan.assert_visible_contains(&[
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ]);
+
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        // The registered name has to follow the advertised one, or the call the
+        // model makes cannot be routed back to its handler.
+        assert!(
+            plan.registered_names.contains(&tool_name.to_string()),
+            "expected a bare runtime for {tool_name}"
+        );
+        assert!(
+            !plan
+                .registered_names
+                .contains(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()),
+            "{tool_name} should not also stay registered under the namespace"
+        );
+        assert_eq!(plan.exposure(tool_name), ToolExposure::Direct);
+    }
+
+    let ToolSpec::Function(spawn_agent) = plan.visible_spec("spawn_agent") else {
+        panic!("expected a plain spawn_agent function");
+    };
+    assert!(
+        spawn_agent.output_schema.is_some(),
+        "flattening must preserve the tool's own schema, not just its name"
+    );
 }

@@ -595,6 +595,9 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    // Withdrawn first so a peer stops seeing this session as reachable before
+    // its machinery starts tearing down under them.
+    crate::session::mesh::leave_session_mesh(sess).await;
     if let Some(startup_prewarm) = sess.take_session_startup_prewarm().await {
         startup_prewarm.abort().await;
     }

@@ -6,7 +6,6 @@ use std::path::Path;
 use super::TransportEvent;
 use crate::transport::websocket::run_websocket_connection;
 use codex_uds::UnixListener;
-use codex_uds::UnixStream;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::StreamExt;
 use tokio::sync::mpsc;
@@ -20,6 +19,9 @@ use tracing::warn;
 
 #[cfg(unix)]
 const CONTROL_SOCKET_MODE: u32 = 0o600;
+
+/// Names the socket in reclaim errors surfaced to operators.
+const CONTROL_SOCKET_DESCRIPTION: &str = "app-server control socket";
 
 pub async fn start_control_socket_acceptor(
     socket_path: AbsolutePathBuf,
@@ -91,44 +93,7 @@ async fn run_control_socket_acceptor(
 }
 
 pub async fn prepare_control_socket_path(socket_path: &Path) -> IoResult<()> {
-    if let Some(parent) = socket_path.parent() {
-        codex_uds::prepare_private_socket_directory(parent).await?;
-    }
-
-    match UnixStream::connect(socket_path).await {
-        Ok(_stream) => {
-            return Err(std::io::Error::new(
-                ErrorKind::AddrInUse,
-                format!(
-                    "app-server control socket is already in use at {}",
-                    socket_path.display()
-                ),
-            ));
-        }
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(err) if err.kind() == ErrorKind::ConnectionRefused => {}
-        Err(err) => {
-            if !socket_path.exists() {
-                return Ok(());
-            }
-            return Err(err);
-        }
-    }
-
-    if !socket_path.try_exists()? {
-        return Ok(());
-    }
-
-    if !codex_uds::is_stale_socket_path(socket_path).await? {
-        return Err(std::io::Error::new(
-            ErrorKind::AlreadyExists,
-            format!(
-                "app-server control socket path exists and is not a socket: {}",
-                socket_path.display()
-            ),
-        ));
-    }
-    tokio::fs::remove_file(socket_path).await
+    codex_uds::reclaim_stale_socket_path(socket_path, CONTROL_SOCKET_DESCRIPTION).await
 }
 
 pub struct AppServerStartupLock {

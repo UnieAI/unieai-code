@@ -119,3 +119,109 @@ async fn stream_round_trips_data_between_listener_and_client() {
 
     server_task.await.expect("server task should join");
 }
+
+const TEST_SOCKET_DESCRIPTION: &str = "test socket";
+
+#[tokio::test]
+async fn reclaim_stale_socket_path_accepts_missing_path() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("nested").join("socket");
+
+    reclaim_stale_socket_path(&socket_path, TEST_SOCKET_DESCRIPTION)
+        .await
+        .expect("missing path should be reclaimable");
+
+    // The parent is created as a side effect so the caller can bind immediately.
+    assert!(socket_path.parent().expect("parent").is_dir());
+    assert!(!socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reclaim_stale_socket_path_removes_socket_left_by_a_dead_owner() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("socket");
+    let listener = match UnixListener::bind(&socket_path).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: failed to bind unix socket: {err}");
+            return;
+        }
+        Err(err) => panic!("failed to bind test socket: {err}"),
+    };
+    // Dropping the listener closes the socket without unlinking the path, which
+    // is exactly the state a SIGKILLed owner leaves behind.
+    drop(listener);
+    assert!(socket_path.exists());
+
+    reclaim_stale_socket_path(&socket_path, TEST_SOCKET_DESCRIPTION)
+        .await
+        .expect("stale socket should be reclaimed");
+
+    assert!(!socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reclaim_stale_socket_path_refuses_to_steal_a_live_socket() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("socket");
+    let _listener = match UnixListener::bind(&socket_path).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: failed to bind unix socket: {err}");
+            return;
+        }
+        Err(err) => panic!("failed to bind test socket: {err}"),
+    };
+
+    let err = reclaim_stale_socket_path(&socket_path, TEST_SOCKET_DESCRIPTION)
+        .await
+        .expect_err("a live socket must not be reclaimed");
+
+    assert_eq!(err.kind(), ErrorKind::AddrInUse);
+    assert!(err.to_string().contains(TEST_SOCKET_DESCRIPTION));
+    assert!(socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reclaim_stale_socket_path_refuses_a_non_socket_path() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("socket");
+    std::fs::write(&socket_path, b"not a socket").expect("regular file should be created");
+
+    let err = reclaim_stale_socket_path(&socket_path, TEST_SOCKET_DESCRIPTION)
+        .await
+        .expect_err("a regular file must not be unlinked");
+
+    assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+    assert!(socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restrict_socket_permissions_makes_a_bound_socket_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("socket");
+    let _listener = match UnixListener::bind(&socket_path).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: failed to bind unix socket: {err}");
+            return;
+        }
+        Err(err) => panic!("failed to bind test socket: {err}"),
+    };
+
+    restrict_socket_permissions(&socket_path)
+        .await
+        .expect("socket permissions should be restricted");
+
+    let mode = std::fs::metadata(&socket_path)
+        .expect("socket metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}

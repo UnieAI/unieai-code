@@ -52,6 +52,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 mod action_required_title;
+mod agent_tree;
 mod app_link_view;
 mod approval_overlay;
 mod mcp_server_elicitation;
@@ -130,8 +131,8 @@ mod feedback_view;
 mod hooks_browser_view;
 pub(crate) use feedback_view::FeedbackAudience;
 pub(crate) use feedback_view::feedback_classification;
-pub(crate) use feedback_view::feedback_rating;
 pub(crate) use feedback_view::feedback_disabled_params;
+pub(crate) use feedback_view::feedback_rating;
 pub(crate) use feedback_view::feedback_selection_params;
 pub(crate) use feedback_view::feedback_success_cell;
 pub(crate) use feedback_view::feedback_upload_consent_params;
@@ -219,6 +220,9 @@ pub(crate) struct BottomPane {
     /// input state is retained when the view is closed.
     composer: ChatComposer,
 
+    /// Resident panel above the composer: the todo list and who is working.
+    agent_tree: agent_tree::AgentTree,
+
     /// Stack of views displayed instead of the composer (e.g. popups/modals).
     view_stack: Vec<Box<dyn BottomPaneView>>,
     delayed_approval_requests: VecDeque<DelayedApprovalRequest>,
@@ -293,6 +297,7 @@ impl BottomPane {
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
         Self {
+            agent_tree: agent_tree::AgentTree::default(),
             composer,
             view_stack: Vec::new(),
             delayed_approval_requests: VecDeque::new(),
@@ -428,6 +433,11 @@ impl BottomPane {
 
     pub fn set_ide_context_active(&mut self, active: bool) {
         self.composer.set_ide_context_active(active);
+        self.request_redraw();
+    }
+
+    pub fn set_unread_peer_messages(&mut self, unread: usize) {
+        self.composer.set_unread_peer_messages(unread);
         self.request_redraw();
     }
 
@@ -597,6 +607,77 @@ impl BottomPane {
         self.push_view(Box::new(modal));
     }
 
+    /// Routes a key to the resident tree when the tree owns the arrow keys.
+    ///
+    /// Entry is `Down` from an empty composer, never `Up`. History recall keeps
+    /// `Up` outright — it is the most-used binding in the TUI, and borrowing it
+    /// would cost more than the panel is worth. `Down` at an empty composer
+    /// does nothing today, so the tree can have it for free: walk back down
+    /// through history, land on the empty composer, press down once more, and
+    /// you are in the tree.
+    fn route_key_to_agent_tree(&mut self, key_event: KeyEvent) -> Option<InputResult> {
+        if key_event.kind == KeyEventKind::Release {
+            return None;
+        }
+
+        match self.agent_tree.focus() {
+            agent_tree::PaneFocus::Composer => {
+                let takes_focus = key_event.code == KeyCode::Down
+                    && !key_hint::has_ctrl_or_alt(key_event.modifiers)
+                    && self.composer.is_empty()
+                    && self.agent_tree.focus_tree();
+                takes_focus.then(|| {
+                    self.request_redraw();
+                    InputResult::None
+                })
+            }
+            agent_tree::PaneFocus::AgentTree => {
+                match key_event.code {
+                    // Up from the first row leaves the way you came in, so the
+                    // pair of keys is symmetric.
+                    KeyCode::Up => {
+                        if !self.agent_tree.select_previous() {
+                            self.agent_tree.focus_composer();
+                        }
+                    }
+                    KeyCode::Down => self.agent_tree.select_next(),
+                    KeyCode::Esc => self.agent_tree.focus_composer(),
+                    KeyCode::Enter => {
+                        if let Some(target) = self.agent_tree.selected_target().cloned() {
+                            let agent_tree::TreeTarget::Thread(thread_id) = target;
+                            self.app_event_tx
+                                .send(AppEvent::SelectAgentThread(thread_id));
+                        }
+                        self.agent_tree.focus_composer();
+                    }
+                    // Anything else is the user typing, which means they are
+                    // done with the tree; the keystroke still reaches the
+                    // composer so no input is lost.
+                    _ => {
+                        self.agent_tree.focus_composer();
+                        return None;
+                    }
+                }
+                self.request_redraw();
+                Some(InputResult::None)
+            }
+        }
+    }
+
+    /// Replaces the resident todo list.
+    pub(crate) fn set_agent_tree_todos(&mut self, todos: Vec<agent_tree::TodoRow>) {
+        if self.agent_tree.set_todos(todos) {
+            self.request_redraw();
+        }
+    }
+
+    /// Replaces the resident agent and peer rows.
+    pub(crate) fn set_agent_tree_agents(&mut self, agents: Vec<agent_tree::AgentRow>) {
+        if self.agent_tree.set_agents(agents) {
+            self.request_redraw();
+        }
+    }
+
     /// Forward a key event to the active view or the composer.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> InputResult {
         // If a modal/view is active, handle it here; otherwise forward to composer.
@@ -655,6 +736,9 @@ impl BottomPane {
                 status.interrupt();
                 self.request_redraw();
                 return InputResult::None;
+            }
+            if let Some(result) = self.route_key_to_agent_tree(key_event) {
+                return result;
             }
             let records_composer_activity =
                 matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -1742,6 +1826,11 @@ impl BottomPane {
             RenderableItem::Borrowed(view)
         } else {
             let mut flex = FlexRenderable::new();
+            // Above the status line so it reads as context for what follows,
+            // and so a status update does not push it around.
+            if !self.agent_tree.is_empty() {
+                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.agent_tree));
+            }
             if let Some(status) = &self.status {
                 flex.push(/*flex*/ 0, RenderableItem::Borrowed(status));
             }
@@ -1862,6 +1951,44 @@ impl BottomPane {
             self.request_redraw();
         }
     }
+}
+
+pub(crate) use agent_tree::AgentRow;
+pub(crate) use agent_tree::TreeTarget;
+
+/// Renders a duration the way a status line should: two units at most, so the
+/// column stays a stable width as agents run.
+pub(crate) fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds >= 3600 {
+        format!("{}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
+    } else if seconds >= 60 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Converts an `update_plan` payload into resident todo rows.
+pub(crate) fn todo_rows_from_plan(
+    update: &codex_protocol::plan_tool::UpdatePlanArgs,
+) -> Vec<agent_tree::TodoRow> {
+    update
+        .plan
+        .iter()
+        .map(|item| agent_tree::TodoRow {
+            text: item.step.clone(),
+            status: match item.status {
+                codex_protocol::plan_tool::StepStatus::Pending => agent_tree::TodoStatus::Pending,
+                codex_protocol::plan_tool::StepStatus::InProgress => {
+                    agent_tree::TodoStatus::InProgress
+                }
+                codex_protocol::plan_tool::StepStatus::Completed => {
+                    agent_tree::TodoStatus::Completed
+                }
+            },
+        })
+        .collect()
 }
 
 struct ChatComposerRightReserveRenderable<'a> {

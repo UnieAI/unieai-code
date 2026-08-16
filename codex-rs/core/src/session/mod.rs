@@ -206,6 +206,7 @@ mod inject;
 mod input_queue;
 mod mcp;
 mod mcp_runtime;
+pub(crate) mod mesh;
 pub(crate) mod multi_agents;
 mod review;
 mod rollout_budget;
@@ -715,6 +716,8 @@ impl Session {
                 .await;
         }
         let thread_id = session.thread_id;
+
+        crate::session::mesh::join_session_mesh(&session).await;
 
         // This task will run until Op::Shutdown is received.
         let session_for_loop = Arc::clone(&session);

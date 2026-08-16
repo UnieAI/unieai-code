@@ -93,6 +93,13 @@ pub(crate) struct SessionServices {
     pub(crate) managed_network_requirements_configured: bool,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
+    /// This session's membership in the machine-local mesh, when it joined.
+    ///
+    /// Set after construction rather than here: the mesh's inbound callbacks
+    /// need a `Weak<Session>`, which does not exist until the `Arc` does.
+    pub(crate) session_mesh: Mutex<Option<std::sync::Arc<unieai_session_mesh::MeshNode>>>,
+    /// This session's mesh policy, resolved once at construction.
+    pub(crate) session_mesh_policy: crate::config::SessionMeshConfig,
     pub(crate) live_thread: Option<LiveThread>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,

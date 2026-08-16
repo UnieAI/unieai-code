@@ -27,6 +27,8 @@ pub use feature_configs::NetworkProxyModeToml;
 pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
+pub use feature_configs::SessionMeshAcceptToml;
+pub use feature_configs::SessionMeshConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
@@ -154,6 +156,13 @@ pub enum Feature {
     MultiAgentMode,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
+    /// Enable the machine-local session mesh: peer discovery and messaging
+    /// between separate CLI processes.
+    ///
+    /// This flag is the consent gate. A session with it off publishes no
+    /// registry row and binds no socket, so it can be neither listed nor
+    /// addressed by another process.
+    SessionMesh,
     /// Enable apps.
     Apps,
     /// Enable MCP apps.
@@ -648,6 +657,8 @@ pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mesh: Option<FeatureToml<SessionMeshConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<FeatureToml<TokenBudgetConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_budget: Option<FeatureToml<RolloutBudgetConfigToml>>,
@@ -685,6 +696,9 @@ impl FeaturesToml {
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
         }
+        if let Some(enabled) = self.session_mesh.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::SessionMesh.key().to_string(), enabled);
+        }
         if let Some(enabled) = self.token_budget.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::TokenBudget.key().to_string(), enabled);
         }
@@ -709,6 +723,7 @@ impl FeaturesToml {
         let Self {
             code_mode,
             multi_agent_v2,
+            session_mesh,
             token_budget,
             rollout_budget,
             current_time_reminder,
@@ -725,6 +740,8 @@ impl FeaturesToml {
                 materialize_resolved_feature_enabled(code_mode, enabled);
             } else if spec.id == Feature::MultiAgentV2 {
                 materialize_resolved_feature_enabled(multi_agent_v2, enabled);
+            } else if spec.id == Feature::SessionMesh {
+                materialize_resolved_feature_enabled(session_mesh, enabled);
             } else if spec.id == Feature::TokenBudget {
                 materialize_resolved_feature_enabled(token_budget, enabled);
             } else if spec.id == Feature::RolloutBudget {
@@ -1056,6 +1073,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentMode,
         key: "multi_agent_mode",
         stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::SessionMesh,
+        key: "session_mesh",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

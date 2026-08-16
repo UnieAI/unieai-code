@@ -968,3 +968,14 @@ mod tests {
             .join("")
     }
 }
+
+/// A compact label for a thread with no nickname or role.
+///
+/// Uses the mesh's short-ref alphabet so a thread and a peer read the same way
+/// in one list, rather than one showing a UUID fragment and the other a handle.
+pub(crate) fn short_thread_label(thread_id: ThreadId) -> String {
+    unieai_session_mesh::short_ref_for(thread_id)
+        .chars()
+        .take(4)
+        .collect()
+}

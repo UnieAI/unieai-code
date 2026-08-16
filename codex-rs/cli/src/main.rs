@@ -240,6 +240,10 @@ enum DebugSubcommand {
     #[clap(hide = true)]
     TraceReduce(DebugTraceReduceCommand),
 
+    /// Inspect and exercise the machine-local session mesh.
+    #[clap(hide = true)]
+    Peers(codex_cli::debug_peers::DebugPeersCommand),
+
     /// Internal: reset local memory state for a fresh start.
     #[clap(hide = true)]
     ClearMemories,
@@ -1516,6 +1520,14 @@ async fn cli_main(
                     "debug models",
                 )?;
                 run_debug_models_command(cmd, root_config_overrides).await?;
+            }
+            DebugSubcommand::Peers(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug peers",
+                )?;
+                codex_cli::debug_peers::run_debug_peers_command(cmd, root_config_overrides).await?;
             }
             DebugSubcommand::AppServer(cmd) => {
                 reject_remote_mode_for_subcommand(

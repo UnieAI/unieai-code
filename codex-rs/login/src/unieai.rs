@@ -407,7 +407,7 @@ inference access (Studio → Keys), then retry `unieai login`",
                         .and_then(|name| name.as_str())
                         .filter(|name| !name.is_empty())
                         .map(str::to_string),
-                    context_window: info.get("contextWindow").and_then(|value| value.as_i64()),
+                    context_window: info.get("contextWindow").and_then(serde_json::Value::as_i64),
                 })
                 .collect::<Vec<UnieAIModel>>()
         });

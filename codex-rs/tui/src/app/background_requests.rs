@@ -73,6 +73,265 @@ impl App {
     /// a startup prefetch (which updates cached snapshots and may surface a
     /// reset-credit notice) from a `/status`-triggered refresh (which must
     /// finalize the corresponding status card).
+    /// Rebuilds the resident tree from whatever the app currently knows.
+    ///
+    /// Recomputed rather than mutated in place: the sources update
+    /// independently (thread events, the peer poll, token accounting) and
+    /// keeping one derivation avoids the rows disagreeing with each other.
+    pub(super) fn refresh_agent_tree(&mut self) {
+        let rows: Vec<crate::bottom_pane::AgentRow> = self
+            .agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, entry)| {
+                // Recorded here as well as on upsert: a thread can reach the
+                // panel through paths that never call the picker upsert, and a
+                // row with no elapsed time looks like a bug rather than a gap.
+                let started_at = *self
+                    .agent_started_at
+                    .entry(thread_id)
+                    .or_insert_with(std::time::Instant::now);
+                let label = entry
+                    .agent_nickname
+                    .clone()
+                    .or_else(|| entry.agent_role.clone())
+                    // A spawned agent is named by its path (`/root/plan`) even
+                    // when it has no nickname, and that name is what the user
+                    // asked for — falling straight through to a short ref threw
+                    // away the one label they chose.
+                    .or_else(|| {
+                        entry.agent_path.as_deref().and_then(|path| {
+                            path.rsplit('/')
+                                .next()
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_string)
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        if Some(thread_id) == self.primary_thread_id {
+                            "main".to_string()
+                        } else {
+                            crate::multi_agents::short_thread_label(thread_id)
+                        }
+                    });
+                crate::bottom_pane::AgentRow {
+                    target: crate::bottom_pane::TreeTarget::Thread(thread_id),
+                    label,
+                    activity: self.agent_activity.get(&thread_id).cloned(),
+                    is_running: entry.is_running,
+                    is_active: self.active_thread_id == Some(thread_id),
+                    elapsed: Some(crate::bottom_pane::format_elapsed(started_at.elapsed())),
+                    tokens: self.agent_tokens.get(&thread_id).copied(),
+                }
+            })
+            .collect();
+
+        // Peers are deliberately not in this list. This panel answers "what is
+        // my session doing right now", and a peer is somebody else's session —
+        // mixing them makes the elapsed and token columns meaningless and
+        // invites the user to treat another person's work as their own. Peers
+        // have their own surfaces: the unread badge, transcript cards, and
+        // `/peers`.
+        self.chat_widget.set_agent_tree_agents(rows);
+    }
+
+    /// Opens the peer browser.
+    ///
+    /// Built from the last poll rather than a fresh probe so the panel opens
+    /// instantly; acting on a peer re-resolves it, which is where staleness
+    /// actually matters.
+    pub(super) fn open_peers_picker(&mut self) {
+        let feature_enabled = self
+            .config
+            .features
+            .enabled(codex_features::Feature::SessionMesh);
+        if let Err(unavailable) = crate::peers::peer_bus_available(
+            feature_enabled,
+            self.state_db.is_some(),
+            &self.app_server_target,
+        ) {
+            // Unavailable and empty must not look the same, so say which.
+            self.chat_widget
+                .add_error_message(unavailable.message().to_string());
+            return;
+        }
+        if self.peer_rows.is_empty() {
+            self.chat_widget.add_info_message(
+                "No other sessions are reachable on this machine yet.".to_string(),
+                Some("start another `unieai` session to see it here".to_string()),
+            );
+            return;
+        }
+
+        let items: Vec<SelectionItem> = self
+            .peer_rows
+            .iter()
+            .map(|peer| {
+                let handle = peer.handle.clone();
+                let target = peer.handle.clone();
+                SelectionItem {
+                    name: handle.clone(),
+                    description: Some(peer.cwd.display().to_string()),
+                    search_value: Some(format!("{handle} {}", peer.cwd.display())),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::PeerPickerSelected {
+                            target: target.clone(),
+                        });
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        self.chat_widget.show_selection_view(SelectionViewParams {
+            title: Some("Sessions on this machine".to_string()),
+            subtitle: Some("select one to message it with /peer".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    /// Sends a message to a peer on behalf of this session.
+    ///
+    /// Uses a sender rather than a second mesh membership: this session already
+    /// has a listener, and publishing another registry row for it would show
+    /// the user a duplicate of themselves.
+    pub(super) fn send_peer_message(&mut self, target: String, message: String) {
+        let Some(thread_id) = self.primary_thread_id else {
+            self.chat_widget
+                .add_error_message("No active session to send from.".to_string());
+            return;
+        };
+        let Some(state_db) = self.state_db.clone() else {
+            self.chat_widget.add_error_message(
+                crate::peers::PeerBusUnavailable::NoStateDatabase
+                    .message()
+                    .to_string(),
+            );
+            return;
+        };
+
+        let sender = unieai_session_mesh::MeshSender::new(
+            unieai_session_mesh::MeshConfig::new(self.config.codex_home.clone()),
+            thread_id,
+            env!("CARGO_PKG_VERSION").to_string(),
+            std::sync::Arc::new(unieai_session_mesh::StateRuntimeStore::new(state_db)),
+        );
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let selector = unieai_session_mesh::PeerSelector::new(target);
+            let result = match sender.resolve(&selector).await {
+                Ok(peer) => sender
+                    .send_message(&peer, &message, /*trigger_turn*/ true, /*hop*/ 0)
+                    .await
+                    .map(|ack| {
+                        format!(
+                            "delivered to {}: {}{}",
+                            peer.display_handle(unieai_session_mesh::SHORT_REF_MIN_LEN),
+                            ack.delivery.as_str(),
+                            ack.reject_reason
+                                .map(|reason| format!(" ({reason})"))
+                                .unwrap_or_default()
+                        )
+                    }),
+                Err(err) => Err(err),
+            };
+            app_event_tx.send(AppEvent::PeerMessageSent {
+                result: result.map_err(|err| err.to_string()),
+            });
+        });
+    }
+
+    /// Renders one peer-bus refresh.
+    ///
+    /// Every message becomes a transcript card. A message that can start a turn
+    /// must never be invisible, or the user cannot account for work their
+    /// session did while they were looking elsewhere.
+    pub(super) fn handle_peer_bus_update(
+        &mut self,
+        peers: Vec<crate::peers::PeerRow>,
+        new_messages: Vec<codex_state::SessionMeshMessageRecord>,
+    ) {
+        for message in &new_messages {
+            let from = crate::peers::sender_handle(message, &peers);
+            self.chat_widget
+                .add_to_history(crate::peers::PeerMessageCell::new(
+                    from.clone(),
+                    message.content.clone(),
+                ));
+            self.chat_widget
+                .notify_peer_message(&from, &message.content);
+        }
+        self.unread_peer_messages = self.unread_peer_messages.saturating_add(new_messages.len());
+        self.chat_widget
+            .set_unread_peer_messages(self.unread_peer_messages);
+        self.peer_rows = peers;
+        self.refresh_agent_tree();
+    }
+
+    /// Starts the poller that feeds every passive peer surface.
+    ///
+    /// One task drives the transcript cards, the unread badge, and the peer
+    /// list, because they must agree: attributing a message needs the peer list
+    /// from the same instant. Returns without spawning when the mesh cannot
+    /// work here, so an unavailable mesh stays silent rather than polling a
+    /// database it will never read anything from.
+    pub(super) fn spawn_peer_bus_poller(&mut self, thread_id: ThreadId) {
+        let feature_enabled = self
+            .config
+            .features
+            .enabled(codex_features::Feature::SessionMesh);
+        if crate::peers::peer_bus_available(
+            feature_enabled,
+            self.state_db.is_some(),
+            &self.app_server_target,
+        )
+        .is_err()
+        {
+            return;
+        }
+        let Some(state_db) = self.state_db.clone() else {
+            return;
+        };
+        if self.peer_bus_poller.is_some() {
+            return;
+        }
+
+        let app_event_tx = self.app_event_tx.clone();
+        self.peer_bus_poller = Some(tokio::spawn(async move {
+            // Only messages newer than this are surfaced, so a resumed session
+            // does not replay an inbox the user already saw.
+            let mut watermark = crate::peers::now_ms();
+            loop {
+                tokio::time::sleep(crate::peers::PEER_BUS_POLL_INTERVAL).await;
+
+                let peers = match state_db.list_session_mesh_peers().await {
+                    Ok(peers) => crate::peers::live_rows_from_records(&peers).await,
+                    Err(_) => continue,
+                };
+                let new_messages = match state_db
+                    .list_session_mesh_messages_for(thread_id, watermark)
+                    .await
+                {
+                    Ok(messages) => messages,
+                    Err(_) => continue,
+                };
+                if let Some(latest) = new_messages.last() {
+                    watermark = latest.created_at_ms;
+                }
+                if peers.is_empty() && new_messages.is_empty() {
+                    continue;
+                }
+                app_event_tx.send(AppEvent::PeerBusUpdated {
+                    peers,
+                    new_messages,
+                });
+            }
+        }));
+    }
+
     pub(super) fn refresh_rate_limits(
         &mut self,
         app_server: &AppServerSession,

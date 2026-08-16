@@ -3,6 +3,24 @@
 use super::*;
 
 impl ChatWidget {
+    /// Surfaces a message that arrived from another session on this machine.
+    pub(crate) fn notify_peer_message(&mut self, from: &str, preview: &str) {
+        self.notify(Notification::PeerMessage {
+            from: from.to_string(),
+            preview: preview.to_string(),
+        });
+    }
+
+    /// Replaces the resident tree's agent and peer rows.
+    pub(crate) fn set_agent_tree_agents(&mut self, agents: Vec<crate::bottom_pane::AgentRow>) {
+        self.bottom_pane.set_agent_tree_agents(agents);
+    }
+
+    /// Records how many peer messages remain unacknowledged.
+    pub(crate) fn set_unread_peer_messages(&mut self, unread: usize) {
+        self.bottom_pane.set_unread_peer_messages(unread);
+    }
+
     pub(super) fn notify(&mut self, notification: Notification) {
         if !notification.allowed_for(&self.config.tui_notifications.notifications) {
             return;
@@ -25,11 +43,27 @@ impl ChatWidget {
 
 #[derive(Debug)]
 pub(super) enum Notification {
-    AgentTurnComplete { response: String },
-    ExecApprovalRequested { command: String },
-    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
-    ElicitationRequested { server_name: String },
-    PlanModePrompt { title: String },
+    AgentTurnComplete {
+        response: String,
+    },
+    ExecApprovalRequested {
+        command: String,
+    },
+    EditApprovalRequested {
+        cwd: PathBuf,
+        changes: Vec<PathBuf>,
+    },
+    ElicitationRequested {
+        server_name: String,
+    },
+    PlanModePrompt {
+        title: String,
+    },
+    /// Another session on this machine sent this one a message.
+    PeerMessage {
+        from: String,
+        preview: String,
+    },
 }
 
 impl Notification {
@@ -62,6 +96,12 @@ impl Notification {
             Notification::PlanModePrompt { title } => {
                 format!("Plan mode prompt: {title}")
             }
+            Notification::PeerMessage { from, preview } => {
+                format!(
+                    "Message from {from}: {}",
+                    truncate_text(preview, /*max_graphemes*/ 40)
+                )
+            }
         }
     }
 
@@ -72,6 +112,7 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",
             Notification::PlanModePrompt { .. } => "plan-mode-prompt",
+            Notification::PeerMessage { .. } => "peer-message",
         }
     }
 
@@ -82,6 +123,10 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. }
             | Notification::PlanModePrompt { .. } => 1,
+            // Ranked with approvals, not with turn completions: a peer message
+            // can start a turn in this session, so it is something the user
+            // needs to know about rather than a summary of work already done.
+            Notification::PeerMessage { .. } => 1,
         }
     }
 

@@ -175,6 +175,7 @@ mod npm_registry;
 pub(crate) mod onboarding;
 mod oss_selection;
 mod pager_overlay;
+mod peers;
 mod permission_compat;
 pub(crate) mod public_widgets;
 mod render;

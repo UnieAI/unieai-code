@@ -187,6 +187,7 @@ fn model_provider_from_proto(
         request_max_retries: provider.request_max_retries,
         stream_max_retries: provider.stream_max_retries,
         stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
+        namespace_tools: None,
         websocket_connect_timeout_ms: provider.websocket_connect_timeout_ms,
         requires_openai_auth: provider.requires_openai_auth,
         supports_websockets: provider.supports_websockets,
@@ -202,6 +203,7 @@ fn model_provider_to_proto(
     let ModelProviderInfo {
         name,
         base_url,
+        namespace_tools: _,
         env_key,
         env_key_instructions,
         experimental_bearer_token,
@@ -533,6 +535,7 @@ mod tests {
             request_max_retries: Some(7),
             stream_max_retries: Some(8),
             stream_idle_timeout_ms: Some(9_000),
+            namespace_tools: None,
             websocket_connect_timeout_ms: Some(10_000),
             requires_openai_auth: false,
             supports_websockets: true,

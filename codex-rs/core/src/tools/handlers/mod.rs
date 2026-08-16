@@ -25,6 +25,8 @@ mod request_plugin_install;
 pub(crate) mod request_plugin_install_spec;
 mod request_user_input;
 pub(crate) mod request_user_input_spec;
+pub(crate) mod session_mesh;
+pub mod session_mesh_spec;
 mod shell;
 pub(crate) mod shell_spec;
 mod sleep;

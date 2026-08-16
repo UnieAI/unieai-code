@@ -11682,3 +11682,52 @@ fn test_tui_notification_condition_rejects_unknown_value() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn session_mesh_defaults_are_reachable_and_interruptible() {
+    let resolved = super::resolve_session_mesh_config(None);
+
+    // With the feature on and nothing else said, a session is a full
+    // participant: the flag itself is the consent, so requiring a second opt-in
+    // would make it meaningless.
+    assert!(!resolved.closed);
+    assert!(resolved.allow_peer_turn_start);
+    assert_eq!(resolved.trigger_turn_min_interval_ms, None);
+    assert_eq!(resolved.max_hops, None);
+}
+
+#[test]
+fn session_mesh_accept_closed_withdraws_the_session() {
+    let features: codex_features::FeaturesToml = toml::from_str(
+        r#"
+[session_mesh]
+enabled = true
+accept = "closed"
+"#,
+    )
+    .expect("features should parse");
+
+    assert!(super::resolve_session_mesh_config(Some(&features)).closed);
+}
+
+#[test]
+fn session_mesh_can_keep_discovery_while_refusing_to_be_put_to_work() {
+    let features: codex_features::FeaturesToml = toml::from_str(
+        r#"
+[session_mesh]
+enabled = true
+allow_peer_turn_start = false
+trigger_turn_min_interval_ms = 30000
+max_hops = 2
+"#,
+    )
+    .expect("features should parse");
+
+    let resolved = super::resolve_session_mesh_config(Some(&features));
+
+    // Reachable and listable, but no peer can spend this session's tokens.
+    assert!(!resolved.closed);
+    assert!(!resolved.allow_peer_turn_start);
+    assert_eq!(resolved.trigger_turn_min_interval_ms, Some(30_000));
+    assert_eq!(resolved.max_hops, Some(2));
+}
