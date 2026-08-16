@@ -100,7 +100,10 @@ use codex_terminal_detection::TerminalName;
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name, but
     // the help output should always use the `unieai` command name that the
-    // npm bin and installer expose.
+    // npm bin and installer expose. `bin_name` covers usage lines; `name` is
+    // what `--version` prints, and without it clap falls back to the crate
+    // name and reports "codex-cli".
+    name = "unieai",
     bin_name = "unieai",
     override_usage = "unieai [OPTIONS] [PROMPT]\n       unieai [OPTIONS] <COMMAND> [ARGS]"
 )]

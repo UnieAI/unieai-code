@@ -12,20 +12,9 @@ pub(crate) fn card_inner_width(width: u16, max_inner_width: usize) -> Option<usi
     Some(inner_width)
 }
 
-/// Accent colour used for the UnieAI session-header logo and border.
-pub(crate) const UNIEAI_BLUE: Color = Color::Rgb(88, 143, 255);
-
 /// Render `lines` inside a border sized to the widest span in the content.
 pub(crate) fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     with_border_internal(lines, /*forced_inner_width*/ None, Style::new().dim())
-}
-
-/// Like [`with_border`], but paints the border glyphs with `border_style`.
-pub(crate) fn with_border_styled(
-    lines: Vec<Line<'static>>,
-    border_style: Style,
-) -> Vec<Line<'static>> {
-    with_border_internal(lines, /*forced_inner_width*/ None, border_style)
 }
 
 /// Render `lines` inside a border whose inner width is at least `inner_width`.
@@ -344,35 +333,13 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Header: a blue UnieAI logo tile (two white "eyes") on the left, with a
-        // welcome message and version to its right.
-        let blue = Style::default().fg(UNIEAI_BLUE);
-        let eye = Style::default().fg(Color::White);
-        let logo_rows: [Vec<Span<'static>>; 3] = [
-            vec![Span::styled("████████", blue)],
-            vec![
-                Span::styled("█", blue),
-                Span::styled("██", eye),
-                Span::styled("██", blue),
-                Span::styled("██", eye),
-                Span::styled("█", blue),
-            ],
-            vec![Span::styled("████████", blue)],
+        // Title line rendered inside the box: ">_ UnieAI Code (vX)"
+        let title_spans: Vec<Span<'static>> = vec![
+            Span::from(">_ ").dim(),
+            Span::from("UnieAI Code").bold(),
+            Span::from(" ").dim(),
+            Span::from(format!("(v{})", self.version)).dim(),
         ];
-        let welcome_rows: [Vec<Span<'static>>; 3] = [
-            vec![Span::from("Welcome to UnieAI Code!").bold()],
-            vec![Span::from("Send /help for help information.").dim()],
-            vec![Span::from(format!("(v{})", self.version)).dim()],
-        ];
-        let header_rows: Vec<Vec<Span<'static>>> = logo_rows
-            .into_iter()
-            .zip(welcome_rows)
-            .map(|(mut logo, welcome)| {
-                logo.push(Span::from("  "));
-                logo.extend(welcome);
-                logo
-            })
-            .collect();
 
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
@@ -416,7 +383,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
 
-        let mut lines: Vec<Line<'static>> = header_rows.into_iter().map(make_row).collect();
+        let mut lines: Vec<Line<'static>> = vec![make_row(title_spans)];
         lines.push(make_row(Vec::new()));
         lines.push(make_row(model_spans));
         lines.push(make_row(dir_spans));
@@ -429,7 +396,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
             ]));
         }
 
-        with_border_styled(lines, Style::default().fg(UNIEAI_BLUE))
+        with_border(lines)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
