@@ -235,7 +235,6 @@ pub(super) async fn start_app_server_for_session_command(
     let cli_kv_overrides = overrides_cli
         .parse_overrides()
         .map_err(|err| eyre!("failed to parse -c overrides: {err}"))?;
-    let codex_home = find_codex_home().wrap_err("failed to find UnieAI Code home")?;
 
     let mut launch_loader_overrides = loader_overrides.clone();
     if let Some(profile_v2) = cli.config_profile_v2.as_ref() {

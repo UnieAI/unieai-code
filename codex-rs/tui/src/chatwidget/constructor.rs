@@ -133,7 +133,7 @@ impl ChatWidget {
             session_header: SessionHeader::new(header_model),
             initial_user_message,
             status_account_display,
-            runtime_model_provider_base_url,
+            runtime_model_provider_base_url: None,
             available_update_version: None,
             remote_connection: None,
             snapshot_local_images: false,
