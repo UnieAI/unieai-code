@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "codex-agent-roles"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-config",
  "codex-file-system",
@@ -2248,6 +2248,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "pretty_assertions",
+ "reqwest 0.12.28",
  "rmcp",
  "serde",
  "serde_json",
@@ -2331,6 +2332,7 @@ name = "codex-app-server-protocol"
 version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
+ "clap",
  "codex-app-server-protocol-noop-macros",
  "codex-experimental-api-macros",
  "codex-extension-items",
@@ -2362,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-server-protocol-noop-macros"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 
 [[package]]
 name = "codex-app-server-test-client"
@@ -2483,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "codex-attachment-store"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -2536,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "codex-build-info"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-install-context",
  "pretty_assertions",
@@ -2838,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "codex-code-mode-runtime"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "base64 0.22.1",
  "codex-code-mode-protocol",
@@ -2920,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "codex-config-schema"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3189,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "codex-diagnostics"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -3324,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "codex-exec-server-test-support"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-exec-server",
@@ -3502,7 +3504,7 @@ dependencies = [
 
 [[package]]
 name = "codex-git-attribution"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-backend-client",
  "codex-extension-api",
@@ -3565,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "codex-guardian-context"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-context-fragments",
  "codex-history",
@@ -3576,7 +3578,7 @@ dependencies = [
 
 [[package]]
 name = "codex-guardian-reviewer"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-analytics",
@@ -3601,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "codex-guardian-v2"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-analytics",
@@ -3630,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "codex-history"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-protocol",
@@ -3642,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "codex-history-notes-extension"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-analytics",
  "codex-api",
@@ -4089,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "codex-mxc-sandbox"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "appcontainer_common",
@@ -4208,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "codex-otel-trace-websocket"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4299,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "codex-queue-extension"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-core",
@@ -4320,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "codex-realtime-webrtc"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-build-info",
@@ -4854,7 +4856,7 @@ dependencies = [
 
 [[package]]
 name = "codex-user-verification"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "base64 0.22.1",
  "core-foundation 0.10.1",
@@ -4895,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-audio"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "base64 0.22.1",
  "codex-protocol",
@@ -4947,7 +4949,7 @@ version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 
 [[package]]
 name = "codex-utils-git-discovery"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-git-utils",
  "codex-utils-absolute-path",
@@ -5078,7 +5080,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-redacted-string"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -5144,7 +5146,7 @@ dependencies = [
 
 [[package]]
 name = "codex-voice-host"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-install-context",
@@ -5234,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "codex-windows-sandbox-service"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5252,7 +5254,7 @@ dependencies = [
 
 [[package]]
 name = "codex-workload-identity"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "codex-http-client",
  "pretty_assertions",
@@ -5267,7 +5269,7 @@ dependencies = [
 
 [[package]]
 name = "codex-worktree"
-version = "0.0.0"
+version = "0.0.22-dev-uc0.5.0-ac0.4.0"
 dependencies = [
  "anyhow",
  "codex-git-utils",
