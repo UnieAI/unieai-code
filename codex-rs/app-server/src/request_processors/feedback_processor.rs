@@ -351,7 +351,7 @@ impl FeedbackRequestProcessor {
             let client = reqwest::Client::new();
             return match client.post(&webhook_url).json(&payload).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    Ok(FeedbackUploadResponse { thread_id })
+                    Ok(FeedbackUploadResponse { thread_id, prompt_hash })
                 }
                 Ok(resp) => {
                     let status = resp.status();
