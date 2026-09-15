@@ -140,7 +140,9 @@ pub fn model_info_for_gateway_model(
     // reasoning-summary parameter their gateways ignore.
     info.tool_mode = Some(ToolMode::Direct);
     info.supports_reasoning_summary_parameter = false;
-    info.base_instructions = GATEWAY_BASE_INSTRUCTIONS.to_string();
+    info.model_messages
+        .get_or_insert_with(local_model_messages)
+        .instructions_template = Some(GATEWAY_BASE_INSTRUCTIONS.to_string());
     if let Some(context_window) = context_window {
         info.context_window = Some(context_window);
         info.max_context_window = Some(context_window);
