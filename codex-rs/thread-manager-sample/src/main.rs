@@ -21,6 +21,7 @@ use codex_core_api::CodexHomeUserInstructionsProvider;
 use codex_core_api::CodexThread;
 use codex_core_api::Config;
 use codex_core_api::ConfigLayerStack;
+use codex_core_api::SessionMeshConfig;
 use codex_core_api::Constrained;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::EventMsg;
