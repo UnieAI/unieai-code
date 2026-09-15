@@ -201,7 +201,6 @@ pub(crate) mod onboarding;
 mod oss_selection;
 mod pager_overlay;
 mod peers;
-mod permission_compat;
 pub(crate) mod public_widgets;
 mod render;
 mod resize_reflow_cap;
@@ -1344,7 +1343,7 @@ async fn run_ratatui_app(
     {
         shutdown_app_server_if_present(app_server.take()).await;
         match start_app_server(
-            &app_server_target,
+            &mut app_server_target,
             arg0_paths.clone(),
             config.clone(),
             cli_kv_overrides.clone(),
@@ -1353,7 +1352,7 @@ async fn run_ratatui_app(
             cloud_config_bundle.clone(),
             feedback.clone(),
             log_db.clone(),
-            state_db.clone(),
+            &mut state_db,
             environment_manager.clone(),
         )
         .await
