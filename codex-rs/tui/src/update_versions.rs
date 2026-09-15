@@ -68,6 +68,7 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 /// unstamped build reports the in-tree workspace version, which appends an
 /// internal id after the patch number. Everything from the first `-` on is
 /// dropped so both forms yield the same release triple.
+#[cfg(any(not(debug_assertions), test))]
 fn parse_build_version(v: &str) -> Option<(u64, u64, u64)> {
     let trimmed = v.trim();
     let release = trimmed.split_once('-').map_or(trimmed, |(head, _)| head);
