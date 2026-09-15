@@ -498,7 +498,7 @@ other non-default provider fields are not supported"
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
-                [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                [("version".to_string(), env!("CARGO_PKG_VERSION").into())]
                     .into_iter()
                     .collect(),
             ),
@@ -520,6 +520,7 @@ other non-default provider fields are not supported"
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            supports_standalone_web_search: false,
         }
     }
 

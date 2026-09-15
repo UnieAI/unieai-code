@@ -876,6 +876,18 @@ impl FeaturesToml {
         entries
     }
 
+    /// Drop entries belonging to removed compatibility features before
+    /// writing the resolved form back, so the locked config only carries
+    /// live flags.
+    pub fn clear_removed_compatibility_entries(&mut self) {
+        for spec in FEATURES {
+            if matches!(spec.stage, Stage::Removed) {
+                self.entries.remove(spec.key);
+            }
+        }
+        self.removed_apps_mcp_path_override = None;
+    }
+
     pub fn materialize_resolved_enabled(&mut self, features: &Features) {
         self.clear_removed_compatibility_entries();
         let Self {
@@ -951,12 +963,24 @@ impl<T: FeatureConfig> FeatureToml<T> {
             Self::Config(config) => config.enabled(),
         }
     }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        match self {
+            Self::Enabled(slot) => *slot = enabled,
+            Self::Config(config) => config.set_enabled(enabled),
+        }
+    }
 }
 
 // A trait to be implemented by custom feature config structs when defining a feature that needs more configuration than
 // just enabled/disabled.
 pub trait FeatureConfig {
     fn enabled(&self) -> Option<bool>;
+
+    /// Write back a resolved enabled state for configs that carry a mutable
+    /// `enabled` field (e.g. session-mesh). Defaults to a no-op so feature
+    /// configs without writable enabled state are unaffected.
+    fn set_enabled(&mut self, _enabled: bool) {}
 }
 
 /// Single, easy-to-read registry of all feature definitions.

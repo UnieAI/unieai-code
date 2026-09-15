@@ -79,7 +79,6 @@ pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbBackup;
-pub use runtime::RuntimeDbPath;
 pub use runtime::SessionMeshMessageRecord;
 pub use runtime::SessionMeshPeerRecord;
 pub use runtime::SessionMeshPeerWithName;

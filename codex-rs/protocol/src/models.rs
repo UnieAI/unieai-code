@@ -292,7 +292,7 @@ impl SandboxEnforcement {
 }
 
 /// Filesystem permissions for profiles where UnieAI owns sandbox construction.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Eq, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type")]
 pub enum ManagedFileSystemPermissions {

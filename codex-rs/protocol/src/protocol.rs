@@ -967,6 +967,7 @@ impl Op {
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
             Self::Shutdown => "shutdown",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
+            Self::ThreadRollback { .. } => "thread_rollback",
         }
     }
 }
