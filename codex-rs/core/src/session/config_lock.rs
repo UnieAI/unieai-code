@@ -249,6 +249,7 @@ mod tests {
             guidance_message: Some("Locked context-window guidance.".to_string()),
             auto_compact_fallback_prompt: Some("Write notes before rollover.".to_string()),
             auto_compact_fallback_buffer_tokens: Some(8_000),
+            auto_compact_retain_tokens: None,
         });
         config
             .features

@@ -413,6 +413,52 @@ fn build_token_limited_compacted_history_appends_summary_message() {
 }
 
 #[test]
+fn build_compacted_history_with_retain_budget_keeps_more_for_larger_budget() {
+    let user_messages = vec![
+        compacted_user_message("first user message"),
+        compacted_user_message("second user message"),
+        compacted_user_message("third user message"),
+    ];
+    let summary_text = "summary text";
+
+    let small =
+        build_compacted_history_with_retain_budget(Vec::new(), &user_messages, summary_text, 4);
+    let large =
+        build_compacted_history_with_retain_budget(Vec::new(), &user_messages, summary_text, 1_000);
+
+    let count_user_messages = |history: &[ResponseItemEnvelope]| {
+        history
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    &entry.item,
+                    ResponseItem::Message { role, .. } if role == "user"
+                )
+            })
+            .count()
+    };
+
+    let small_kept = count_user_messages(&small);
+    let large_kept = count_user_messages(&large);
+    // The summary itself is also a user message, so the large budget keeps every recent message
+    // while a tiny budget keeps only a (truncated) portion of the most recent message.
+    assert!(
+        large_kept > small_kept,
+        "larger retain budget should keep more recent user messages (small={small_kept}, large={large_kept})"
+    );
+    assert_eq!(
+        large.last().and_then(|entry| content_items_to_text(
+            match &entry.item {
+                ResponseItem::Message { content, .. } => content,
+                other => panic!("unexpected item in history: {other:?}"),
+            }
+        )),
+        Some(summary_text.to_string()),
+        "summary should always be appended"
+    );
+}
+
+#[test]
 fn build_compacted_history_preserves_user_message_passthrough_metadata() {
     let history = build_compacted_history(
         Vec::new(),

@@ -105,6 +105,7 @@ pub(super) fn resolve_token_budget(
         auto_compact_fallback_buffer_tokens: Some(
             model_defaults.auto_compact_fallback_buffer_tokens,
         ),
+        auto_compact_retain_tokens: None,
     };
 
     if let Err(error) = token_budget.validate() {

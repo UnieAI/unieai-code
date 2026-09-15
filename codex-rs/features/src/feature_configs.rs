@@ -393,6 +393,11 @@ pub struct TokenBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub auto_compact_fallback_buffer_tokens: Option<i64>,
+    /// Approximate token budget of the most recent user history to keep verbatim in a summarize
+    /// compaction. When unset, the default retain budget is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub auto_compact_retain_tokens: Option<i64>,
 }
 
 impl FeatureConfig for TokenBudgetConfigToml {

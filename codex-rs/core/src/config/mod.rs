@@ -1165,6 +1165,7 @@ pub struct TokenBudgetConfig {
     pub guidance_message: Option<String>,
     pub auto_compact_fallback_prompt: Option<String>,
     pub auto_compact_fallback_buffer_tokens: Option<i64>,
+    pub auto_compact_retain_tokens: Option<i64>,
 }
 
 impl TokenBudgetConfig {
@@ -1236,6 +1237,15 @@ impl TokenBudgetConfig {
                 "features.token_budget.auto_compact_fallback_buffer_tokens must be positive",
             ));
         }
+        if self
+            .auto_compact_retain_tokens
+            .is_some_and(|tokens| tokens <= 0)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "features.token_budget.auto_compact_retain_tokens must be positive",
+            ));
+        }
 
         Ok(())
     }
@@ -1258,6 +1268,7 @@ impl Default for TokenBudgetConfig {
             guidance_message: None,
             auto_compact_fallback_prompt: None,
             auto_compact_fallback_buffer_tokens: None,
+            auto_compact_retain_tokens: None,
         }
     }
 }
@@ -2802,6 +2813,8 @@ pub(crate) fn resolve_token_budget_config(
         .map(str::to_string);
     let auto_compact_fallback_buffer_tokens =
         token_budget_config.and_then(|config| config.auto_compact_fallback_buffer_tokens);
+    let auto_compact_retain_tokens =
+        token_budget_config.and_then(|config| config.auto_compact_retain_tokens);
 
     let token_budget = TokenBudgetConfig {
         use_history_notes_extension,
@@ -2810,6 +2823,7 @@ pub(crate) fn resolve_token_budget_config(
         guidance_message,
         auto_compact_fallback_prompt,
         auto_compact_fallback_buffer_tokens,
+        auto_compact_retain_tokens,
     };
     token_budget.validate()?;
     Ok(Some(token_budget))

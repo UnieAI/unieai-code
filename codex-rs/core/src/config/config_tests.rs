@@ -735,6 +735,7 @@ auto_compact_fallback_buffer_tokens = 8000
                 guidance_message: Some("Preserve important state before compaction.".to_string()),
                 auto_compact_fallback_prompt: Some("Write notes immediately.".to_string()),
                 auto_compact_fallback_buffer_tokens: Some(8_000),
+                auto_compact_retain_tokens: None,
             }),
         ),
     ] {

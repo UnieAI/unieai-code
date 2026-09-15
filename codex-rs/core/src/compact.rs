@@ -358,7 +358,20 @@ async fn run_compact_task_inner_impl(
     };
     let user_messages = collect_annotated_user_messages(history_items, identity);
 
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    let retain_tokens = turn_context
+        .config
+        .token_budget
+        .as_ref()
+        .and_then(|token_budget| token_budget.auto_compact_retain_tokens)
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .unwrap_or(COMPACT_USER_MESSAGE_MAX_TOKENS);
+
+    let mut new_history = build_compacted_history_with_retain_budget(
+        Vec::new(),
+        &user_messages,
+        &summary_text,
+        retain_tokens,
+    );
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -671,6 +684,22 @@ pub(crate) fn build_compacted_history(
         user_messages,
         summary_text,
         COMPACT_USER_MESSAGE_MAX_TOKENS,
+    )
+}
+
+/// Builds compacted history keeping a configurable approximate-token budget of the most recent
+/// user messages verbatim, independent of the summarization.
+pub(crate) fn build_compacted_history_with_retain_budget(
+    initial_context: Vec<ResponseItemEnvelope>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+    retain_tokens: usize,
+) -> Vec<ResponseItemEnvelope> {
+    build_compacted_history_with_limit(
+        initial_context,
+        user_messages,
+        summary_text,
+        retain_tokens,
     )
 }
 
