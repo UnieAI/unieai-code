@@ -277,12 +277,6 @@ pub(crate) struct BottomPane {
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
     /// Working time accumulated by `status` before it was last torn down.
-    ///
-    /// The indicator is dropped and rebuilt several times within a single turn
-    /// — every streamed assistant message takes the bottom pane over and hands
-    /// it back — so the elapsed clock has to outlive the widget or it restarts
-    /// from zero mid-turn. Reset only when a genuinely new task starts.
-    status_elapsed_carry: Duration,
     /// Running-hook summary supplied by the lifecycle owner after its reveal delay.
     hook_status_message: Option<String>,
     inline_banner: Option<actionable_banner::InlineBanner>,
@@ -360,7 +354,6 @@ impl BottomPane {
             disable_paste_burst,
             is_task_running: false,
             status: None,
-            status_elapsed_carry: Duration::ZERO,
             hook_status_message: None,
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
@@ -545,11 +538,6 @@ impl BottomPane {
 
     pub fn set_unread_peer_messages(&mut self, unread: usize) {
         self.composer.set_unread_peer_messages(unread);
-        self.request_redraw();
-    }
-
-    pub fn set_personality_command_enabled(&mut self, enabled: bool) {
-        self.composer.set_personality_command_enabled(enabled);
         self.request_redraw();
     }
 
@@ -1323,8 +1311,6 @@ impl BottomPane {
 
         if running {
             if !was_running {
-                // A new task, so the previous turn's clock does not carry over.
-                self.status_elapsed_carry = Duration::ZERO;
                 self.status_timer.reset(Duration::ZERO);
                 if self.status.is_none() {
                     self.status = Some(StatusIndicatorWidget::new(
@@ -1355,9 +1341,7 @@ impl BottomPane {
 
     /// Hide the status indicator while leaving task-running state untouched.
     pub(crate) fn hide_status_indicator(&mut self) {
-        if let Some(status) = self.status.take() {
-            // Keep the turn's clock; the indicator usually comes straight back.
-            self.status_elapsed_carry = status.elapsed_duration();
+        if self.status.take().is_some() {
             self.request_redraw();
         }
     }
@@ -1372,7 +1356,6 @@ impl BottomPane {
                 )
             });
             if let Some(status) = self.status.as_mut() {
-                status.seed_elapsed(self.status_elapsed_carry);
                 status.set_interrupt_binding(
                     self.keymap
                         .primary_hint(KeymapContext::Chat, "interrupt_turn"),
