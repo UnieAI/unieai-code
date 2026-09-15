@@ -217,6 +217,7 @@ impl ModelInfoOverrides {
             personality_enabled,
             // The models manager already owns its catalog.
             model_catalog: None,
+            unknown_models_are_gateway_models: false,
         }
     }
 }
