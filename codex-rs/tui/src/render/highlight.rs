@@ -18,9 +18,10 @@
 //! swap/snapshot the theme for live preview.  All highlighting functions read
 //! the theme via `theme_lock()`.
 //!
-//! **Guardrails:** inputs exceeding 512 KB or 10 000 lines are rejected early
-//! (returns `None`) to prevent pathological CPU/memory usage.  Callers must
-//! fall back to plain unstyled text.
+//! **Guardrails:** inputs exceeding 512 KB or 10 000 lines, or containing an
+//! individual line longer than 4 KiB, are rejected early (returns `None`) to
+//! prevent pathological CPU/memory usage.  Callers must fall back to plain
+//! unstyled text.
 
 use ratatui::style::Color as RtColor;
 use ratatui::style::Modifier;
@@ -45,6 +46,11 @@ use syntect::parsing::SyntaxReference;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
+
+#[path = "highlight_streaming.rs"]
+mod streaming;
+
+pub(crate) use streaming::StreamingCodeHighlighter;
 
 // -- Global singletons -------------------------------------------------------
 
@@ -495,7 +501,8 @@ fn ansi_palette_color(index: u8) -> RtColor {
 /// This is the central syntect→ratatui seam: markdown code blocks, exec bash
 /// highlighting, diff syntax overlays, chart accents, and status-line theme
 /// colors all obtain their RGB values here.
-fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
     convert_syntect_color_for_level(color, crate::color_support::active_level())
 }
 
@@ -557,6 +564,8 @@ fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     let normalized = lang.to_ascii_lowercase();
     let patched = match normalized.as_str() {
         "csharp" | "c-sharp" => "c#",
+        // CUDA source (.cu) and header (.cuh) files use C++ highlighting as a fallback.
+        "cu" | "cuh" => "cpp",
         "cppm" | "cxxm" | "ixx" => "cpp",
         "golang" => "go",
         "python3" => "python",
@@ -597,6 +606,9 @@ const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 /// Skip highlighting for inputs with more than 10,000 lines.
 const MAX_HIGHLIGHT_LINES: usize = 10_000;
 
+/// Skip highlighting when an individual line is longer than 4 KiB.
+pub(crate) const MAX_HIGHLIGHT_LINE_BYTES: usize = 4 * 1024;
+
 /// Check whether an input exceeds the safe highlighting limits.
 ///
 /// Callers that highlight content in a loop (e.g. per diff-line) should
@@ -627,7 +639,12 @@ fn highlight_to_line_spans_with_theme(
     // Bail out early for oversized inputs to avoid excessive resource usage.
     // Count actual lines (not newline bytes) to avoid an off-by-one when
     // the input does not end with a newline.
-    if code.len() > MAX_HIGHLIGHT_BYTES || code.lines().count() > MAX_HIGHLIGHT_LINES {
+    if code.len() > MAX_HIGHLIGHT_BYTES
+        || code.lines().count() > MAX_HIGHLIGHT_LINES
+        || code
+            .lines()
+            .any(|line| line.len() > MAX_HIGHLIGHT_LINE_BYTES)
+    {
         return None;
     }
 
@@ -637,23 +654,28 @@ fn highlight_to_line_spans_with_theme(
 
     for line in LinesWithEndings::from(code) {
         let ranges = h.highlight_line(line, syntax_set()).ok()?;
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for (style, text) in ranges {
-            // Strip trailing line endings (LF and CR) since we handle line
-            // breaks ourselves.  CRLF inputs would otherwise leave a stray \r.
-            let text = text.trim_end_matches(['\n', '\r']);
-            if text.is_empty() {
-                continue;
-            }
-            spans.push(Span::styled(text.to_string(), convert_style(style)));
-        }
-        if spans.is_empty() {
-            spans.push(Span::raw(String::new()));
-        }
-        lines.push(spans);
+        lines.push(highlighted_line_spans(ranges));
     }
 
     Some(lines)
+}
+
+/// Convert one highlighted line into the spans shared by full and streaming renders.
+///
+/// Source line endings are omitted, while empty lines retain their canonical empty span.
+fn highlighted_line_spans(ranges: Vec<(SyntectStyle, &str)>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (style, text) in ranges {
+        // Line breaks are represented by the surrounding Line, not its spans.
+        let text = text.trim_end_matches(['\n', '\r']);
+        if !text.is_empty() {
+            spans.push(Span::styled(text.to_string(), convert_style(style)));
+        }
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(String::new()));
+    }
+    spans
 }
 
 /// Parse `code` using syntect for `lang` and return per-line styled spans.
@@ -1229,6 +1251,18 @@ mod tests {
     }
 
     #[test]
+    fn long_single_line_bash_skips_highlighting_and_preserves_text() {
+        let token = "eHh4".repeat(MAX_HIGHLIGHT_LINE_BYTES / 4 + 1);
+        let code = format!("printf %s {token} | base64 -d >/dev/null");
+
+        assert!(highlight_code_to_styled_spans(&code, "bash").is_none());
+        assert_eq!(
+            highlight_code_to_lines(&code, "bash"),
+            vec![Line::from(code)]
+        );
+    }
+
+    #[test]
     fn highlight_many_lines_falls_back() {
         // Input exceeding MAX_HIGHLIGHT_LINES should return None.
         let many_lines = "let x = 1;\n".repeat(MAX_HIGHLIGHT_LINES + 1);
@@ -1307,8 +1341,8 @@ mod tests {
         }
         // Patched aliases that two-face cannot resolve on its own.
         for alias in [
-            "csharp", "c-sharp", "cppm", "CPPM", "cxxm", "CxXm", "ixx", "IXX", "golang", "python3",
-            "shell",
+            "csharp", "c-sharp", "cu", "cuh", "cppm", "CPPM", "cxxm", "CxXm", "ixx", "IXX",
+            "golang", "python3", "shell",
         ] {
             assert!(
                 find_syntax(alias).is_some(),

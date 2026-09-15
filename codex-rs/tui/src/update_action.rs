@@ -12,6 +12,8 @@ pub enum UpdateAction {
     NpmGlobalLatest,
     /// Update via `bun install -g @unieai/code@latest`.
     BunGlobalLatest,
+    /// Update via `vp install -g @unieai/code@latest`.
+    VitePlusGlobalLatest,
     /// Update via `pnpm add -g @unieai/code@latest`.
     PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
@@ -28,6 +30,7 @@ impl UpdateAction {
         match &context.method {
             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
             InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
+            InstallMethod::VitePlus => Some(UpdateAction::VitePlusGlobalLatest),
             InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
             InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
             InstallMethod::Standalone { platform, .. } => Some(match platform {
@@ -43,6 +46,7 @@ impl UpdateAction {
         match self {
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@unieai/code"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@unieai/code"]),
+            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@unieai/code"]),
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@unieai/code"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "unieai"]),
             UpdateAction::StandaloneUnix => (

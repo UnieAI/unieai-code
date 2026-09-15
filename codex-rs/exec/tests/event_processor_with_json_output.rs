@@ -169,10 +169,13 @@ fn turn_started_emits_turn_started_event() {
 fn command_execution_started_and_completed_translate_to_thread_events() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
     let command_item = ThreadItem::CommandExecution {
+        model_context: None,
         id: "cmd-1".to_string(),
         command: "ls".to_string(),
         cwd: test_path_buf("/tmp/project").abs().into(),
         process_id: Some("123".to_string()),
+        plugin_id: None,
+        script_path: None,
         source: CommandExecutionSource::UserShell,
         status: ApiCommandExecutionStatus::InProgress,
         command_actions: Vec::<CommandAction>::new(),
@@ -209,10 +212,13 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
             item: ThreadItem::CommandExecution {
+                model_context: None,
                 id: "cmd-1".to_string(),
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs().into(),
                 process_id: Some("123".to_string()),
+                plugin_id: None,
+                script_path: None,
                 source: CommandExecutionSource::UserShell,
                 status: ApiCommandExecutionStatus::Completed,
                 command_actions: Vec::<CommandAction>::new(),
@@ -301,6 +307,8 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
                 text: "hello".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -485,6 +493,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -504,6 +513,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: Vec::new(),
                     structured_content: None,
@@ -577,6 +587,7 @@ fn mcp_tool_call_failure_sets_failed_status() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "tool exploded".to_string(),
@@ -627,6 +638,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -646,6 +658,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![json!({
                         "type": "text",
@@ -917,6 +930,8 @@ fn agent_message_item_updates_final_message() {
                 text: "hello".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -952,6 +967,8 @@ fn agent_message_item_started_is_ignored() {
                 text: "hello".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -1302,6 +1319,8 @@ fn turn_completion_recovers_final_message_from_turn_items() {
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
+                    questions: None,
                 }],
                 status: TurnStatus::Completed,
                 error: None,
@@ -1331,10 +1350,13 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
     let started =
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::CommandExecution {
+                model_context: None,
                 id: "cmd-1".to_string(),
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs().into(),
                 process_id: Some("123".to_string()),
+                plugin_id: None,
+                script_path: None,
                 source: CommandExecutionSource::UserShell,
                 status: ApiCommandExecutionStatus::InProgress,
                 command_actions: Vec::<CommandAction>::new(),
@@ -1371,10 +1393,13 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                 id: "turn-1".to_string(),
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::CommandExecution {
+                    model_context: None,
                     id: "cmd-1".to_string(),
                     command: "ls".to_string(),
                     cwd: test_path_buf("/tmp/project").abs().into(),
                     process_id: Some("123".to_string()),
+                    plugin_id: None,
+                    script_path: None,
                     source: CommandExecutionSource::UserShell,
                     status: ApiCommandExecutionStatus::Completed,
                     command_actions: Vec::<CommandAction>::new(),
@@ -1425,6 +1450,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                 text: "stale answer".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -1443,6 +1470,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
+                    questions: None,
                 }],
                 status: TurnStatus::Completed,
                 error: None,
@@ -1475,6 +1504,8 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
                 text: "streamed answer".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -1521,6 +1552,8 @@ fn failed_turn_clears_stale_final_message() {
                 text: "partial answer".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -1540,6 +1573,7 @@ fn failed_turn_clears_stale_final_message() {
                 items: Vec::new(),
                 status: TurnStatus::Failed,
                 error: Some(TurnError {
+                    misalignment: None,
                     message: "turn failed".to_string(),
                     additional_details: None,
                     codex_error_info: None,
@@ -1596,6 +1630,7 @@ fn turn_failure_prefers_structured_error_message() {
 
     let error = processor.collect_thread_events(ServerNotification::Error(ErrorNotification {
         error: TurnError {
+            misalignment: None,
             message: "backend failed".to_string(),
             codex_error_info: None,
             additional_details: Some("request id abc".to_string()),

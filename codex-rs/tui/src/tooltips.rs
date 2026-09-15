@@ -1,4 +1,6 @@
 use codex_features::FEATURES;
+use codex_features::Feature;
+use codex_features::FeatureSpec;
 use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
@@ -9,7 +11,7 @@ const ANNOUNCEMENT_TIP_URL: &str =
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
-const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
+const RAW_TOOLTIPS: &str = include_str!("../assets/tooltips.txt");
 
 lazy_static! {
     static ref TOOLTIPS: Vec<&'static str> = RAW_TOOLTIPS
@@ -28,14 +30,21 @@ lazy_static! {
     static ref ALL_TOOLTIPS: Vec<&'static str> = {
         let mut tips = Vec::new();
         tips.extend(TOOLTIPS.iter().copied());
-        tips.extend(experimental_tooltips());
+        tips.extend(experimental_tooltips(
+            FEATURES,
+            codex_realtime_webrtc::RealtimeWebrtcSession::is_supported,
+        ));
         tips
     };
 }
 
-fn experimental_tooltips() -> Vec<&'static str> {
-    FEATURES
+fn experimental_tooltips(
+    features: &[FeatureSpec],
+    voice_supported: impl Fn() -> bool,
+) -> Vec<&'static str> {
+    features
         .iter()
+        .filter(|spec| spec.id != Feature::RealtimeConversation || voice_supported())
         .filter_map(|spec| spec.stage.experimental_announcement())
         .collect()
 }
@@ -68,19 +77,27 @@ pub(crate) mod announcement {
     use crate::version::CODEX_CLI_VERSION;
     use chrono::NaiveDate;
     use chrono::Utc;
+    use codex_http_client::ClientRouteClass;
+    use codex_http_client::HttpClientFactory;
+    use codex_http_client::RouteAwareClientPool;
     use codex_protocol::account::PlanType;
     use regex_lite::Regex;
     use serde::Deserialize;
     use std::sync::OnceLock;
-    use std::thread;
     use std::time::Duration;
 
     static ANNOUNCEMENT_TIP: OnceLock<Option<String>> = OnceLock::new();
     const CURRENT_OS: TargetOs = TargetOs::current();
 
     /// Prewarm the cache of the announcement tip.
-    pub(crate) fn prewarm() {
-        let _ = thread::spawn(|| ANNOUNCEMENT_TIP.get_or_init(init_announcement_tip_in_thread));
+    pub(crate) fn prewarm(http_client_factory: HttpClientFactory) {
+        if ANNOUNCEMENT_TIP.get().is_some() {
+            return;
+        }
+        tokio::spawn(async move {
+            let announcement_tip = fetch_announcement_tip_text(http_client_factory).await;
+            let _ = ANNOUNCEMENT_TIP.set(announcement_tip);
+        });
     }
 
     /// Fetch the announcement tip, return None if the prewarm is not done yet.
@@ -142,25 +159,15 @@ pub(crate) mod announcement {
         }
     }
 
-    fn init_announcement_tip_in_thread() -> Option<String> {
-        thread::spawn(blocking_init_announcement_tip)
-            .join()
-            .ok()
-            .flatten()
-    }
-
-    fn blocking_init_announcement_tip() -> Option<String> {
-        // Avoid system proxy detection to prevent macOS system-configuration panics (#8912).
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .build()
-            .ok()?;
+    async fn fetch_announcement_tip_text(http_client_factory: HttpClientFactory) -> Option<String> {
+        let client = RouteAwareClientPool::new(http_client_factory, ClientRouteClass::Other);
         let response = client
             .get(ANNOUNCEMENT_TIP_URL)
             .timeout(Duration::from_millis(2000))
             .send()
+            .await
             .ok()?;
-        response.error_for_status().ok()?.text().ok()
+        response.error_for_status().ok()?.text().await.ok()
     }
 
     pub(crate) fn parse_announcement_tip_toml(
@@ -269,8 +276,46 @@ pub(crate) mod announcement {
 mod tests {
     use super::*;
     use crate::tooltips::announcement::parse_announcement_tip_toml;
+    use pretty_assertions::assert_eq;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    #[test]
+    fn experimental_voice_tooltip_requires_runtime_support() {
+        let mut features = FEATURES.to_vec();
+        features
+            .iter_mut()
+            .find(|spec| spec.id == Feature::RealtimeConversation)
+            .unwrap()
+            .stage = codex_features::Stage::Experimental {
+            name: "Voice conversations",
+            menu_description: "Talk with Codex using /voice.",
+            announcement: "NEW: Voice conversations can now be enabled from /experimental. Restart Codex after enabling, then use /voice.",
+        };
+        let unavailable = experimental_tooltips(&features, || false);
+        let available = experimental_tooltips(&features, || true);
+        let voice_tip = features
+            .iter()
+            .find(|spec| spec.id == Feature::RealtimeConversation)
+            .and_then(|spec| spec.stage.experimental_announcement())
+            .expect("voice has an experimental announcement");
+        assert_eq!(
+            unavailable,
+            available
+                .iter()
+                .copied()
+                .filter(|tip| *tip != voice_tip)
+                .collect::<Vec<_>>()
+        );
+        insta::assert_snapshot!(
+            "experimental_voice_tooltip",
+            available
+                .into_iter()
+                .filter(|tip| *tip == voice_tip)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 
     #[test]
     fn random_tooltip_returns_some_tip_when_available() {

@@ -1,6 +1,9 @@
 //! Session headers, onboarding guidance, and transcript cards.
 
 use super::*;
+use crate::line_truncation::line_width;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
+use crate::width::display_width;
 
 pub(crate) const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56; // Just an eyeballed value
 
@@ -34,15 +37,7 @@ fn with_border_internal(
     forced_inner_width: Option<usize>,
     border_style: Style,
 ) -> Vec<Line<'static>> {
-    let max_line_width = lines
-        .iter()
-        .map(|line| {
-            line.iter()
-                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-                .sum::<usize>()
-        })
-        .max()
-        .unwrap_or(0);
+    let max_line_width = lines.iter().map(line_width).max().unwrap_or(0);
     let content_width = forced_inner_width
         .unwrap_or(max_line_width)
         .max(max_line_width);
@@ -52,10 +47,7 @@ fn with_border_internal(
     out.push(vec![Span::styled(format!("╭{}╮", "─".repeat(border_inner_width)), border_style)].into());
 
     for line in lines.into_iter() {
-        let used_width: usize = line
-            .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-            .sum();
+        let used_width = line_width(&line);
         let span_count = line.spans.len();
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(span_count + 4);
         spans.push(Span::styled("│ ", border_style));
@@ -70,13 +62,6 @@ fn with_border_internal(
     out.push(vec![Span::styled(format!("╰{}╯", "─".repeat(border_inner_width)), border_style)].into());
 
     out
-}
-
-/// Return the emoji followed by a hair space (U+200A).
-/// Using only the hair space avoids excessive padding after the emoji while
-/// still providing a small visual gap across terminals.
-pub(crate) fn padded_emoji(emoji: &str) -> String {
-    format!("{emoji}\u{200A}")
 }
 
 #[derive(Debug)]
@@ -97,7 +82,7 @@ impl TooltipHistoryCell {
 impl HistoryCell for TooltipHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let indent = "  ";
-        let indent_width = UnicodeWidthStr::width(indent);
+        let indent_width = display_width(indent);
         let wrap_width = usize::from(width.max(1))
             .saturating_sub(indent_width)
             .max(1);
@@ -138,8 +123,13 @@ impl HistoryCell for SessionInfoCell {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep local preferences separate while the legacy Config parameter is still required"
+)]
 pub(crate) fn new_session_info(
     config: &Config,
+    local_settings: &crate::local_settings::LocalSettings,
     requested_model: &str,
     session: &ThreadSessionState,
     is_first_event: bool,
@@ -197,7 +187,7 @@ pub(crate) fn new_session_info(
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
     } else {
-        if config.show_tooltips
+        if local_settings.tui.show_tooltips
             && let Some(tooltips) = tooltip_override
                 .or_else(|| tooltips::get_tooltip(auth_plan, show_fast_status))
                 .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))
@@ -277,7 +267,7 @@ impl SessionHeaderHistoryCell {
     ) -> Self {
         Self {
             version,
-            model,
+            model: crate::model_catalog::model_display_name(&model).to_string(),
             model_style,
             reasoning_effort,
             show_fast_status,
@@ -310,7 +300,7 @@ impl SessionHeaderHistoryCell {
             if max_width == 0 {
                 return String::new();
             }
-            if UnicodeWidthStr::width(formatted.as_str()) > max_width {
+            if display_width(formatted.as_str()) > max_width {
                 return crate::text_formatting::center_truncate_path(&formatted, max_width);
             }
         }
@@ -378,7 +368,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let dir_label = format!("{DIR_LABEL:<label_width$}");
         let dir_prefix = format!("{dir_label} ");
-        let dir_prefix_width = UnicodeWidthStr::width(dir_prefix.as_str());
+        let dir_prefix_width = display_width(dir_prefix.as_str());
         let dir_max_width = inner_width.saturating_sub(dir_prefix_width);
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
@@ -396,6 +386,10 @@ impl HistoryCell for SessionHeaderHistoryCell {
             ]));
         }
 
+        let lines = lines
+            .into_iter()
+            .map(|line| truncate_line_with_ellipsis_if_overflow(line, inner_width))
+            .collect();
         with_border(lines)
     }
 

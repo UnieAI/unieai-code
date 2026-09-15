@@ -1,10 +1,4 @@
-//! TUI-owned Windows sandbox helpers retained while setup still runs in the local client process.
-//!
-//! TODO: These helpers inspect and modify the TUI host, so they do not support
-//! cross-platform remote app servers. Move readiness and setup to the existing
-//! `windowsSandbox/*` RPCs while preserving the pending permission profile,
-//! use the server platform reported during initialization, and add a remote
-//! equivalent for read-root grants.
+//! Windows sandbox display state derived from configuration.
 
 use crate::legacy_core::config::Config;
 use codex_config::types::WindowsSandboxModeToml;
@@ -19,6 +13,7 @@ use std::collections::HashMap;
 use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
+
 
 pub(crate) fn level_from_config(config: &Config) -> WindowsSandboxLevel {
     match config.permissions.windows_sandbox_mode {

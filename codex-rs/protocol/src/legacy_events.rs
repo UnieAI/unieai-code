@@ -85,6 +85,8 @@ impl UserMessageItem {
             image_details: self.image_details(),
             local_images: self.local_image_paths(),
             local_image_details: self.local_image_details(),
+            audio: Some(self.audio_urls()),
+            local_audio: self.local_audio_paths(),
             text_elements: self.text_elements(),
         }
     }
@@ -103,6 +105,8 @@ impl AgentMessageItem {
                     message: text.clone(),
                     phase: self.phase.clone(),
                     memory_citation: self.memory_citation.clone(),
+                    delivery: self.delivery,
+                    questions: self.questions.clone(),
                 }),
             })
             .collect()
@@ -157,6 +161,8 @@ impl CommandExecutionItem {
     pub(crate) fn as_legacy_begin_event(&self, turn_id: String, started_at_ms: i64) -> EventMsg {
         EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
             call_id: self.id.clone(),
+            plugin_id: self.plugin_id.clone(),
+            script_path: self.script_path.clone(),
             process_id: self.process_id.clone(),
             turn_id,
             started_at_ms,
@@ -181,6 +187,8 @@ impl CommandExecutionItem {
         };
         Some(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
             call_id: self.id.clone(),
+            plugin_id: self.plugin_id.clone(),
+            script_path: self.script_path.clone(),
             process_id: self.process_id.clone(),
             turn_id,
             completed_at_ms,
@@ -241,6 +249,11 @@ impl CollabAgentToolCallItem {
     pub(crate) fn as_legacy_begin_event(&self, started_at_ms: i64) -> Option<EventMsg> {
         let receiver_thread_id = self.receiver_thread_ids.first().copied();
         match self.tool {
+            // V2 records these tool items privately for analytics, not legacy UI events.
+            CollabAgentTool::SendMessage
+            | CollabAgentTool::FollowupTask
+            | CollabAgentTool::InterruptAgent
+            | CollabAgentTool::ListAgents => None,
             CollabAgentTool::SpawnAgent => Some(EventMsg::CollabAgentSpawnBegin(
                 CollabAgentSpawnBeginEvent {
                     call_id: self.id.clone(),
@@ -296,6 +309,10 @@ impl CollabAgentToolCallItem {
         }
         let receiver_thread_id = self.receiver_thread_ids.first().copied();
         match self.tool {
+            CollabAgentTool::SendMessage
+            | CollabAgentTool::FollowupTask
+            | CollabAgentTool::InterruptAgent
+            | CollabAgentTool::ListAgents => None,
             CollabAgentTool::SpawnAgent => {
                 let (new_agent_nickname, new_agent_role) = receiver_thread_id
                     .map(|thread_id| self.receiver_agent_identity(thread_id))
@@ -423,6 +440,8 @@ impl ImageGenerationItem {
             status: self.status.clone(),
             revised_prompt: self.revised_prompt.clone(),
             result: self.result.clone(),
+            transparent_background: None,
+            failure: None,
             saved_path: self.saved_path.clone(),
         })
     }
@@ -453,9 +472,10 @@ impl FileChangeItem {
 }
 
 impl McpToolCallItem {
-    pub fn as_legacy_begin_event(&self) -> EventMsg {
+    pub fn as_legacy_begin_event(&self, turn_id: String) -> EventMsg {
         EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
             call_id: self.id.clone(),
+            turn_id,
             invocation: McpInvocation {
                 server: self.server.clone(),
                 tool: self.tool.clone(),
@@ -467,10 +487,11 @@ impl McpToolCallItem {
             app_name: self.app_name.clone(),
             action_name: self.action_name.clone(),
             plugin_id: self.plugin_id.clone(),
+            read_only_hint: self.read_only_hint,
         })
     }
 
-    pub fn as_legacy_end_event(&self) -> Option<EventMsg> {
+    pub fn as_legacy_end_event(&self, turn_id: String) -> Option<EventMsg> {
         let result = match (&self.result, &self.error) {
             (Some(result), _) => Ok(result.clone()),
             (None, Some(error)) => Err(error.message.clone()),
@@ -479,6 +500,7 @@ impl McpToolCallItem {
 
         Some(EventMsg::McpToolCallEnd(McpToolCallEndEvent {
             call_id: self.id.clone(),
+            turn_id,
             invocation: McpInvocation {
                 server: self.server.clone(),
                 tool: self.tool.clone(),
@@ -490,6 +512,7 @@ impl McpToolCallItem {
             app_name: self.app_name.clone(),
             action_name: self.action_name.clone(),
             plugin_id: self.plugin_id.clone(),
+            read_only_hint: self.read_only_hint,
             duration: self.duration?,
             result,
         }))
@@ -500,7 +523,7 @@ impl TurnItem {
     pub fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
         match self {
             TurnItem::UserMessage(item) => vec![item.as_legacy_event()],
-            TurnItem::HookPrompt(_) => Vec::new(),
+            TurnItem::FunctionCallOutput(_) | TurnItem::HookPrompt(_) => Vec::new(),
             TurnItem::AgentMessage(item) => item.as_legacy_events(),
             TurnItem::Plan(_) => Vec::new(),
             TurnItem::CommandExecution(_)
@@ -521,7 +544,10 @@ impl TurnItem {
                 .as_legacy_end_event(String::new())
                 .into_iter()
                 .collect(),
-            TurnItem::McpToolCall(item) => item.as_legacy_end_event().into_iter().collect(),
+            TurnItem::McpToolCall(item) => item
+                .as_legacy_end_event(String::new())
+                .into_iter()
+                .collect(),
             TurnItem::Reasoning(item) => item.as_legacy_events(show_raw_agent_reasoning),
             TurnItem::ContextCompaction(item) => vec![item.as_legacy_event()],
         }
@@ -541,7 +567,7 @@ impl HasLegacyEvent for ItemStartedEvent {
                 })]
             }
             TurnItem::FileChange(item) => vec![item.as_legacy_begin_event(self.turn_id.clone())],
-            TurnItem::McpToolCall(item) => vec![item.as_legacy_begin_event()],
+            TurnItem::McpToolCall(item) => vec![item.as_legacy_begin_event(self.turn_id.clone())],
             TurnItem::CommandExecution(item) => {
                 vec![item.as_legacy_begin_event(self.turn_id.clone(), self.started_at_ms)]
             }
@@ -560,6 +586,10 @@ impl HasLegacyEvent for ItemStartedEvent {
 impl HasLegacyEvent for ItemCompletedEvent {
     fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
         match &self.item {
+            TurnItem::McpToolCall(item) => item
+                .as_legacy_end_event(self.turn_id.clone())
+                .into_iter()
+                .collect(),
             TurnItem::FileChange(item) => item
                 .as_legacy_end_event(self.turn_id.clone())
                 .into_iter()

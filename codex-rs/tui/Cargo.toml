@@ -22,7 +22,9 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-build-info = { workspace = true }
 anyhow = { workspace = true }
+axum = { workspace = true, default-features = false, features = ["http1", "tokio"] }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
@@ -33,14 +35,16 @@ codex-arg0 = { workspace = true }
 codex-install-context = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-config = { workspace = true }
+codex-context-fragments = { workspace = true }
 codex-connectors = { workspace = true }
 codex-core-plugins = { workspace = true }
-codex-core-skills = { workspace = true }
+codex-history = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-feedback = { workspace = true }
 codex-file-search = { workspace = true }
 codex-git-utils = { workspace = true }
+codex-http-client = { workspace = true }
 codex-login = { workspace = true }
 codex-message-history = { workspace = true }
 codex-model-provider = { workspace = true }
@@ -49,6 +53,8 @@ codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
+codex-realtime-webrtc = { workspace = true }
+futures = { workspace = true }
 unieai-session-mesh = { workspace = true }
 unieai-utils-process-liveness = { workspace = true }
 codex-rollout = { workspace = true }
@@ -56,7 +62,9 @@ codex-sandboxing = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
+codex-worktree = { workspace = true }
 codex-utils-approval-presets = { workspace = true }
+codex-uds = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-elapsed = { workspace = true }
@@ -79,7 +87,7 @@ image = { workspace = true, features = ["jpeg", "png", "gif", "webp"] }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 pathdiff = { workspace = true }
-pulldown-cmark = { workspace = true }
+pulldown-cmark = { workspace = true, features = ["html"] }
 rand = { workspace = true }
 ratatui = { workspace = true, features = [
     "scrolling-regions",
@@ -89,8 +97,7 @@ ratatui = { workspace = true, features = [
 ] }
 ratatui-macros = { workspace = true }
 regex-lite = { workspace = true }
-reqwest = { workspace = true, features = ["blocking", "json"] }
-rmcp = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = { workspace = true }
@@ -130,6 +137,13 @@ tokio-util = { workspace = true, features = ["time"] }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Keep the same executor features as the credential store, which also uses zbus.
+zbus = "4.4.0"
+
 [target.'cfg(windows)'.dependencies]
 which = { workspace = true }
 windows-sys = { version = "0.52", features = [
@@ -140,6 +154,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_IO",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 winsplit = "0.1"
 
@@ -151,13 +166,13 @@ arboard = { workspace = true }
 
 [dev-dependencies]
 app_test_support = { workspace = true }
-codex-cli = { workspace = true }
 codex-mcp = { workspace = true }
 core_test_support = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 assert_matches = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
+http = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rand = { workspace = true }

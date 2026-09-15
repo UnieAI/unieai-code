@@ -13,7 +13,10 @@ use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
 use chrono::Duration;
 use chrono::Utc;
-use codex_login::default_client::create_client;
+use codex_http_client::ClientRouteClass;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::RouteAwareClientPool;
+use codex_login::default_client::default_headers;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -34,11 +37,12 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         None => true,
         Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
     } {
+        let http_client_factory = config.http_client_factory();
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-            check_for_update(&version_file, action)
+            check_for_update(&version_file, action, http_client_factory)
                 .await
                 .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
@@ -65,11 +69,21 @@ struct HomebrewCaskInfo {
     version: String,
 }
 
-async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> anyhow::Result<()> {
+async fn check_for_update(
+    version_file: &Path,
+    action: Option<UpdateAction>,
+    http_client_factory: HttpClientFactory,
+) -> anyhow::Result<()> {
+    let client_pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
+        http_client_factory,
+        ClientRouteClass::Other,
+    )
+    .with_legacy_custom_ca_fallback();
     let latest_version = match action {
         Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = create_client()
+            let HomebrewCaskInfo { version } = client_pool
                 .get(HOMEBREW_CASK_API_URL)
+                .headers(default_headers())
                 .send()
                 .await?
                 .error_for_status()?
@@ -79,10 +93,12 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
         }
         Some(UpdateAction::NpmGlobalLatest)
         | Some(UpdateAction::BunGlobalLatest)
+        | Some(UpdateAction::VitePlusGlobalLatest)
         | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version().await?;
-            let package_info = create_client()
+            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
+            let package_info = client_pool
                 .get(npm_registry::PACKAGE_URL)
+                .headers(default_headers())
                 .send()
                 .await?
                 .error_for_status()?
@@ -92,7 +108,7 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
             latest_version
         }
         Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version().await?
+            fetch_latest_github_release_version(&client_pool).await?
         }
     };
 
@@ -112,20 +128,17 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
     Ok(())
 }
 
-async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
-    // The client follows the redirect; the tag is the last path segment of the
-    // final URL, e.g. .../releases/tag/cli-v0.1.0.
-    let response = create_client()
+async fn fetch_latest_github_release_version(
+    client_pool: &RouteAwareClientPool,
+) -> anyhow::Result<String> {
+    let ReleaseInfo {
+        tag_name: latest_tag_name,
+    } = client_pool
         .get(LATEST_RELEASE_URL)
+        .headers(default_headers())
         .send()
         .await?
         .error_for_status()?;
-    let latest_tag_name = response
-        .url()
-        .path_segments()
-        .and_then(|segments| segments.filter(|s| !s.is_empty()).next_back())
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to resolve latest release tag from redirect"))?;
     extract_version_from_latest_tag(&latest_tag_name)
 }
 
