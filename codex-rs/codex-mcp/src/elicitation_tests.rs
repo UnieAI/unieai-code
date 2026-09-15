@@ -196,7 +196,7 @@ async fn strict_auto_review_respects_explicit_elicitation_denials() {
     ] {
         let explicitly_denied = matches!(
             policy,
-            AskForApproval::Granular(config) if !config.allows_mcp_elicitations()
+            AskForApproval::Granular(config) if !config.may_prompt_for_mcp_elicitations()
         );
         let reviewer = RecordingReviewer::new(Ok(Some(approved_response())));
         let (manager, events, sender) =

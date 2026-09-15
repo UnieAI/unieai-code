@@ -300,7 +300,7 @@ impl ElicitationRequestManager {
                     Some(Value::Bool(true)) => {
                         if matches!(
                             approval_policy,
-                            AskForApproval::Granular(config) if !config.allows_mcp_elicitations()
+                            AskForApproval::Granular(config) if !config.may_prompt_for_mcp_elicitations()
                         ) {
                             return Ok(strict_auto_review_decline());
                         }

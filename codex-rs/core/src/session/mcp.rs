@@ -914,7 +914,7 @@ async fn review_guardian_mcp_elicitation(
                 }
                 return Ok(Some(mcp_elicitation_decline_without_message()));
             }
-            AskForApproval::Granular(config) if !config.allows_mcp_elicitations() => {
+            AskForApproval::Granular(config) if !config.may_prompt_for_mcp_elicitations() => {
                 return Ok(Some(mcp_elicitation_decline_without_message()));
             }
             AskForApproval::OnRequest
