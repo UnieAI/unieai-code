@@ -133,7 +133,7 @@ fn apply_feedback_requirement(
     let Some(Sourced { value, source }) = requirement else {
         return;
     };
-    let FeedbackConfigToml { enabled } = value;
+    let FeedbackConfigToml { enabled, .. } = value;
     let configured = configured.get_or_insert_default();
     let conflict = replace_required_leaf(&mut configured.enabled, enabled);
     push_structured_requirement_override_warning("feedback", conflict, source, startup_warnings);

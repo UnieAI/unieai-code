@@ -3756,7 +3756,7 @@ impl Config {
             && provider.env_key.as_deref() == Some("UNIEAI_API_KEY")
         {
             provider.base_url = Some(credentials.gateway_base_url.clone());
-            provider.experimental_bearer_token = Some(credentials.gateway_api_key.clone());
+            provider.experimental_bearer_token = Some(credentials.gateway_api_key.clone().into());
             provider.env_key = None;
             provider.env_key_instructions = None;
         }

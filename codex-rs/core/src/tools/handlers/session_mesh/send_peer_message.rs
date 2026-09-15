@@ -13,7 +13,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_send_peer_message_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -99,7 +99,7 @@ pub(crate) struct SendPeerMessageResult {
 }
 
 impl ToolOutput for SendPeerMessageResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "send_peer_message")
     }
 

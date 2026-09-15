@@ -12,7 +12,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_list_peers_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -54,7 +54,7 @@ pub(crate) struct ListPeersResult {
 }
 
 impl ToolOutput for ListPeersResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "list_peers")
     }
 

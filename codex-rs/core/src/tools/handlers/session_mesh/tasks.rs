@@ -205,7 +205,7 @@ struct ListedTask {
 macro_rules! tool_output_impl {
     ($ty:ty, $name:literal, $success:expr) => {
         impl ToolOutput for $ty {
-            fn log_preview(&self) -> String {
+            fn log_output(&self) -> String {
                 tool_output_json_text(self, $name)
             }
 
@@ -249,7 +249,7 @@ impl ToolExecutor<ToolInvocation> for PublishTaskHandler {
         create_publish_task_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -297,7 +297,7 @@ impl ToolExecutor<ToolInvocation> for ClaimTaskHandler {
         create_claim_task_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -333,7 +333,7 @@ impl ToolExecutor<ToolInvocation> for ReportTaskHandler {
         create_report_task_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -373,7 +373,7 @@ impl ToolExecutor<ToolInvocation> for ListTasksHandler {
         create_list_tasks_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..

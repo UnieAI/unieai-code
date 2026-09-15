@@ -70,7 +70,7 @@ impl ToolExecutor<ToolInvocation> for SpawnPeerSessionHandler {
         create_spawn_peer_session_tool()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -119,7 +119,7 @@ impl CoreToolRuntime for SpawnPeerSessionHandler {
 }
 
 impl ToolOutput for SpawnPeerSessionResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "spawn_peer_session")
     }
 
