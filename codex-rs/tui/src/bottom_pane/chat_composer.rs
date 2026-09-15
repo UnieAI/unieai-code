@@ -624,20 +624,6 @@ impl ChatComposer {
         self.slash_input().command_popup("").palette_items()
     }
 
-    fn builtin_command_flags(&self) -> BuiltinCommandFlags {
-        BuiltinCommandFlags {
-            collaboration_modes_enabled: self.collaboration_modes_enabled,
-            connectors_enabled: self.connectors_enabled,
-            plugins_command_enabled: self.plugins_command_enabled,
-            token_activity_command_enabled: self.token_activity_command_enabled,
-            service_tier_commands_enabled: self.service_tier_commands_enabled,
-            goal_command_enabled: self.goal_command_enabled,
-            personality_command_enabled: self.personality_command_enabled,
-            allow_elevate_sandbox: self.windows_degraded_sandbox_active,
-            side_conversation_active: self.side_conversation_active,
-        }
-    }
-
     pub fn new(
         has_input_focus: bool,
         app_event_tx: AppEventSender,
@@ -1027,14 +1013,6 @@ impl ChatComposer {
 
     pub fn set_unread_peer_messages(&mut self, unread: usize) {
         self.footer.unread_peer_messages = unread;
-    }
-
-    pub fn set_personality_command_enabled(&mut self, enabled: bool) {
-        self.personality_command_enabled = enabled;
-    }
-
-    pub fn set_worktrees_enabled(&mut self, enabled: bool) {
-        self.slash_input().set_worktrees_enabled(enabled);
     }
 
     pub fn set_side_conversation_active(&mut self, active: bool) {
