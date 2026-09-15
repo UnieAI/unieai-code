@@ -214,6 +214,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         developer_instructions: None,
         guardian_policy_config: None,
         guardian_policy_template: None,
+        session_mesh: SessionMeshConfig::default(),
         include_permissions_instructions: false,
         include_apps_instructions: false,
         include_collaboration_mode_instructions: false,
