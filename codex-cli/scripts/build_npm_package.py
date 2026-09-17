@@ -13,6 +13,17 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
+AGENT_RUNTIME_ROOT = REPO_ROOT / "agent-runtime"
+# What the uac engine (`/engine uac`) needs at runtime, relative to
+# agent-runtime/. Its npm dependencies (deepseek-harness) become the root
+# package's dependencies; see stage_agent_runtime.
+AGENT_RUNTIME_FILES = [
+    "package.json",
+    "bin/uac-app-server.mjs",
+    "src/config.mjs",
+    "src/app-server",
+    "src/dsh",
+]
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 CODEX_NPM_NAME = "@unieai/code"
@@ -237,6 +248,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
+        stage_agent_runtime(staging_dir)
 
         readme_src = REPO_ROOT / "README.md"
         if readme_src.exists():
@@ -297,7 +309,10 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json["version"] = version
 
     if package == "codex":
-        package_json["files"] = ["bin/codex.js"]
+        package_json["files"] = ["bin/codex.js", "agent-runtime"]
+        # Kept out of codex-cli/package.json: that is a pnpm workspace member,
+        # and the workspace's release-age policy would refuse fresh pins.
+        package_json["dependencies"] = agent_runtime_dependencies()
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
                 f"npm:{CODEX_NPM_NAME}@"
@@ -321,6 +336,31 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     with open(staging_dir / "package.json", "w", encoding="utf-8") as out:
         json.dump(package_json, out, indent=2)
         out.write("\n")
+
+
+def stage_agent_runtime(staging_dir: Path) -> None:
+    """Copy the uac engine's runtime files, without tests or node_modules."""
+    dest_root = staging_dir / "agent-runtime"
+    for relative in AGENT_RUNTIME_FILES:
+        src = AGENT_RUNTIME_ROOT / relative
+        dest = dest_root / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(
+                src,
+                dest,
+                ignore=shutil.ignore_patterns("*.test.mjs", "node_modules"),
+            )
+        else:
+            shutil.copy2(src, dest)
+
+
+def agent_runtime_dependencies() -> dict[str, str]:
+    with open(AGENT_RUNTIME_ROOT / "package.json", "r", encoding="utf-8") as fh:
+        dependencies = json.load(fh).get("dependencies") or {}
+    if not dependencies:
+        raise RuntimeError("agent-runtime/package.json declares no dependencies to ship")
+    return dict(sorted(dependencies.items()))
 
 
 def compute_platform_package_version(version: str, platform_tag: str) -> str:

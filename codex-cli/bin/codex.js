@@ -232,6 +232,15 @@ const env = {
   ...process.env,
   CODEX_MANAGED_PACKAGE_ROOT: codexPackageRoot,
 };
+// `/engine uac` runs this package's uac server with the node running us; the
+// native binary cannot find either on its own from inside a platform package.
+const uacServer = path.join(__dirname, "..", "agent-runtime", "bin", "uac-app-server.mjs");
+if (!env.UNIEAI_UAC_SERVER && existsSync(uacServer)) {
+  env.UNIEAI_UAC_SERVER = uacServer;
+}
+if (!env.UNIEAI_NODE) {
+  env.UNIEAI_NODE = process.execPath;
+}
 delete env.CODEX_MANAGED_BY_NPM;
 delete env.CODEX_MANAGED_BY_BUN;
 delete env.CODEX_MANAGED_BY_PNPM;

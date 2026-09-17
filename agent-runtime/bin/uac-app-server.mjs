@@ -31,6 +31,14 @@ import { createDshEngine, createDshHost } from "../src/dsh/engine.mjs";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
+// deepseek-harness uses Node 22 APIs (Promise.withResolvers, …); say so plainly
+// instead of failing inside dsh. The TUI falls back to codex and names this log.
+const nodeMajor = Number(process.versions.node.split(".")[0]);
+if (nodeMajor < 22) {
+  log(`uac needs Node.js 22 or newer; this is ${process.version}. Set UNIEAI_NODE to a newer node.`);
+  process.exit(1);
+}
+
 const sandboxMode = process.env.UNIEAI_SANDBOX || "workspace-write";
 const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
 const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac", "app-server.sock");

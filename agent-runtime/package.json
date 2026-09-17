@@ -2,7 +2,7 @@
   "name": "@unieai/code-agent-runtime",
   "private": true,
   "version": "0.5.0",
-  "description": "UnieAI Code on the unieai-agent-core loop: coding tools, session persistence, slim TUI. agent-core itself is vendored at third_party/unieai-agent-core (git submodule).",
+  "description": "UnieAI Code engines: the uac (deepseek-harness) app-server bridge, plus the agent-core loop, coding tools and slim TUI. agent-core itself is vendored at third_party/unieai-agent-core (git submodule).",
   "type": "module",
   "bin": {
     "unieai-agent": "./bin/tui.mjs"
@@ -15,6 +15,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.6-alpha.1"
+    "@deepseek-ai/dsh": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.1.6-alpha.1"
   }
 }
