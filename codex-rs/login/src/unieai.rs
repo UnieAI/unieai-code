@@ -67,6 +67,10 @@ pub struct UnieAIModel {
     /// Not yet populated by all Studio deployments; honored when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
+    /// Input modalities the gateway declares (`text`, `image`), from its
+    /// `/models` listing; `None` when the gateway did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
 }
 
 impl UnieAICredentials {
@@ -83,6 +87,7 @@ impl UnieAICredentials {
                 id: id.clone(),
                 name: None,
                 context_window: None,
+                input_modalities: None,
             })
             .collect()
     }
@@ -493,6 +498,7 @@ fn models_from_provider_config(config: &StudioProviderConfig) -> Option<Vec<Unie
                 context_window: info
                     .get("contextWindow")
                     .and_then(serde_json::Value::as_i64),
+                input_modalities: None,
             })
             .collect()
     })
@@ -518,6 +524,55 @@ async fn refresh_access_token(
         "token refresh",
     )
     .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GatewayModelModalities {
+    #[serde(default)]
+    input: Vec<String>,
+}
+
+/// One entry of the gateway's `/models` listing (only what the CLI uses).
+#[derive(Debug, Deserialize)]
+struct GatewayModelEntry {
+    id: String,
+    #[serde(default)]
+    context_window: Option<i64>,
+    #[serde(default)]
+    modalities: Option<GatewayModelModalities>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayModelList {
+    #[serde(default)]
+    data: Vec<GatewayModelEntry>,
+}
+
+async fn fetch_gateway_model_capabilities(
+    client: &codex_http_client::HttpClient,
+    credentials: &UnieAICredentials,
+) -> io::Result<Vec<GatewayModelEntry>> {
+    let url = format!("{}/models", credentials.gateway_base_url.trim_end_matches('/'));
+    get_json::<GatewayModelList>(client, &url, &credentials.gateway_api_key, None)
+        .await
+        .map(|list| list.data)
+}
+
+/// Fill in what Studio leaves out: context window and input modalities.
+fn apply_gateway_capabilities(models: &mut [UnieAIModel], capabilities: &[GatewayModelEntry]) {
+    for model in models.iter_mut() {
+        let Some(entry) = capabilities.iter().find(|entry| entry.id == model.id) else {
+            continue;
+        };
+        if model.context_window.is_none() {
+            model.context_window = entry.context_window.filter(|window| *window > 0);
+        }
+        if let Some(modalities) = &entry.modalities
+            && !modalities.input.is_empty()
+        {
+            model.input_modalities = Some(modalities.input.clone());
+        }
+    }
 }
 
 /// Bring `unieai.json` in line with the Studio account: refresh the access
@@ -576,7 +631,14 @@ pub async fn sync_unieai_account(codex_home: &Path) -> io::Result<Option<UnieAIC
     }
     // An account with no models is a real state; record it rather than keep
     // serving a stale list.
-    credentials.available_models = Some(models_from_provider_config(&provider).unwrap_or_default());
+    let mut models = models_from_provider_config(&provider).unwrap_or_default();
+    // Studio lists which models the account has; the gateway knows what each
+    // one accepts. Best-effort: a gateway without the listing keeps Studio's.
+    match fetch_gateway_model_capabilities(&client, &credentials).await {
+        Ok(capabilities) => apply_gateway_capabilities(&mut models, &capabilities),
+        Err(err) => tracing::debug!(%err, "gateway model capabilities unavailable"),
+    }
+    credentials.available_models = Some(models);
     credentials.available_model_ids = None;
     save_unieai_credentials(codex_home, &credentials)?;
     Ok(Some(credentials))
@@ -694,6 +756,51 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn gateway_capabilities_fill_gaps_without_overriding_studio() {
+        let mut models = vec![
+            UnieAIModel {
+                id: "text-model".to_string(),
+                name: None,
+                context_window: None,
+                input_modalities: None,
+            },
+            UnieAIModel {
+                id: "vision-model".to_string(),
+                name: None,
+                context_window: Some(32_000),
+                input_modalities: None,
+            },
+            UnieAIModel {
+                id: "unlisted".to_string(),
+                name: None,
+                context_window: None,
+                input_modalities: None,
+            },
+        ];
+        let listing: GatewayModelList = serde_json::from_value(serde_json::json!({
+            "data": [
+                {"id": "text-model", "context_window": 128000,
+                 "modalities": {"input": ["text"], "output": ["text"]}},
+                {"id": "vision-model", "context_window": 64000,
+                 "modalities": {"input": ["text", "image"]}},
+                {"id": "other", "context_window": null}
+            ]
+        }))
+        .expect("listing");
+
+        apply_gateway_capabilities(&mut models, &listing.data);
+
+        assert_eq!(models[0].context_window, Some(128_000));
+        assert_eq!(models[0].input_modalities, Some(vec!["text".to_string()]));
+        assert_eq!(models[1].context_window, Some(32_000), "Studio's value wins");
+        assert_eq!(
+            models[1].input_modalities,
+            Some(vec!["text".to_string(), "image".to_string()])
+        );
+        assert_eq!(models[2].input_modalities, None);
+    }
+
+    #[test]
     fn normalizes_scheme_less_urls() {
         assert_eq!(
             normalize_url("studio.demo.unieai.com/"),
@@ -754,6 +861,7 @@ mod tests {
                 id: "m1".to_string(),
                 name: Some("Model One".to_string()),
                 context_window: Some(131_072),
+                input_modalities: None,
             }]),
         };
         save_unieai_credentials(dir.path(), &credentials).expect("save");

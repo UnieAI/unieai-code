@@ -1,6 +1,7 @@
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
@@ -116,6 +117,7 @@ pub fn model_info_for_gateway_model(
     slug: &str,
     display_name: &str,
     context_window: Option<i64>,
+    input_modalities: Option<&[String]>,
 ) -> ModelInfo {
     let mut info = base_model_info(slug);
     info.display_name = display_name.to_string();
@@ -132,6 +134,22 @@ pub fn model_info_for_gateway_model(
     if let Some(context_window) = context_window {
         info.context_window = Some(context_window);
         info.max_context_window = Some(context_window);
+    }
+    // Unknown models default to accepting images; a gateway that says a model
+    // is text-only must win, or view_image sends images the model rejects.
+    if let Some(declared) = input_modalities {
+        let modalities: Vec<InputModality> = declared
+            .iter()
+            .filter_map(|modality| match modality.as_str() {
+                "text" => Some(InputModality::Text),
+                "image" => Some(InputModality::Image),
+                "audio" => Some(InputModality::Audio),
+                _ => None,
+            })
+            .collect();
+        if !modalities.is_empty() {
+            info.input_modalities = modalities;
+        }
     }
     info
 }

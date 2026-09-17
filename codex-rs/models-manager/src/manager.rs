@@ -745,7 +745,7 @@ pub(crate) fn construct_model_info_from_candidates(
         // profile it would have had, so it keeps the UnieAI identity, stays
         // pinned to direct tool calls, and does not get sent the reasoning
         // parameter open-model gateways ignore.
-        model_info::model_info_for_gateway_model(model, model, None)
+        model_info::model_info_for_gateway_model(model, model, None, None)
     } else {
         model_info::model_info_from_slug(model)
     };

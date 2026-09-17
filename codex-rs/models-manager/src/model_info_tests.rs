@@ -267,3 +267,29 @@ fn model_context_window_uses_model_value_without_override() {
 
     assert_eq!(updated, model);
 }
+
+#[test]
+fn gateway_declared_modalities_override_the_image_default() {
+    let text_only = model_info_for_gateway_model(
+        "deepseek",
+        "DeepSeek",
+        Some(128_000),
+        Some(&["text".to_string()]),
+    );
+    assert_eq!(text_only.input_modalities, vec![InputModality::Text]);
+    assert_eq!(text_only.context_window, Some(128_000));
+
+    let vision = model_info_for_gateway_model(
+        "vlm",
+        "VLM",
+        None,
+        Some(&["text".to_string(), "image".to_string()]),
+    );
+    assert_eq!(
+        vision.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+
+    let undeclared = model_info_for_gateway_model("x", "x", None, None);
+    assert_eq!(undeclared.input_modalities, default_input_modalities());
+}

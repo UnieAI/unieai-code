@@ -4048,6 +4048,7 @@ impl Config {
                         &model.id,
                         model.name.as_deref().unwrap_or(&model.id),
                         model.context_window,
+                        model.input_modalities.as_deref(),
                     )
                 })
                 .collect();

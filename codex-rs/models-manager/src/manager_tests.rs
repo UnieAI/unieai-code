@@ -801,7 +801,11 @@ async fn off_catalog_slugs_get_the_gateway_profile_when_the_provider_is_a_gatewa
         "a model the gateway serves is not an unknown model"
     );
     assert!(
-        gateway.base_instructions.starts_with("You are UnieAI Code"),
+        gateway
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .is_some_and(|template| template.starts_with("You are UnieAI Code")),
         "off-catalog models kept introducing themselves as OpenAI's Codex CLI"
     );
     assert_eq!(gateway.tool_mode, Some(ToolMode::Direct));
