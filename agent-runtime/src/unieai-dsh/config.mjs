@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadCredentials, unieaiHome } from "../config.mjs";
+import { buildPersona } from "./unieai-persona.mjs";
 
 export const DSH_PROVIDER_ID = "unieai";
 export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
@@ -67,9 +68,42 @@ export function configuredModel(home = unieaiHome()) {
   }
 }
 
-/** dsh's `settings.yaml` for the gateway. YAML is written by hand: flat and quoted. */
-export function renderSettings({ baseUrl, models, defaultModel }) {
-  const q = (value) => JSON.stringify(String(value));
+/** Context window assumed for gateway models that declare none. */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+
+/**
+ * Codex retries every dropped stream and honours long Retry-After waits; dsh's
+ * default gives up on STREAM_CLOSED / PI_AI_ERROR and on waits over 10s, so a
+ * gateway hiccup ends the whole task. INVALID_REQUEST stays non-retryable.
+ */
+const RETRY_POLICY = {
+  maxRetries: 8,
+  retryableCodes: ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT", "STREAM_CLOSED", "PI_AI_ERROR"],
+  initialDelayMs: 1000,
+  maxDelayMs: 60000,
+};
+
+const yamlQuote = (value) => JSON.stringify(String(value));
+
+/** A gateway model as settings.yaml declares it. */
+export function gatewayModel(model) {
+  const id = typeof model === "string" ? model : model?.id;
+  const contextWindow = Number(model?.context_window ?? model?.contextWindow) || null;
+  const declared = model?.input_modalities ?? model?.inputModalities ?? null;
+  const input = Array.isArray(declared) ? declared.filter((m) => m === "text" || m === "image") : null;
+  return { id, contextWindow, input: input?.length ? input : null };
+}
+
+/**
+ * dsh's `settings.yaml` for the gateway. YAML is written by hand: flat and quoted.
+ *
+ * Each model carries what the gateway declared: its context window (else
+ * DEFAULT_CONTEXT_WINDOW, so compaction triggers for small models instead of
+ * never) and its input modalities (dsh treats an undeclared model as
+ * text-only, so read_image would refuse even on a vision model).
+ */
+export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs = 300_000 }) {
+  const q = yamlQuote;
   const lines = [
     "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
     "llm-pi-ai:",
@@ -79,12 +113,33 @@ export function renderSettings({ baseUrl, models, defaultModel }) {
     `      apiKeyEnv: ${GATEWAY_KEY_ENV}`,
     "      api: openai-completions",
     `      baseURL: ${q(baseUrl)}`,
+    `      defaultContextWindow: ${DEFAULT_CONTEXT_WINDOW}`,
+    "      retryPolicy:",
+    "        mode: normal",
+    `        maxRetries: ${RETRY_POLICY.maxRetries}`,
+    `        retryableCodes: [${RETRY_POLICY.retryableCodes.join(", ")}]`,
+    "        backoff:",
+    `          initialDelayMs: ${RETRY_POLICY.initialDelayMs}`,
+    `          maxDelayMs: ${RETRY_POLICY.maxDelayMs}`,
+    "          jitterRatio: 0.1",
     "      compat:",
     "        supportsDeveloperRole: false",
     "        maxTokensField: max_tokens",
     "      models:",
-    ...models.map((id) => `        - id: ${q(id)}`),
   ];
+  for (const model of models.map(gatewayModel)) {
+    lines.push(`        - id: ${q(model.id)}`);
+    if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
+    if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+  }
+  // Codex yields long commands instead of killing them at 60s. With plain
+  // bash the next best thing is a foreground budget that fits a build.
+  lines.push(
+    "shell:",
+    `  timeoutMs: ${shellTimeoutMs}`,
+    "  maxTimeoutMs: 1800000",
+    "  maxOutputBytes: 1048576",
+  );
   if (defaultModel) {
     lines.push("agent-default-model:", `  provider: ${DSH_PROVIDER_ID}`, `  model: ${q(defaultModel)}`);
   }
@@ -92,20 +147,109 @@ export function renderSettings({ baseUrl, models, defaultModel }) {
 }
 
 /**
- * The ACP profile's own route (it ignores `agent-default-model`), plus the
- * unieai-control plugin that serves what ACP does not.
+ * UnieAI's dsh plugins, loaded by file URL through the patch. `rows` are the
+ * extra patch rows a plugin needs (e.g. disabling the dsh tool it replaces).
+ * A plugin whose file is absent is skipped, so a partial checkout still runs.
  */
-export function renderPatch({ defaultModel, controlSocket = null, pluginUrl = CONTROL_PLUGIN_URL }) {
-  const q = (value) => JSON.stringify(String(value));
-  const lines = [
-    "- id: acp",
-    "  config:",
-    `    provider: ${DSH_PROVIDER_ID}`,
-    `    model: ${q(defaultModel)}`,
-  ];
-  if (controlSocket) {
+export const UNIEAI_PLUGINS = [
+  { id: "unieai-exec", file: "plugins/unieai-exec.mjs", rows: ["- id: tool-bash", "  disabled: true"], execTools: true },
+  // Replaces dsh's read-before-edit policy (a bash `cat` now counts; stale files still refused).
+  { id: "unieai-edit-observe", file: "plugins/unieai-edit-observe.mjs", rows: ["- id: fs-observation-policy", "  disabled: true"] },
+  { id: "unieai-edit-rescue", file: "plugins/unieai-edit-rescue.mjs" },
+  { id: "unieai-edit-feedback", file: "plugins/unieai-edit-feedback.mjs" },
+  { id: "unieai-apply-patch", file: "plugins/unieai-apply-patch.mjs" },
+  { id: "unieai-loop-truncation", file: "plugins/unieai-loop-truncation.mjs", config: { maxRetries: 2, growth: 2 } },
+  { id: "unieai-loop-completion", file: "plugins/unieai-loop-completion.mjs" },
+  { id: "unieai-loop-toolerrors", file: "plugins/unieai-loop-toolerrors.mjs" },
+  { id: "unieai-context-overflow", file: "plugins/unieai-context-overflow.mjs" },
+  // Inert unless UNIEAI_TURN_DEADLINE_MS / UNIEAI_TURN_MAX_STEPS are set.
+  { id: "unieai-loop-budget", file: "plugins/unieai-loop-budget.mjs" },
+];
+
+/**
+ * The plugins to load: all available ones, or `UNIEAI_DSH_PLUGINS`
+ * (`off`, or a comma list of ids) for A/B runs.
+ */
+export function selectPlugins(env = process.env, available = UNIEAI_PLUGINS) {
+  const present = available.filter((plugin) => existsSync(join(here, plugin.file)));
+  const choice = String(env.UNIEAI_DSH_PLUGINS ?? "").trim();
+  if (!choice || choice === "all") return present;
+  if (choice === "off" || choice === "none") return [];
+  const wanted = new Set(choice.split(",").map((id) => id.trim()));
+  return present.filter((plugin) => wanted.has(plugin.id));
+}
+
+const indent = (text, spaces) => text.split("\n").map((line) => (line ? " ".repeat(spaces) + line : line)).join("\n");
+
+/**
+ * The patch dsh loads last: the ACP route (it ignores `agent-default-model`),
+ * the UnieAI persona, harness settings ported from codex, and UnieAI plugins
+ * (unieai-control serves what ACP does not). A patch row replaces a row's
+ * whole config, so each row restates the fields it keeps.
+ */
+export function renderPatch({
+  defaultModel,
+  controlSocket = null,
+  pluginUrl = CONTROL_PLUGIN_URL,
+  plugins = [],
+  acp = true,
+  persona = true,
+}) {
+  const q = yamlQuote;
+  const execTools = plugins.some((plugin) => plugin.execTools);
+  const lines = [];
+  if (acp) {
+    lines.push("- id: acp", "  config:", `    provider: ${DSH_PROVIDER_ID}`, `    model: ${q(defaultModel)}`);
+  }
+  if (persona) {
+    const text = buildPersona({ execTools });
     lines.push(
-      "- insert:",
+      "- id: system-prompt",
+      "  config:",
+      "    includeHarnessIdentity: false",
+      "    includeRuntimeContext: true",
+      "    personaSuffix: \"Your working directory is {{cwd}}.\"",
+      "    personaPrefix: |",
+      indent(text, 6),
+    );
+  }
+  lines.push(
+    // Leave a quarter of the window for reasoning and output, and give the
+    // summary room: thinking models truncate an 8k summary.
+    "- id: compaction-basic",
+    "  config:",
+    "    thresholdRatio: 0.75",
+    "    retainRatio: 0.15",
+    "    maxTokens: 16384",
+    "    compactionRetries: 2",
+    "    maxOverflowRetries: 2",
+    // Codex keeps ~10k tokens of a tool result; dsh inlined 50KB. The spill
+    // preview keeps head and tail and the full text stays readable.
+    // unieai-exec already cuts to ~44KB itself; don't cut its output twice.
+    "- id: spill-policy",
+    "  config:",
+    `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    "- id: tool-fs",
+    "  config:",
+    "    readMaxBytes: 32768",
+    "- id: tool-jobs",
+    "  config:",
+    "    waitTimeoutMs: 60000",
+    "    maxWaitTimeoutMs: 1800000",
+    "- id: jobs",
+    "  config:",
+    "    maxConcurrentJobsPerOwner: 16",
+    // web_search needs a DeepSeek key uac does not have; don't advertise it.
+    "- id: tool-web",
+    "  config:",
+    "    fetch: true",
+    "    search: false",
+    "    searchTimeoutMs: 60000",
+  );
+  for (const plugin of plugins) lines.push(...(plugin.rows ?? []));
+  const inserts = [];
+  if (controlSocket) {
+    inserts.push(
       "    - id: unieai-control",
       `      name: ${q(pluginUrl)}`,
       "      config:",
@@ -114,6 +258,21 @@ export function renderPatch({ defaultModel, controlSocket = null, pluginUrl = CO
       `        model: ${q(defaultModel)}`,
     );
   }
+  // The date, appended as a user-role snapshot so the system prefix stays put.
+  inserts.push(
+    "    - id: time-context",
+    "      name: '@deepseek-ai/dsh-time-context'",
+    "      config:",
+    "        refreshIntervalMs: 1800000",
+  );
+  for (const plugin of plugins) {
+    inserts.push(`    - id: ${plugin.id}`, `      name: ${q(pathToFileURL(join(here, plugin.file)).href)}`);
+    if (plugin.config) {
+      inserts.push("      config:");
+      for (const [key, value] of Object.entries(plugin.config)) inserts.push(`        ${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;
 }
 
@@ -150,14 +309,16 @@ export function writeDshAccount({ env = process.env } = {}) {
   }
   const home = dshHome(env);
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const listed = credentials.models.map((m) => m?.id).filter(Boolean);
+  const catalog = credentials.models.filter((m) => m?.id);
+  const listed = catalog.map((m) => m.id);
   const defaultModel = pickDefaultModel({ explicit: env.UNIEAI_MODEL, configured: configuredModel(), listed });
   if (!defaultModel) {
     throw new Error("no models are available for this UnieAI account; add models in UnieAI Studio");
   }
   const models = [...new Set([defaultModel, ...listed])];
+  const declared = models.map((id) => catalog.find((m) => m.id === id) ?? { id });
   writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: credentials.gatewayApiKey || "" }));
-  writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models, defaultModel }));
+  writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models: declared, defaultModel }));
   return { home, defaultModel, models };
 }
 
@@ -168,7 +329,8 @@ export function writeDshAccount({ env = process.env } = {}) {
 export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null } = {}) {
   const { home, defaultModel, models } = writeDshAccount({ env });
   const patchPath = join(home, "uac.patch.yml");
-  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket }));
+  const plugins = selectPlugins(env);
+  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins }));
 
   const childEnv = {
     ...env,
@@ -180,7 +342,7 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // The launch environment outranks the credential store and is frozen at
   // launch, so a key there would pin dsh to it across a Studio key rotation.
   delete childEnv[GATEWAY_KEY_ENV];
-  return { env: childEnv, defaultModel, models, controlSocket, ...dshCommand(childEnv) };
+  return { env: childEnv, defaultModel, models, controlSocket, plugins: plugins.map((p) => p.id), ...dshCommand(childEnv) };
 }
 
 /** The app-server protocol's sandbox names -> dsh's permission modes. */

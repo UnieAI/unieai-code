@@ -14,7 +14,7 @@ import {
   historyTurn,
   newSessionWhenRoutesReady,
 } from "./engine.mjs";
-import { permissionMode, pickDefaultModel, renderCredentials, renderPatch, renderSettings } from "./config.mjs";
+import { permissionMode, pickDefaultModel, renderCredentials, renderPatch, renderSettings, selectPlugins } from "./config.mjs";
 
 /** A fake agent: `script(request, agent)` answers each client request. */
 function fakeAgent(script) {
@@ -162,6 +162,9 @@ test("aborting a turn sends session/cancel", async () => {
 test("helpers: args, diffs, model options, config rendering", () => {
   assert.deepEqual(engineToolArgs("read", { file_path: "x.py", offset: 3 }), { file_path: "x.py", offset: 3, filePath: "x.py" });
   assert.deepEqual(engineToolArgs("bash", "raw"), { __raw: "raw" });
+  assert.equal(engineToolArgs("exec_command", { cmd: "make test", yield_time_ms: 1000 }).cmd, "bash -lc 'make test'");
+  assert.equal(engineToolArgs("write_stdin", { session_id: 7, chars: "" }).cmd, "poll session 7");
+  assert.equal(engineToolArgs("write_stdin", { session_id: 7, chars: "\u0003" }).cmd, "interrupt session 7");
   assert.equal(engineToolArgs("bash", { command: "cd a && wc -l 'x y'" }).cmd, `bash -lc 'cd a && wc -l '\\''x y'\\'''`);
 
   const write = diffFromArgs("write", { file_path: "n.txt", content: "a\nb\n" });
@@ -174,11 +177,33 @@ test("helpers: args, diffs, model options, config rendering", () => {
   assert.equal(findModelOption(MODEL_OPTIONS, "GLM-5.2"), JSON.stringify(["unieai", "GLM-5.2"]));
   assert.equal(findModelOption(MODEL_OPTIONS, "nope"), null);
 
-  const settings = renderSettings({ baseUrl: "https://gw/v1", models: ["A", "B"], defaultModel: "A" });
+  const settings = renderSettings({
+    baseUrl: "https://gw/v1",
+    models: ["A", { id: "B", context_window: 64000, input_modalities: ["text", "image", "video"] }],
+    defaultModel: "A",
+  });
+  assert.match(settings, /- id: "A"\n {8}- id: "B"\n {10}contextWindow: 64000\n {10}input: \[text, image\]/);
+  assert.match(settings, /defaultContextWindow: 128000/);
+  assert.match(settings, /retryableCodes: \[[^\]]*STREAM_CLOSED/);
+  assert.match(settings, /shell:\n {2}timeoutMs: 300000/);
   assert.match(settings, /baseURL: "https:\/\/gw\/v1"/);
   assert.match(settings, /- id: "B"/);
   assert.match(settings, /agent-default-model:\n {2}provider: unieai\n {2}model: "A"/);
-  assert.equal(renderPatch({ defaultModel: "A" }), '- id: acp\n  config:\n    provider: unieai\n    model: "A"\n');
+  const base = renderPatch({ defaultModel: "A" });
+  assert.ok(base.startsWith('- id: acp\n  config:\n    provider: unieai\n    model: "A"\n'));
+  assert.match(base, /- id: system-prompt\n {2}config:\n {4}includeHarnessIdentity: false/);
+  assert.match(base, /personaPrefix: \|\n {6}You are UnieAI Code/);
+  assert.doesNotMatch(base.replace(/\{\{(model|cwd)\}\}/g, ""), /\{\{/, "dsh interpolates strictly");
+  assert.doesNotMatch(renderPatch({ defaultModel: "A", acp: false }), /- id: acp\n/);
+  assert.doesNotMatch(renderPatch({ defaultModel: "A", persona: false }), /system-prompt/);
+  const withExec = renderPatch({
+    defaultModel: "A",
+    plugins: [{ id: "unieai-exec", file: "plugins/unieai-exec.mjs", rows: ["- id: tool-bash", "  disabled: true"], execTools: true }],
+  });
+  assert.match(withExec, /- id: tool-bash\n {2}disabled: true/);
+  assert.match(withExec, / {4}- id: unieai-exec\n {6}name: "file:\/\/.*plugins\/unieai-exec\.mjs"/);
+  assert.match(withExec, /exec_command/, "the persona teaches the tools that are loaded");
+  assert.doesNotMatch(base, /exec_command/);
   assert.match(
     renderPatch({ defaultModel: "A", controlSocket: "/s/c.sock", pluginUrl: "file:///p/unieai-control.mjs" }),
     /- insert:\n {4}- id: unieai-control\n {6}name: "file:\/\/\/p\/unieai-control.mjs"\n {6}config:\n {8}socket: "\/s\/c.sock"/,
@@ -320,4 +345,26 @@ test("history turns become protocol items with tool cards", () => {
   assert.deepEqual(turn.items[3].changes[0].kind, { type: "add" });
   assert.equal(turn.items[4].status, "failed");
   assert.equal(historyTurn({ endSeq: null, items: [] }).status, "inProgress");
+});
+
+test("plugin selection follows UNIEAI_DSH_PLUGINS and skips missing files", () => {
+  const available = [
+    { id: "unieai-control-probe", file: "unieai-control.mjs" },
+    { id: "unieai-missing", file: "plugins/does-not-exist.mjs" },
+  ];
+  assert.deepEqual(selectPlugins({}, available).map((p) => p.id), ["unieai-control-probe"]);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "off" }, available), []);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-missing" }, available), []);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-control-probe" }, available).map((p) => p.id), ["unieai-control-probe"]);
+});
+
+test("apply_patch calls render as a diff of the first file they change", async () => {
+  const { diffFromApplyPatch } = await import("./engine.mjs");
+  const update = diffFromApplyPatch("*** Begin Patch\n*** Update File: src/a.py\n@@ def f():\n-    return 1\n+    return 2\n*** Add File: b.txt\n+x\n*** End Patch");
+  assert.equal(update.path, "src/a.py");
+  assert.equal(update.kind, "update");
+  assert.equal(update.diff, "--- a/src/a.py\n+++ b/src/a.py\n@@ -1,1 +1,1 @@\n-    return 1\n+    return 2\n");
+  const add = diffFromApplyPatch("*** Begin Patch\n*** Add File: n.txt\n+hello\n+world\n*** End Patch");
+  assert.deepEqual(add, { path: "n.txt", kind: "add", diff: "hello\nworld\n" });
+  assert.equal(diffFromApplyPatch("nonsense"), null);
 });

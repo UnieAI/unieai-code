@@ -9,7 +9,7 @@
   },
   "scripts": {
     "tui": "node bin/tui.mjs",
-    "test": "node --test src"
+    "test": "node --test 'src/**/*.test.mjs'"
   },
   "engines": {
     "node": ">=20"

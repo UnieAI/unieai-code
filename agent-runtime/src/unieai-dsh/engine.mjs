@@ -17,6 +17,9 @@ const TOOL_NAMES = {
   bash: "bash",
   bash_persistent: "bash",
   pwsh: "bash",
+  // unieai-exec (codex-style unified exec)
+  exec_command: "bash",
+  write_stdin: "bash",
   read: "read",
   read_image: "read",
   grep: "grep",
@@ -24,6 +27,7 @@ const TOOL_NAMES = {
   edit: "edit",
   str_replace_editor: "edit",
   write: "write",
+  apply_patch: "edit",
 };
 
 export function engineToolName(dshName) {
@@ -50,6 +54,12 @@ export function engineToolArgs(dshName, rawInput) {
   // The TUI splits the command with shlex and unwraps `bash -lc <script>`, so
   // a bare script with `&&` would render as `'&&'`. Send it the way codex does.
   if (rawInput.command !== undefined) args.cmd = shellWrapped(String(rawInput.command));
+  if (dshName === "exec_command" && rawInput.cmd !== undefined) args.cmd = shellWrapped(String(rawInput.cmd));
+  if (dshName === "write_stdin") {
+    const chars = String(rawInput.chars ?? "");
+    const action = chars === "\u0003" ? "interrupt" : chars ? `send ${JSON.stringify(chars)}` : "poll";
+    args.cmd = `${action} session ${rawInput.session_id}`;
+  }
   if (dshName === "read" && rawInput.offset !== undefined) args.offset = rawInput.offset;
   return args;
 }
@@ -64,7 +74,51 @@ const prefixed = (text, mark) =>
  * diff, so it is built from the call's own arguments; the hunk is positioned
  * at line 1 because the call does not say where in the file the text was.
  */
+/**
+ * The first file an apply_patch call changes, as a FileUpdateChange. Codex's
+ * patch hunks carry no line numbers, so each gets a nominal header the diff
+ * renderer accepts.
+ */
+export function diffFromApplyPatch(patch) {
+  const lines = String(patch ?? "").split("\n");
+  const start = lines.findIndex((line) => /^\*\*\* (Add|Update|Delete) File: /.test(line));
+  if (start < 0) return null;
+  const [, verb, path] = lines[start].match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
+  const body = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("*** ")) {
+      if (line.startsWith("*** Move to: ") || line.startsWith("*** End of File")) continue;
+      break;
+    }
+    body.push(line);
+  }
+  if (verb === "Add") return { path, kind: "add", diff: `${body.map((line) => line.replace(/^\+/, "")).join("\n")}\n` };
+  if (verb === "Delete") return { path, kind: "delete", diff: "" };
+  const hunks = [];
+  let hunk = null;
+  for (const line of body) {
+    if (line.startsWith("@@")) {
+      hunk = [];
+      hunks.push(hunk);
+    } else {
+      if (!hunk) {
+        hunk = [];
+        hunks.push(hunk);
+      }
+      hunk.push(line);
+    }
+  }
+  const out = [`--- a/${path}`, `+++ b/${path}`];
+  for (const h of hunks.filter((h) => h.length)) {
+    const before = h.filter((line) => !line.startsWith("+")).length;
+    const after = h.filter((line) => !line.startsWith("-")).length;
+    out.push(`@@ -1,${before} +1,${after} @@`, ...h.map((line) => (/^[ +-]/.test(line) ? line : ` ${line}`)));
+  }
+  return { path, kind: "update", diff: `${out.join("\n")}\n` };
+}
+
 export function diffFromArgs(dshName, args = {}) {
+  if (dshName === "apply_patch") return diffFromApplyPatch(args.input ?? args.patch);
   const path = args.file_path ?? args.path;
   if (!path) return null;
   let before;
