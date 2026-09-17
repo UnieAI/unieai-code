@@ -116,7 +116,11 @@ impl App {
                     activity: self.agent_activity.get(&thread_id).cloned(),
                     is_running: entry.is_running,
                     is_active: self.active_thread_id == Some(thread_id),
-                    elapsed: Some(crate::bottom_pane::format_elapsed(started_at.elapsed())),
+                    // Like upstream's status indicator: a per-turn clock,
+                    // shown only while the agent is working.
+                    elapsed: entry
+                        .is_running
+                        .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
                     tokens: self.agent_tokens.get(&thread_id).copied(),
                 }
             })

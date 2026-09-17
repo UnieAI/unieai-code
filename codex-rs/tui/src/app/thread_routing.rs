@@ -1249,6 +1249,13 @@ impl App {
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
+        // Fallback for `turn_stopped`, which needs the cached active turn id that
+        // a session refresh can clear before `turn/completed` arrives.
+        let status_went_idle = matches!(
+            &notification,
+            ServerNotification::ThreadStatusChanged(changed)
+                if !matches!(changed.status, codex_app_server_protocol::ThreadStatus::Active { .. })
+        );
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
@@ -1285,10 +1292,23 @@ impl App {
         };
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
+            // The row's clock is per turn, like the status indicator's.
+            self.agent_started_at
+                .insert(thread_id, std::time::Instant::now());
+            self.agent_activity.remove(&thread_id);
         } else if is_thread_closed {
             self.mark_agent_picker_thread_closed(thread_id);
-        } else if turn_stopped {
+        } else if turn_stopped || status_went_idle {
             self.agent_navigation.mark_stopped(thread_id);
+        }
+        let went_idle = is_thread_closed || turn_stopped || status_went_idle;
+        if went_idle {
+            // A finished command is no longer what the agent is doing.
+            self.agent_activity.remove(&thread_id);
+        }
+        if is_turn_started || went_idle {
+            // Marking alone changes nothing on screen; the tree is a snapshot.
+            self.refresh_agent_tree();
         }
 
         // Settings snapshots do not belong in the transcript queue: apply them in receive order.
