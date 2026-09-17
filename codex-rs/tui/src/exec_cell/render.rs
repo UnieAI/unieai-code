@@ -1135,10 +1135,7 @@ mod tests {
                 name: name.to_string(),
                 path: std::path::PathBuf::from(name),
             }],
-            output: Some(CommandOutput {
-                exit_code: 0,
-                aggregated_output: String::new(),
-            }),
+            output: Some(CommandOutput::new(/*exit_code*/ 0, String::new())),
             source: ExecCommandSource::Agent,
             start_time: None,
             duration: Some(Duration::from_millis(5)),
@@ -1155,10 +1152,7 @@ mod tests {
                 query: Some(query.to_string()),
                 path: None,
             }],
-            output: Some(CommandOutput {
-                exit_code: 0,
-                aggregated_output: String::new(),
-            }),
+            output: Some(CommandOutput::new(/*exit_code*/ 0, String::new())),
             source: ExecCommandSource::Agent,
             start_time: None,
             duration: Some(Duration::from_millis(5)),
@@ -1320,10 +1314,7 @@ mod tests {
         let mut cell = ExecCell::new(read_call("c1", "a.rs"), /*animations*/ false);
         cell.calls.push(read_call("c2", "b.rs"));
         let mut failed = read_call("c3", "c.rs");
-        failed.output = Some(CommandOutput {
-            exit_code: 1,
-            aggregated_output: String::new(),
-        });
+        failed.output = Some(CommandOutput::new(/*exit_code*/ 1, String::new()));
         cell.calls.push(failed);
 
         let rendered = render_lines(&cell.exploring_display_lines_with_verb_groups(
@@ -1370,10 +1361,7 @@ mod tests {
                 cmd: "ls src".into(),
                 path: Some("src".into()),
             }],
-            output: Some(CommandOutput {
-                exit_code: 1,
-                aggregated_output: String::new(),
-            }),
+            output: Some(CommandOutput::new(/*exit_code*/ 1, String::new())),
             source: ExecCommandSource::Agent,
             start_time: None,
             duration: Some(Duration::from_millis(3)),

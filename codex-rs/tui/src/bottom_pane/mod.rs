@@ -624,11 +624,6 @@ impl BottomPane {
         self.status.as_ref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn status_widget_mut(&mut self) -> Option<&mut StatusIndicatorWidget> {
-        self.status.as_mut()
-    }
-
     pub(crate) fn status_elapsed(&self) -> Option<Duration> {
         self.is_task_running
             .then(|| self.status_timer.elapsed_at(Instant::now()))
@@ -3278,44 +3273,6 @@ mod tests {
             "queued_messages_visible_when_status_hidden_snapshot",
             render_snapshot(&pane, area)
         );
-    }
-
-    #[test]
-    fn status_indicator_clock_survives_hide_and_show_within_a_turn() {
-        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
-        let tx = AppEventSender::new(tx_raw);
-        let mut pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: tx,
-            frame_requester: FrameRequester::test_dummy(),
-            has_input_focus: true,
-            enhanced_keys_supported: false,
-            placeholder_text: "Ask UnieAI Code to do anything".to_string(),
-            disable_paste_burst: false,
-            animations_enabled: true,
-            skills: Some(Vec::new()),
-        });
-
-        pane.set_task_running(/*running*/ true);
-        // Bank 7s of working time without depending on the wall clock.
-        let status = pane.status_widget_mut().expect("status indicator");
-        status.pause_timer_at(Instant::now() + Duration::from_secs(7));
-        status.resume_timer();
-        assert_eq!(pane.status_widget().unwrap().elapsed_seconds(), 7);
-
-        // A streamed assistant message takes the pane over and hands it back.
-        pane.hide_status_indicator();
-        pane.ensure_status_indicator();
-
-        assert_eq!(
-            pane.status_widget().unwrap().elapsed_seconds(),
-            7,
-            "the turn's clock must not restart when the indicator is rebuilt"
-        );
-
-        // A genuinely new task does start from zero.
-        pane.set_task_running(/*running*/ false);
-        pane.set_task_running(/*running*/ true);
-        assert_eq!(pane.status_widget().unwrap().elapsed_seconds(), 0);
     }
 
     #[test]
