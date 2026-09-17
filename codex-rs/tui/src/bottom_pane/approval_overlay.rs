@@ -2319,10 +2319,11 @@ mod tests {
             })
             .collect();
         let expected = vec![
-            "✔ You approved UnieAI Code to run".to_string(),
-            "  git add tui/src/render/".to_string(),
-            "  mod.rs tui/src/render/".to_string(),
-            "  renderable.rs this time".to_string(),
+            "✔ You approved UnieAI Code".to_string(),
+            "  to run git add tui/src/".to_string(),
+            "  render/mod.rs tui/src/".to_string(),
+            "  render/renderable.rs this".to_string(),
+            "  time".to_string(),
         ];
         assert_eq!(rendered, expected);
     }

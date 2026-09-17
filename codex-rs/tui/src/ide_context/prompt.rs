@@ -12,8 +12,8 @@ const MAX_OPEN_TABS_CHARS: usize = 20_000;
 // Match the desktop app and IDE extension delimiter exactly. IDE context is serialized into the
 // raw prompt before this marker, then transcript rendering strips back to the request after the last
 // marker. Keeping the same marker and stripping semantics lets threads created with IDE context in
-// one surface replay cleanly in the others.
-const PROMPT_REQUEST_BEGIN: &str = "## My request for UnieAI Code:";
+// one surface replay cleanly in the others. Task mentions merge into the same heading.
+pub(crate) const PROMPT_REQUEST_BEGIN: &str = "## My request for UnieAI Code:";
 
 pub(crate) fn apply_ide_context_to_user_input(
     context: &IdeContext,

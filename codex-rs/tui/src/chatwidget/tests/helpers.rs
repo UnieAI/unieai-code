@@ -12,10 +12,18 @@ pub(super) async fn test_config() -> Config {
         .tempdir()
         .expect("tempdir")
         .keep();
-    let mut config =
-        Config::load_default_with_cli_overrides_for_codex_home(codex_home.clone(), Vec::new())
-            .await
-            .expect("config");
+    // These upstream suites exercise ChatGPT-auth behavior; the fork's
+    // default provider is unieai (requires_openai_auth=false, and its model
+    // catalog comes only from a Studio login), so load with the openai provider.
+    let mut config = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.clone(),
+        vec![(
+            "model_provider".to_string(),
+            toml::Value::String("openai".to_string()),
+        )],
+    )
+    .await
+    .expect("config");
     // Keep generic UI snapshots stable when the bundled catalog default changes.
     config.model = Some("gpt-5.6-sol".to_string());
     config.codex_home = codex_home.abs();
@@ -24,13 +32,17 @@ pub(super) async fn test_config() -> Config {
     config.cwd = PathBuf::from(test_path_display("/tmp/project")).abs();
     config.config_layer_stack = ConfigLayerStack::default();
     config.startup_warnings.clear();
-    // These upstream suites exercise ChatGPT-auth behavior; the fork's
-    // default provider is unieai (requires_openai_auth=false), so pin the
-    // provider back to openai.
     config.model_provider_id = "openai".to_string();
     config.model_provider = built_in_model_providers(/*openai_base_url*/ None)
         .remove("openai")
         .expect("openai provider is built in");
+    // Embedded app servers started from this config re-read `codex_home`, so
+    // pin the provider there as well.
+    std::fs::write(
+        codex_home.join("config.toml"),
+        "model_provider = \"openai\"\n",
+    )
+    .expect("write test config.toml");
     config
 }
 
@@ -224,12 +236,6 @@ pub(super) async fn make_chatwidget_manual_with_auth(
     widget.windows_sandbox_config.requirements = Some(None);
     widget.transcript.active_cell = None;
     widget.transcript.active_cell_revision = 0;
-    widget.normal_placeholder_text = "Ask UnieAI Code to do anything".to_string();
-    widget.side_placeholder_text =
-        "Check recently modified functions for compatibility".to_string();
-    widget
-        .bottom_pane
-        .set_placeholder_text(widget.normal_placeholder_text.clone());
     widget.set_model(&resolved_model);
     (widget, rx, op_rx)
 }

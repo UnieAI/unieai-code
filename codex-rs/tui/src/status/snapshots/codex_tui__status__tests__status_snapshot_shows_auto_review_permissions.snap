@@ -5,10 +5,9 @@ expression: sanitized
 /status
 
 ╭───────────────────────────────────────────────────────────────────────╮
-│  >_ UnieAI Code (v0.0.0)                                              │
+│  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0)                         │
 │                                                                       │
 │  Model:            gpt-5.1-codex-max (reasoning none, summaries auto) │
-│  Model provider:   UnieAI                                             │
 │  Directory: [[workspace]]                                             │
 │  Permissions:      Workspace (Approve for me)                         │
 │  Agents.md:        <none>                                             │

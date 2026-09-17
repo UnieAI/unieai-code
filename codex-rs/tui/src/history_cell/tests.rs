@@ -1147,11 +1147,11 @@ fn prefixed_wrapped_history_cell_indents_wrapped_lines() {
     assert_eq!(
         rendered,
         vec![
-            "✔ You approved codex to".to_string(),
-            "  run echo something".to_string(),
-            "  really long to ensure".to_string(),
-            "  wrapping happens this".to_string(),
-            "  time".to_string(),
+            "✔ You approved UnieAI".to_string(),
+            "  Code to run echo".to_string(),
+            "  something really long".to_string(),
+            "  to ensure wrapping".to_string(),
+            "  happens this time".to_string(),
         ]
     );
 }

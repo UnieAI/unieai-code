@@ -1680,68 +1680,22 @@ mod tests {
         ));
     }
 
+    // The fork's picker offers only the UnieAI Studio flows (b65803c55c); the
+    // Bedrock feature flag and forced login method must not bring back the
+    // upstream ChatGPT/API key/Bedrock options.
     #[tokio::test]
-    async fn bedrock_option_requires_feature_and_api_login_permission() {
+    async fn sign_in_picker_offers_only_unieai_flows_regardless_of_bedrock_or_forced_login() {
         let (mut widget, _tmp) = widget_forced_chatgpt().await;
+        let unieai_only = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
         widget.auth_config.forced_login_method = None;
-        assert_eq!(
-            widget.displayed_sign_in_options(),
-            vec![
-                SignInOption::ChatGpt,
-                SignInOption::DeviceCode,
-                SignInOption::ApiKey,
-            ]
-        );
+        assert_eq!(widget.displayed_sign_in_options(), unieai_only);
 
         widget.bedrock_setup_enabled = true;
-        assert_eq!(
-            widget.displayed_sign_in_options(),
-            vec![
-                SignInOption::ChatGpt,
-                SignInOption::DeviceCode,
-                SignInOption::ApiKey,
-                SignInOption::Bedrock,
-            ]
-        );
-
-        let area = Rect::new(0, 0, 76, 19);
-        let mut buffer = Buffer::empty(area);
-        widget.render_pick_mode(area, &mut buffer);
-        let mut rows = (area.top()..area.bottom())
-            .map(|row| {
-                (area.left()..area.right())
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect::<Vec<_>>();
-        while rows.last().is_some_and(String::is_empty) {
-            rows.pop();
-        }
-        insta::assert_snapshot!(rows.join("\n"), @r###"
-          Choose how you want to use Codex.
-
-        > 1. Sign in with ChatGPT
-             Usage included with Plus, Pro, Business, and Enterprise plans
-
-          2. Sign in with Device Code
-             Sign in from another device with a one-time code
-
-          3. Use an OpenAI API key
-             Pay for what you use
-
-          4. Use Amazon Bedrock
-             Connect using your AWS credentials
-
-          Press enter to continue
-        "###);
+        assert_eq!(widget.displayed_sign_in_options(), unieai_only);
 
         widget.auth_config.forced_login_method = Some(ForcedLoginMethod::Chatgpt);
-        assert_eq!(
-            widget.displayed_sign_in_options(),
-            vec![SignInOption::ChatGpt, SignInOption::DeviceCode]
-        );
+        assert_eq!(widget.displayed_sign_in_options(), unieai_only);
+        assert!(!unieai_only.contains(&SignInOption::Bedrock));
     }
 
     #[tokio::test]
@@ -1886,17 +1840,17 @@ mod tests {
 
         assert_eq!(
             collect_osc8_chars(&buf, area, "https://developers.openai.com/codex/security"),
-            "Codex docs"
+            "UnieAI Code docs"
         );
         assert_eq!(
             collect_osc8_chars(&buf, area, "https://chatgpt.com/#settings"),
             "training data preferences"
         );
         assert_eq!(
-            (0..37).map(|x| buf[(x, 5)].modifier).collect::<Vec<_>>(),
+            (0..43).map(|x| buf[(x, 5)].modifier).collect::<Vec<_>>(),
             [
                 vec![Modifier::DIM; 27],
-                vec![Modifier::DIM | Modifier::UNDERLINED; 10],
+                vec![Modifier::DIM | Modifier::UNDERLINED; 16],
             ]
             .concat()
         );
@@ -1925,10 +1879,10 @@ mod tests {
 
           Before you start:
 
-          Decide how much autonomy you want to grant Codex
-          For more details see the Codex docs
+          Decide how much autonomy you want to grant UnieAI Code
+          For more details see the UnieAI Code docs
 
-          Codex can make mistakes
+          UnieAI Code can make mistakes
           Review the code it writes and commands it runs
 
           Powered by your ChatGPT account

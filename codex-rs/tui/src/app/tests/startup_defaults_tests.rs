@@ -46,7 +46,9 @@ async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
     let home = tempdir()?;
     std::fs::write(
         home.path().join("config.toml"),
-        "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\nfeatures.fast_mode = true\n",
+        // Pin the built-in openai provider: the fork's default `unieai` provider
+        // has no model catalog without a Studio login.
+        "model_provider = \"openai\"\nmodel = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\nfeatures.fast_mode = true\n",
     )?;
     let config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
@@ -302,11 +304,13 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
         let launch_cwd = tempdir()?;
         std::fs::write(
             client_home.path().join("config.toml"),
-            "model = \"stale-client-model\"\nmodel_reasoning_effort = \"low\"\n",
+            "model_provider = \"openai\"\nmodel = \"stale-client-model\"\nmodel_reasoning_effort = \"low\"\n",
         )?;
+        // The cleared model falls back to the catalog, which the fork's default
+        // `unieai` provider only has after a Studio login.
         std::fs::write(
             server_home.path().join("config.toml"),
-            "model_reasoning_effort = \"high\"\n",
+            "model_provider = \"openai\"\nmodel_reasoning_effort = \"high\"\n",
         )?;
         let mut config = ConfigBuilder::default()
             .codex_home(client_home.path().to_path_buf())
@@ -369,7 +373,7 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
             let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
                 .replace(&destination.path().display().to_string(), "<PROJECT>");
             insta::assert_snapshot!(rendered, @r"
-            › Ask Codex to do anything
+            › Ask UnieAI Code to do anything
 
               gpt-6-astra high · <PROJECT>
             ");

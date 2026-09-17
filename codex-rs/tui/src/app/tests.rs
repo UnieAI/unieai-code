@@ -3068,6 +3068,11 @@ async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> 
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         turn_completed_notification(thread_id, "first", TurnStatus::Interrupted),
     )));
+    // The fork proactively opens the feedback picker after an interrupted
+    // turn (c015a1f0f9); dismiss it so Enter submits the draft.
+    assert!(app.chat_widget.has_active_view());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     while events.try_recv().is_ok() {}
     app.chat_widget
         .restore_user_message_to_composer("busy".into());

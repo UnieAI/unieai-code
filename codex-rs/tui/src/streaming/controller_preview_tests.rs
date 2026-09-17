@@ -125,10 +125,13 @@ fn prose_after_a_table_is_previewed_until_another_table_starts() {
     let cwd = std::env::temp_dir();
     let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
     controller.push("| A | B |\n| --- | --- |\n| a | b |\n\n");
+    // The blank line closes the table, so its rows are released for commit
+    // (fork change 75485faebe); the partial prose must only be previewed.
+    let queued_after_table = controller.queued_lines();
     controller.push("prose after the table");
     let tail = visible_lines(controller.current_tail_lines());
     assert_eq!(tail.last(), Some(&Line::from("prose after the table")));
-    assert_eq!(controller.queued_lines(), 0);
+    assert_eq!(controller.queued_lines(), queued_after_table);
 
     controller.push("\n\n| C | D |\n| --- | --- |\n");
     let tail = controller.current_tail_lines();

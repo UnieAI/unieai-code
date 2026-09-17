@@ -224,10 +224,17 @@ async fn commands_can_precede_the_sparkle_but_inserted_or_typed_drafts_cannot() 
             "shortcut_help" => {
                 app.chat_widget
                     .handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+                // The fork's which-key overlay (a51f9b07ea) replaces the
+                // footer shortcut list on `?`.
                 assert!(
                     render_bottom_popup(&app.chat_widget, /*width*/ 80)
-                        .contains("customize shortcuts with /keymap")
+                        .contains("Keyboard Shortcuts")
                 );
+                // Typing into the overlay re-inserts the key through an app
+                // event this test does not pump, so close it with Esc first.
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                assert!(!app.chat_widget.has_active_view());
             }
             "commands" => {
                 for command in ["/status", "/pwd"] {
@@ -560,7 +567,7 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
             let lines = rendered.lines().collect::<Vec<_>>();
             let prompt = lines
                 .iter()
-                .position(|line| line.contains("Ask Codex to do anything"))
+                .position(|line| line.contains("Ask UnieAI Code to do anything"))
                 .expect("empty composer shows its placeholder");
             let composer = lines[prompt.saturating_sub(1)..=prompt + 1].join("\n");
             snapshots.push(format!("{picker}:\n{composer}"));
@@ -622,7 +629,7 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
         let lines = rendered.lines().collect::<Vec<_>>();
         let prompt = lines
             .iter()
-            .position(|line| line.contains("Ask Codex to do anything"))
+            .position(|line| line.contains("Ask UnieAI Code to do anything"))
             .expect("empty composer shows its placeholder");
         let composer = lines[prompt.saturating_sub(1)..=prompt + 1].join("\n");
         assert_eq!(

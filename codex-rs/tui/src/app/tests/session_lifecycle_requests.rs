@@ -3270,7 +3270,8 @@ model_reasoning_effort = "low"
             app.config.model_provider_id.as_str(),
             app.chat_widget.current_reasoning_effort()
         ),
-        ("gpt-5.4", "openai", Some(ReasoningEffortConfig::Low))
+        // The host config names no provider, so the fork's default applies.
+        ("gpt-5.4", "unieai", Some(ReasoningEffortConfig::Low))
     );
     // Provider selection belongs to host config, not project config.
     let host_config = home.join("config.toml");

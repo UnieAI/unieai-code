@@ -145,6 +145,10 @@ async fn command_center_new_reads_server_defaults_for_actual_destination() -> Re
                 },
                 if mode == "local-default-provider" {
                     "model_provider = \"ollama\"\n"
+                } else if mode == "remote-null-fast" {
+                    // This case reads the catalog default; the fork's `unieai`
+                    // default provider only has a catalog after a Studio login.
+                    "model_provider = \"openai\"\n"
                 } else {
                     ""
                 }
@@ -303,6 +307,10 @@ async fn command_center_new_reads_server_defaults_for_actual_destination() -> Re
                     serde_json::Value::Null
                 } else if mode == "local" && !explicit_cwd {
                     serde_json::json!("ollama")
+                } else if mode == "local-cli-model" || mode == "local-default-provider" {
+                    // No provider is configured for the launch: the fork's
+                    // built-in default provider applies.
+                    serde_json::json!("unieai")
                 } else {
                     serde_json::json!("openai")
                 },
@@ -735,7 +743,7 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
     );
     insta::assert_snapshot!(
         crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_widget, /*width*/ 80)
-            .lines().next().unwrap(), @"› Keep this unsent draft");
+            .lines().find(|line| line.starts_with('›')).unwrap(), @"› Keep this unsent draft");
     // Seed persisted history without sending the user's draft. Subsequent navigation
     // must exercise thread/resume, including its restoration of permission settings.
     for id in [first, other] {

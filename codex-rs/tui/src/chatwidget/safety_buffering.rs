@@ -8,9 +8,8 @@ use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
 const SAFETY_BUFFERING_PROMPT_VIEW_ID: &str = "safety-buffering-prompt";
 const SAFETY_BUFFERING_LEARN_MORE_URL: &str = "https://help.openai.com/en/articles/20001326";
 
-const SAFETY_BUFFERING_HEADER: &str =
-    "Our systems are thinking a bit more about this request before responding.";
-const SAFETY_BUFFERING_MESSAGE_WITH_RETRY: &str = "Hang tight or retry with a faster model for a quicker response, though it may be less capable of handling complex requests.";
+const SAFETY_BUFFERING_HEADER: &str = "Giving this request a little extra thought";
+const SAFETY_BUFFERING_MESSAGE_WITH_RETRY: &str = "If you'd rather not wait, retry with a faster model. It may be less capable of handling complex requests.";
 const SAFETY_BUFFERING_FOOTER: &str = "No action is required. UnieAI Code will keep waiting, and this menu will close when the response is ready.";
 
 struct SafetyBufferingHeader(Vec<Line<'static>>);

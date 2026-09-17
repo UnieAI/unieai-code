@@ -2553,6 +2553,13 @@ mod tests {
     use tempfile::TempDir;
 
     async fn build_config(temp_dir: &TempDir) -> Config {
+        // Bootstrap needs a model catalog; the fork's default `unieai` provider
+        // only has one after a Studio login, so pin the built-in openai provider.
+        std::fs::write(
+            temp_dir.path().join("config.toml"),
+            "model_provider = \"openai\"\n",
+        )
+        .expect("write test config.toml");
         ConfigBuilder::default()
             .codex_home(temp_dir.path().to_path_buf())
             .build()

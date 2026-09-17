@@ -5,13 +5,15 @@ expression: sanitized
 /status
 
 ╭─────────────────────────────────────────────────────────────────────────────╮
-│  >_ UnieAI Code (v0.0.0)                                                    │
+│  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0)                               │
+│                                                                             │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date               │
+│ information on rate limits and credits                                      │
 │                                                                             │
 │  Remote:           unix:///tmp/codex-home/app-server-control/app-server-    │
 │                    control.sock (v0.133.0)                                  │
 │                                                                             │
 │  Model:            gpt-5.1-codex-max (reasoning medium, summaries auto)     │
-│  Model provider:   UnieAI                                                   │
 │  Directory: [[workspace]]                                                   │
 │  Permissions:      Custom (workspace with network access, Ask for approval) │
 │  Agents.md:        <none>                                                   │

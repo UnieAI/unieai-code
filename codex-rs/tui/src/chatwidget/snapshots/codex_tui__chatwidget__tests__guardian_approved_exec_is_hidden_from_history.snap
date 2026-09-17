@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
-assertion_line: 169
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
 
@@ -8,8 +7,7 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 
 
-✔ Auto-reviewer approved UnieAI Code to run rm -f /tmp/guardian-approved.sqlite
-  this time
+
 
 
 › Ask UnieAI Code to do anything

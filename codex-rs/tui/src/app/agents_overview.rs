@@ -901,10 +901,12 @@ impl App {
                     &self.harness_overrides,
                 );
                 // Embedded thread/start sends a provider ID alongside the selected model.
+                // With no configured provider, fall back to the same built-in
+                // default the embedded server's config loader uses.
                 if use_server_provider {
-                    config.model_provider_id = defaults
-                        .model_provider
-                        .unwrap_or_else(|| "openai".to_string());
+                    config.model_provider_id = defaults.model_provider.unwrap_or_else(|| {
+                        codex_model_provider_info::UNIEAI_PROVIDER_ID.to_string()
+                    });
                 }
             }
             Ok(None) => {}

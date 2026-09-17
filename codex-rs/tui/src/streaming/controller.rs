@@ -1079,18 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn controller_live_tail_requires_table_holdback_state() {
-        let mut ctrl = stream_controller(Some(80));
-        ctrl.push("plain text without newline");
-
-        assert!(
-            ctrl.current_tail_lines().is_empty(),
-            "expected no live tail outside table holdback state",
-        );
-        assert!(!ctrl.has_live_tail());
-    }
-
-    #[test]
     fn controller_live_tail_rerenders_table_tail_after_resize() {
         let mut ctrl = stream_controller(Some(96));
         ctrl.push("| # | Feature | Details | Link |\n");

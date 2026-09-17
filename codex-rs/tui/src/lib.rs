@@ -2357,12 +2357,14 @@ requires_openai_auth = {requires_openai_auth}
                 AppServerTarget::Embedded,
                 false,
             ),
+            // The wizard is gated to the implicit `openai` provider; the fork's
+            // built-in default provider is `unieai`, so it stays hidden.
             (
                 "enabled for the default provider",
                 enabled,
                 LoginStatus::NotAuthenticated,
                 AppServerTarget::Embedded,
-                true,
+                false,
             ),
             (
                 "explicit provider",

@@ -139,14 +139,19 @@ pub const CONTEXT_WINDOW_OPEN_TAG: &str = "<context_window>";
 pub const CONTEXT_WINDOW_CLOSE_TAG: &str = "</context_window>";
 pub const CONTEXT_WINDOW_GUIDANCE_OPEN_TAG: &str = "<context_window_guidance>";
 pub const CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG: &str = "</context_window_guidance>";
-pub const USER_MESSAGE_BEGIN: &str = "## My request for UnieAI:";
+/// The heading the TUI and IDE surfaces put before the user's own words.
+pub const USER_MESSAGE_BEGIN: &str = "## My request for UnieAI Code:";
+/// Earlier spellings still present in saved sessions.
+const LEGACY_USER_MESSAGE_BEGINS: [&str; 2] = ["## My request for UnieAI:", "## My request for Codex:"];
 
 /// Removes the model-context prefix from a user message before displaying it.
 pub fn strip_user_message_prefix(text: &str) -> &str {
-    match text.find(USER_MESSAGE_BEGIN) {
-        Some(idx) => text[idx + USER_MESSAGE_BEGIN.len()..].trim(),
-        None => text.trim(),
-    }
+    std::iter::once(USER_MESSAGE_BEGIN)
+        .chain(LEGACY_USER_MESSAGE_BEGINS)
+        .filter_map(|marker| text.rfind(marker).map(|idx| idx + marker.len()))
+        .max()
+        .map_or(text, |start| &text[start..])
+        .trim()
 }
 
 // TODO(anp): Replace `TurnEnvironmentSelection` with `PathUri` once path URIs carry environment
@@ -4631,6 +4636,25 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn strip_user_message_prefix_accepts_every_marker_spelling() {
+        for marker in [
+            "## My request for UnieAI Code:",
+            "## My request for UnieAI:",
+            "## My request for Codex:",
+        ] {
+            let text = format!("# Context\n## Active file: a.rs\n\n{marker}\n  fix it \n");
+            assert_eq!(strip_user_message_prefix(&text), "fix it", "{marker}");
+        }
+        assert_eq!(
+            strip_user_message_prefix(
+                "## My request for UnieAI:\nold\n## My request for UnieAI Code:\nnew"
+            ),
+            "new"
+        );
+        assert_eq!(strip_user_message_prefix("  plain  "), "plain");
+    }
 
     #[test]
     fn old_turn_started_records_have_no_root_attribution() {

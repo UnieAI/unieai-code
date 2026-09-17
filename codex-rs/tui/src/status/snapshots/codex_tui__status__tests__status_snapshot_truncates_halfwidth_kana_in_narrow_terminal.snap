@@ -5,12 +5,7 @@ expression: sanitized
 /status
 
 ╭────────────────────────────────────────╮
-│  >_ OpenAI Codex (v0.0.0)              │
-│                                        │
-│ Visit                                  │
-│ https://chatgpt.com/codex/settings/usa │
-│ for up-to-date                         │
-│ information on rate limits and credits │
+│  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-a │
 │                                        │
 │  Model:                ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞ  │
 │  Directory: [[workspace]]              │
