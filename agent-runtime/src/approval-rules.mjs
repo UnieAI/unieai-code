@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * approval-rules.mjs — remember bash approvals so the same command shape isn't
  * re-asked (idea from opencode's saved permissions + bash arity reduction).

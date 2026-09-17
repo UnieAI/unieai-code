@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * process-manager.mjs — long-running child processes the agent can start, poll and stop.
  *

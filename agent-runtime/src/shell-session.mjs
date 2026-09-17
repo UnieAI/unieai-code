@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * shell-session.mjs — one shell that stays alive across tool calls.
  *

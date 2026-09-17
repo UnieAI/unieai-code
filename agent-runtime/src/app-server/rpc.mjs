@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * rpc.mjs — JSON-RPC 2.0 dispatch for the app-server connection.
  *

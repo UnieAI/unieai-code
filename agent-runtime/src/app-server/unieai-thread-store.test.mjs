@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // Persistent threads: list, resume, fork, revert, rename, archive, delete —
 // with every response checked against the Rust protocol's generated schema.
 import { test } from "node:test";
@@ -7,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHandlers } from "./server.mjs";
-import { createThreadStore } from "./thread-store.mjs";
+import { createThreadStore } from "./unieai-thread-store.mjs";
 import { validateAgainstSchema, SCHEMA_DIR } from "./schema-check.mjs";
 import { userMessageItem, agentMessageItem } from "./items.mjs";
 

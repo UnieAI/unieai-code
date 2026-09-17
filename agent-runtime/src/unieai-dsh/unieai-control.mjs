@@ -1,5 +1,6 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * uac-control.mjs — a dsh plugin that serves what ACP does not expose.
+ * unieai-control.mjs — a dsh plugin that serves what ACP does not expose.
  *
  * dsh's ACP bridge offers prompt / cancel / new / resume / close. The
  * app-server protocol also needs steering a running turn, manual compaction,
@@ -19,7 +20,7 @@ import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
-export const name = "uac-control";
+export const name = "unieai-control";
 export const inject = ["agents", "compaction", "sessionQuery", "sessions"];
 
 /** Plain text of a message's content blocks. */
@@ -148,7 +149,7 @@ async function withObservation(ctx, sessionId, read) {
 export function apply(ctx, config = {}) {
   const socketPath = config.socket || process.env.UAC_CONTROL_SOCKET;
   if (!socketPath) {
-    ctx.logger.warn("uac-control: no socket configured; disabled");
+    ctx.logger.warn("unieai-control: no socket configured; disabled");
     return;
   }
   const route = { provider: config.provider, model: config.model };
@@ -230,7 +231,7 @@ export function apply(ctx, config = {}) {
   });
   server.listen(socketPath, () => {
     chmodSync(socketPath, 0o600);
-    ctx.logger.info(`uac-control: listening on ${socketPath}`);
+    ctx.logger.info(`unieai-control: listening on ${socketPath}`);
   });
   ctx.on("dispose", () => {
     server.close();

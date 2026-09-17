@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * session-rollout.mjs — an append-only log of session-tree entries.
  *

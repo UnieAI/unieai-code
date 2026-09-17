@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // ripgrep's default engine rejects lookaround, but the model writes regexes in
 // Python/JS dialects where lookaround is ordinary. A pattern like
 // `standard_duration_re|(?=\d+:\d+)` came back as "ripgrep exited 2", and the

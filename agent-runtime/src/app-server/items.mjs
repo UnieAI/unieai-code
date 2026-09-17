@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * items.mjs — turn agent-runtime's tool events into the protocol's items.
  *

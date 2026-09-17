@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // A turn killed before it ended used to be lost entirely.
 //
 // The engine writes its whole-tree snapshot when a turn finishes, so a process

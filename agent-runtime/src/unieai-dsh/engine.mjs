@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * engine.mjs — unieai-agent-core (uac): one conversation on deepseek-harness.
  *
@@ -161,7 +162,7 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
     return agentPromise;
   };
 
-  /** The uac-control channel into the same dsh process (see uac-control.mjs). */
+  /** The unieai-control channel into the same dsh process (see unieai-control.mjs). */
   const control = async (method, params) => {
     if (!connectControl) throw new Error("this dsh host has no control channel");
     await agent();
@@ -218,7 +219,7 @@ export async function newSessionWhenRoutesReady(acp, params, { timeoutMs = 20_00
 
 const TURN_STATUS = { interrupted: "interrupted", aborted: "interrupted", error: "failed", blocked: "failed" };
 
-/** One uac-control history turn -> the engine's HistoryTurn (see server.mjs). */
+/** One unieai-control history turn -> the engine's HistoryTurn (see server.mjs). */
 export function historyTurn(turn) {
   const items = [];
   for (const entry of turn.items ?? []) {

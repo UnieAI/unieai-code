@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The approval round trip, against the enums and params the Rust side actually
 // defines (codex-rs/app-server-protocol/src/protocol/v2/item.rs).
 //

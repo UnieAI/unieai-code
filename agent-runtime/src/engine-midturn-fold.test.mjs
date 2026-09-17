@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // A long turn now folds its history instead of clipping tool outputs.
 //
 // The old behaviour pruned tool messages every step once history passed the

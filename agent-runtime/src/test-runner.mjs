@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * test-runner.mjs — work out how a project runs its own tests, and build the
  * command to run a targeted slice of them.

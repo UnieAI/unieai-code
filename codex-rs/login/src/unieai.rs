@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 //! UnieAI Studio device-code login.
 //!
 //! Signs the user into UnieAI Studio with the OAuth device-code grant, then

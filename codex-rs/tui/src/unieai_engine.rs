@@ -1,7 +1,8 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 //! Which agent engine a new session runs on, and how to reach the non-default one.
 //!
 //! `codex` is the embedded Rust engine. `uac` (unieai-agent-core) is served by
-//! `agent-runtime/bin/uac-app-server.mjs`, which answers the app-server protocol's
+//! `agent-runtime/bin/unieai-uac-server.mjs`, which answers the app-server protocol's
 //! engine methods by driving deepseek-harness (`dsh`) over ACP and forwards every
 //! other method to the Rust app-server. The TUI reaches it as a local daemon on
 //! its own socket, so the upstream daemon socket keeps its meaning.
@@ -24,7 +25,7 @@ const ENGINE_FILE: &str = "engine";
 const UAC_DIR: &str = "uac";
 const UAC_SOCKET: &str = "app-server.sock";
 const UAC_LOG: &str = "server.log";
-const UAC_SCRIPT: &str = "agent-runtime/bin/uac-app-server.mjs";
+const UAC_SCRIPT: &str = "agent-runtime/bin/unieai-uac-server.mjs";
 const UAC_START_TIMEOUT: Duration = Duration::from_secs(20);
 const UAC_PROBE_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -257,5 +258,5 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
 }
 
 #[cfg(test)]
-#[path = "engine_selection_tests.rs"]
+#[path = "unieai_engine_tests.rs"]
 mod tests;

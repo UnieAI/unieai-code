@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * memory-store.mjs — filesystem storage for agent-core's Tier-1 core memory.
  *

@@ -221,10 +221,10 @@ pub(super) async fn run_main_inner(
         None
     };
     let uac_socket = if explicit_remote_endpoint.is_none()
-        && engine_selection::resolve_engine(&codex_home) == engine_selection::EngineKind::Uac
+        && unieai_engine::resolve_engine(&codex_home) == unieai_engine::EngineKind::Uac
     {
         match startup_draft
-            .run_until(engine_selection::ensure_uac_server(&codex_home))
+            .run_until(unieai_engine::ensure_uac_server(&codex_home))
             .await?
         {
             Ok(socket_path) => Some(socket_path),

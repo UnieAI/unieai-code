@@ -234,7 +234,7 @@ const env = {
 };
 // `/engine uac` runs this package's uac server with the node running us; the
 // native binary cannot find either on its own from inside a platform package.
-const uacServer = path.join(__dirname, "..", "agent-runtime", "bin", "uac-app-server.mjs");
+const uacServer = path.join(__dirname, "..", "agent-runtime", "bin", "unieai-uac-server.mjs");
 if (!env.UNIEAI_UAC_SERVER && existsSync(uacServer)) {
   env.UNIEAI_UAC_SERVER = uacServer;
 }

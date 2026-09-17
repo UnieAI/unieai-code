@@ -1,5 +1,6 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * launch.mjs — serve the app-server protocol on a unix socket from an engine.
+ * unieai-launch.mjs — serve the app-server protocol on a unix socket from an engine.
  *
  * Shared by the entry points in bin/: each supplies how a thread's engine is
  * built; the socket, the forwarder to the Rust app-server, and shutdown are the
@@ -19,7 +20,7 @@ export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
 /**
  * `buildEngine({ cwd, model, sandboxMode, resumeState, onState, onText,
  * onReasoning, onToolEvent, requestApproval })` returns an engine for one
- * thread. `threadStore` (see thread-store.mjs) makes threads persistent.
+ * thread. `threadStore` (see unieai-thread-store.mjs) makes threads persistent.
  * `onShutdown` runs before the process exits.
  */
 export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, onShutdown = async () => {} }) {

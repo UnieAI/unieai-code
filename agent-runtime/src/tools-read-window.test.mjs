@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // A `read` that ignores offset/limit is worse than one that has no windowing at
 // all: the model asks for line 4000, gets the head of the file back, asks again,
 // gets the same head, and concludes the tool is broken. In the SWE-bench Verified

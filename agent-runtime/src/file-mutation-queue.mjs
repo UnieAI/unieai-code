@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * file-mutation-queue.mjs — serialize mutations that touch the same file.
  *

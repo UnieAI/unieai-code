@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * goal-plan.mjs — a lightweight, in-session task checklist for a mutation turn
  * (goal-harness §3, translated from grok-build's goal_planner / goal_next_step

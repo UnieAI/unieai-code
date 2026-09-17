@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The turn-entry prune has to be measured against the budget the coding layer
 // declares, not agent-core's env default.
 //

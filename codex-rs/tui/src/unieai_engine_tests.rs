@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 use super::*;
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;

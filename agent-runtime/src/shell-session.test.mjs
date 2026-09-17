@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The point of a session shell is that the next command sees what the last one
 // did. Everything else here is about what happens when that breaks.
 import { test } from "node:test";

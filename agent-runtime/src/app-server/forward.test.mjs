@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The forwarder is what keeps us from reimplementing the platform half of the
 // protocol. These use a stub child that speaks the same line-delimited JSON-RPC,
 // so the contract is pinned without spawning the real Rust binary.

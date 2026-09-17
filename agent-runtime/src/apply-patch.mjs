@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * apply-patch.mjs — the codex `apply_patch` envelope, parsed and applied.
  *

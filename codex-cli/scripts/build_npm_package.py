@@ -19,10 +19,10 @@ AGENT_RUNTIME_ROOT = REPO_ROOT / "agent-runtime"
 # package's dependencies; see stage_agent_runtime.
 AGENT_RUNTIME_FILES = [
     "package.json",
-    "bin/uac-app-server.mjs",
+    "bin/unieai-uac-server.mjs",
     "src/config.mjs",
     "src/app-server",
-    "src/dsh",
+    "src/unieai-dsh",
 ]
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"

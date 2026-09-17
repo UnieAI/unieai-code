@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * turn-coordinator.mjs — serialize turns per session so concurrent sends never
  * interleave (idea from opencode's run-coordinator). The engine mutates one

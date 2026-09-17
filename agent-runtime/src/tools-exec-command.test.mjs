@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // exec_command mounted as a tool: the state one call sets up is there for the
 // next, and the tool is simply absent where no persistent shell exists.
 import { test } from "node:test";

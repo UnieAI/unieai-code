@@ -1,7 +1,8 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // History and fork boundaries from dsh session events.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forkCut, historyFromEvents } from "./uac-control.mjs";
+import { forkCut, historyFromEvents } from "./unieai-control.mjs";
 
 let seq = 0;
 const ev = (type, data) => ({ type, seq: seq++, time: 1_700_000_000_000 + seq * 1000, data });

@@ -7,8 +7,8 @@ mod math_interruption_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
-#[path = "tests/agent_tree_idle_tests.rs"]
-mod agent_tree_idle_tests;
+#[path = "tests/unieai_agent_tree_idle_tests.rs"]
+mod unieai_agent_tree_idle_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]

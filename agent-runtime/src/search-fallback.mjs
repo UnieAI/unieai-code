@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * search-fallback.mjs — pure-JS grep/glob for hosts that have no ripgrep.
  *

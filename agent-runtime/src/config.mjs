@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * config.mjs — resolve UnieAI credentials, models, and the sandbox binary.
  *

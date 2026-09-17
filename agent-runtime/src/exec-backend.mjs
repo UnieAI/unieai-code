@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * exec-backend.mjs — where the agent's shell commands actually execute.
  *

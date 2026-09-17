@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * acp-client.mjs — a minimal Agent Client Protocol client over a child's stdio.
  *

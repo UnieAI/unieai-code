@@ -104,7 +104,7 @@ mod analytics;
 mod app;
 mod app_backtrack;
 mod app_command;
-mod engine_selection;
+mod unieai_engine;
 mod app_event;
 mod app_event_sender;
 mod app_info;

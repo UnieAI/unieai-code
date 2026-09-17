@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // apply_patch as a mounted tool: gated per model, sharing the same write policy
 // and staleness guards as edit/write, and all-or-nothing.
 import { test } from "node:test";

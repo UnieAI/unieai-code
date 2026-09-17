@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * tools.mjs — UnieAI Code's coding toolset for the agent-core loop (productized
  * from agent-core's examples/coding-tools) — a domainToolBuilder giving agent-core a coding

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * server.mjs — the app-server protocol, served by our engine.
  *

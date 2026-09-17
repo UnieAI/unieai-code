@@ -1,14 +1,15 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * uac-app-server.mjs — the unieai-agent-core (uac) engine for `/engine uac`.
+ * unieai-uac-server.mjs — the unieai-agent-core (uac) engine for `/engine uac`.
  *
  * Answers the app-server protocol's engine methods by driving
  * deepseek-harness (`dsh --profile acp`) over the Agent Client Protocol, and
  * forwards every other method to the Rust app-server. The TUI starts this
  * detached on `$CODEX_HOME/uac/app-server.sock` when the engine is `uac`
- * (codex-rs/tui/src/engine_selection.rs); it keeps running for later launches.
+ * (codex-rs/tui/src/unieai_engine.rs); it keeps running for later launches.
  *
- *   UNIEAI_APP_SERVER_SOCKET=/tmp/uac.sock node agent-runtime/bin/uac-app-server.mjs
+ *   UNIEAI_APP_SERVER_SOCKET=/tmp/uac.sock node agent-runtime/bin/unieai-uac-server.mjs
  *
  * Environment:
  *   UNIEAI_DSH_BIN     dsh's bin.js or executable (default: the pinned
@@ -22,11 +23,11 @@ import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { launchAppServer, log } from "../src/app-server/launch.mjs";
-import { createThreadStore } from "../src/app-server/thread-store.mjs";
-import { createAcpConnection, spawnAcpAgent } from "../src/dsh/acp-client.mjs";
-import { prepareDsh, writeDshAccount } from "../src/dsh/config.mjs";
-import { createDshEngine, createDshHost } from "../src/dsh/engine.mjs";
+import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
+import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
+import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
+import { prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
+import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -61,7 +62,7 @@ const host = createDshHost({
   connectControl: () => connectControlSocket(controlSocket),
 });
 
-/** The uac-control plugin listens once dsh has loaded it; wait briefly for it. */
+/** The unieai-control plugin listens once dsh has loaded it; wait briefly for it. */
 async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -69,9 +70,9 @@ async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = 
         const s = connect(path, () => resolve(s));
         s.once("error", reject);
       });
-      return createAcpConnection({ input: socket, output: socket, onError: (error) => log("[uac-control]", error.message) });
+      return createAcpConnection({ input: socket, output: socket, onError: (error) => log("[unieai-control]", error.message) });
     } catch (error) {
-      if (attempt >= attempts) throw new Error(`uac-control is not reachable at ${path}: ${error.message}`);
+      if (attempt >= attempts) throw new Error(`unieai-control is not reachable at ${path}: ${error.message}`);
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   }

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * goal-summarizer.mjs — pure helpers for the achievement-triggered closing
  * summary (goal-harness §4.2, translated from grok-build's goal_summarizer

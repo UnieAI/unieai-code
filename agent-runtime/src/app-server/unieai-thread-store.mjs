@@ -1,5 +1,6 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * thread-store.mjs — the app-server threads an engine has served, on disk.
+ * unieai-thread-store.mjs — the app-server threads an engine has served, on disk.
  *
  * The Rust app-server keeps its own thread index; threads served from here
  * are not in it, so `thread/list` and `thread/resume` answered by Rust never

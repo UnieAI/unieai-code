@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * completion-escalation.mjs — escalate the completion verifier's nudge when the
  * same task keeps failing review (idea from grok-build's goal strategist / stop-

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * engine.mjs — one conversation on the agent-core loop, surface-agnostic.
  *

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * schema-check.mjs — validate what we send against the Rust protocol's own schema.
  *

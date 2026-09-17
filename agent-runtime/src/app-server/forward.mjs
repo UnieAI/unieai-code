@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * forward.mjs — hand the platform half of the protocol to the Rust app-server.
  *

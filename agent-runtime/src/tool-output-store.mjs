@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * tool-output-store.mjs — spill oversized tool output to disk instead of losing
  * it to truncation (idea from opencode's tool-output-store). A huge bash/read

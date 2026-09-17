@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * portable-exec.mjs — launching child processes the same way on every OS.
  *

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The uac engine against an in-memory ACP agent that speaks what dsh's
 // `--profile acp` sends (packages/acp/acp/src/updates.ts in deepseek-harness).
 import { test } from "node:test";
@@ -179,8 +180,8 @@ test("helpers: args, diffs, model options, config rendering", () => {
   assert.match(settings, /agent-default-model:\n {2}provider: unieai\n {2}model: "A"/);
   assert.equal(renderPatch({ defaultModel: "A" }), '- id: acp\n  config:\n    provider: unieai\n    model: "A"\n');
   assert.match(
-    renderPatch({ defaultModel: "A", controlSocket: "/s/c.sock", pluginUrl: "file:///p/uac-control.mjs" }),
-    /- insert:\n {4}- id: uac-control\n {6}name: "file:\/\/\/p\/uac-control.mjs"\n {6}config:\n {8}socket: "\/s\/c.sock"/,
+    renderPatch({ defaultModel: "A", controlSocket: "/s/c.sock", pluginUrl: "file:///p/unieai-control.mjs" }),
+    /- insert:\n {4}- id: unieai-control\n {6}name: "file:\/\/\/p\/unieai-control.mjs"\n {6}config:\n {8}socket: "\/s\/c.sock"/,
   );
 
   assert.equal(pickDefaultModel({ explicit: "X", configured: "A", listed: ["B"] }), "X");

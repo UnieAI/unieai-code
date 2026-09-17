@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 //! `/engine`: pick the agent engine for new sessions.
 //!
 //! The choice is persisted and the CLI relaunches onto it; the current
@@ -7,8 +8,8 @@ use super::*;
 use crate::RemoteAppServerEndpoint;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
-use crate::engine_selection;
-use crate::engine_selection::EngineKind;
+use crate::unieai_engine;
+use crate::unieai_engine::EngineKind;
 use crate::wrapping::word_wrap_lines;
 use ratatui::buffer::Buffer;
 use ratatui::widgets::Paragraph;
@@ -37,7 +38,7 @@ impl App {
             AppServerTarget::LocalDaemon {
                 endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
                 ..
-            } if engine_selection::is_uac_socket(
+            } if unieai_engine::is_uac_socket(
                 &self.config.codex_home,
                 socket_path.as_path(),
             ) =>
@@ -51,7 +52,7 @@ impl App {
     pub(super) fn open_engine_menu(&mut self) {
         let codex_home = self.config.codex_home.to_path_buf();
         let running = self.running_engine();
-        let configured = engine_selection::resolve_engine(&codex_home);
+        let configured = unieai_engine::resolve_engine(&codex_home);
         let mut header = vec![
             Line::from("Engine".bold()),
             Line::from(format!("This session: {}", running.display_name()).dim()),
@@ -61,7 +62,7 @@ impl App {
                 format!(
                     "Configured {} is not running; see {}",
                     configured.display_name(),
-                    engine_selection::uac_log_path(&codex_home).display()
+                    unieai_engine::uac_log_path(&codex_home).display()
                 )
                 .dim(),
             ));
@@ -90,14 +91,14 @@ impl App {
     /// Persist `engine` and report whether the CLI should relaunch onto it.
     pub(super) fn switch_engine(&mut self, engine: EngineKind) -> bool {
         let codex_home = self.config.codex_home.to_path_buf();
-        if std::env::var_os(engine_selection::ENGINE_ENV_VAR).is_some() {
+        if std::env::var_os(unieai_engine::ENGINE_ENV_VAR).is_some() {
             self.chat_widget.add_error_message(format!(
                 "{} is set for this launch and overrides /engine; unset it to switch.",
-                engine_selection::ENGINE_ENV_VAR
+                unieai_engine::ENGINE_ENV_VAR
             ));
             return false;
         }
-        if let Err(err) = engine_selection::write_engine(&codex_home, engine) {
+        if let Err(err) = unieai_engine::write_engine(&codex_home, engine) {
             self.chat_widget
                 .add_error_message(format!("Failed to save engine choice: {err}"));
             return false;

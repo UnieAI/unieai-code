@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * unieai-agent — slim terminal UI for UnieAI Code on the agent-core loop.
  *

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // Both checks here were reverse-engineered from real SWE-bench failures where the
 // agent edited the correct file and still produced a wrong fix, so the tests use
 // those exact shapes.

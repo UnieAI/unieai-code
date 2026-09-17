@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * write-policy.mjs — one decision for "may this tool write here?".
  *

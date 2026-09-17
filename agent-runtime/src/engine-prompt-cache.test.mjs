@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The prompt cache key has to be stable across a session's turns.
 //
 // A coding session re-sends a long, mostly-unchanged history on every step, so

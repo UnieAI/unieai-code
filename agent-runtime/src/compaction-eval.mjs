@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * compaction-eval.mjs — measure what a compaction summary actually kept.
  *

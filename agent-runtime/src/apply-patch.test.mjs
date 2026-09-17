@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The apply_patch envelope, against the grammar codex defines
 // (codex-rs/apply-patch/src/parser.rs) and the cases its own tests cover.
 import { test } from "node:test";

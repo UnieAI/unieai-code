@@ -830,7 +830,7 @@ impl ChatWidget {
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
             SlashCommand::Engine if !trimmed.is_empty() => {
-                match crate::engine_selection::EngineKind::parse(trimmed) {
+                match crate::unieai_engine::EngineKind::parse(trimmed) {
                     Some(engine) => self.app_event_tx.send(AppEvent::SwitchEngine(engine)),
                     None => self.add_error_message(ENGINE_USAGE.to_string()),
                 }

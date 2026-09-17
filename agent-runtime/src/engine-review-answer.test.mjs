@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The background verifier has to be given the answer the model actually gave.
 //
 // In "review" goal mode the completion contract runs after the turn ends, off

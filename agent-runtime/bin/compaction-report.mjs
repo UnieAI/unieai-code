@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * compaction-report — score what compaction summaries actually kept.
  *

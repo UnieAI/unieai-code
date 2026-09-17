@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * config.mjs — where dsh lives and how it reaches the UnieAI gateway.
  *
@@ -19,8 +20,8 @@ export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-/** The control plugin dsh loads by URL (see uac-control.mjs). */
-export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "uac-control.mjs")).href;
+/** The control plugin dsh loads by URL (see unieai-control.mjs). */
+export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "unieai-control.mjs")).href;
 
 /** `bin.js` of the `@deepseek-ai/dsh` this package depends on, if installed. */
 export function installedDshBin() {
@@ -92,7 +93,7 @@ export function renderSettings({ baseUrl, models, defaultModel }) {
 
 /**
  * The ACP profile's own route (it ignores `agent-default-model`), plus the
- * uac-control plugin that serves what ACP does not.
+ * unieai-control plugin that serves what ACP does not.
  */
 export function renderPatch({ defaultModel, controlSocket = null, pluginUrl = CONTROL_PLUGIN_URL }) {
   const q = (value) => JSON.stringify(String(value));
@@ -105,7 +106,7 @@ export function renderPatch({ defaultModel, controlSocket = null, pluginUrl = CO
   if (controlSocket) {
     lines.push(
       "- insert:",
-      "    - id: uac-control",
+      "    - id: unieai-control",
       `      name: ${q(pluginUrl)}`,
       "      config:",
       `        socket: ${q(controlSocket)}`,

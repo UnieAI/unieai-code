@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * session-tree-context.mjs — deriving a UnieAI Code prompt from a session tree.
  *

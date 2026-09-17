@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createDispatcher, isRequest, isNotification, isResponse, RpcError, RPC } from "./rpc.mjs";

@@ -215,7 +215,7 @@ mod background_requests;
 mod config_persistence;
 mod connector_mentions;
 mod daemon_menu;
-mod engine_menu;
+mod unieai_engine_menu;
 mod event_dispatch;
 mod exit_summary;
 mod experimental_features;

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // A compaction is not a conversation.
 //
 // The engine serializes turns on one chain, and `steer()` used to accept text

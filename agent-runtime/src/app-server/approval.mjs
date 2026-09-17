@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * approval.mjs — ask the user before running something, over the protocol.
  *

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The loop and the upstream retry logic have both supported a turn deadline all
 // along; the engine simply never passed one. The cost showed up on a degraded
 // gateway: a turn would spend minutes retrying, get SIGKILLed by the caller's

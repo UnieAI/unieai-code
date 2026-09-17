@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * session-tree-store.mjs — persistence for the append-only session tree.
  *

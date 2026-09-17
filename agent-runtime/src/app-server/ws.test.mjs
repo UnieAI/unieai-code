@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The Rust client is the only peer this ever talks to, so the tests pin the
 // parts of RFC 6455 it exercises: the upgrade handshake, masked client frames
 // (clients MUST mask, servers MUST NOT), the three length encodings, and

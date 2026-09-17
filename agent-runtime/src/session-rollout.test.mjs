@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The rollout exists for one situation: the process died mid-turn.
 //
 // The snapshot store writes the whole tree when a turn ends, so until then a

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The client renders by item `type`; a tool we map to the wrong type, or fail to
 // map at all, shows up as a missing card rather than an error. These pin the
 // mapping and the started/completed correlation.

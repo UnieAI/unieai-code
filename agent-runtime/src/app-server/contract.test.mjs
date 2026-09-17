@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The contract test: everything this bridge sends, checked against the schema
 // generated from the Rust types themselves.
 //

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * compaction-archive.mjs — keep what compaction folds away.
  *

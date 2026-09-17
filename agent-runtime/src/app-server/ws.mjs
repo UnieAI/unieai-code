@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * ws.mjs — the small slice of RFC 6455 an app-server connection needs.
  *

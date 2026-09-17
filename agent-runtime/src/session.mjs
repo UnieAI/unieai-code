@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * session.mjs — minimal session persistence for the agent-core runtime.
  *

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The engine is injected, so these exercise the protocol contract without a
 // gateway: what the daemon probe needs from `initialize`, that a thread is owned
 // here rather than in the Rust process, and that a turn reports progress through

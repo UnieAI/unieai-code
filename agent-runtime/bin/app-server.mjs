@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * app-server.mjs — serve the CLI's app-server protocol from agent-runtime's
  * own agent-core loop.
@@ -12,14 +13,14 @@
  *   UNIEAI_APP_SERVER_SOCKET=/tmp/x.sock node …      # somewhere else, for testing
  *
  * The `/engine` command does not use this entry point; it runs
- * uac-app-server.mjs (deepseek-harness) on its own socket.
+ * unieai-uac-server.mjs (deepseek-harness) on its own socket.
  *
  * Engine methods are answered here; every other method is proxied to
  * `unieai app-server` so the platform surface stays upstream's.
  */
 import { createRequire } from "node:module";
 import { createEngine } from "../src/engine.mjs";
-import { launchAppServer, log } from "../src/app-server/launch.mjs";
+import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");

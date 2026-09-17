@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * edit-signals.mjs — deterministic checks over what an edit just introduced.
  *

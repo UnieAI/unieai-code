@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // The loop prunes tool outputs once history passes its context budget, keeping
 // only the last couple of rounds. agent-core's default is 32k — the size of the
 // models it was written against — and the coding layer never overrode it, so a

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * snapshot.mjs — workspace checkpoints in a SHADOW git repo (idea from opencode's
  * snapshot service). Each checkpoint is a git tree hash written to a git dir that

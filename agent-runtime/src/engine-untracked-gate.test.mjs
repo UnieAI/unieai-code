@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // `git status` counts untracked files; `git diff` does not. That gap let a turn
 // whose only output was a scratch repro script pass the mutation gate (status was
 // dirty) and then skip the skeptic entirely (diff was empty) — "wrote a file,

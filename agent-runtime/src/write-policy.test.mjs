@@ -1,3 +1,4 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
 // One policy decides where a write may land, whichever tool is asking.
 //
 // Before this, `bash` ran inside the platform sandbox and `write`/`edit` did
