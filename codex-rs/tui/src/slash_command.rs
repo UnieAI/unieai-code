@@ -51,6 +51,8 @@ pub enum SlashCommand {
     Mention,
     Status,
     Daemon,
+    /// Choose the agent engine for new sessions: `/engine [codex|uac]`.
+    Engine,
     Cd,
     #[strum(to_string = "pwd", serialize = "cwd")]
     Pwd,
@@ -115,6 +117,7 @@ impl SlashCommand {
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Daemon => "Manage the local background server.",
+            SlashCommand::Engine => "switch the agent engine (codex or unieai-agent-core)",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Cd => "change the current working directory",
             SlashCommand::Pwd => "show the current working directory",
@@ -189,6 +192,7 @@ impl SlashCommand {
                 | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::Peer
+                | SlashCommand::Engine
         )
     }
 
@@ -233,6 +237,7 @@ impl SlashCommand {
             | SlashCommand::Cd
             | SlashCommand::Clear
             | SlashCommand::Logout
+            | SlashCommand::Engine
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff

@@ -271,6 +271,10 @@ pub(crate) struct AgentsOverviewThreadRefresh {
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
     OpenDaemonMenu,
+    /// Show the engine picker for new sessions.
+    OpenEngineMenu,
+    /// Persist the engine choice and relaunch onto it.
+    SwitchEngine(crate::engine_selection::EngineKind),
     ConfirmDaemonUpdate(crate::update_action::DaemonUpdateSource),
     RunDaemonUpdate(crate::update_action::DaemonUpdateSource),
     ReviewMisalignment(Arc<crate::chatwidget::MisalignmentReview>),

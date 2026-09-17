@@ -50,7 +50,34 @@ Requires a signed-in UnieAI gateway (`unieai login`) — credentials are read fr
 - `src/tools.mjs` — bash / read / write / edit (sandboxed; smart-verifying edits).
 - `src/session.mjs`, `src/config.mjs` — session persistence and gateway credentials.
 - `bin/tui.mjs` — the slim terminal UI.
+- `bin/app-server.mjs` — serves the CLI's app-server protocol from this engine.
+- `bin/uac-app-server.mjs`, `src/dsh/` — the `uac` engine (see below).
 
-The generic agent loop lives in `@unieai/agent-core` (git submodule); coding-specific
-mechanisms live here. Versioning is `ucX.Y.Z-acA.B.C` — this package's version
-paired with the agent-core version it runs on.
+## `/engine`: codex or unieai-agent-core (uac)
+
+In the `unieai` TUI, `/engine` (or `/engine codex|uac`) picks the engine for new
+sessions and relaunches onto it. The choice is saved in `$CODEX_HOME/engine`;
+`UNIEAI_ENGINE=codex|uac` overrides it for one launch.
+
+`uac` runs deepseek-harness (`dsh --profile acp`) behind `bin/uac-app-server.mjs`:
+engine methods drive dsh over the Agent Client Protocol, everything else is
+forwarded to the Rust app-server. The TUI starts it detached on
+`$CODEX_HOME/uac/app-server.sock` (log: `$CODEX_HOME/uac/server.log`) and falls
+back to codex if it cannot start.
+
+- dsh is the pinned `@deepseek-ai/dsh` dependency (override with
+  `UNIEAI_DSH_BIN`: its `bin.js` or an executable).
+- dsh gets a private home, `$CODEX_HOME/uac/dsh-home`. Its `settings.yaml` and
+  `.credentials.yaml` are rewritten from `unieai.json` before each new thread.
+- Models follow the Studio account: every TUI launch (and `unieai login sync`)
+  refreshes `unieai.json` from Studio's `/api/config`.
+- ACP covers prompting and cancelling. Everything else runs through
+  `src/dsh/uac-control.mjs`, a plugin loaded into dsh that listens on a private
+  socket next to the app-server's: steering a running turn, manual compaction,
+  history (for resume and the transcript), and fork at a turn boundary (thread
+  fork, and prompt edit / `thread/revert` as fork-minus-later-turns).
+- uac threads are indexed in `$CODEX_HOME/uac/threads.json` (ids, titles, the
+  dsh session behind each), so `/resume`, rename and archive work across
+  restarts. Conversation content stays in dsh's session log.
+- Not supported: `review/start` and thread goals. Approvals are per call;
+  "allow for session" is remembered per tool by the bridge.

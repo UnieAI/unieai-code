@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { validateAgainstSchema, loadSchema, SCHEMA_DIR } from "./schema-check.mjs";
 import { createHandlers } from "./server.mjs";
-import { startedItem, completedItem, userMessageItem, agentMessageItem, reasoningItem } from "./items.mjs";
+import { startedItem, completedItem, userMessageItem, agentMessageItem, reasoningItem, createItemBridge } from "./items.mjs";
 import { createApprovalBridge } from "./approval.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -163,4 +163,21 @@ test("the union really does cover the methods we send", { skip }, () => {
   ]) {
     assert.ok(methods.has(m), `${m} is not a method this protocol defines`);
   }
+});
+
+test("tool cards from the item bridge validate, lifecycle timestamps included", { skip }, () => {
+  const emitted = [];
+  const onToolEvent = createItemBridge((method, params) =>
+    emitted.push([method, { threadId: "th", turnId: "tu", ...params }]),
+  );
+  onToolEvent({ type: "tool_use_started", tool_use_id: "a", tool_name: "bash", args: { cmd: "ls" } });
+  onToolEvent({ type: "tool_use_completed", tool_use_id: "a", tool_name: "bash", output_preview: "x" });
+  onToolEvent({ type: "tool_use_started", tool_use_id: "b", tool_name: "write", args: { filePath: "n.txt" }, path: "n.txt", diff: "a\n", kind: "add" });
+  onToolEvent({ type: "file_diff", tool_use_id: "b", tool_name: "write", path: "n.txt", diff: "+a\n", kind: "add" });
+  onToolEvent({ type: "tool_use_started", tool_use_id: "c", tool_name: "bash", args: { cmd: "false" } });
+  onToolEvent({ type: "tool_use_failed", tool_use_id: "c", tool_name: "bash", error: "exit 1" });
+
+  assert.equal(emitted.length, 6);
+  assert.deepEqual(emitted[2][1].item.changes, [{ path: "n.txt", kind: { type: "add" }, diff: "a\n" }]);
+  for (const [method, params] of emitted) checkNotification(method, params);
 });

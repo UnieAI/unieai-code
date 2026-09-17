@@ -220,13 +220,39 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let mut app_server_target = app_server_target_for_launch(
-        explicit_remote_endpoint,
-        default_daemon,
-        reuse_implicit_local_daemon,
-        workload_identity_selected,
-        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
-    )?;
+    let uac_socket = if explicit_remote_endpoint.is_none()
+        && engine_selection::resolve_engine(&codex_home) == engine_selection::EngineKind::Uac
+    {
+        match startup_draft
+            .run_until(engine_selection::ensure_uac_server(&codex_home))
+            .await?
+        {
+            Ok(socket_path) => Some(socket_path),
+            Err(err) => {
+                // Falling back keeps the TUI usable; `/engine` reports the
+                // session is on codex and points at the server log.
+                tracing::warn!(%err, "uac engine unavailable; using the codex engine");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut app_server_target = match uac_socket {
+        Some(socket_path) => AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            // A uac server that dies between the probe and the connect should
+            // still leave the user with a working (codex) session.
+            allow_embedded_fallback: true,
+        },
+        None => app_server_target_for_launch(
+            explicit_remote_endpoint,
+            default_daemon,
+            reuse_implicit_local_daemon,
+            workload_identity_selected,
+            std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        )?,
+    };
     let remote_cwd_override = cli
         .cwd
         .clone()

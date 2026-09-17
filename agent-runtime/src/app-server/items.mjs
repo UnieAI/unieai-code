@@ -79,13 +79,14 @@ export const newItemId = () => randomUUID();
  * tool is reported as the closest thing that is true: a command execution
  * labelled with the tool's name.
  */
-export function startedItem({ tool, args = {}, id = newItemId(), cwd = null }) {
+export function startedItem({ tool, args = {}, id = newItemId(), cwd = null, change = null }) {
   const type = TOOL_ITEM_TYPE[tool] || "commandExecution";
   const base = { type, id, status: "inProgress" };
   if (type === "fileChange") {
-    // The TUI shows a diff card; the patch arrives on completion, since the
-    // engine only knows the result after the write lands.
-    return { ...base, changes: [] };
+    // The TUI draws the diff card from the STARTED item. An engine that knows
+    // the change before running it (dsh: from the call's arguments) passes it
+    // here; agent-runtime only learns it after the write, so its card is empty.
+    return { ...base, changes: change?.diff ? [fileUpdateChange(change)] : [] };
   }
   return {
     ...base,
@@ -108,12 +109,7 @@ export function completedItem({ tool, id, ok = true, output = "", extra = {}, cw
   const type = TOOL_ITEM_TYPE[tool] || "commandExecution";
   const base = { type, id, status: ok ? "completed" : "failed" };
   if (type === "fileChange") {
-    return {
-      ...base,
-      changes: extra.diff
-        ? [{ path: extra.path ?? "", kind: patchChangeKind(extra.kind), diff: extra.diff }]
-        : [],
-    };
+    return { ...base, changes: extra.diff ? [fileUpdateChange(extra)] : [] };
   }
   return {
     ...base,
@@ -126,6 +122,14 @@ export function completedItem({ tool, id, ok = true, output = "", extra = {}, cw
     exitCode: extra.exitCode ?? (ok ? 0 : 1),
     durationMs: extra.durationMs ?? null,
   };
+}
+
+/**
+ * One protocol FileUpdateChange. For `add` and `delete` the `diff` field holds
+ * the file's content, for `update` a unified diff — the TUI reads it that way.
+ */
+function fileUpdateChange({ path, kind, diff }) {
+  return { path: path ?? "", kind: patchChangeKind(kind), diff };
 }
 
 /**
@@ -193,7 +197,10 @@ export function createItemBridge(emit) {
         const itemId = newItemId();
         const args = parseArgs(event.args_preview ?? event.args);
         open.set(useId, { itemId, tool, args });
-        emit("item/started", { item: startedItem({ tool, args, id: itemId }) });
+        const change = event.diff ? { path: event.path, kind: event.kind, diff: event.diff } : null;
+        // The lifecycle timestamps are required: a notification without them
+        // does not deserialize, and the client drops it without a word.
+        emit("item/started", { item: startedItem({ tool, args, id: itemId, change }), startedAtMs: Date.now() });
         break;
       }
       // A tool that reports a timeline event (read -> file_read, grep -> grep,
@@ -221,9 +228,11 @@ export function createItemBridge(emit) {
               path: event.path ?? entry.args.filePath ?? entry.args.__raw,
               query: entry.args.pattern,
               diff: event.diff,
+              kind: event.kind,
               matches: event.matches,
             },
           }),
+          completedAtMs: Date.now(),
         });
         break;
       }

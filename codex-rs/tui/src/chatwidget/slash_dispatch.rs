@@ -507,6 +507,7 @@ impl ChatWidget {
                 self.add_hooks_output();
             }
             SlashCommand::Daemon => self.app_event_tx.send(AppEvent::OpenDaemonMenu),
+            SlashCommand::Engine => self.app_event_tx.send(AppEvent::OpenEngineMenu),
             SlashCommand::Status => {
                 if self.should_prefetch_rate_limits() {
                     let request_id = self.next_status_refresh_request_id;
@@ -828,6 +829,12 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Engine if !trimmed.is_empty() => {
+                match crate::engine_selection::EngineKind::parse(trimmed) {
+                    Some(engine) => self.app_event_tx.send(AppEvent::SwitchEngine(engine)),
+                    None => self.add_error_message(ENGINE_USAGE.to_string()),
+                }
+            }
             SlashCommand::Peer if !trimmed.is_empty() => {
                 // `/peer api [k2f8] hello` — the handle may contain a space, so
                 // split after the bracketed ref when there is one.
@@ -1279,6 +1286,7 @@ impl ChatWidget {
             | SlashCommand::Quit
             | SlashCommand::Exit
             | SlashCommand::Logout
+            | SlashCommand::Engine
             | SlashCommand::Mention
             | SlashCommand::Skills
             | SlashCommand::Import
@@ -1340,6 +1348,8 @@ impl ChatWidget {
         false
     }
 }
+
+const ENGINE_USAGE: &str = "Usage: /engine [codex|uac]";
 
 const PEER_USAGE: &str =
     "Usage: /peer <handle> <message>  (run /peers to see handles, for example `api [k2f8]`)";

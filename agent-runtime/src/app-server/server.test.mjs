@@ -343,7 +343,7 @@ test("thread-scoped methods are answered here, never forwarded", async () => {
   });
   for (const method of [
     "turn/steer", "thread/compact/start", "thread/items/list",
-    "thread/resume", "thread/fork", "thread/rollback", "review/start",
+    "thread/turns/list", "thread/resume", "thread/fork", "thread/revert", "review/start",
   ]) {
     await dispatch({ method, id: 1, params: { threadId: "nope" } });
   }
@@ -351,48 +351,81 @@ test("thread-scoped methods are answered here, never forwarded", async () => {
 });
 
 test("an unimplemented thread method says so rather than answering wrongly", async () => {
-  const h = createHandlers({ createEngineFor: () => ({}), codexHome: "/h" });
-  for (const method of ["thread/resume", "thread/fork", "thread/rollback", "review/start"]) {
-    await assert.rejects(() => h[method]({ threadId: "x" }), /not supported/, method);
+  const h = createHandlers({ createEngineFor: () => ({ send: async () => {} }), codexHome: "/h" });
+  const { thread } = await h["thread/start"]({});
+  await assert.rejects(() => h["thread/resume"]({ threadId: "x" }), /not supported/);
+  for (const method of ["thread/fork", "thread/revert", "review/start"]) {
+    await assert.rejects(() => h[method]({ threadId: thread.id, beforeTurnId: "t" }), /not supported/, method);
   }
 });
 
-test("steering reports whether the running turn actually took it", async () => {
+/** A turn that stays running until `release()` is called. */
+function heldEngine(extra = {}) {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  return { engine: { send: () => held, ...extra }, release: () => release() };
+}
+
+test("steering answers with the running turn's id and echoes the message", async () => {
   let steered = null;
-  const h = createHandlers({
-    createEngineFor: () => ({ send: async () => {}, steer: (t) => { steered = t; return true; } }),
-    codexHome: "/h",
-  });
+  const { engine, release } = heldEngine({ steer: (t) => { steered = t; return true; } });
+  const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
-  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
-  assert.deepEqual(await h["turn/steer"]({ threadId: thread.id, input: "actually, do X" }), { delivered: true });
+  const emitted = [];
+  const { turn } = await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: (m, p) => emitted.push([m, p]) });
+  const res = await h["turn/steer"]({ threadId: thread.id, input: "actually, do X", expectedTurnId: turn.id });
+  assert.deepEqual(res, { turnId: turn.id });
   assert.equal(steered, "actually, do X");
+  assert.ok(emitted.some(([m, p]) => m === "item/started" && p.item.type === "userMessage" && p.item.content[0].text === "actually, do X"));
+  await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "x", expectedTurnId: "old" }), /no longer running/);
+  release();
 });
 
-test("steering something that cannot take it reports false, not success", async () => {
-  // The engine refuses when nothing is running, or when what is running is a
-  // compaction. Reporting `delivered: true` would tell the user their message
-  // landed somewhere it did not.
+test("steering something that cannot take it is an error, not success", async () => {
+  // The engine refuses when what is running is a compaction; with nothing
+  // running there is no turn to steer at all.
+  const { engine, release } = heldEngine({ steer: () => false });
+  const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
+  const { thread } = await h["thread/start"]({});
+  await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "hello" }), /no turn is running/);
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
+  await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "hello" }), /did not accept/);
+  release();
+});
+
+test("compaction runs on an idle engine and is reported as a contextCompaction turn", async () => {
+  const emitted = [];
+  let compacted = false;
   const h = createHandlers({
-    createEngineFor: () => ({ send: async () => {}, steer: () => false }),
+    createEngineFor: () => ({ send: async () => {}, compact: async () => { compacted = true; return true; } }),
     codexHome: "/h",
   });
   const { thread } = await h["thread/start"]({});
-  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
-  assert.deepEqual(await h["turn/steer"]({ threadId: thread.id, input: "hello" }), { delivered: false });
+  const res = await h["thread/compact/start"]({ threadId: thread.id }, { emit: (m, p) => emitted.push([m, p]) });
+  assert.deepEqual(res, {});
+  await new Promise((r) => setImmediate(r));
+  assert.ok(compacted);
+  assert.deepEqual(
+    emitted.map(([m, p]) => `${m}${p.item ? `:${p.item.type}` : ""}`),
+    ["thread/status/changed", "turn/started", "item/started:contextCompaction", "item/completed:contextCompaction", "turn/completed", "thread/status/changed"],
+  );
 });
 
-test("compaction runs on the engine and is announced when it changed something", async () => {
+test("a failed compaction fails its turn, not the request", async () => {
   const emitted = [];
   const h = createHandlers({
-    createEngineFor: () => ({ send: async () => {}, compact: async () => true }),
+    createEngineFor: () => ({ send: async () => {}, compact: async () => { throw new Error("nothing to shrink"); } }),
     codexHome: "/h",
   });
   const { thread } = await h["thread/start"]({});
+  assert.deepEqual(await h["thread/compact/start"]({ threadId: thread.id }, { emit: (m, p) => emitted.push([m, p]) }), {});
+  await new Promise((r) => setImmediate(r));
+  const error = emitted.find(([m]) => m === "error");
+  assert.equal(error[1].error.message, "nothing to shrink");
+  const done = emitted.find(([m]) => m === "turn/completed");
+  assert.equal(done[1].turn.status, "failed");
+  // The thread is usable again afterwards.
   await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
-  const res = await h["thread/compact/start"]({ threadId: thread.id }, { emit: (m, p) => emitted.push([m, p]) });
-  assert.deepEqual(res, { compacted: true });
-  assert.ok(emitted.some(([m]) => m === "thread/compacted"));
 });
 
 test("listing items returns protocol items, without the engine's synthetic wrappers", async () => {
@@ -410,7 +443,9 @@ test("listing items returns protocol items, without the engine's synthetic wrapp
   });
   const { thread } = await h["thread/start"]({});
   await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
-  const { items } = await h["thread/items/list"]({ threadId: thread.id });
+  await new Promise((r) => setImmediate(r));
+  const { data } = await h["thread/items/list"]({ threadId: thread.id, sortDirection: "asc" });
+  const items = data.map((entry) => entry.item);
   const types = items.map((i) => i.type);
   assert.ok(!types.includes("systemMessage"), "there is no such item type");
   // Two user-role messages in, one out: `<project_instructions>` is something

@@ -120,6 +120,17 @@ impl App {
                 self.handle_peer_bus_update(peers, new_messages);
             }
             AppEvent::OpenDaemonMenu => self.open_daemon_menu(),
+            AppEvent::OpenEngineMenu => self.open_engine_menu(),
+            AppEvent::SwitchEngine(engine) => {
+                if self.switch_engine(engine) {
+                    return Ok(
+                        match self.handle_exit_mode(app_server, ExitMode::ShutdownFirst).await {
+                            AppRunControl::Exit(_) => AppRunControl::Exit(ExitReason::EngineSwitched),
+                            other => other,
+                        },
+                    );
+                }
+            }
             AppEvent::ConfirmDaemonUpdate(source) => self.confirm_daemon_update(source),
             AppEvent::RunDaemonUpdate(source) => {
                 self.pending_update_action = Some(UpdateAction::Daemon(source));

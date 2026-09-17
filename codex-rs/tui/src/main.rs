@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
                 true
             }
             ExitReason::UserRequested
+            | ExitReason::EngineSwitched
             | ExitReason::Archived(_)
             | ExitReason::TurnInterrupted
             | ExitReason::ThreadRemoved => false,

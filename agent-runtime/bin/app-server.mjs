@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * app-server.mjs — serve the CLI's app-server protocol from OUR engine.
+ * app-server.mjs — serve the CLI's app-server protocol from agent-runtime's
+ * own agent-core loop.
  *
  * Run this and the `unieai` TUI uses agent-runtime instead of the embedded Rust
  * engine: on startup it probes $CODEX_HOME/app-server-control/app-server-control.sock
@@ -10,88 +11,29 @@
  *   node agent-runtime/bin/app-server.mjs            # serve on the default socket
  *   UNIEAI_APP_SERVER_SOCKET=/tmp/x.sock node …      # somewhere else, for testing
  *
+ * The `/engine` command does not use this entry point; it runs
+ * uac-app-server.mjs (deepseek-harness) on its own socket.
+ *
  * Engine methods are answered here; every other method is proxied to
  * `unieai app-server` so the platform surface stays upstream's.
  */
-import { mkdirSync, rmSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { createRequire } from "node:module";
-import { startAppServer } from "../src/app-server/server.mjs";
-import { createForwarder } from "../src/app-server/forward.mjs";
 import { createEngine } from "../src/engine.mjs";
-import { createItemBridge } from "../src/app-server/items.mjs";
-import { createApprovalBridge } from "../src/app-server/approval.mjs";
-import { sandboxBin } from "../src/config.mjs";
+import { launchAppServer, log } from "../src/app-server/launch.mjs";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
-const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
-const socketPath =
-  process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "app-server-control", "app-server-control.sock");
-
-mkdirSync(dirname(socketPath), { recursive: true });
-// A socket file left by a crashed process would make the CLI think a server is
-// live and then fail to connect, so clear a stale one before binding.
-if (existsSync(socketPath)) rmSync(socketPath, { force: true });
-
-const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
-
-// The server does not exist yet, and the forwarder needs to reach it: the Rust
-// child starts pushing notifications as soon as it is initialized. A ref keeps
-// the wiring one-directional without ordering the two constructions by hand.
-let appServer = null;
-const forwarder = createForwarder({
-  bin: sandboxBin(),
-  cwd: process.cwd(),
-  onError: (error) => log("[forward]", error.message),
-  // fs/changed, account/updated, mcpServer/startupStatus/updated and the rest
-  // of the platform's own notifications. Nothing was listening for these, so
-  // the client never learned about anything the Rust side noticed.
-  onNotification: (method, params) => appServer?.broadcast(method, params),
-});
-
-const server = appServer = await startAppServer({
-  socketPath,
-  codexHome,
+await launchAppServer({
+  name: "unieai agent-runtime",
   version,
-  forward: (method, params) => forwarder.forward(method, params),
-  onError: (error) => log("[app-server]", error.message),
-  onTrace: (line) => log("[trace]", line),
-  createEngineFor: ({ cwd, model, emit, request, sandboxMode, ids, newItemId }) => {
-    // Engine events carry our vocabulary; the client only renders the protocol's.
-    const onToolEvent = createItemBridge(emit);
-    return createEngine({
+  buildEngine: ({ cwd, model, sandboxMode, ...callbacks }) =>
+    createEngine({
       workspace: cwd,
       model: model || process.env.UNIEAI_MODEL || undefined,
       expectsMutation: true,
       sandboxMode,
-      onText: (delta) => emit("item/agentMessage/delta", { delta }),
-      onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
-      onToolEvent,
-      // The user decides, through the client. Fails closed: an unanswered or
-      // errored request declines rather than running unapproved.
-      requestApproval: createApprovalBridge({
-        request,
-        cwd,
-        ids,
-        newItemId,
-        timeoutMs: Number(process.env.UNIEAI_APPROVAL_TIMEOUT_MS) || 0,
-      }),
-    });
-  },
+      ...callbacks,
+    }),
 });
-
-log(`unieai agent-runtime app-server ${version} listening on ${socketPath}`);
 log("the unieai CLI will now use this engine; stop this process to fall back to the Rust one");
-
-const shutdown = async () => {
-  log("shutting down");
-  forwarder.close();
-  await server.close();
-  rmSync(socketPath, { force: true });
-  process.exit(0);
-};
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);

@@ -929,10 +929,14 @@ fn handle_app_exit(
             true
         }
         ExitReason::UserRequested
+        | ExitReason::EngineSwitched
         | ExitReason::Archived(_)
         | ExitReason::TurnInterrupted
         | ExitReason::ThreadRemoved => false,
     };
+    if matches!(exit_info.exit_reason, ExitReason::EngineSwitched) {
+        return relaunch_for_engine_switch();
+    }
 
     let update_action = exit_info.update_action;
     if !matches!(update_action, Some(UpdateAction::Daemon(_))) {
@@ -949,6 +953,59 @@ fn handle_app_exit(
         run_update_action(action, cli_executable)?;
     }
     Ok(())
+}
+
+/// Re-run this CLI after `/engine` so the new engine takes the next session.
+///
+/// Leading options are kept; everything from the first positional argument on
+/// is dropped, because a prompt would be re-sent and a `resume`/`fork` target
+/// belongs to the engine that was just left.
+fn relaunch_for_engine_switch() -> anyhow::Result<()> {
+    let mut args = std::env::args_os();
+    let program = args.next().unwrap_or_else(|| "codex".into());
+    let program = std::env::current_exe().map_or(program, std::ffi::OsString::from);
+    let kept = relaunch_args(&MultitoolCli::command(), args.collect());
+    let mut command = std::process::Command::new(program);
+    command.args(kept);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(anyhow::Error::new(command.exec()).context("failed to relaunch after engine switch"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn relaunch_args(cli: &clap::Command, args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let takes_value = |raw: &str| {
+        let found = if let Some(long) = raw.strip_prefix("--") {
+            cli.get_arguments().find(|arg| arg.get_long() == Some(long))
+        } else {
+            let mut chars = raw.chars().skip(1);
+            match (chars.next(), chars.next()) {
+                (Some(short), None) => cli.get_arguments().find(|arg| arg.get_short() == Some(short)),
+                _ => None,
+            }
+        };
+        found.is_some_and(|arg| arg.get_action().takes_values())
+    };
+    let mut kept = Vec::new();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        let Some(text) = arg.to_str() else { break };
+        if text == "--" || !text.starts_with('-') || text == "-" {
+            break;
+        }
+        let needs_value = !text.contains('=') && takes_value(text);
+        kept.push(arg);
+        if needs_value && let Some(value) = iter.next() {
+            kept.push(value);
+        }
+    }
+    kept
 }
 
 /// Run the update action and print the result.
@@ -3188,6 +3245,24 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn relaunch_args_keep_options_and_drop_prompt_or_subcommand() {
+        let cli = MultitoolCli::command();
+        let args = |raw: &[&str]| raw.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+
+        assert_eq!(
+            relaunch_args(
+                &cli,
+                args(&["-m", "gpt", "--config=a=1", "-c", "b=2", "fix the bug"])
+            ),
+            args(&["-m", "gpt", "--config=a=1", "-c", "b=2"])
+        );
+        assert_eq!(
+            relaunch_args(&cli, args(&["--no-alt-screen", "resume", "abc"])),
+            args(&["--no-alt-screen"])
+        );
+    }
 
     #[test]
     fn interactive_tui_future_stays_bounded() {

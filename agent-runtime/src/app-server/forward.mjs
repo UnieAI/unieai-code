@@ -69,7 +69,9 @@ export function createForwarder({ bin, args = ["app-server"], cwd, env = process
   // The app-server refuses every other method until it has been initialized
   // ("Not initialized", -32600). Do the handshake once, up front, and make every
   // forwarded call wait for it — otherwise the first request through races it.
-  const ready = call("initialize", { clientInfo, capabilities: null })
+  // The TUI opts into the experimental API; without the same opt-in here,
+  // forwarded methods such as collaborationMode/list are refused.
+  const ready = call("initialize", { clientInfo, capabilities: { experimentalApi: true } })
     .then((result) => {
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
       return result;
