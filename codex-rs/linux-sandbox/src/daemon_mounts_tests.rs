@@ -150,3 +150,19 @@ fn masked_wslg_alias_does_not_allow_other_exposed_aliases() {
         assert!(super::check_mounts(directory, "0:1", mount_id, exposed.as_bytes(), mask).is_err());
     }
 }
+
+#[test]
+fn ignores_namespace_file_mounts_on_other_devices() {
+    let directory = Path::new("/tmp/codex-daemon-1000");
+    let other_device =
+        b"1 0 0:1 / / rw - ext4 disk rw\n2 1 0:4 net:[4026531840] /run/docker/netns/default rw - nsfs nsfs rw\n";
+    let same_device =
+        b"1 0 0:1 / / rw - ext4 disk rw\n2 1 0:1 net:[4026531840] /run/netns/x rw - nsfs nsfs rw\n";
+    let nested =
+        b"1 0 0:1 / / rw - ext4 disk rw\n2 1 0:4 net:[1] /tmp/codex-daemon-1000/ns rw - nsfs nsfs rw\n";
+    for mount_id in [Some("1"), None] {
+        assert!(check_mounts(directory, "0:1", mount_id, other_device).is_ok());
+        assert!(check_mounts(directory, "0:1", mount_id, same_device).is_err());
+        assert!(check_mounts(directory, "0:1", mount_id, nested).is_err());
+    }
+}

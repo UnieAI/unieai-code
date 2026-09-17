@@ -64,6 +64,13 @@ fn check_mounts(
         };
         let root = mount_path(root)?;
         let destination = mount_path(destination)?;
+        // nsfs and similar pseudo filesystems report roots such as
+        // `net:[4026531840]` (Docker and snapd create many). Only a mount on the
+        // directory's device can alias it, so only there must the root be a path.
+        if !destination.is_absolute() || (!root.is_absolute() && *mount_device == device.as_bytes())
+        {
+            return Err(io::Error::other("mountinfo path is not absolute"));
+        }
         mounts.push((*id, *parent, *mount_device, root, destination));
     }
     let (location, containing_mount) = if let Some(mount_id) = mount_id {
@@ -176,11 +183,7 @@ fn mount_path(encoded: &[u8]) -> io::Result<PathBuf> {
             byte
         });
     }
-    let path = PathBuf::from(std::ffi::OsString::from_vec(decoded));
-    if !path.is_absolute() {
-        return Err(io::Error::other("mountinfo path is not absolute"));
-    }
-    Ok(path)
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(decoded)))
 }
 
 #[cfg(test)]
