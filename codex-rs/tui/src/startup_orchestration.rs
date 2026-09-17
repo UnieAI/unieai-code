@@ -7,6 +7,8 @@ use super::*;
 use codex_terminal_detection::Multiplexer;
 use codex_terminal_detection::TerminalName;
 
+const UNIEAI_ACCOUNT_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
 pub(super) async fn run_main_inner(
     mut cli: Cli,
     arg0_paths: Arg0DispatchPaths,
@@ -77,6 +79,22 @@ pub(super) async fn run_main_inner(
             std::process::exit(1);
         }
     };
+
+    if explicit_remote_endpoint.is_none() {
+        // Every engine reads the model list from unieai.json; refresh it from
+        // the Studio account before config is loaded so `/model` and uac agree
+        // with Studio. Bounded so an unreachable Studio cannot stall startup.
+        match tokio::time::timeout(
+            UNIEAI_ACCOUNT_SYNC_TIMEOUT,
+            codex_login::unieai::sync_unieai_account(&codex_home),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => tracing::warn!(%err, "UnieAI Studio sync failed; using saved models"),
+            Err(_) => tracing::warn!("UnieAI Studio sync timed out; using saved models"),
+        }
+    }
 
     let mut launch_loader_overrides = loader_overrides.clone();
     if let Some(profile_v2) = cli.config_profile_v2.as_ref() {

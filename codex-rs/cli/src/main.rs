@@ -13,6 +13,7 @@ use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::read_access_token_from_stdin;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
+use codex_cli::run_login_sync;
 use codex_cli::run_login_with_access_token;
 use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
@@ -570,6 +571,8 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
+    /// Sync the UnieAI model list and gateway key from your Studio account.
+    Sync,
 }
 
 #[derive(Debug, Parser)]
@@ -1742,6 +1745,9 @@ async fn cli_main(
             match login_cli.action {
                 Some(LoginSubcommand::Status) => {
                     run_login_status(login_cli.config_overrides).await;
+                }
+                Some(LoginSubcommand::Sync) => {
+                    run_login_sync(login_cli.config_overrides).await;
                 }
                 None => {
                     if login_cli.with_api_key && login_cli.with_access_token {

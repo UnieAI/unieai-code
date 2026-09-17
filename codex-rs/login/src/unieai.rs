@@ -395,22 +395,7 @@ inference access (Studio → Keys), then retry `unieai login`",
 
     let available_models = provider_config
         .as_ref()
-        .filter(|config| !config.models.is_empty())
-        .map(|config| {
-            config
-                .models
-                .iter()
-                .map(|(id, info)| UnieAIModel {
-                    id: id.clone(),
-                    name: info
-                        .get("name")
-                        .and_then(|name| name.as_str())
-                        .filter(|name| !name.is_empty())
-                        .map(str::to_string),
-                    context_window: info.get("contextWindow").and_then(serde_json::Value::as_i64),
-                })
-                .collect::<Vec<UnieAIModel>>()
-        });
+        .and_then(models_from_provider_config);
 
     let credentials = UnieAICredentials {
         studio_url,
@@ -489,6 +474,111 @@ async fn poll_for_tokens(
         }
         tokio::time::sleep(interval.min(max_wait - start.elapsed())).await;
     }
+}
+
+/// Studio's models as stored credentials record them, in Studio's order.
+fn models_from_provider_config(config: &StudioProviderConfig) -> Option<Vec<UnieAIModel>> {
+    (!config.models.is_empty()).then(|| {
+        config
+            .models
+            .iter()
+            .map(|(id, info)| UnieAIModel {
+                id: id.clone(),
+                name: info
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+                context_window: info
+                    .get("contextWindow")
+                    .and_then(serde_json::Value::as_i64),
+            })
+            .collect()
+    })
+}
+
+/// Seconds of validity below which the access token is refreshed first.
+const ACCESS_TOKEN_REFRESH_MARGIN_SECS: i64 = 60;
+
+/// Exchange the stored refresh token for new tokens (Studio rotates both).
+async fn refresh_access_token(
+    client: &codex_http_client::HttpClient,
+    credentials: &UnieAICredentials,
+) -> io::Result<TokenResponse> {
+    post_json(
+        client,
+        &format!("{}/auth/device/token", credentials.studio_url),
+        &serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": credentials.refresh_token,
+            "client_id": UNIEAI_CLIENT_ID,
+        }),
+        None,
+        "token refresh",
+    )
+    .await
+}
+
+/// Bring `unieai.json` in line with the Studio account: refresh the access
+/// token when it is about to expire, then re-read the org's `unieai` provider
+/// config so the model list and gateway key match what Studio serves now.
+///
+/// Login only captured these once, so a model removed from (or added to) the
+/// account in Studio stayed wrong until the next `unieai login`. Returns the
+/// updated credentials, or `None` when the user is not signed in.
+pub async fn sync_unieai_account(codex_home: &Path) -> io::Result<Option<UnieAICredentials>> {
+    let Some(mut credentials) = load_unieai_credentials(codex_home) else {
+        return Ok(None);
+    };
+    let client = create_client();
+    let now = chrono::Utc::now().timestamp();
+    if credentials.expires_at - now <= ACCESS_TOKEN_REFRESH_MARGIN_SECS {
+        let tokens = refresh_access_token(&client, &credentials).await?;
+        credentials.access_token = tokens.access_token;
+        credentials.refresh_token = tokens.refresh_token;
+        credentials.expires_at = now + tokens.expires_in;
+        // Persist the rotated refresh token before anything else can fail:
+        // the old one is no longer valid.
+        save_unieai_credentials(codex_home, &credentials)?;
+    }
+
+    let config = get_json::<serde_json::Value>(
+        &client,
+        &format!("{}/api/config", credentials.studio_url),
+        &credentials.access_token,
+        credentials.active_org_id.as_deref(),
+    )
+    .await?;
+    let provider = config
+        .get("config")
+        .and_then(|config| config.get("provider"))
+        .and_then(|providers| providers.get("unieai"))
+        .cloned()
+        .map(serde_json::from_value::<StudioProviderConfig>)
+        .transpose()
+        .map_err(io::Error::other)?;
+    let Some(provider) = provider else {
+        return Err(io::Error::other(
+            "UnieAI Studio returned no `unieai` provider config for this account",
+        ));
+    };
+
+    if let Some(api_key) = provider.api_key() {
+        credentials.gateway_api_key = api_key.to_string();
+    }
+    if !credentials.gateway_base_url_locked {
+        credentials.gateway_base_url = resolve_gateway_base_url(
+            &credentials.studio_url,
+            /*user_gateway_url*/ None,
+            provider.base_url(),
+        );
+    }
+    // An account with no models is a real state; record it rather than keep
+    // serving a stale list.
+    credentials.available_models = Some(models_from_provider_config(&provider).unwrap_or_default());
+    credentials.available_model_ids = None;
+    save_unieai_credentials(codex_home, &credentials)?;
+    Ok(Some(credentials))
 }
 
 async fn fetch_unieai_provider_config(

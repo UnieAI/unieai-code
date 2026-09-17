@@ -485,6 +485,28 @@ pub async fn run_login_with_unieai(
     }
 }
 
+pub async fn run_login_sync(cli_config_overrides: CliConfigOverrides) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    match codex_login::unieai::sync_unieai_account(&config.codex_home).await {
+        Ok(Some(credentials)) => {
+            let models = credentials.models();
+            eprintln!("Synced {} model(s) from UnieAI Studio:", models.len());
+            for model in models {
+                eprintln!("  {}", model.id);
+            }
+            std::process::exit(0);
+        }
+        Ok(None) => {
+            eprintln!("Not logged in to UnieAI. Run `unieai login` first.");
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("Error syncing from UnieAI Studio: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
