@@ -56,6 +56,10 @@ impl MigrationScope {
 
     fn repository(root: PathBuf) -> io::Result<Option<Self>> {
         for relative_path in [
+            ".unieai",
+            ".unieai/config.toml",
+            ".unieai/agents",
+            ".unieai/hooks",
             ".codex",
             ".codex/config.toml",
             ".codex/agents",

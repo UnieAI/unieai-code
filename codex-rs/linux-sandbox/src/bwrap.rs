@@ -465,16 +465,14 @@ fn create_filesystem_args(
                 };
                 // Automatic repo-metadata read masks are skipped here so the
                 // metadata handling below can apply the root-scoped
-                // protection consistently for `.git`, `.agents`, and `.codex`.
+                // protection consistently for `.git`, `.agents`, `.codex`, and
+                // `.unieai`.
                 // User-authored `read` rules for other subpaths and `none`
                 // rules should keep their normal bwrap behavior, which can mask
                 // the first missing component to prevent creation under writable
                 // roots.
                 let project_subpath = Path::new(subpath);
-                if project_subpath != Path::new(".git")
-                    && project_subpath != Path::new(".agents")
-                    && project_subpath != Path::new(".codex")
-                {
+                if !is_protected_metadata_name(project_subpath.as_os_str()) {
                     return None;
                 }
                 let resolved = AbsolutePathBuf::resolve_path_against_base(subpath, cwd);
@@ -1884,6 +1882,7 @@ mod tests {
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".git"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".unieai"));
         assert_eq!(args.preserved_files.len(), 1);
         assert_eq!(
             synthetic_mount_target_paths(&args),
@@ -1892,6 +1891,7 @@ mod tests {
                 workspace.join(".git"),
                 workspace.join(".agents"),
                 workspace.join(".codex"),
+                workspace.join(".unieai"),
             ]
         );
         assert!(
@@ -1923,12 +1923,14 @@ mod tests {
         assert_empty_file_bound_without_perms(&args.args, &dot_git);
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".unieai"));
         assert_eq!(
             synthetic_mount_target_paths(&args),
             vec![
                 dot_git.clone(),
                 workspace.join(".agents"),
                 workspace.join(".codex"),
+                workspace.join(".unieai"),
             ]
         );
         assert!(
@@ -1968,9 +1970,15 @@ mod tests {
         assert_empty_directory_mounted_read_only(&args.args, &dot_git);
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".unieai"));
         assert_eq!(
             synthetic_mount_target_paths(&args),
-            vec![workspace.join(".codex"), dot_git, workspace.join(".agents")],
+            vec![
+                workspace.join(".codex"),
+                workspace.join(".unieai"),
+                dot_git,
+                workspace.join(".agents"),
+            ],
         );
         assert!(
             protected_create_target_paths(&args).is_empty(),
@@ -2005,9 +2013,15 @@ mod tests {
         assert_empty_directory_mounted_read_only(&args.args, &dot_git);
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".unieai"));
         assert_eq!(
             synthetic_mount_target_paths(&args),
-            vec![workspace.join(".codex"), dot_git, workspace.join(".agents")],
+            vec![
+                workspace.join(".codex"),
+                workspace.join(".unieai"),
+                dot_git,
+                workspace.join(".agents"),
+            ],
         );
         assert!(
             protected_create_target_paths(&args).is_empty(),
@@ -2170,9 +2184,11 @@ mod tests {
                 PathBuf::from("/.git"),
                 PathBuf::from("/.agents"),
                 PathBuf::from("/.codex"),
+                PathBuf::from("/.unieai"),
                 PathBuf::from("/dev/.git"),
                 PathBuf::from("/dev/.agents"),
                 PathBuf::from("/dev/.codex"),
+                PathBuf::from("/dev/.unieai"),
             ]
         );
         let daemon_directory =
@@ -2224,6 +2240,12 @@ mod tests {
                 "/.codex".to_string(),
                 "--remount-ro".to_string(),
                 "/.codex".to_string(),
+                "--perms".to_string(),
+                "555".to_string(),
+                "--tmpfs".to_string(),
+                "/.unieai".to_string(),
+                "--remount-ro".to_string(),
+                "/.unieai".to_string(),
                 "--ro-bind".to_string(),
                 path_to_string(&synthetic_mount_registry_root()),
                 path_to_string(&synthetic_mount_registry_root()),
@@ -2252,6 +2274,12 @@ mod tests {
                 "/dev/.codex".to_string(),
                 "--remount-ro".to_string(),
                 "/dev/.codex".to_string(),
+                "--perms".to_string(),
+                "555".to_string(),
+                "--tmpfs".to_string(),
+                "/dev/.unieai".to_string(),
+                "--remount-ro".to_string(),
+                "/dev/.unieai".to_string(),
             ]
         );
     }

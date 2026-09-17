@@ -7,7 +7,7 @@ async fn repo_migration_skips_redirected_generated_destinations() -> std::io::Re
     let root = TempDir::new()?;
     let repo = root.path().join("repo");
     let source = repo.join(EXTERNAL_AGENT_DIR);
-    let target = repo.join(".codex");
+    let target = codex_config::project_config_dir(repo.as_path());
     let outside = root.path().join("outside");
     fs::create_dir_all(repo.join(".git"))?;
     fs::create_dir_all(source.join("agents"))?;
@@ -337,14 +337,15 @@ async fn import_repo_hooks_preserves_disabled_codex_hooks_feature() {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
     fs::create_dir_all(repo_root.join(EXTERNAL_AGENT_DIR)).expect("create external agent dir");
-    fs::create_dir_all(repo_root.join(".codex")).expect("create codex dir");
+    fs::create_dir_all(codex_config::project_config_dir(repo_root.as_path()))
+        .expect("create codex dir");
     fs::write(
         repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
         r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo done"}]}]}}"#,
     )
     .expect("write hooks");
     fs::write(
-        repo_root.join(".codex").join("config.toml"),
+        codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
         "[features]\ncodex_hooks = false\n",
     )
     .expect("write config");
@@ -379,11 +380,17 @@ async fn import_repo_hooks_preserves_disabled_codex_hooks_feature() {
         }]
     );
     assert_eq!(
-        fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml")
+        )
+        .expect("read config"),
         "[features]\ncodex_hooks = false\n"
     );
     let hooks: JsonValue = serde_json::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("hooks.json")).expect("read hooks"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("hooks.json"),
+        )
+        .expect("read hooks"),
     )
     .expect("parse hooks");
     assert_eq!(
@@ -416,10 +423,11 @@ async fn repo_hooks_migration_skips_symlink_targets() {
     ] {
         let repo_root = root.path().join(repo_name);
         let linked_target = root.path().join(format!("{repo_name}-target"));
-        let hooks_json = repo_root.join(".codex").join("hooks.json");
+        let hooks_json = codex_config::project_config_dir(repo_root.as_path()).join("hooks.json");
         fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
         fs::create_dir_all(repo_root.join(EXTERNAL_AGENT_DIR)).expect("create external agent dir");
-        fs::create_dir_all(repo_root.join(".codex")).expect("create codex dir");
+        fs::create_dir_all(codex_config::project_config_dir(repo_root.as_path()))
+            .expect("create codex dir");
         fs::write(
             repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
             r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo done"}]}]}}"#,
@@ -533,7 +541,10 @@ async fn import_repo_mcp_uses_home_settings_toggles_when_repo_settings_missing()
         }]
     );
     let config: TomlValue = toml::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
+        )
+        .expect("read config"),
     )
     .expect("parse config");
     let expected: TomlValue = toml::from_str(
@@ -593,7 +604,10 @@ async fn import_repo_mcp_uses_local_settings_toggles_over_project_settings() {
         .await;
 
     let config: TomlValue = toml::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
+        )
+        .expect("read config"),
     )
     .expect("parse config");
     let expected: TomlValue = toml::from_str(
@@ -640,7 +654,10 @@ async fn import_repo_mcp_ignores_invalid_home_settings_when_repo_settings_missin
         .await;
 
     let config: TomlValue = toml::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
+        )
+        .expect("read config"),
     )
     .expect("parse config");
     let expected: TomlValue = toml::from_str(

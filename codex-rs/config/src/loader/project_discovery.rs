@@ -40,3 +40,7 @@ pub(super) fn merge_managed_config_for_discovery(
 #[cfg(test)]
 #[path = "managed_project_discovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unieai_project_config_dir_tests.rs"]
+mod unieai_project_config_dir_tests;

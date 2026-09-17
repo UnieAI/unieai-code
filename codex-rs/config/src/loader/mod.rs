@@ -46,6 +46,9 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::unieai_project_config_dir::LEGACY_PROJECT_CONFIG_DIR_NAME;
+use codex_protocol::unieai_project_config_dir::PROJECT_CONFIG_DIR_NAME;
+use codex_protocol::unieai_project_config_dir::select_project_config_dir_name;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
@@ -121,9 +124,13 @@ async fn first_layer_config_error_from_entries(layers: &[ConfigLayerEntry]) -> O
 /// - user      `${CODEX_HOME}/config.toml`
 /// - profile   `${CODEX_HOME}/<name>.config.toml`, when selected
 /// - cwd       `${PWD}/config.toml` (loaded but disabled when the directory is untrusted)
-/// - tree      parent directories up to root looking for `./.codex/config.toml` (loaded but disabled when untrusted)
-/// - repo      `$(git rev-parse --show-toplevel)/.codex/config.toml` (loaded but disabled when untrusted)
+/// - tree      parent directories up to root looking for `./.unieai/config.toml` (loaded but disabled when untrusted)
+/// - repo      `$(git rev-parse --show-toplevel)/.unieai/config.toml` (loaded but disabled when untrusted)
 /// - runtime   e.g., --config flags, model selector in UI
+///
+/// Project directories use `.unieai/` and fall back to the legacy `.codex/`
+/// directory only when `.unieai/` does not exist. When both exist, only
+/// `.unieai/` is loaded and a startup warning notes that `.codex/` is ignored.
 ///
 /// (*) Only available on macOS via managed device profiles.
 ///
@@ -1089,7 +1096,11 @@ impl ProjectTrustContext {
         }
     }
 
-    fn root_checkout_hooks_folder_for_dir(&self, dir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    fn root_checkout_hooks_folder_for_dir(
+        &self,
+        dir: &AbsolutePathBuf,
+        project_config_dir_name: &str,
+    ) -> Option<AbsolutePathBuf> {
         let checkout_root = self.checkout_root.as_ref()?;
         let repo_root = self.repo_root.as_ref()?;
         // Regular checkouts resolve both paths to the same root; linked worktrees do not.
@@ -1098,7 +1109,7 @@ impl ProjectTrustContext {
         }
 
         let relative_dir = dir.as_path().strip_prefix(checkout_root.as_path()).ok()?;
-        Some(repo_root.join(relative_dir).join(".codex"))
+        Some(repo_root.join(relative_dir).join(project_config_dir_name))
     }
 }
 
@@ -1211,6 +1222,29 @@ fn sanitize_project_config(
     }
 
     ignored_keys
+}
+
+async fn is_directory(fs: &dyn ExecutorFileSystem, path: &AbsolutePathBuf) -> bool {
+    fs.get_metadata(
+        &PathUri::from_abs_path(path),
+        Default::default(),
+        /*sandbox*/ None,
+    )
+    .await
+    .map(|metadata| metadata.is_directory)
+    .unwrap_or(false)
+}
+
+fn legacy_project_config_dir_ignored_warning(
+    project_config_dir: &AbsolutePathBuf,
+    ignored_dir: &AbsolutePathBuf,
+) -> String {
+    format!(
+        "Both {primary} and legacy {legacy} exist; only {primary} is loaded. \
+         Move any settings you still need from {legacy} into {primary}.",
+        primary = project_config_dir.as_path().display(),
+        legacy = ignored_dir.as_path().display(),
+    )
 }
 
 fn project_ignored_config_keys_warning(
@@ -1635,24 +1669,37 @@ async fn discover_project_layers(
     let mut layers = Vec::new();
     let mut startup_warnings = Vec::new();
     for dir in dirs {
-        let dot_codex_abs = dir.join(".codex");
-        let dot_codex_uri = PathUri::from_abs_path(&dot_codex_abs);
-        if !fs
-            .get_metadata(&dot_codex_uri, Default::default(), /*sandbox*/ None)
-            .await
-            .map(|metadata| metadata.is_directory)
-            .unwrap_or(false)
-        {
+        let primary_exists = is_directory(fs, &dir.join(PROJECT_CONFIG_DIR_NAME)).await;
+        let legacy_exists = is_directory(fs, &dir.join(LEGACY_PROJECT_CONFIG_DIR_NAME)).await;
+        let Some(project_config_dir_name) =
+            select_project_config_dir_name(primary_exists, legacy_exists)
+        else {
             continue;
-        }
+        };
+        let dot_codex_abs = dir.join(project_config_dir_name);
 
         let decision = trust_context.decision_for_dir(&dir);
         let disabled_reason = trust_context.disabled_reason_for_decision(&decision);
-        let hooks_config_folder_override = trust_context.root_checkout_hooks_folder_for_dir(&dir);
+        let hooks_config_folder_override =
+            trust_context.root_checkout_hooks_folder_for_dir(&dir, project_config_dir_name);
         let dot_codex_normalized =
             normalize_path(dot_codex_abs.as_path()).unwrap_or_else(|_| dot_codex_abs.to_path_buf());
         if dot_codex_abs == codex_home_abs || dot_codex_normalized == codex_home_normalized {
             continue;
+        }
+        if primary_exists && legacy_exists {
+            let ignored_dir = dir.join(LEGACY_PROJECT_CONFIG_DIR_NAME);
+            let ignored_normalized =
+                normalize_path(ignored_dir.as_path()).unwrap_or_else(|_| ignored_dir.to_path_buf());
+            // `<dir>/.codex` may be an upstream Codex home rather than project config.
+            if ignored_dir != codex_home_abs && ignored_normalized != codex_home_normalized {
+                let warning =
+                    legacy_project_config_dir_ignored_warning(&dot_codex_abs, &ignored_dir);
+                tracing::warn!("{warning}");
+                if disabled_reason.is_none() {
+                    startup_warnings.push(warning);
+                }
+            }
         }
         let config_file = dot_codex_abs.join(CONFIG_TOML_FILE);
         let config_file_uri = PathUri::from_abs_path(&config_file);

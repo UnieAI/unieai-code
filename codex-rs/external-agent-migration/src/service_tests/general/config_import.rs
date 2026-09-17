@@ -23,12 +23,13 @@ async fn import_repo_mcp_preserves_existing_same_named_server() {
         }"#,
     )
     .expect("write mcp");
-    fs::create_dir_all(repo_root.join(".codex")).expect("create codex dir");
+    fs::create_dir_all(codex_config::project_config_dir(repo_root.as_path()))
+        .expect("create codex dir");
     let existing_config = r#"[mcp_servers.mixedTransport]
 url = "https://example.com/mixed-transport"
 "#;
     fs::write(
-        repo_root.join(".codex").join("config.toml"),
+        codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
         existing_config,
     )
     .expect("write config");
@@ -59,7 +60,10 @@ url = "https://example.com/mixed-transport"
         .await;
 
     assert_eq!(
-        fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml")
+        )
+        .expect("read config"),
         existing_config
     );
 }
@@ -79,9 +83,10 @@ async fn detect_repo_mcp_lists_only_missing_servers() {
         }"#,
     )
     .expect("write mcp");
-    fs::create_dir_all(repo_root.join(".codex")).expect("create codex dir");
+    fs::create_dir_all(codex_config::project_config_dir(repo_root.as_path()))
+        .expect("create codex dir");
     fs::write(
-        repo_root.join(".codex").join("config.toml"),
+        codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
         r#"[mcp_servers.mixedTransport]
 url = "https://example.com/mixed-transport"
 "#,
@@ -107,7 +112,9 @@ url = "https://example.com/mixed-transport"
             description: format!(
                 "Migrate MCP servers from {} into {}",
                 repo_root.display(),
-                repo_root.join(".codex").join("config.toml").display()
+                codex_config::project_config_dir(repo_root.as_path())
+                    .join("config.toml")
+                    .display()
             ),
             cwd: Some(repo_root),
             details: Some(MigrationDetails {

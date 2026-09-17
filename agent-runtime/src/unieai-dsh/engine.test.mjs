@@ -359,6 +359,13 @@ test("uac loads the vendored uac-plugins cli profile; UNIEAI_DSH_PLUGINS narrows
   assert.doesNotMatch(patch, /repeat-tool-reminder/);
 });
 
+test("AGENTS.md and skills come from the UnieAI home", () => {
+  const patch = renderPatch({ defaultModel: "A", home: "/h/.unieai", plugins: selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-skills" }) });
+  assert.match(patch, /- id: agent-instructions\n {2}config:\n {4}maxBytes: 65536\n {4}dshHome: "\/h\/\.unieai"/);
+  assert.match(patch, /- id: skill-filesystem\n {2}disabled: true/);
+  assert.match(patch, / {4}- id: unieai-skills\n {6}name: "file:[^"]+"\n {6}config:\n {8}home: "\/h\/\.unieai"/);
+});
+
 test("apply_patch calls render as a diff of the first file they change", async () => {
   const { diffFromApplyPatch } = await import("./engine.mjs");
   const update = diffFromApplyPatch("*** Begin Patch\n*** Update File: src/a.py\n@@ def f():\n-    return 1\n+    return 2\n*** Add File: b.txt\n+x\n*** End Patch");

@@ -2196,6 +2196,7 @@ mod tests {
             allow_login_shell: Some(false),
             feedback: Some(FeedbackConfigToml {
                 enabled: Some(false),
+                ..Default::default()
             }),
             windows: Some(WindowsRequirementsToml {
                 sandbox_private_desktop: Some(false),
@@ -2822,6 +2823,7 @@ mod tests {
                 .expect("managed model catalog path should be absolute");
         let feedback = FeedbackConfigToml {
             enabled: Some(false),
+            ..Default::default()
         };
         let windows = WindowsRequirementsToml {
             allowed_sandbox_implementations: None,

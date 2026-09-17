@@ -35,13 +35,17 @@ pub use windows_glob::windows_deny_read_glob_scan;
 
 const PROTECTED_METADATA_GIT_PATH_NAME: &str = ".git";
 const PROTECTED_METADATA_AGENTS_PATH_NAME: &str = ".agents";
-const PROTECTED_METADATA_CODEX_PATH_NAME: &str = ".codex";
+const PROTECTED_METADATA_CODEX_PATH_NAME: &str =
+    crate::unieai_project_config_dir::LEGACY_PROJECT_CONFIG_DIR_NAME;
+const PROTECTED_METADATA_UNIEAI_PATH_NAME: &str =
+    crate::unieai_project_config_dir::PROJECT_CONFIG_DIR_NAME;
 
 /// Top-level workspace metadata paths that stay protected under writable roots.
 pub const PROTECTED_METADATA_PATH_NAMES: &[&str] = &[
     PROTECTED_METADATA_GIT_PATH_NAME,
     PROTECTED_METADATA_AGENTS_PATH_NAME,
     PROTECTED_METADATA_CODEX_PATH_NAME,
+    PROTECTED_METADATA_UNIEAI_PATH_NAME,
 ];
 
 /// Returns true when a path basename is one of the protected workspace metadata names.
@@ -845,9 +849,12 @@ impl FileSystemSandboxPolicy {
                 .map(|path| FileSystemSandboxEntry::new(path.into(), FileSystemAccessMode::Write)),
         );
 
-        append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".git");
-        append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".agents");
-        append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".codex");
+        for metadata_name in PROTECTED_METADATA_PATH_NAMES {
+            append_default_read_only_project_root_subpath_if_no_explicit_rule(
+                &mut entries,
+                *metadata_name,
+            );
+        }
         for writable_root in writable_roots {
             for protected_path in default_read_only_subpaths_for_writable_root(
                 writable_root,
@@ -2256,13 +2263,18 @@ pub(crate) fn default_read_only_subpaths_for_writable_root(
         subpaths.push(top_level_agents);
     }
 
-    // Keep top-level project metadata under .codex read-only to the agent by
-    // default. For the workspace root itself, protect it even before the
-    // directory exists so first-time creation still goes through the
-    // protected-path approval flow.
-    let top_level_codex = writable_root.join(PROTECTED_METADATA_CODEX_PATH_NAME);
-    if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
-        subpaths.push(top_level_codex);
+    // Keep top-level project config metadata (.codex and .unieai) read-only to
+    // the agent by default. For the workspace root itself, protect them even
+    // before the directories exist so first-time creation still goes through
+    // the protected-path approval flow.
+    for name in [
+        PROTECTED_METADATA_CODEX_PATH_NAME,
+        PROTECTED_METADATA_UNIEAI_PATH_NAME,
+    ] {
+        let top_level_config_dir = writable_root.join(name);
+        if protect_missing_dot_codex || top_level_config_dir.as_path().is_dir() {
+            subpaths.push(top_level_config_dir);
+        }
     }
 
     dedup_absolute_paths(subpaths, /*normalize_effective_paths*/ false)
@@ -3199,6 +3211,12 @@ mod tests {
                     },
                     FileSystemAccessMode::Read,
                 ),
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::project_roots(Some(".unieai".into())),
+                    },
+                    FileSystemAccessMode::Read,
+                ),
             ])
         );
     }
@@ -3280,6 +3298,7 @@ mod tests {
         let dot_git_config = cwd.path().join(".git").join("config");
         let dot_agents_config = cwd.path().join(".agents").join("config");
         let dot_codex_config = cwd.path().join(".codex").join("config.toml");
+        let dot_unieai_config = cwd.path().join(".unieai").join("config.toml");
         let root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
         let file_system_policy =
             FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -3291,6 +3310,7 @@ mod tests {
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_git_config, cwd.path()));
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_agents_config, cwd.path()));
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_codex_config, cwd.path()));
+        assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_unieai_config, cwd.path()));
 
         let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd.path());
         assert_eq!(writable_roots.len(), 1);
@@ -3300,11 +3320,13 @@ mod tests {
                 ".git".to_string(),
                 ".agents".to_string(),
                 ".codex".to_string(),
+                ".unieai".to_string(),
             ]
         );
         assert!(!writable_roots[0].is_path_writable(&dot_git_config));
         assert!(!writable_roots[0].is_path_writable(&dot_agents_config));
         assert!(!writable_roots[0].is_path_writable(&dot_codex_config));
+        assert!(!writable_roots[0].is_path_writable(&dot_unieai_config));
     }
 
     #[test]

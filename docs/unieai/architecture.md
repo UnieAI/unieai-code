@@ -62,6 +62,12 @@ Fork 對 gateway 模型換上精簡提示（由 agent-core 的 `buildSystemPromp
 - 預設 `~/.unieai`（`UNIEAI_HOME` 覆蓋；`CODEX_HOME` 相容保留）
 - 登入憑證 + 模型目錄：`~/.unieai/unieai.json`
 - agent-core session：`~/.unieai/agent-sessions/`；codex rollout：`~/.unieai/sessions/`
+- 專案層設定（codex engine）：`<project>/.unieai/`（`config.toml`、`skills/`、
+  `rules/`、`agents/`、hooks）。`.unieai/` 不存在時才讀舊的 `<project>/.codex/`
+  （legacy 相容）；兩者並存時只讀 `.unieai/`，並在啟動時警告 `.codex/` 被忽略。
+  `.agents/skills` 照常載入。沙箱預設將 `.unieai/`、`.codex/`、`.agents/`、`.git/`
+  設為唯讀。常數：`codex_protocol::unieai_project_config_dir`
+  （`codex_config::PROJECT_CONFIG_DIR_NAME` / `LEGACY_PROJECT_CONFIG_DIR_NAME`）。
 
 ## 發佈
 

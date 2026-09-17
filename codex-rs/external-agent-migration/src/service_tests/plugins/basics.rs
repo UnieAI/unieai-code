@@ -546,7 +546,8 @@ async fn detect_repo_skips_plugins_only_configured_in_project_codex() {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
     fs::create_dir_all(repo_root.join(EXTERNAL_AGENT_DIR)).expect("create repo external agent dir");
-    fs::create_dir_all(repo_root.join(".codex")).expect("create repo codex dir");
+    fs::create_dir_all(codex_config::project_config_dir(repo_root.as_path()))
+        .expect("create repo codex dir");
     fs::create_dir_all(&codex_home).expect("create codex home");
     fs::write(
         repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
@@ -563,7 +564,7 @@ async fn detect_repo_skips_plugins_only_configured_in_project_codex() {
     )
     .expect("write repo settings");
     fs::write(
-        repo_root.join(".codex").join("config.toml"),
+        codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
         r#"
 [plugins."formatter@acme-tools"]
 enabled = true

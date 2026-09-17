@@ -171,6 +171,7 @@ export function renderPatch({
   plugins = [],
   acp = true,
   persona = true,
+  home = unieaiHome(),
 }) {
   const q = yamlQuote;
   const execTools = plugins.some((plugin) => plugin.execTools);
@@ -223,7 +224,10 @@ export function renderPatch({
     "    search: false",
     "    searchTimeoutMs: 60000",
   );
-  const parts = renderPatchParts({ plugins, profile: "cli" });
+  // One layout for both engines: the user's AGENTS.md (and, through
+  // unieai-skills, their skills) live in the UnieAI home, not dsh's.
+  lines.push("- id: agent-instructions", "  config:", "    maxBytes: 65536", `    dshHome: ${q(home)}`);
+  const parts = renderPatchParts({ plugins, profile: "cli", config: { "unieai-skills": { home } } });
   lines.push(...parts.rows);
   const inserts = [];
   if (controlSocket) {

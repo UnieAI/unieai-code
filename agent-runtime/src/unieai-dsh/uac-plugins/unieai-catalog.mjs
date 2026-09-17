@@ -37,6 +37,13 @@ export const PLUGINS = Object.freeze([
     profiles: ["cli"],
     summary: "read-before-edit that also counts shell reads; stale files still refused",
   },
+  {
+    id: "unieai-skills",
+    file: "unieai-skills.mjs",
+    rows: ["- id: skill-filesystem", "  disabled: true"],
+    profiles: ["cli"],
+    summary: "skills from <project>/.unieai/skills and ~/.unieai/skills",
+  },
   { id: "unieai-edit-rescue", file: "unieai-edit-rescue.mjs", profiles: ["cli"], summary: "whitespace/indent-tolerant edit matching" },
   { id: "unieai-edit-feedback", file: "unieai-edit-feedback.mjs", profiles: ["cli"], summary: "diff and context after each edit" },
   { id: "unieai-apply-patch", file: "unieai-apply-patch.mjs", profiles: ["cli"], summary: "codex apply_patch tool" },

@@ -6,6 +6,14 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Project config directory
+
+UnieAI Code reads project-level config from `<project>/.unieai/` (`config.toml`,
+`skills/`, `rules/`, `agents/`, hooks) wherever the upstream docs mention
+`.codex/`. For compatibility, a legacy `<project>/.codex/` directory is still
+loaded when `.unieai/` does not exist. If both exist, only `.unieai/` is loaded
+and a startup warning notes that `.codex/` is ignored.
+
 ## Granular approvals
 
 `approval_policy = "granular"` takes a table of per-category switches. Each one

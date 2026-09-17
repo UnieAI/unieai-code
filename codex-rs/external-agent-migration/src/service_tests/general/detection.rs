@@ -503,7 +503,9 @@ async fn detect_repo_still_reports_non_plugin_items_when_home_config_is_invalid(
                         .join(EXTERNAL_AGENT_DIR)
                         .join("settings.json")
                         .display(),
-                    repo_root.join(".codex").join("config.toml").display()
+                    codex_config::project_config_dir(repo_root.as_path())
+                        .join("config.toml")
+                        .display()
                 ),
                 cwd: Some(repo_root.clone()),
                 details: None,
@@ -599,7 +601,9 @@ async fn detect_repo_lists_mcp_hooks_commands_and_subagents() {
                 description: format!(
                     "Migrate MCP servers from {} into {}",
                     repo_root.display(),
-                    repo_root.join(".codex").join("config.toml").display()
+                    codex_config::project_config_dir(repo_root.as_path())
+                        .join("config.toml")
+                        .display()
                 ),
                 cwd: Some(repo_root.clone()),
                 details: Some(MigrationDetails {
@@ -614,7 +618,9 @@ async fn detect_repo_lists_mcp_hooks_commands_and_subagents() {
                 description: format!(
                     "Migrate hooks from {} to {}",
                     repo_root.join(EXTERNAL_AGENT_DIR).display(),
-                    repo_root.join(".codex").join("hooks.json").display()
+                    codex_config::project_config_dir(repo_root.as_path())
+                        .join("hooks.json")
+                        .display()
                 ),
                 cwd: Some(repo_root.clone()),
                 details: Some(MigrationDetails {
@@ -647,7 +653,9 @@ async fn detect_repo_lists_mcp_hooks_commands_and_subagents() {
                 description: format!(
                     "Migrate subagents from {} to {}",
                     repo_root.join(EXTERNAL_AGENT_DIR).join("agents").display(),
-                    repo_root.join(".codex").join("agents").display()
+                    codex_config::project_config_dir(repo_root.as_path())
+                        .join("agents")
+                        .display()
                 ),
                 cwd: Some(repo_root),
                 details: Some(MigrationDetails {
@@ -780,7 +788,10 @@ async fn import_repo_migrates_mcp_hooks_commands_and_subagents() {
     .await;
 
     let config: TomlValue = toml::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("config.toml"),
+        )
+        .expect("read config"),
     )
     .expect("parse config");
     let expected_config: TomlValue = toml::from_str(
@@ -816,7 +827,10 @@ STATIC = "yes"
         .expect("migrated MCP config should be supported");
 
     let hooks: JsonValue = serde_json::from_str(
-        &fs::read_to_string(repo_root.join(".codex").join("hooks.json")).expect("read hooks"),
+        &fs::read_to_string(
+            codex_config::project_config_dir(repo_root.as_path()).join("hooks.json"),
+        )
+        .expect("read hooks"),
     )
     .expect("parse hooks");
     let _supported_hooks: codex_config::HooksFile =
@@ -843,8 +857,7 @@ STATIC = "yes"
         })
     );
     assert!(
-        !repo_root
-            .join(".codex")
+        !codex_config::project_config_dir(repo_root.as_path())
             .join("hooks.migration-notes.md")
             .exists()
     );
@@ -863,8 +876,7 @@ STATIC = "yes"
 
     let agent: TomlValue = toml::from_str(
         &fs::read_to_string(
-            repo_root
-                .join(".codex")
+            codex_config::project_config_dir(repo_root.as_path())
                 .join("agents")
                 .join("researcher.toml"),
         )

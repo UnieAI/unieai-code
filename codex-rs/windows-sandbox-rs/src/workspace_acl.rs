@@ -16,6 +16,16 @@ pub unsafe fn protect_workspace_codex_dir(cwd: &Path, psid: *mut c_void) -> Resu
 
 /// # Safety
 /// Caller must ensure `psid` is a valid SID pointer.
+pub unsafe fn protect_workspace_unieai_dir(cwd: &Path, psid: *mut c_void) -> Result<bool> {
+    protect_workspace_subdir(
+        cwd,
+        psid,
+        codex_protocol::unieai_project_config_dir::PROJECT_CONFIG_DIR_NAME,
+    )
+}
+
+/// # Safety
+/// Caller must ensure `psid` is a valid SID pointer.
 pub unsafe fn protect_workspace_agents_dir(cwd: &Path, psid: *mut c_void) -> Result<bool> {
     protect_workspace_subdir(cwd, psid, ".agents")
 }

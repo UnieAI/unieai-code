@@ -5228,6 +5228,7 @@ mod tests {
         let cwd = TempDir::new().expect("tempdir");
         std::fs::create_dir_all(cwd.path().join(".agents")).expect("create .agents");
         std::fs::create_dir_all(cwd.path().join(".codex")).expect("create .codex");
+        std::fs::create_dir_all(cwd.path().join(".unieai")).expect("create .unieai");
         let canonical_cwd = codex_utils_absolute_path::canonicalize_preserving_symlinks(cwd.path())
             .expect("canonicalize cwd");
         let cwd_absolute =
@@ -5239,6 +5240,8 @@ mod tests {
             .expect("canonical .agents");
         let expected_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
+        let expected_unieai = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".unieai"))
+            .expect("canonical .unieai");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -5294,6 +5297,12 @@ mod tests {
                 .iter()
                 .any(|path| path.as_path() == expected_codex.as_path())
         );
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .iter()
+                .any(|path| path.as_path() == expected_unieai.as_path())
+        );
     }
 
     #[test]
@@ -5310,6 +5319,9 @@ mod tests {
                 .expect("canonical docs/public");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
+        let expected_dot_unieai =
+            AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".unieai"))
+                .expect("canonical .unieai");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -5338,6 +5350,7 @@ mod tests {
                     canonical_cwd,
                     vec![
                         expected_dot_codex.to_path_buf(),
+                        expected_dot_unieai.to_path_buf(),
                         expected_docs.to_path_buf()
                     ],
                 ),

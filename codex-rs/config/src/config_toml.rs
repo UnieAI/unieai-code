@@ -539,7 +539,6 @@ pub struct ConfigToml {
     pub oss_provider: Option<String>,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigLockfileToml {

@@ -333,11 +333,13 @@ async fn editor_process_uses_protected_workspace_fallback_with_default_temporary
         /*exclude_tmpdir_env_var*/ false,
         /*exclude_slash_tmp*/ false,
     );
-    let workspace_codex_home = cwd.join(".codex");
-    let editor_directory = dunce::canonicalize(&cwd)
-        .expect("canonicalize workspace")
-        .join(".codex")
-        .join("editor");
+    // The project config dir the editor falls back into: `.unieai`, or an
+    // existing legacy `.codex` (see codex_config::project_config_dir).
+    let workspace_codex_home = codex_config::project_config_dir(&cwd);
+    let editor_directory = codex_config::project_config_dir(
+        &dunce::canonicalize(&cwd).expect("canonicalize workspace"),
+    )
+    .join("editor");
     let editor_command = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),

@@ -676,3 +676,77 @@ async fn resolved_config_and_repo_roots_preserve_order_and_dedupe_paths_not_name
         ]
     );
 }
+
+#[tokio::test]
+async fn unieai_project_config_dir_skills_are_discovered_alongside_agents_skills() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let codex_home = temp_dir.path().join("home");
+    let repo = absolute(
+        dunce::canonicalize(temp_dir.path())
+            .expect("canonical temp dir")
+            .join("repo"),
+    );
+    fs::create_dir_all(&codex_home).expect("create codex home");
+    fs::create_dir_all(repo.join(".git")).expect("create .git");
+    let project_key = toml::Value::String(codex_config::loader::project_trust_key(repo.as_path()));
+    fs::write(
+        codex_home.join("config.toml"),
+        format!("[projects.{project_key}]\ntrust_level = \"trusted\"\n"),
+    )
+    .expect("write user config");
+    let unieai_skill = write_skill(&repo.join(".unieai/skills"), "primary", "primary-skill");
+    write_skill(&repo.join(".codex/skills"), "legacy", "legacy-skill");
+    let agents_skill = write_skill(&repo.join(".agents/skills"), "agents", "agents-skill");
+
+    let config_stack = codex_config::loader::load_config_layers_state(
+        LOCAL_FS.as_ref(),
+        &codex_home,
+        Some(repo.clone()),
+        &[] as &[(String, toml::Value)],
+        codex_config::LoaderOverrides::without_managed_config_for_tests(),
+        &codex_config::NoopThreadConfigLoader,
+    )
+    .await
+    .expect("load config stack");
+
+    let roots = resolve_skill_roots_with_home_dir(
+        Some(Arc::clone(&LOCAL_FS)),
+        &config_stack,
+        &repo,
+        /*home_dir*/ None,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
+    let repo_roots = roots
+        .iter()
+        .filter(|root| root.scope == SkillScope::Repo)
+        .map(|root| root.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        repo_roots,
+        vec![repo.join(".unieai/skills"), repo.join(".agents/skills")]
+    );
+
+    let repo_roots = roots
+        .into_iter()
+        .filter(|root| root.scope == SkillScope::Repo)
+        .collect::<Vec<_>>();
+    let outcome = load_and_merge_host_skill_roots(
+        repo_roots,
+        &Semaphore::new(MAX_CONCURRENT_ROOT_SCANS),
+        /*restriction_product*/ None,
+        /*plugin_skill_snapshots*/ None,
+    )
+    .await;
+    assert!(outcome.errors.is_empty());
+    let mut skill_paths = outcome
+        .skills
+        .into_iter()
+        .map(|skill| skill.path_to_skills_md)
+        .collect::<Vec<_>>();
+    skill_paths.sort();
+    let mut expected = vec![agents_skill, unieai_skill];
+    expected.sort();
+    assert_eq!(skill_paths, expected);
+}
