@@ -132,14 +132,20 @@ async fn check_for_update(
 async fn fetch_latest_github_release_version(
     client_pool: &RouteAwareClientPool,
 ) -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = client_pool
+    // The pool follows the redirect; the tag is the last path segment of the
+    // final URL, e.g. .../releases/tag/npm-v0.0.27.
+    let response = client_pool
         .get(LATEST_RELEASE_URL)
         .headers(default_headers())
         .send()
         .await?
         .error_for_status()?;
+    let latest_tag_name = response
+        .url()
+        .path_segments()
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Failed to resolve latest release tag from redirect"))?;
     extract_version_from_latest_tag(&latest_tag_name)
 }
 
