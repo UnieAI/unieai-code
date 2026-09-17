@@ -1286,6 +1286,21 @@ async fn run_ratatui_app(
                 exit_reason: ExitReason::UserRequested,
             });
         }
+        // A UnieAI Rabi login cannot use the codex engine: restart onto uac.
+        if login_screen_shown
+            && unieai_engine::needs_engine_relaunch(&initial_config.codex_home, &app_server_target)
+        {
+            shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+            let _ = tui.terminal.clear();
+            return Ok(AppExitInfo {
+                token_usage: crate::token_usage::TokenUsage::default(),
+                thread_id: None,
+                resume_hint: None,
+                disconnect_info: None,
+                update_action: None,
+                exit_reason: ExitReason::EngineSwitched,
+            });
+        }
         #[cfg(target_os = "windows")]
         {
             trust_decision_was_made =

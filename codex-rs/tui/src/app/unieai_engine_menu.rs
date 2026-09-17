@@ -5,7 +5,6 @@
 //! conversation stays with the engine that started it.
 
 use super::*;
-use crate::RemoteAppServerEndpoint;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::unieai_engine;
@@ -34,19 +33,7 @@ impl App {
     /// The engine this session is actually running on, which can differ from
     /// the configured one when the uac server failed to start.
     pub(super) fn running_engine(&self) -> EngineKind {
-        match &self.app_server_target {
-            AppServerTarget::LocalDaemon {
-                endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
-                ..
-            } if unieai_engine::is_uac_socket(
-                &self.config.codex_home,
-                socket_path.as_path(),
-            ) =>
-            {
-                EngineKind::Uac
-            }
-            _ => EngineKind::Codex,
-        }
+        unieai_engine::target_engine(&self.config.codex_home, &self.app_server_target)
     }
 
     pub(super) fn open_engine_menu(&mut self) {
@@ -72,13 +59,18 @@ impl App {
         ));
         let items = EngineKind::ALL
             .into_iter()
-            .map(|engine| SelectionItem {
-                name: engine.display_name().to_string(),
-                description: Some(engine.description().to_string()),
-                is_current: engine == running,
-                actions: vec![Box::new(move |tx| tx.send(AppEvent::SwitchEngine(engine)))],
-                dismiss_on_select: true,
-                ..Default::default()
+            .map(|engine| {
+                let unavailable = unieai_engine::engine_unavailable_reason(&codex_home, engine);
+                SelectionItem {
+                    name: engine.display_name().to_string(),
+                    description: Some(engine.description().to_string()),
+                    is_current: engine == running,
+                    is_disabled: unavailable.is_some(),
+                    disabled_reason: unavailable,
+                    actions: vec![Box::new(move |tx| tx.send(AppEvent::SwitchEngine(engine)))],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
             })
             .collect();
         self.chat_widget.show_selection_view(SelectionViewParams {
@@ -96,6 +88,11 @@ impl App {
                 "{} is set for this launch and overrides /engine; unset it to switch.",
                 unieai_engine::ENGINE_ENV_VAR
             ));
+            return false;
+        }
+        if let Some(reason) = unieai_engine::engine_unavailable_reason(&codex_home, engine) {
+            self.chat_widget
+                .add_error_message(format!("{}: {reason}", engine.display_name()));
             return false;
         }
         if let Err(err) = unieai_engine::write_engine(&codex_home, engine) {

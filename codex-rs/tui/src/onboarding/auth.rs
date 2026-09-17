@@ -102,6 +102,7 @@ pub(crate) enum SignInState {
 pub(crate) enum SignInOption {
     UnieAI,
     UnieAICompany,
+    UnieAIRabi,
     // No longer listed by the onboarding picker; the flows stay for tests and
     // potential re-enablement (`unieai login --chatgpt` covers the CLI path).
     #[allow(dead_code)]
@@ -130,6 +131,8 @@ pub(crate) struct UnieAIGatewayInputState {
 /// until Studio issues the code.
 #[derive(Clone)]
 pub(crate) struct UnieAIDeviceState {
+    /// "UnieAI Studio" or "UnieAI Rabi".
+    product: &'static str,
     studio_url: String,
     verification_uri: Option<String>,
     user_code: Option<String>,
@@ -137,6 +140,9 @@ pub(crate) struct UnieAIDeviceState {
 
 #[derive(Clone)]
 pub(crate) struct UnieAISuccessState {
+    product: &'static str,
+    /// Rabi accounts run on the uac engine only.
+    uac_only: bool,
     email: Option<String>,
     gateway_base_url: String,
     studio_url: String,
@@ -144,6 +150,8 @@ pub(crate) struct UnieAISuccessState {
 }
 
 const API_KEY_DISABLED_MESSAGE: &str = "API key login is disabled.";
+const STUDIO_PRODUCT: &str = "UnieAI Studio";
+const RABI_PRODUCT: &str = "UnieAI Rabi";
 pub(super) fn onboarding_request_id() -> codex_app_server_protocol::RequestId {
     codex_app_server_protocol::RequestId::String(Uuid::new_v4().to_string())
 }
@@ -415,10 +423,14 @@ impl AuthModeWidget {
             .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
     }
 
-    // The onboarding picker only offers the two UnieAI Studio flows. The
+    // The onboarding picker only offers the UnieAI flows. The
     // ChatGPT/OpenAI machinery stays reachable via `unieai login --chatgpt`.
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
-        vec![SignInOption::UnieAI, SignInOption::UnieAICompany]
+        vec![
+            SignInOption::UnieAI,
+            SignInOption::UnieAICompany,
+            SignInOption::UnieAIRabi,
+        ]
     }
 
     fn selectable_sign_in_options(&self) -> Vec<SignInOption> {
@@ -454,6 +466,9 @@ impl AuthModeWidget {
             }
             SignInOption::UnieAICompany => {
                 self.start_unieai_studio_entry();
+            }
+            SignInOption::UnieAIRabi => {
+                self.start_unieai_rabi_login();
             }
             SignInOption::ChatGpt => {
                 if self.is_chatgpt_login_allowed() {
@@ -505,6 +520,7 @@ impl AuthModeWidget {
             .clone()
             .unwrap_or_else(|| codex_login::unieai::DEFAULT_STUDIO_URL.to_string());
         *self.sign_in_state.write().unwrap() = SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+            product: STUDIO_PRODUCT,
             studio_url: displayed_studio_url,
             verification_uri: None,
             user_code: None,
@@ -525,6 +541,7 @@ impl AuthModeWidget {
                 on_prompt: Box::new(move |prompt| {
                     *prompt_state.write().unwrap() =
                         SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+                            product: STUDIO_PRODUCT,
                             studio_url: prompt.studio_url.clone(),
                             verification_uri: Some(prompt.verification_uri.clone()),
                             user_code: Some(prompt.user_code.clone()),
@@ -542,6 +559,8 @@ impl AuthModeWidget {
                     *error.write().unwrap() = None;
                     *sign_in_state.write().unwrap() =
                         SignInState::UnieAISuccess(UnieAISuccessState {
+                            product: STUDIO_PRODUCT,
+                            uac_only: false,
                             email: credentials.email.clone(),
                             gateway_base_url: credentials.gateway_base_url.clone(),
                             studio_url: credentials.studio_url.clone(),
@@ -550,6 +569,68 @@ impl AuthModeWidget {
                 }
                 Err(err) => {
                     *error.write().unwrap() = Some(format!("UnieAI login failed: {err}"));
+                    *sign_in_state.write().unwrap() = SignInState::PickMode;
+                }
+            }
+            request_frame.schedule_frame();
+        });
+        *self.unieai_login_abort.write().unwrap() = Some(join_handle.abort_handle());
+        self.request_frame.schedule_frame();
+    }
+
+    /// Runs the UnieAI Rabi device login, driving the same device-code and
+    /// success screens as the Studio login.
+    fn start_unieai_rabi_login(&mut self) {
+        self.set_error(/*message*/ None);
+        *self.sign_in_state.write().unwrap() = SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+            product: RABI_PRODUCT,
+            studio_url: codex_login::unieai_rabi::resolve_rabi_url(/*override_url*/ None),
+            verification_uri: None,
+            user_code: None,
+        });
+
+        let codex_home = self.codex_home.clone();
+        let sign_in_state = self.sign_in_state.clone();
+        let error = self.error.clone();
+        let request_frame = self.request_frame.clone();
+        let prompt_state = self.sign_in_state.clone();
+        let prompt_frame = self.request_frame.clone();
+        let prompt_request_handle = self.app_server_request_handle.clone();
+
+        let join_handle = tokio::spawn(async move {
+            let options = codex_login::unieai_rabi::UnieAIRabiLoginOptions {
+                rabi_url: None,
+                on_prompt: Box::new(move |prompt| {
+                    *prompt_state.write().unwrap() =
+                        SignInState::UnieAIDeviceCode(UnieAIDeviceState {
+                            product: RABI_PRODUCT,
+                            studio_url: prompt.rabi_url.clone(),
+                            verification_uri: Some(prompt.verification_uri.clone()),
+                            user_code: Some(prompt.user_code.clone()),
+                        });
+                    maybe_open_auth_url_in_browser(
+                        &prompt_request_handle,
+                        &prompt.verification_uri,
+                    );
+                    prompt_frame.schedule_frame();
+                }),
+            };
+
+            match codex_login::unieai_rabi::run_rabi_device_login(&codex_home, options).await {
+                Ok(credentials) => {
+                    *error.write().unwrap() = None;
+                    *sign_in_state.write().unwrap() =
+                        SignInState::UnieAISuccess(UnieAISuccessState {
+                            product: RABI_PRODUCT,
+                            uac_only: true,
+                            email: credentials.email.clone(),
+                            gateway_base_url: credentials.gateway_base_url.clone(),
+                            studio_url: credentials.studio_url.clone(),
+                            has_models: !credentials.models().is_empty(),
+                        });
+                }
+                Err(err) => {
+                    *error.write().unwrap() = Some(format!("UnieAI Rabi login failed: {err}"));
                     *sign_in_state.write().unwrap() = SignInState::PickMode;
                 }
             }
@@ -753,6 +834,14 @@ impl AuthModeWidget {
                         "Enter your company or on-prem Studio URL",
                     ));
                 }
+                SignInOption::UnieAIRabi => {
+                    lines.extend(create_mode_item(
+                        idx,
+                        option,
+                        "Sign in with UnieAI Rabi",
+                        "Use your Rabi account (agent.unieai.com); runs on unieai-agent-core",
+                    ));
+                }
                 SignInOption::ChatGpt => {
                     lines.extend(create_mode_item(
                         idx,
@@ -814,11 +903,11 @@ impl AuthModeWidget {
             self.request_frame
                 .schedule_frame_in(std::time::Duration::from_millis(100));
             spans.extend(shimmer_text(
-                "Confirm the sign-in in UnieAI Studio",
+                &format!("Confirm the sign-in in {}", state.product),
                 MotionMode::Animated,
             ));
         } else {
-            spans.push("Confirm the sign-in in UnieAI Studio".into());
+            spans.push(format!("Confirm the sign-in in {}", state.product).into());
         }
         let mut lines: Vec<Line> = vec![spans.into(), "".into()];
 
@@ -870,15 +959,32 @@ impl AuthModeWidget {
 
     fn render_unieai_success(&self, area: Rect, buf: &mut Buffer, state: &UnieAISuccessState) {
         let signed_in_line = match &state.email {
-            Some(email) => format!("✓ Signed in to UnieAI Studio as {email}"),
-            None => "✓ Signed in to UnieAI Studio".to_string(),
+            Some(email) => format!("✓ Signed in to {} as {email}", state.product),
+            None => format!("✓ Signed in to {}", state.product),
         };
         let mut lines = vec![
             signed_in_line.fg(Color::Green).into(),
             "".into(),
             Line::from(format!("  Inference gateway: {}", state.gateway_base_url)).dim(),
         ];
-        if !state.has_models {
+        if state.uac_only {
+            lines.push(
+                Line::from(
+                    "  This account runs on unieai-agent-core (uac); UnieAI Code restarts on it.",
+                )
+                .dim(),
+            );
+        }
+        if state.uac_only && !state.has_models {
+            lines.push("".into());
+            lines.push(
+                Line::from(format!(
+                    "  No models are available yet for this account ({}).",
+                    state.studio_url
+                ))
+                .fg(Color::Yellow),
+            );
+        } else if !state.has_models {
             lines.push("".into());
             lines.push(
                 Line::from(format!(
@@ -1680,13 +1786,18 @@ mod tests {
         ));
     }
 
-    // The fork's picker offers only the UnieAI Studio flows (b65803c55c); the
+    // The fork's picker offers only the UnieAI flows (Studio, company Studio,
+    // Rabi); the
     // Bedrock feature flag and forced login method must not bring back the
     // upstream ChatGPT/API key/Bedrock options.
     #[tokio::test]
     async fn sign_in_picker_offers_only_unieai_flows_regardless_of_bedrock_or_forced_login() {
         let (mut widget, _tmp) = widget_forced_chatgpt().await;
-        let unieai_only = vec![SignInOption::UnieAI, SignInOption::UnieAICompany];
+        let unieai_only = vec![
+            SignInOption::UnieAI,
+            SignInOption::UnieAICompany,
+            SignInOption::UnieAIRabi,
+        ];
         widget.auth_config.forced_login_method = None;
         assert_eq!(widget.displayed_sign_in_options(), unieai_only);
 

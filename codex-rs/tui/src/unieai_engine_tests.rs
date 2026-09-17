@@ -49,3 +49,31 @@ fn deep_homes_get_a_short_stable_socket() {
         PathBuf::from("/home/u/.unieai/uac/app-server.sock")
     );
 }
+
+fn write_account(home: &std::path::Path, account: &str) {
+    let json = serde_json::json!({
+        "account": account,
+        "studio_url": "https://agent.unieai.com",
+        "access_token": "",
+        "refresh_token": "",
+        "expires_at": 0,
+        "gateway_base_url": "https://agent.unieai.com/api/desktop/v1",
+        "gateway_api_key": "k",
+    });
+    std::fs::write(home.join("unieai.json"), json.to_string()).expect("write unieai.json");
+}
+
+#[test]
+fn rabi_accounts_cannot_run_the_codex_engine() {
+    let home = tempfile::tempdir().expect("tempdir");
+    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Codex), None);
+    write_account(home.path(), "studio");
+    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Codex), None);
+
+    write_account(home.path(), "rabi");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(reason.contains("UnieAI Rabi"), "{reason}");
+    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Uac), None);
+    write_engine(home.path(), EngineKind::Codex).expect("write");
+    assert_eq!(resolve_engine(home.path()), EngineKind::Uac);
+}

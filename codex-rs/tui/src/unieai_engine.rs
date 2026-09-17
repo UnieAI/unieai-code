@@ -81,8 +81,49 @@ pub(crate) fn configured_engine(codex_home: &Path) -> EngineKind {
         .unwrap_or(EngineKind::Codex)
 }
 
+/// Why the signed-in account cannot run `engine`, if it cannot. A UnieAI
+/// Rabi account's relay serves chat completions only, which the codex engine
+/// (Responses API) cannot use.
+pub(crate) fn engine_unavailable_reason(codex_home: &Path, engine: EngineKind) -> Option<String> {
+    let account = codex_login::unieai::load_unieai_credentials(codex_home)?.account;
+    (engine == EngineKind::Codex && !account.supports_codex_engine()).then(|| {
+        format!(
+            "Not available with a {} account; it runs on {}.",
+            account.display_name(),
+            EngineKind::Uac.display_name()
+        )
+    })
+}
+
+/// The engine a session connected to `target` runs on (it can differ from
+/// the configured one when the uac server failed to start).
+pub(crate) fn target_engine(codex_home: &Path, target: &crate::AppServerTarget) -> EngineKind {
+    match target {
+        crate::AppServerTarget::LocalDaemon {
+            endpoint: crate::RemoteAppServerEndpoint::UnixSocket { socket_path },
+            ..
+        } if is_uac_socket(codex_home, socket_path.as_path()) => EngineKind::Uac,
+        _ => EngineKind::Codex,
+    }
+}
+
+/// Whether a session on `target` must restart onto another engine because
+/// the account signed in during onboarding cannot use this one.
+pub(crate) fn needs_engine_relaunch(codex_home: &Path, target: &crate::AppServerTarget) -> bool {
+    engine_unavailable_reason(codex_home, target_engine(codex_home, target)).is_some()
+}
+
 /// The engine this launch should use.
 pub(crate) fn resolve_engine(codex_home: &Path) -> EngineKind {
+    let requested = requested_engine(codex_home);
+    if let Some(reason) = engine_unavailable_reason(codex_home, requested) {
+        tracing::info!("{} {reason}", requested.display_name());
+        return EngineKind::Uac;
+    }
+    requested
+}
+
+fn requested_engine(codex_home: &Path) -> EngineKind {
     match std::env::var(ENGINE_ENV_VAR) {
         Ok(raw) if !raw.trim().is_empty() => EngineKind::parse(&raw).unwrap_or_else(|| {
             tracing::warn!(value = %raw, "ignoring unknown {ENGINE_ENV_VAR}");

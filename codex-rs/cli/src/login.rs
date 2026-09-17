@@ -485,12 +485,61 @@ pub async fn run_login_with_unieai(
     }
 }
 
+/// Login by signing into UnieAI Rabi with its desktop device grant. Rabi's
+/// relay speaks chat completions only, so the account runs on the uac engine.
+pub async fn run_login_with_unieai_rabi(
+    cli_config_overrides: CliConfigOverrides,
+    rabi_url: Option<String>,
+) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting unieai rabi device login flow");
+
+    let options = codex_login::unieai_rabi::UnieAIRabiLoginOptions {
+        rabi_url,
+        on_prompt: Box::new(|prompt| {
+            eprintln!(
+                "\nTo sign in to UnieAI Rabi, open this link and confirm the code:\n\n    {}\n\n    Code: {}\n\nWaiting for confirmation in UnieAI Rabi ({})...",
+                prompt.verification_uri, prompt.user_code, prompt.rabi_url
+            );
+        }),
+    };
+
+    match codex_login::unieai_rabi::run_rabi_device_login(&config.codex_home, options).await {
+        Ok(credentials) => {
+            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
+            if let Some(email) = &credentials.email {
+                eprintln!("Signed in to UnieAI Rabi as {email}");
+            }
+            eprintln!("Model relay: {}", credentials.gateway_base_url);
+            eprintln!(
+                "UnieAI Rabi runs on the uac engine (unieai-agent-core); the codex engine is not available with this account."
+            );
+            if credentials.models().is_empty() {
+                eprintln!(
+                    "No models are available yet for this account ({}).",
+                    credentials.studio_url
+                );
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging in to UnieAI Rabi: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn run_login_sync(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     match codex_login::unieai::sync_unieai_account(&config.codex_home).await {
         Ok(Some(credentials)) => {
             let models = credentials.models();
-            eprintln!("Synced {} model(s) from UnieAI Studio:", models.len());
+            eprintln!(
+                "Synced {} model(s) from {}:",
+                models.len(),
+                credentials.account.display_name()
+            );
             for model in models {
                 eprintln!("  {}", model.id);
             }
@@ -501,7 +550,7 @@ pub async fn run_login_sync(cli_config_overrides: CliConfigOverrides) -> ! {
             std::process::exit(1);
         }
         Err(err) => {
-            eprintln!("Error syncing from UnieAI Studio: {err}");
+            eprintln!("Error syncing the UnieAI account: {err}");
             std::process::exit(1);
         }
     }
@@ -511,9 +560,10 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
     if let Some(credentials) = codex_login::unieai::load_unieai_credentials(&config.codex_home) {
+        let product = credentials.account.display_name();
         match &credentials.email {
-            Some(email) => eprintln!("Logged in to UnieAI as {email}"),
-            None => eprintln!("Logged in to UnieAI"),
+            Some(email) => eprintln!("Logged in to {product} as {email}"),
+            None => eprintln!("Logged in to {product}"),
         }
         eprintln!("Inference gateway: {}", credentials.gateway_base_url);
         std::process::exit(0);

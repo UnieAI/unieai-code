@@ -19,6 +19,7 @@ use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
 use codex_cli::run_login_with_device_code;
 use codex_cli::run_login_with_unieai;
+use codex_cli::run_login_with_unieai_rabi;
 use codex_cli::run_logout;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_cloud_tasks::Cli as CloudTasksCli;
@@ -554,6 +555,14 @@ struct LoginCommand {
     #[arg(long = "gateway-url", value_name = "URL")]
     gateway_url: Option<String>,
 
+    /// Sign in with UnieAI Rabi instead of UnieAI Studio (runs on the uac engine).
+    #[arg(long = "rabi", conflicts_with_all = ["use_chatgpt", "studio_url", "gateway_url"])]
+    use_rabi: bool,
+
+    /// UnieAI Rabi URL for other deployments (default: https://agent.unieai.com).
+    #[arg(long = "rabi-url", value_name = "URL", requires = "use_rabi")]
+    rabi_url: Option<String>,
+
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
     /// Override the OAuth issuer base URL (advanced)
     #[arg(long = "experimental_issuer", value_name = "URL", hide = true)]
@@ -571,7 +580,7 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
-    /// Sync the UnieAI model list and gateway key from your Studio account.
+    /// Sync the UnieAI model list (and Studio gateway key) from your account.
     Sync,
 }
 
@@ -1832,6 +1841,9 @@ async fn cli_main(
                         run_login_with_access_token(login_cli.config_overrides, access_token).await;
                     } else if login_cli.use_chatgpt {
                         run_login_with_chatgpt(login_cli.config_overrides).await;
+                    } else if login_cli.use_rabi {
+                        run_login_with_unieai_rabi(login_cli.config_overrides, login_cli.rabi_url)
+                            .await;
                     } else {
                         // Default: sign in to UnieAI Studio via device code.
                         run_login_with_unieai(

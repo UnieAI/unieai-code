@@ -30,9 +30,45 @@ pub const DEFAULT_GATEWAY_BASE_URL: &str = "https://api.unieai.com/v1";
 
 const UNIEAI_CREDENTIALS_FILE: &str = "unieai.json";
 
-/// Persisted result of a UnieAI Studio login.
+/// Which UnieAI product the stored login belongs to.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UnieAIAccountKind {
+    /// UnieAI Studio: OAuth tokens plus the org's inference gateway key.
+    #[default]
+    Studio,
+    /// UnieAI Rabi (agent.unieai.com): one desktop API key for the product's
+    /// chat-completions relay. See [`crate::unieai_rabi`].
+    Rabi,
+}
+
+impl UnieAIAccountKind {
+    fn is_studio(&self) -> bool {
+        *self == Self::Studio
+    }
+
+    /// Whether the account's gateway serves the Responses API the codex
+    /// engine needs. Rabi's relay only serves chat completions, which the
+    /// uac engine speaks.
+    pub fn supports_codex_engine(self) -> bool {
+        self == Self::Studio
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Studio => "UnieAI Studio",
+            Self::Rabi => "UnieAI Rabi",
+        }
+    }
+}
+
+/// Persisted result of a UnieAI login (Studio or Rabi).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UnieAICredentials {
+    /// Absent in files written before Rabi login existed: those are Studio.
+    #[serde(default, skip_serializing_if = "UnieAIAccountKind::is_studio")]
+    pub account: UnieAIAccountKind,
+    /// The product origin: Studio's URL, or Rabi's for a Rabi login.
     pub studio_url: String,
     pub access_token: String,
     pub refresh_token: String,
@@ -404,6 +440,7 @@ inference access (Studio → Keys), then retry `unieai login`",
         .and_then(models_from_provider_config);
 
     let credentials = UnieAICredentials {
+        account: UnieAIAccountKind::Studio,
         studio_url,
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
@@ -586,6 +623,11 @@ pub async fn sync_unieai_account(codex_home: &Path) -> io::Result<Option<UnieAIC
     let Some(mut credentials) = load_unieai_credentials(codex_home) else {
         return Ok(None);
     };
+    if credentials.account == UnieAIAccountKind::Rabi {
+        return crate::unieai_rabi::sync_rabi_account(codex_home, credentials)
+            .await
+            .map(Some);
+    }
     let client = create_client();
     let now = chrono::Utc::now().timestamp();
     if credentials.expires_at - now <= ACCESS_TOKEN_REFRESH_MARGIN_SECS {
@@ -674,6 +716,11 @@ pub async fn logout_unieai(codex_home: &Path) -> io::Result<bool> {
     let Some(credentials) = load_unieai_credentials(codex_home) else {
         return Ok(false);
     };
+    // A Rabi desktop key is revoked from the product's account page; there
+    // is no client-side revocation endpoint.
+    if credentials.account == UnieAIAccountKind::Rabi {
+        return delete_unieai_credentials(codex_home);
+    }
 
     let client = create_client();
     let revoke = client
@@ -696,7 +743,7 @@ pub async fn logout_unieai(codex_home: &Path) -> io::Result<bool> {
     delete_unieai_credentials(codex_home)
 }
 
-async fn post_json<T: serde::de::DeserializeOwned>(
+pub(crate) async fn post_json<T: serde::de::DeserializeOwned>(
     client: &codex_http_client::HttpClient,
     url: &str,
     body: &serde_json::Value,
@@ -727,7 +774,7 @@ async fn post_json<T: serde::de::DeserializeOwned>(
     resp.json().await.map_err(io::Error::other)
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
     client: &codex_http_client::HttpClient,
     url: &str,
     bearer: &str,
@@ -847,6 +894,7 @@ mod tests {
     fn credentials_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let credentials = UnieAICredentials {
+            account: UnieAIAccountKind::Studio,
             studio_url: "https://studio.unieai.com".to_string(),
             access_token: "at".to_string(),
             refresh_token: "rt".to_string(),
@@ -887,5 +935,27 @@ mod tests {
             vec!["m1", "m2"]
         );
         assert_eq!(models[0].context_window, None);
+        assert_eq!(credentials.account, UnieAIAccountKind::Studio);
+        assert!(credentials.account.supports_codex_engine());
+    }
+
+    #[test]
+    fn studio_account_kind_is_not_written() {
+        let json = serde_json::to_value(UnieAICredentials {
+            account: UnieAIAccountKind::Studio,
+            studio_url: String::new(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            email: None,
+            active_org_id: None,
+            gateway_base_url: String::new(),
+            gateway_api_key: String::new(),
+            gateway_base_url_locked: false,
+            available_model_ids: None,
+            available_models: None,
+        })
+        .expect("serialize");
+        assert_eq!(json.get("account"), None);
     }
 }
