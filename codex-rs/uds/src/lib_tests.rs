@@ -386,6 +386,8 @@ async fn restrict_socket_permissions_makes_a_bound_socket_owner_only() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn implicit_peer_validation_rejects_elevated_listener() {

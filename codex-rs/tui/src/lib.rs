@@ -64,8 +64,6 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::SandboxMode;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_rollout::StateDbHandle;
 use codex_rollout::state_db;
 use codex_state::log_db;
@@ -102,6 +100,7 @@ pub(crate) use codex_app_server_client::legacy_core;
 pub(crate) use worktree_startup::ManagedTuiWorktree;
 
 mod additional_dirs;
+mod analytics;
 mod app;
 mod app_backtrack;
 mod app_command;
@@ -206,6 +205,7 @@ mod render;
 mod resize_reflow_cap;
 mod resume_picker;
 mod scrollback_verb_group;
+mod screen_reader;
 mod selection_list;
 mod service_tier_resolution;
 mod session_archive_commands;
@@ -246,6 +246,7 @@ mod unarchive_prompt;
 pub(crate) mod update_action;
 mod which_key;
 mod worktree_startup;
+pub use update_action::DaemonUpdateSource;
 pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
@@ -257,7 +258,6 @@ mod updates_cache;
 mod version;
 mod vim_search;
 mod width;
-#[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
 mod workspace_command;
 mod workspace_messages;
@@ -1007,19 +1007,6 @@ fn loader_overrides_are_default(loader_overrides: &LoaderOverrides) -> bool {
     let loader_overrides_are_default =
         loader_overrides_are_default && loader_overrides.managed_preferences_base64.is_none();
     loader_overrides_are_default
-}
-
-fn can_reuse_implicit_local_daemon(
-    cli_kv_overrides: &[(String, toml::Value)],
-    loader_overrides: &LoaderOverrides,
-    strict_config: bool,
-    has_non_replayable_launch_overrides: bool,
-) -> bool {
-    // A reused daemon cannot adopt this invocation's full launch config state.
-    cli_kv_overrides.is_empty()
-        && loader_overrides_are_default(loader_overrides)
-        && !strict_config
-        && !has_non_replayable_launch_overrides
 }
 
 /// Restore terminal modes before a fatal startup exit bypasses destructor cleanup.
@@ -1883,20 +1870,7 @@ async fn run_ratatui_app(
     set_default_client_residency_requirement(config.enforce_residency.value());
     let should_show_trust_screen = should_show_trust_screen(&config);
     #[cfg(target_os = "windows")]
-    let windows_sandbox_level = crate::windows_sandbox::level_from_config(&config);
-    #[cfg(target_os = "windows")]
-    let required_elevated_sandbox_needs_setup = windows_sandbox_level
-        == WindowsSandboxLevel::Elevated
-        && config
-            .config_layer_stack
-            .requirements()
-            .windows_sandbox_mode
-            .source
-            .is_some();
-    #[cfg(target_os = "windows")]
-    let should_prompt_windows_sandbox_nux_at_startup = (trust_decision_was_made
-        && windows_sandbox_level == WindowsSandboxLevel::Disabled)
-        || required_elevated_sandbox_needs_setup;
+    let should_prompt_windows_sandbox_nux_at_startup = trust_decision_was_made;
     #[cfg(not(target_os = "windows"))]
     let should_prompt_windows_sandbox_nux_at_startup = false;
 
@@ -1904,6 +1878,7 @@ async fn run_ratatui_app(
         prompt,
         shared,
         no_alt_screen,
+        daemon_cli_executable,
         ..
     } = cli;
     let images = shared.into_inner().images;
@@ -1996,6 +1971,7 @@ async fn run_ratatui_app(
         startup_hooks_browser,
         startup_draft,
         managed_worktree,
+        daemon_cli_executable,
     ))
     .await;
 
@@ -2258,6 +2234,8 @@ fn should_show_bedrock_setup_wizard(
             .auth_config()
             .is_login_method_allowed(ForcedLoginMethod::Api)
 }
+
+mod daemon_startup;
 
 #[cfg(test)]
 #[path = "daemon_startup_tests.rs"]
@@ -3101,45 +3079,6 @@ requires_openai_auth = {requires_openai_auth}
             error.to_string(),
             "workload identity must be configured on the remote app-server host"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn can_reuse_implicit_local_daemon_requires_default_launch_config() -> color_eyre::Result<()> {
-        let mut loader_overrides = LoaderOverrides::default();
-        let cli_kv_overrides = vec![("web_search".to_string(), toml::Value::String("live".into()))];
-
-        assert!(can_reuse_implicit_local_daemon(
-            &[],
-            &LoaderOverrides::default(),
-            /*strict_config*/ false,
-            /*has_non_replayable_launch_overrides*/ false,
-        ));
-        assert!(!can_reuse_implicit_local_daemon(
-            &cli_kv_overrides,
-            &LoaderOverrides::default(),
-            /*strict_config*/ false,
-            /*has_non_replayable_launch_overrides*/ false,
-        ));
-        loader_overrides.ignore_user_config = true;
-        assert!(!can_reuse_implicit_local_daemon(
-            &[],
-            &loader_overrides,
-            /*strict_config*/ false,
-            /*has_non_replayable_launch_overrides*/ false,
-        ));
-        assert!(!can_reuse_implicit_local_daemon(
-            &[],
-            &LoaderOverrides::default(),
-            /*strict_config*/ true,
-            /*has_non_replayable_launch_overrides*/ false,
-        ));
-        assert!(!can_reuse_implicit_local_daemon(
-            &[],
-            &LoaderOverrides::default(),
-            /*strict_config*/ false,
-            /*has_non_replayable_launch_overrides*/ true,
-        ));
         Ok(())
     }
 

@@ -596,6 +596,7 @@ fn image_generation_call_renders_saved_path() {
 
 fn session_configured_event(model: &str) -> ThreadSessionState {
     ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),
         forked_from_id: None,
         fork_parent_title: None,
@@ -1443,8 +1444,7 @@ fn code_mode_tool_call_uses_title_and_preserves_full_transcript() {
     • Called Inspect Spotify workspace
       └ 012345678901234567890123456789012345
             67890123456789012345678901234567
-            89012345678901234567890123456789
-            01234567890123456789012345678901
+        … more · ctrl+t
             23456789012345678901234567890123
             45678901...
 
