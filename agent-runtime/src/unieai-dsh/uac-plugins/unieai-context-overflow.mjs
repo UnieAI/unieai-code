@@ -26,7 +26,7 @@
  * break tool-call pairing or lose the task. A span whose bulk is not tool
  * output still fails as before.
  *
- * Loaded through the uac patch as an `insert` row (see config.mjs).
+ * Loaded as a patch `insert` row (see unieai-catalog.mjs).
  */
 import { freezeMessage, isContextWindowExceededError } from "@deepseek-ai/dsh-llm";
 import { textOfBlocks } from "./unieai-loop-common.mjs";

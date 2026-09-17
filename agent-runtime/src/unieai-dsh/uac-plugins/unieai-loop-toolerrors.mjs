@@ -8,11 +8,13 @@
  * retry the same call. On `tools/post-execute` this plugin appends to such
  * error results:
  *   - UNKNOWN_TOOL: the nearest available tool name(s) and the tool list;
- *   - INVALID_ARGS: the tool's parameter summary (required first).
+ *   - INVALID_ARGS: the tool's parameter summary (required first); when the
+ *     arguments were not JSON at all, unieai-agent-core's rewrite instruction
+ *     and the tool's full parameter schema.
  * The result stays an error with its original `error.info`; only the
  * model-facing content grows. Nested (run_code) dispatches are left alone.
  *
- * Loaded through the uac patch as an `insert` row (see config.mjs).
+ * Loaded as a patch `insert` row (see unieai-catalog.mjs).
  */
 export const name = "unieai-loop-toolerrors";
 export const inject = ["tools"];
@@ -93,6 +95,20 @@ export function parameterSummary(toolName, parameters) {
   return `Parameters of "${toolName}" (pass them as one JSON object):\n${lines.join("\n")}${closed}`;
 }
 
+const MAX_SCHEMA_CHARS = 4000;
+
+/** The instruction for arguments that did not parse as JSON. */
+export function invalidJsonHint(toolName, parameters) {
+  let schema = "";
+  try {
+    schema = JSON.stringify(parameters ?? {});
+  } catch {
+    schema = "";
+  }
+  const shown = schema && schema.length <= MAX_SCHEMA_CHARS ? ` The "${toolName}" argument schema is: ${schema}.` : "";
+  return `The arguments were not valid JSON. Rewrite the arguments as a single valid JSON object matching the "${toolName}" schema.${shown}`;
+}
+
 export function apply(ctx) {
   ctx.on("tools/post-execute", async (exec, result, next) => {
     const decision = await next();
@@ -107,7 +123,8 @@ export function apply(ctx) {
         hint = unknownToolHint(exec.name, names);
       } else if (code === "INVALID_ARGS") {
         const tool = ctx.tools.get(exec.name, exec.agent);
-        hint = tool ? parameterSummary(tool.name, tool.parameters) : null;
+        if (tool && typeof exec.arguments === "string" && exec.arguments.trim()) hint = invalidJsonHint(tool.name, tool.parameters);
+        else hint = tool ? parameterSummary(tool.name, tool.parameters) : null;
       }
     } catch (error) {
       ctx.logger.warn(`${name}: could not build a hint for "${exec.name}": ${error?.message ?? error}`);

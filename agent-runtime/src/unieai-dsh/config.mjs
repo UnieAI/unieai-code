@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadCredentials, unieaiHome } from "../config.mjs";
 import { buildPersona } from "./unieai-persona.mjs";
+import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
 
 export const DSH_PROVIDER_ID = "unieai";
 export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
@@ -147,36 +148,12 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
 }
 
 /**
- * UnieAI's dsh plugins, loaded by file URL through the patch. `rows` are the
- * extra patch rows a plugin needs (e.g. disabling the dsh tool it replaces).
- * A plugin whose file is absent is skipped, so a partial checkout still runs.
+ * The plugins uac loads: the `cli` profile of the vendored uac-plugins
+ * catalog, narrowed by `UNIEAI_DSH_PLUGINS` (`off`, or a comma list of ids)
+ * for A/B runs.
  */
-export const UNIEAI_PLUGINS = [
-  { id: "unieai-exec", file: "plugins/unieai-exec.mjs", rows: ["- id: tool-bash", "  disabled: true"], execTools: true },
-  // Replaces dsh's read-before-edit policy (a bash `cat` now counts; stale files still refused).
-  { id: "unieai-edit-observe", file: "plugins/unieai-edit-observe.mjs", rows: ["- id: fs-observation-policy", "  disabled: true"] },
-  { id: "unieai-edit-rescue", file: "plugins/unieai-edit-rescue.mjs" },
-  { id: "unieai-edit-feedback", file: "plugins/unieai-edit-feedback.mjs" },
-  { id: "unieai-apply-patch", file: "plugins/unieai-apply-patch.mjs" },
-  { id: "unieai-loop-truncation", file: "plugins/unieai-loop-truncation.mjs", config: { maxRetries: 2, growth: 2 } },
-  { id: "unieai-loop-completion", file: "plugins/unieai-loop-completion.mjs" },
-  { id: "unieai-loop-toolerrors", file: "plugins/unieai-loop-toolerrors.mjs" },
-  { id: "unieai-context-overflow", file: "plugins/unieai-context-overflow.mjs" },
-  // Inert unless UNIEAI_TURN_DEADLINE_MS / UNIEAI_TURN_MAX_STEPS are set.
-  { id: "unieai-loop-budget", file: "plugins/unieai-loop-budget.mjs" },
-];
-
-/**
- * The plugins to load: all available ones, or `UNIEAI_DSH_PLUGINS`
- * (`off`, or a comma list of ids) for A/B runs.
- */
-export function selectPlugins(env = process.env, available = UNIEAI_PLUGINS) {
-  const present = available.filter((plugin) => existsSync(join(here, plugin.file)));
-  const choice = String(env.UNIEAI_DSH_PLUGINS ?? "").trim();
-  if (!choice || choice === "all") return present;
-  if (choice === "off" || choice === "none") return [];
-  const wanted = new Set(choice.split(",").map((id) => id.trim()));
-  return present.filter((plugin) => wanted.has(plugin.id));
+export function selectPlugins(env = process.env) {
+  return selectCatalogPlugins({ profile: "cli", env });
 }
 
 const indent = (text, spaces) => text.split("\n").map((line) => (line ? " ".repeat(spaces) + line : line)).join("\n");
@@ -246,7 +223,8 @@ export function renderPatch({
     "    search: false",
     "    searchTimeoutMs: 60000",
   );
-  for (const plugin of plugins) lines.push(...(plugin.rows ?? []));
+  const parts = renderPatchParts({ plugins, profile: "cli" });
+  lines.push(...parts.rows);
   const inserts = [];
   if (controlSocket) {
     inserts.push(
@@ -265,13 +243,7 @@ export function renderPatch({
     "      config:",
     "        refreshIntervalMs: 1800000",
   );
-  for (const plugin of plugins) {
-    inserts.push(`    - id: ${plugin.id}`, `      name: ${q(pathToFileURL(join(here, plugin.file)).href)}`);
-    if (plugin.config) {
-      inserts.push("      config:");
-      for (const [key, value] of Object.entries(plugin.config)) inserts.push(`        ${key}: ${JSON.stringify(value)}`);
-    }
-  }
+  inserts.push(...parts.inserts);
   lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;
 }

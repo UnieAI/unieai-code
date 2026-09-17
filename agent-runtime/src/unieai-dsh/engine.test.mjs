@@ -198,10 +198,10 @@ test("helpers: args, diffs, model options, config rendering", () => {
   assert.doesNotMatch(renderPatch({ defaultModel: "A", persona: false }), /system-prompt/);
   const withExec = renderPatch({
     defaultModel: "A",
-    plugins: [{ id: "unieai-exec", file: "plugins/unieai-exec.mjs", rows: ["- id: tool-bash", "  disabled: true"], execTools: true }],
+    plugins: selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-exec" }),
   });
   assert.match(withExec, /- id: tool-bash\n {2}disabled: true/);
-  assert.match(withExec, / {4}- id: unieai-exec\n {6}name: "file:\/\/.*plugins\/unieai-exec\.mjs"/);
+  assert.match(withExec, / {4}- id: unieai-exec\n {6}name: "file:\/\/.*uac-plugins\/unieai-exec\.mjs"/);
   assert.match(withExec, /exec_command/, "the persona teaches the tools that are loaded");
   assert.doesNotMatch(base, /exec_command/);
   assert.match(
@@ -347,15 +347,16 @@ test("history turns become protocol items with tool cards", () => {
   assert.equal(historyTurn({ endSeq: null, items: [] }).status, "inProgress");
 });
 
-test("plugin selection follows UNIEAI_DSH_PLUGINS and skips missing files", () => {
-  const available = [
-    { id: "unieai-control-probe", file: "unieai-control.mjs" },
-    { id: "unieai-missing", file: "plugins/does-not-exist.mjs" },
-  ];
-  assert.deepEqual(selectPlugins({}, available).map((p) => p.id), ["unieai-control-probe"]);
-  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "off" }, available), []);
-  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-missing" }, available), []);
-  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-control-probe" }, available).map((p) => p.id), ["unieai-control-probe"]);
+test("uac loads the vendored uac-plugins cli profile; UNIEAI_DSH_PLUGINS narrows it", () => {
+  const ids = selectPlugins({}).map((p) => p.id);
+  for (const id of ["unieai-exec", "unieai-toolcall-repair", "unieai-loop-guard", "unieai-loop-completion"]) assert.ok(ids.includes(id), id);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "off" }), []);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-missing" }), []);
+  assert.deepEqual(selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-loop-guard" }).map((p) => p.id), ["unieai-loop-guard"]);
+  // Budgets stay env-driven and the doom guard off in the CLI.
+  const patch = renderPatch({ defaultModel: "A", plugins: selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-loop-guard" }) });
+  assert.match(patch, / {4}- id: unieai-loop-guard\n {6}name: "file:[^"]+"\n {6}config:\n {8}doom: false/);
+  assert.doesNotMatch(patch, /repeat-tool-reminder/);
 });
 
 test("apply_patch calls render as a diff of the first file they change", async () => {

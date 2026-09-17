@@ -76,6 +76,14 @@ back to codex if it cannot start.
   socket next to the app-server's: steering a running turn, manual compaction,
   history (for resume and the transcript), and fork at a turn boundary (thread
   fork, and prompt edit / `thread/revert` as fork-minus-later-turns).
+- UnieAI's dsh plugins (codex-style exec and edit tools, tool-call repair,
+  loop guardrails) come from [UnieAI/uac-plugins](https://github.com/UnieAI/uac-plugins),
+  vendored in `src/unieai-dsh/uac-plugins/` (`UPSTREAM` names the commit). uac
+  loads the catalog's `cli` profile. Update the copy with
+  `npm run sync:uac-plugins` from a clean checkout next to this repository
+  (or `UAC_PLUGINS_DIR`); never edit it here. `UNIEAI_DSH_PLUGINS=off|id,id`
+  selects plugins for A/B runs, and `UNIEAI_TURN_MAX_STEPS` /
+  `UNIEAI_TURN_DEADLINE_MS` give each turn a budget with a soft landing.
 - uac threads are indexed in `$CODEX_HOME/uac/threads.json` (ids, titles, the
   dsh session behind each), so `/resume`, rename and archive work across
   restarts. Conversation content stays in dsh's session log.

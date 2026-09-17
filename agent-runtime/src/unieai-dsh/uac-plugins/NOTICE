@@ -1,0 +1,9 @@
+UnieAI uac-plugins
+Copyright (c) 2026 UnieAI. All rights reserved.
+
+These plugins run inside deepseek-harness (https://github.com/deepseek-ai/deepseek-harness),
+licensed under the MIT license, which is not included in this repository.
+
+Parts of unieai-apply-patch, unieai-edit-*, and unieai-exec port behaviour of
+OpenAI Codex (https://github.com/openai/codex), licensed under the Apache License 2.0.
+Copyright 2025 OpenAI

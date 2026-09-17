@@ -31,7 +31,7 @@
  * continued with a one-line steer, at most `maxContinuations` per turn. The
  * turn's recorded end reason stays `max-tokens` (ACP `max_tokens`).
  *
- * Loaded through the uac patch as an `insert` row (see config.mjs).
+ * Loaded as a patch `insert` row (see unieai-catalog.mjs).
  */
 import { isAgentLoopRequest } from "@deepseek-ai/dsh-llm";
 import { inputTokensOf, lastAssistantEventInTurn, pluginNotice, positiveInt } from "./unieai-loop-common.mjs";

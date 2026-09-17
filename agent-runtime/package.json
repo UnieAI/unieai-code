@@ -9,7 +9,8 @@
   },
   "scripts": {
     "tui": "node bin/tui.mjs",
-    "test": "node --test 'src/**/*.test.mjs'"
+    "test": "node --test 'src/**/*.test.mjs'",
+    "sync:uac-plugins": "node scripts/unieai-sync-uac-plugins.mjs"
   },
   "engines": {
     "node": ">=20"
