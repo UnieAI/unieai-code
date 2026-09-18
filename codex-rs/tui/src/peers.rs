@@ -11,10 +11,15 @@
 //! otherwise confidently list this laptop's peers as if they were the remote
 //! host's.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use codex_protocol::ThreadId;
+use codex_state::SESSION_MESH_DELIVERY_APPROVED;
+use codex_state::SESSION_MESH_DELIVERY_DELIVERING;
+use codex_state::SESSION_MESH_DELIVERY_DENIED;
+use codex_state::SESSION_MESH_DELIVERY_HELD;
 use codex_state::SessionMeshMessageRecord;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -154,6 +159,59 @@ pub(crate) fn peer_rows(peers: &[unieai_session_mesh::PeerHandle]) -> Vec<PeerRo
         .collect()
 }
 
+/// Drops `thread_id` (this session) from a listing.
+pub(crate) fn exclude_thread(rows: Vec<PeerRow>, thread_id: Option<ThreadId>) -> Vec<PeerRow> {
+    rows.into_iter()
+        .filter(|row| Some(row.thread_id) != thread_id)
+        .collect()
+}
+
+/// Decides which stored messages are new to the user.
+///
+/// A message is shown once, when its delivery has settled (delivered,
+/// queued, held, refused) — not while a doorbell is still deciding, which is
+/// what would otherwise show a card for a message that is about to be held.
+/// Anything created or delivered since `since_ms` counts, which also covers
+/// messages left while this session was not running and picked up at start.
+#[derive(Debug)]
+pub(crate) struct PeerFeed {
+    since_ms: i64,
+    seen: HashSet<String>,
+}
+
+impl PeerFeed {
+    pub(crate) fn new(since_ms: i64) -> Self {
+        Self {
+            since_ms,
+            seen: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn take_new(
+        &mut self,
+        messages: Vec<SessionMeshMessageRecord>,
+    ) -> Vec<SessionMeshMessageRecord> {
+        messages
+            .into_iter()
+            .filter(|message| {
+                let Some(delivery) = message.delivery.as_deref() else {
+                    return false;
+                };
+                let settled = !matches!(
+                    delivery,
+                    SESSION_MESH_DELIVERY_DELIVERING | SESSION_MESH_DELIVERY_APPROVED
+                );
+                let recent = message.created_at_ms >= self.since_ms
+                    || message
+                        .delivered_at_ms
+                        .is_some_and(|delivered| delivered >= self.since_ms)
+                    || delivery == SESSION_MESH_DELIVERY_HELD;
+                settled && recent && self.seen.insert(message.message_id.clone())
+            })
+            .collect()
+    }
+}
+
 /// A message received from another session, rendered into the transcript.
 ///
 /// Peer messages are always shown. A message that can start a turn must never
@@ -162,11 +220,41 @@ pub(crate) fn peer_rows(peers: &[unieai_session_mesh::PeerHandle]) -> Vec<PeerRo
 pub(crate) struct PeerMessageCell {
     from_handle: String,
     body: String,
+    /// `peer message`, `delivery notice`, or a held/refused variant.
+    label: String,
 }
 
 impl PeerMessageCell {
+    #[cfg(test)]
     pub(crate) fn new(from_handle: String, body: String) -> Self {
-        Self { from_handle, body }
+        Self {
+            from_handle,
+            body,
+            label: "peer message".to_string(),
+        }
+    }
+
+    pub(crate) fn from_record(from_handle: String, message: &SessionMeshMessageRecord) -> Self {
+        let notice = unieai_session_mesh::MessageKind::parse(&message.kind)
+            == unieai_session_mesh::MessageKind::Notice;
+        let label = match message.delivery.as_deref() {
+            _ if notice => "delivery notice".to_string(),
+            Some(SESSION_MESH_DELIVERY_HELD) => {
+                "peer message (held - awaiting your approval)".to_string()
+            }
+            Some(SESSION_MESH_DELIVERY_DENIED) => "peer message (denied)".to_string(),
+            Some(delivery)
+                if delivery.starts_with("rejected") || delivery.starts_with("failed") =>
+            {
+                "peer message (refused)".to_string()
+            }
+            _ => "peer message".to_string(),
+        };
+        Self {
+            from_handle,
+            body: message.content.clone(),
+            label,
+        }
     }
 }
 
@@ -174,7 +262,7 @@ impl HistoryCell for PeerMessageCell {
     fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = vec![
             vec![
-                "peer message".magenta(),
+                self.label.clone().magenta(),
                 " from ".dim(),
                 self.from_handle.clone().bold(),
             ]

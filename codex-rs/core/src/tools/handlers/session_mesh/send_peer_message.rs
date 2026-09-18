@@ -1,6 +1,8 @@
 use super::*;
 use crate::tools::handlers::session_mesh_spec::create_send_peer_message_tool;
 use unieai_session_mesh::PeerSelector;
+use unieai_session_mesh::unieai_tools::SendPeerMessageArgs;
+use unieai_session_mesh::unieai_tools::SendPeerMessageResult;
 
 pub(crate) struct Handler;
 
@@ -13,7 +15,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_send_peer_message_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -38,39 +43,31 @@ impl Handler {
             ));
         }
 
-        // Relays carry a hop count so two sessions answering each other cannot
-        // burn tokens in both terminals unattended. A turn started by a peer
-        // message therefore sends onward at hop+1.
-        let hop = peer_message_hop(&turn);
         let selector = PeerSelector::new(args.target.clone());
-
         let node = mesh_node(&session.services).await?;
+        // Relays carry a hop count so two sessions answering each other cannot
+        // burn tokens in both terminals unattended: anything sent after a peer
+        // message arrived, and before this session's user spoke again, goes
+        // out one hop further than that message.
+        let hop = node.outbound_hop();
+        // Stamped so the recipient can hold the message if it runs with
+        // broader permissions than this turn.
+        let permissions = crate::session::mesh::turn_permission_mode(&turn);
         let peer = node.resolve(&selector).await.map_err(mesh_error)?;
         let ack = node
-            .send_message(&peer, &args.message, !args.queue_only, hop)
+            .send_message(
+                &peer,
+                &args.message,
+                !args.queue_only,
+                hop,
+                Some(permissions),
+            )
             .await
             .map_err(mesh_error)?;
 
-        Ok(boxed_tool_output(SendPeerMessageResult {
-            accepted: ack.accepted,
-            // Reported verbatim: telling the model a turn started when the peer
-            // merely queued the message is the failure this whole design exists
-            // to avoid.
-            delivery: ack.delivery.as_str().to_string(),
-            note: ack.reject_reason,
-        }))
-    }
-}
-
-/// Hop count to stamp on an outgoing peer message.
-///
-/// A turn that a peer started is one hop further along the chain than a turn
-/// the user started, so anything it sends onward must carry that distance.
-fn peer_message_hop(turn: &crate::session::turn_context::TurnContext) -> u32 {
-    if turn.session_source.is_non_root_agent() {
-        1
-    } else {
-        0
+        Ok(boxed_tool_output(SendPeerMessageOutput(
+            SendPeerMessageResult::from(ack),
+        )))
     }
 }
 
@@ -80,31 +77,18 @@ impl CoreToolRuntime for Handler {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SendPeerMessageArgs {
-    target: String,
-    message: String,
-    #[serde(default)]
-    queue_only: bool,
-}
-
+/// The engine-neutral result, wrapped so core can implement its output trait.
 #[derive(Debug, Serialize)]
-pub(crate) struct SendPeerMessageResult {
-    accepted: bool,
-    /// `started_turn`, `queued`, or `rejected`.
-    delivery: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
+#[serde(transparent)]
+pub(crate) struct SendPeerMessageOutput(SendPeerMessageResult);
 
-impl ToolOutput for SendPeerMessageResult {
+impl ToolOutput for SendPeerMessageOutput {
     fn log_output(&self) -> String {
         tool_output_json_text(self, "send_peer_message")
     }
 
     fn success_for_logging(&self) -> bool {
-        self.accepted
+        self.0.accepted
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
@@ -112,7 +96,7 @@ impl ToolOutput for SendPeerMessageResult {
             call_id,
             payload,
             self,
-            Some(self.accepted),
+            Some(self.0.accepted),
             "send_peer_message",
         )
     }

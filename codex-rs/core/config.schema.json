@@ -997,6 +997,9 @@
             "session_mesh": {
               "$ref": "#/definitions/FeatureToml_for_SessionMeshConfigToml"
             },
+            "session_mesh_tasks": {
+              "type": "boolean"
+            },
             "shell_snapshot": {
               "type": "boolean"
             },
@@ -6772,6 +6775,9 @@
         },
         "session_mesh": {
           "$ref": "#/definitions/FeatureToml_for_SessionMeshConfigToml"
+        },
+        "session_mesh_tasks": {
+          "type": "boolean"
         },
         "shell_snapshot": {
           "type": "boolean"

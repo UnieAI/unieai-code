@@ -10,6 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::identity::PeerHandle;
+use crate::unieai_permissions::PermissionMode;
 use crate::wire::Delivery;
 
 pub type InboundFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -23,6 +24,36 @@ pub struct InboundMessage {
     /// Honouring it is still the recipient's decision.
     pub trigger_turn: bool,
     pub hop: u32,
+    pub kind: MessageKind,
+    /// Engine the sender runs on (`codex`, `uac`), as it stamped the message.
+    pub sender_engine: Option<String>,
+}
+
+/// What a stored message is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    /// Written by a peer (its model or its user).
+    Message,
+    /// Written by the mesh itself to report what happened to an earlier
+    /// message (held, approved, denied). Never starts a turn and is never held:
+    /// it carries no request.
+    Notice,
+}
+
+impl MessageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Notice => "notice",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "notice" => Self::Notice,
+            _ => Self::Message,
+        }
+    }
 }
 
 /// The recipient's answer, reported back to the sender verbatim.
@@ -53,4 +84,10 @@ pub trait MeshInbound: Send + Sync {
 
     /// Answers a liveness probe.
     fn on_probe(&self) -> InboundFuture<'_, LocalSnapshot>;
+
+    /// This session's permission mode right now, compared against the
+    /// sender's to decide whether a message must wait for the user (see
+    /// [`crate::unieai_permissions`]). `None` means unknown, which is treated
+    /// as the least restricted mode, so messages are held.
+    fn permission_mode(&self) -> InboundFuture<'_, Option<PermissionMode>>;
 }

@@ -309,7 +309,22 @@ impl App {
             model = updated_model;
         }
         let dynamic_tool_status_updates = tokio::sync::broadcast::channel(/*capacity*/ 64).0;
-        if matches!(&app_server_target, AppServerTarget::LocalDaemon { .. })
+        // The uac engine takes client tools as `dynamicTools` (its bridge
+        // forwards them to deepseek-harness); it does not load the TUI's MCP
+        // server. Its threads therefore use the Dynamic transport, which also
+        // carries the session-mesh peer tools the TUI answers for them.
+        let uac_engine =
+            crate::unieai_engine::target_engine(&config.codex_home, &app_server_target)
+                == crate::unieai_engine::EngineKind::Uac;
+        if uac_engine {
+            app_server.set_peer_mesh_tools(
+                config
+                    .features
+                    .enabled(codex_features::Feature::SessionMesh),
+            );
+        }
+        if !uac_engine
+            && matches!(&app_server_target, AppServerTarget::LocalDaemon { .. })
             && !crate::uses_remote_workspace_or_environment(
                 &app_server_target,
                 environment_manager.as_ref(),
@@ -732,6 +747,7 @@ See the Codex keymap documentation for supported actions and examples."
             peer_bus_poller: None,
             unread_peer_messages: 0,
             peer_rows: Vec::new(),
+            peer_mesh: Default::default(),
             agent_started_at: HashMap::new(),
             agent_tokens: HashMap::new(),
             agent_activity: HashMap::new(),

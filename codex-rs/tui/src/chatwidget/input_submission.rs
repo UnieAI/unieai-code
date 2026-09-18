@@ -4,6 +4,38 @@ use super::*;
 use codex_app_server_protocol::ImageReference;
 
 impl ChatWidget {
+    /// A turn carrying a peer session's framed message, built with this
+    /// session's current settings exactly as a typed prompt would be. The
+    /// client id is marked so the app does not count it as user input when
+    /// deciding whether a human is still in the conversation.
+    pub(crate) fn peer_delivery_turn(&self, text: String) -> AppCommand {
+        let effective_mode = self.effective_collaboration_mode();
+        let collaboration_mode = if self.collaboration_modes_enabled() {
+            self.active_collaboration_mask
+                .as_ref()
+                .map(|_| effective_mode.clone())
+        } else {
+            None
+        };
+        AppCommand::user_turn(
+            crate::unieai_mesh::peer_delivery_client_id(),
+            vec![UserInput::Text {
+                text,
+                text_elements: Vec::new(),
+            }],
+            self.config.cwd.to_path_buf(),
+            AskForApproval::from(self.config.permissions.approval_policy.value()),
+            self.config.permissions.active_permission_profile(),
+            effective_mode.model().to_string(),
+            effective_mode.reasoning_effort(),
+            /*summary*/ None,
+            self.service_tier_update_for_core(),
+            /*final_output_json_schema*/ None,
+            collaboration_mode,
+            /*personality*/ None,
+        )
+    }
+
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
         self.bottom_pane.set_task_mentions_enabled(enabled);
     }

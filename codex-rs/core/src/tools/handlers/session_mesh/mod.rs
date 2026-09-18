@@ -21,8 +21,6 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use unieai_session_mesh::MeshError;
 use unieai_session_mesh::MeshNode;
-use unieai_session_mesh::PeerHandle;
-use unieai_session_mesh::short_ref_display_len;
 
 pub(crate) use list_peers::Handler as ListPeersHandler;
 pub(crate) use send_peer_message::Handler as SendPeerMessageHandler;
@@ -67,25 +65,4 @@ no local state database)"
 /// handle.
 fn mesh_error(err: MeshError) -> FunctionCallError {
     FunctionCallError::RespondToModel(err.to_string())
-}
-
-/// A peer as the model sees it.
-#[derive(Debug, Serialize)]
-pub(crate) struct ListedPeer {
-    /// The exact string to pass back as `target`.
-    handle: String,
-    status: String,
-    cwd: String,
-}
-
-fn listed_peers(peers: &[PeerHandle]) -> Vec<ListedPeer> {
-    let width = short_ref_display_len(peers);
-    peers
-        .iter()
-        .map(|peer| ListedPeer {
-            handle: peer.display_handle(width),
-            status: peer.status.as_str().to_string(),
-            cwd: peer.cwd.display().to_string(),
-        })
-        .collect()
 }

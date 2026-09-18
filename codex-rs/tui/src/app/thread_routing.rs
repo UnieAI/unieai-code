@@ -748,6 +748,8 @@ impl App {
                 collaboration_mode,
                 personality,
             } => {
+                let items =
+                    self.prepare_turn_items_for_mesh(thread_id, client_user_message_id, items);
                 let mut should_start_turn = true;
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     let mut steer_turn_id = turn_id;
@@ -758,7 +760,7 @@ impl App {
                                 thread_id,
                                 steer_turn_id.clone(),
                                 client_user_message_id.clone(),
-                                items.to_vec(),
+                                items.clone(),
                             )
                             .await
                         {
@@ -864,7 +866,7 @@ impl App {
                         .turn_start(
                             thread_id,
                             client_user_message_id.clone(),
-                            items.to_vec(),
+                            items.clone(),
                             cwd.clone(),
                             turn_approval_policy,
                             turn_approvals_reviewer,
@@ -1585,9 +1587,10 @@ impl App {
             self.recap.reset_for_new_thread(Instant::now());
         }
         self.primary_thread_id = Some(thread_id);
-        // The mesh inbox is addressed to this thread, so the poller can only
-        // start once the primary thread is known.
-        self.spawn_peer_bus_poller(thread_id);
+        // The mesh inbox is addressed to this thread, so the mesh surfaces can
+        // only follow it once the primary thread is known. This runs for
+        // /new, /resume, and thread switches alike.
+        self.sync_peer_mesh(thread_id);
         self.agents_overview.hidden_threads.remove(&thread_id);
         self.agents_overview.threads.entry(thread_id).or_default();
         self.primary_session_configured = Some(session.clone());

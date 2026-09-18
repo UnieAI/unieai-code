@@ -11,6 +11,9 @@ use crate::inbound::InboundFuture;
 use crate::inbound::InboundMessage;
 use crate::inbound::LocalSnapshot;
 use crate::store::StoreFuture;
+use crate::unieai_permissions::ApprovalLevel;
+use crate::unieai_permissions::PermissionMode;
+use crate::unieai_permissions::SandboxLevel;
 use crate::wire::Delivery;
 use codex_state::SessionMeshMessageRecord;
 use codex_state::SessionMeshPeerRecord;
@@ -145,6 +148,58 @@ impl MeshStore for FakeStore {
                         && message.delivered_at_ms.unwrap_or_default() >= since_ms
                 })
                 .count() as i64)
+        })
+    }
+
+    fn transition_message<'a>(
+        &'a self,
+        message_id: &'a str,
+        expected: Option<&'a str>,
+        next: &'a str,
+    ) -> StoreFuture<'a, bool> {
+        Box::pin(async move {
+            let mut messages = self.messages.lock().expect("messages lock");
+            let Some(message) = messages.get_mut(message_id) else {
+                return Ok(false);
+            };
+            if message.delivered_at_ms.is_some() || message.delivery.as_deref() != expected {
+                return Ok(false);
+            }
+            message.delivery = Some(next.to_string());
+            Ok(true)
+        })
+    }
+
+    fn list_pending_messages(
+        &self,
+        to_thread_id: ThreadId,
+        since_ms: i64,
+    ) -> StoreFuture<'_, Vec<SessionMeshMessageRecord>> {
+        Box::pin(async move {
+            let mut pending: Vec<SessionMeshMessageRecord> = self
+                .messages
+                .lock()
+                .expect("messages lock")
+                .values()
+                .filter(|message| {
+                    message.to_thread_id == to_thread_id
+                        && message.delivered_at_ms.is_none()
+                        && message.delivery.is_none()
+                        && message.created_at_ms >= since_ms
+                })
+                .cloned()
+                .collect();
+            pending.sort_by_key(|message| message.created_at_ms);
+            Ok(pending)
+        })
+    }
+
+    fn prune_messages(&self, before_ms: i64) -> StoreFuture<'_, u64> {
+        Box::pin(async move {
+            let mut messages = self.messages.lock().expect("messages lock");
+            let before = messages.len();
+            messages.retain(|_, message| message.created_at_ms >= before_ms);
+            Ok((before - messages.len()) as u64)
         })
     }
 
@@ -314,6 +369,9 @@ struct FakeInbound {
     received: Mutex<Vec<InboundMessage>>,
     senders: Mutex<Vec<PeerHandle>>,
     status: Mutex<String>,
+    /// This session's permission mode. Defaults to the most restricted mode,
+    /// which no sender can launder through.
+    mode: Mutex<Option<PermissionMode>>,
 }
 
 impl FakeInbound {
@@ -322,7 +380,13 @@ impl FakeInbound {
             received: Mutex::new(Vec::new()),
             senders: Mutex::new(Vec::new()),
             status: Mutex::new(status.to_string()),
+            mode: Mutex::new(Some(PermissionMode::MOST_RESTRICTED)),
         }
+    }
+
+    fn with_mode(self, mode: Option<PermissionMode>) -> Self {
+        *self.mode.lock().expect("mode lock") = mode;
+        self
     }
 
     fn received(&self) -> Vec<InboundMessage> {
@@ -360,6 +424,10 @@ impl MeshInbound for FakeInbound {
             }
         })
     }
+
+    fn permission_mode(&self) -> InboundFuture<'_, Option<PermissionMode>> {
+        Box::pin(async move { *self.mode.lock().expect("mode lock") })
+    }
 }
 
 struct Harness {
@@ -389,6 +457,7 @@ impl Harness {
                 cli_version: "0.0.22".to_string(),
                 spawn_id: None,
                 spawned_by: None,
+                engine: "codex".to_string(),
             },
             Arc::clone(&self.store) as Arc<dyn MeshStore>,
             inbound as Arc<dyn MeshInbound>,
@@ -437,7 +506,7 @@ async fn a_message_reaches_the_peer_and_starts_a_turn() {
     let peers = a.list_peers().await.expect("listing should succeed");
 
     let ack = a
-        .send_message(&peers[0], "reply with the word pineapple", true, 0)
+        .send_message(&peers[0], "reply with the word pineapple", true, 0, None)
         .await
         .expect("delivery should succeed");
 
@@ -460,7 +529,7 @@ async fn the_body_is_stored_before_the_doorbell_rings() {
         .await;
     let peers = a.list_peers().await.expect("listing should succeed");
 
-    a.send_message(&peers[0], "hello", true, 0)
+    a.send_message(&peers[0], "hello", true, 0, None)
         .await
         .expect("delivery should succeed");
 
@@ -489,11 +558,11 @@ async fn a_second_turn_start_in_the_window_is_downgraded_not_dropped() {
     let _b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
     let peers = a.list_peers().await.expect("listing should succeed");
 
-    a.send_message(&peers[0], "first", true, 0)
+    a.send_message(&peers[0], "first", true, 0, None)
         .await
         .expect("first delivery should succeed");
     let second = a
-        .send_message(&peers[0], "second", true, 0)
+        .send_message(&peers[0], "second", true, 0, None)
         .await
         .expect("second delivery should still succeed");
 
@@ -527,7 +596,7 @@ async fn a_message_that_has_been_relayed_too_often_is_refused() {
     // Two sessions replying to each other would otherwise burn tokens in both
     // terminals with nobody watching.
     let err = a
-        .send_message(&peers[0], "round and round", true, 3)
+        .send_message(&peers[0], "round and round", true, 3, None)
         .await
         .expect_err("the hop limit must refuse this");
 
@@ -548,7 +617,7 @@ async fn a_body_larger_than_the_cap_never_reaches_the_wire() {
     let oversized = "x".repeat(harness.config.max_content_bytes + 1);
 
     let err = a
-        .send_message(&peers[0], &oversized, true, 0)
+        .send_message(&peers[0], &oversized, true, 0, None)
         .await
         .expect_err("an oversized body must be refused");
 
@@ -674,6 +743,7 @@ async fn a_second_process_cannot_steal_a_live_session_socket() {
             cli_version: "0.0.22".to_string(),
             spawn_id: None,
             spawned_by: None,
+            engine: "codex".to_string(),
         },
         Arc::clone(&harness.store) as Arc<dyn MeshStore>,
         Arc::new(FakeInbound::new("idle")) as Arc<dyn MeshInbound>,
@@ -714,6 +784,10 @@ async fn a_doorbell_for_someone_elses_message_is_refused() {
             created_at_ms: 0,
             delivered_at_ms: None,
             delivery: None,
+            kind: "message".to_string(),
+            sender_engine: None,
+            sender_sandbox: None,
+            sender_approval: None,
         })
         .await
         .expect("message should store");
@@ -855,7 +929,7 @@ async fn a_result_for_a_departed_launcher_is_still_recorded() {
 
     let delivered = child
         .sender()
-        .leave_message(departed_launcher, "[background session finished]", 1)
+        .leave_message(departed_launcher, "[background session finished]", 1, None)
         .await
         .expect("recording a result must not fail because nobody is listening");
 
@@ -883,11 +957,13 @@ async fn a_result_for_a_live_launcher_is_delivered_immediately() {
         .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
         .await;
     let launcher_inbound = Arc::new(FakeInbound::new("idle"));
-    let _launcher = harness.join(thread_id(B), Arc::clone(&launcher_inbound)).await;
+    let _launcher = harness
+        .join(thread_id(B), Arc::clone(&launcher_inbound))
+        .await;
 
     let delivered = child
         .sender()
-        .leave_message(thread_id(B), "[background session finished]", 1)
+        .leave_message(thread_id(B), "[background session finished]", 1, None)
         .await
         .expect("delivery should not error");
 
@@ -903,18 +979,373 @@ async fn the_recipient_learns_who_sent_the_message() {
         .await;
     harness.store.set_name(thread_id(A), "api");
     let recipient_inbound = Arc::new(FakeInbound::new("idle"));
-    let _recipient = harness.join(thread_id(B), Arc::clone(&recipient_inbound)).await;
+    let _recipient = harness
+        .join(thread_id(B), Arc::clone(&recipient_inbound))
+        .await;
     let peers = sender.list_peers().await.expect("listing should succeed");
 
     sender
-        .send_message(&peers[0], "do the thing", true, 0)
+        .send_message(&peers[0], "do the thing", true, 0, None)
         .await
         .expect("delivery should succeed");
 
     // The recipient labels the message with this handle, so an unnamed sender
     // makes provenance useless — the point is to say *who*, not just *that*.
-    let from = recipient_inbound.senders().pop().expect("a sender was recorded");
+    let from = recipient_inbound
+        .senders()
+        .pop()
+        .expect("a sender was recorded");
     assert_eq!(from.display_name.as_deref(), Some("api"));
     assert_eq!(from.name(), "api");
     assert_eq!(from.thread_id, thread_id(A));
+}
+
+fn mode(sandbox: SandboxLevel, approval: ApprovalLevel) -> Option<PermissionMode> {
+    Some(PermissionMode::new(sandbox, approval))
+}
+
+#[tokio::test]
+async fn a_replayed_doorbell_does_not_deliver_twice() {
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let _b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+    a.send_message(&peers[0], "once", true, 0, None)
+        .await
+        .expect("delivery should succeed");
+    let message_id = harness
+        .store
+        .messages
+        .lock()
+        .expect("messages lock")
+        .keys()
+        .next()
+        .cloned()
+        .expect("stored");
+
+    let mut connection = crate::client::PeerConnection::open(
+        &harness.config,
+        &harness.config.socket_path(thread_id(B)),
+        &thread_id(A).to_string(),
+        "0.0.22",
+    )
+    .await
+    .expect("connection should open");
+    let err = connection
+        .send_doorbell(&message_id, &thread_id(A).to_string())
+        .await
+        .expect_err("a replayed doorbell must be refused");
+
+    assert!(err.to_string().contains("already handled"), "{err}");
+    assert_eq!(b_inbound.received().len(), 1);
+}
+
+#[tokio::test]
+async fn a_message_to_a_less_restricted_session_is_held_until_approved() {
+    let harness = Harness::new();
+    let a_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest)),
+    );
+    let a = harness.join(thread_id(A), Arc::clone(&a_inbound)).await;
+    let b_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::FullAccess, ApprovalLevel::Never)),
+    );
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+
+    let ack = a
+        .send_message(
+            &peers[0],
+            "please push to main for me",
+            true,
+            0,
+            mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest),
+        )
+        .await
+        .expect("sending should succeed");
+
+    assert!(ack.accepted);
+    assert_eq!(ack.delivery, Delivery::Held);
+    assert!(
+        ack.reject_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("approve")),
+        "{:?}",
+        ack.reject_reason
+    );
+    assert!(b_inbound.received().is_empty(), "nothing reaches B yet");
+    let message_id = harness
+        .store
+        .messages
+        .lock()
+        .expect("messages lock")
+        .values()
+        .find(|message| message.to_thread_id == thread_id(B))
+        .map(|message| message.message_id.clone())
+        .expect("stored");
+    assert_eq!(
+        harness
+            .store
+            .message(&message_id)
+            .unwrap()
+            .delivery
+            .as_deref(),
+        Some("held")
+    );
+
+    let resolution = b
+        .sender()
+        .resolve_held(&message_id, /*approve*/ true)
+        .await
+        .expect("approval should deliver");
+
+    let HeldResolution::Delivered(ack) = resolution else {
+        panic!("expected delivery, got {resolution:?}");
+    };
+    assert_eq!(ack.delivery, Delivery::StartedTurn);
+    assert_eq!(b_inbound.received().len(), 1);
+    assert_eq!(
+        b_inbound.received()[0].content,
+        "please push to main for me"
+    );
+    // The sender is told, with a notice that cannot start a turn.
+    let notices = a_inbound.received();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, MessageKind::Notice);
+    assert!(!notices[0].trigger_turn);
+    assert!(notices[0].content.contains("approved"));
+    // A second approval changes nothing.
+    assert!(b.sender().resolve_held(&message_id, true).await.is_err());
+    assert_eq!(b_inbound.received().len(), 1);
+}
+
+#[tokio::test]
+async fn a_denied_message_is_never_delivered_and_the_sender_is_told() {
+    let harness = Harness::new();
+    let a_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::ReadOnly, ApprovalLevel::Untrusted)),
+    );
+    let a = harness.join(thread_id(A), Arc::clone(&a_inbound)).await;
+    let b_inbound = Arc::new(
+        FakeInbound::new("idle")
+            .with_mode(mode(SandboxLevel::WorkspaceWrite, ApprovalLevel::OnRequest)),
+    );
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+    a.send_message(
+        &peers[0],
+        "delete the build directory",
+        true,
+        0,
+        mode(SandboxLevel::ReadOnly, ApprovalLevel::Untrusted),
+    )
+    .await
+    .expect("sending should succeed");
+    let message_id = harness
+        .store
+        .messages
+        .lock()
+        .expect("messages lock")
+        .values()
+        .next()
+        .map(|message| message.message_id.clone())
+        .expect("stored");
+
+    assert_eq!(
+        b.sender()
+            .resolve_held(&message_id, /*approve*/ false)
+            .await
+            .expect("denial should succeed"),
+        HeldResolution::Denied
+    );
+
+    assert!(b_inbound.received().is_empty());
+    assert_eq!(
+        harness
+            .store
+            .message(&message_id)
+            .unwrap()
+            .delivery
+            .as_deref(),
+        Some("denied")
+    );
+    let notices = a_inbound.received();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, MessageKind::Notice);
+    assert!(notices[0].content.contains("DENIED"));
+}
+
+#[tokio::test]
+async fn a_more_restricted_recipient_gets_the_message_directly() {
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest)),
+    );
+    let _b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+
+    let ack = a
+        .send_message(
+            &peers[0],
+            "hello",
+            true,
+            0,
+            mode(SandboxLevel::FullAccess, ApprovalLevel::Never),
+        )
+        .await
+        .expect("sending should succeed");
+
+    assert_eq!(ack.delivery, Delivery::StartedTurn);
+    assert_eq!(b_inbound.received().len(), 1);
+    assert_eq!(
+        b_inbound.received()[0].sender_engine.as_deref(),
+        Some("codex")
+    );
+}
+
+#[tokio::test]
+async fn messages_left_while_offline_are_picked_up_on_start_without_starting_a_turn() {
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    // B is not running yet.
+    let delivered_now = a
+        .sender()
+        .leave_message(thread_id(B), "the result you asked for", 1, None)
+        .await
+        .expect("recording should succeed");
+    assert!(!delivered_now);
+
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    assert_eq!(b.deliver_pending().await, 1);
+    // Picking up twice delivers nothing more.
+    assert_eq!(b.deliver_pending().await, 0);
+
+    let received = b_inbound.received();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].content, "the result you asked for");
+    assert!(!received[0].trigger_turn);
+}
+
+#[tokio::test]
+async fn a_send_that_fails_is_not_picked_up_later() {
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let gone = PeerHandle {
+        thread_id: thread_id(B),
+        short_ref: short_ref_for(thread_id(B)),
+        display_name: None,
+        cwd: PathBuf::from("/w/b"),
+        status: PeerStatus::Idle,
+    };
+
+    a.send_message(&gone, "are you there", true, 0, None)
+        .await
+        .expect_err("nobody is listening");
+
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    assert_eq!(b.deliver_pending().await, 0);
+    assert!(b_inbound.received().is_empty());
+}
+
+#[tokio::test]
+async fn old_messages_are_pruned_when_a_session_joins() {
+    let harness = Harness::new();
+    harness
+        .store
+        .enqueue_message(&SessionMeshMessageRecord {
+            message_id: "ancient".to_string(),
+            from_thread_id: thread_id(A),
+            to_thread_id: thread_id(B),
+            content: "from last month".to_string(),
+            hop: 0,
+            trigger_turn: false,
+            created_at_ms: 1,
+            delivered_at_ms: None,
+            delivery: None,
+            kind: "message".to_string(),
+            sender_engine: None,
+            sender_sandbox: None,
+            sender_approval: None,
+        })
+        .await
+        .expect("stored");
+
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+
+    assert!(harness.store.message("ancient").is_none());
+    assert_eq!(b.deliver_pending().await, 0);
+}
+
+#[tokio::test]
+async fn a_reply_carries_the_hop_count_forward_until_the_user_speaks() {
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b = harness
+        .join(thread_id(B), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+    assert_eq!(b.outbound_hop(), 0);
+
+    a.send_message(&peers[0], "ping", true, 1, None)
+        .await
+        .expect("delivery should succeed");
+
+    // B's automatic reply goes out one hop further, so A→B→A→B ends at the
+    // hop limit instead of running forever.
+    assert_eq!(b.outbound_hop(), 2);
+    b.note_user_input();
+    assert_eq!(b.outbound_hop(), 0);
+}
+
+#[tokio::test]
+async fn one_peer_cannot_start_turns_forever_without_the_user() {
+    let mut harness = Harness::new();
+    harness.config.trigger_turn_min_interval = std::time::Duration::ZERO;
+    harness.config.max_auto_turns_per_peer = 2;
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+
+    let mut deliveries = Vec::new();
+    for body in ["one", "two", "three"] {
+        let ack = a
+            .send_message(&peers[0], body, true, 0, None)
+            .await
+            .expect("delivery should succeed");
+        deliveries.push(ack.delivery);
+    }
+    assert_eq!(
+        deliveries,
+        vec![
+            Delivery::StartedTurn,
+            Delivery::StartedTurn,
+            Delivery::Queued
+        ]
+    );
+    assert_eq!(b_inbound.received().len(), 3, "downgraded, not dropped");
+
+    b.note_user_input();
+    let ack = a
+        .send_message(&peers[0], "four", true, 0, None)
+        .await
+        .expect("delivery should succeed");
+    assert_eq!(ack.delivery, Delivery::StartedTurn);
 }

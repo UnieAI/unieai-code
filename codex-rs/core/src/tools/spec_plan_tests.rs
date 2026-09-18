@@ -3424,7 +3424,11 @@ async fn session_mesh_tools_follow_the_feature_flag() {
     // The flag is the consent gate: with it off a session publishes no registry
     // row and binds no socket, so offering the tools would only let the model
     // discover it has no way to use them.
-    let disabled = probe(|_| {}).await;
+    let disabled = probe(|turn| {
+        set_feature(turn, Feature::SessionMesh, /*enabled*/ false);
+        set_feature(turn, Feature::SessionMeshTasks, /*enabled*/ true);
+    })
+    .await;
     disabled.assert_visible_lacks(&[
         "list_peers",
         "send_peer_message",
@@ -3432,13 +3436,26 @@ async fn session_mesh_tools_follow_the_feature_flag() {
         "claim_task",
         "report_task",
         "list_tasks",
+        "spawn_peer_session",
     ]);
 
-    let enabled = probe(|turn| {
+    // Messaging is on by default; the task board and detached sessions are not.
+    let default = probe(|_| {}).await;
+    default.assert_visible_contains(&["list_peers", "send_peer_message"]);
+    default.assert_visible_lacks(&[
+        "publish_task",
+        "claim_task",
+        "report_task",
+        "list_tasks",
+        "spawn_peer_session",
+    ]);
+
+    let with_tasks = probe(|turn| {
         set_feature(turn, Feature::SessionMesh, /*enabled*/ true);
+        set_feature(turn, Feature::SessionMeshTasks, /*enabled*/ true);
     })
     .await;
-    enabled.assert_visible_contains(&[
+    with_tasks.assert_visible_contains(&[
         "list_peers",
         "send_peer_message",
         "publish_task",

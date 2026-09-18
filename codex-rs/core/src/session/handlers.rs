@@ -474,6 +474,11 @@ pub(super) async fn submission_loop(
                     mode,
                     reply,
                 } => {
+                    // Input from this session's client means a human is in the
+                    // conversation again, so peer relay limits start over.
+                    if let Some(node) = sess.services.session_mesh.lock().await.clone() {
+                        node.note_user_input();
+                    }
                     let result = turn_input::handle(&sess, *request, mode, sub.id.clone()).await;
                     let _ = reply.send(result);
                     false

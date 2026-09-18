@@ -12,6 +12,7 @@ fn the_child_command_carries_the_parent_link_and_detaches() {
     let params = SpawnChildParams {
         prompt: "run the tests".to_string(),
         cwd: Some(std::path::PathBuf::from("/w/api")),
+        sandbox_mode: Some("read-only".to_string()),
     };
 
     let command = child_command(
@@ -30,6 +31,16 @@ fn the_child_command_carries_the_parent_link_and_detaches() {
         .collect();
     assert_eq!(args[0], "exec");
     assert!(args.contains(&"run the tests".to_string()), "{args:?}");
+    // The child inherits the launcher's sandbox rather than the config default.
+    let sandbox_at = args
+        .iter()
+        .position(|arg| arg == "--sandbox")
+        .expect("sandbox flag");
+    assert_eq!(args[sandbox_at + 1], "read-only");
+    assert!(
+        sandbox_at < args.iter().position(|arg| arg == "run the tests").unwrap(),
+        "{args:?}"
+    );
 
     let env: Vec<(String, Option<String>)> = command
         .as_std()

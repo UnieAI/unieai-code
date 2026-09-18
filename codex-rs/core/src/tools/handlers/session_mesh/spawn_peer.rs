@@ -18,7 +18,9 @@ you questions."
         (
             "cwd".to_string(),
             JsonSchema::string(Some(
-                "Working directory for the background session. Defaults to yours.".to_string(),
+                "Working directory for the background session, inside your workspace. Defaults to \
+yours."
+                    .to_string(),
             )),
         ),
     ]);
@@ -30,7 +32,8 @@ This is expensive and rarely what you want: the new process pays full CLI startu
 token budget, and cannot be waited on or interrupted by you. Use it ONLY when the work must \
 outlive this session, run in a different workspace, or be reachable from another terminal. \
 For anything you intend to wait for or supervise — which is almost all delegated work — use \
-spawn_agent instead. When the background session finishes it sends you its result, which you see \
+spawn_agent instead. The user must approve the launch, and the new session runs with your \
+sandbox and cannot ask for approvals. When the background session finishes it sends you its result, which you see \
 at the start of a later turn; it is also visible to list_peers and can be messaged like any peer."
             .to_string(),
         strict: false,
@@ -70,10 +73,17 @@ impl ToolExecutor<ToolInvocation> for SpawnPeerSessionHandler {
         create_spawn_peer_session_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
-                session, payload, ..
+                session,
+                turn,
+                payload,
+                call_id,
+                ..
             } = invocation;
             let arguments = function_arguments(payload)?;
             let args: SpawnPeerSessionArgs = parse_arguments(&arguments)?;
@@ -84,12 +94,98 @@ impl ToolExecutor<ToolInvocation> for SpawnPeerSessionHandler {
                 ));
             }
 
+            // The child starts in this session's workspace or below it, never
+            // somewhere this session was not already working.
+            #[allow(deprecated)]
+            let workspace = turn.cwd.clone();
+            let cwd = match args.cwd.as_deref() {
+                None => workspace.to_path_buf(),
+                Some(requested) => {
+                    let requested = workspace.as_path().join(requested);
+                    let resolved = requested.canonicalize().map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "`cwd` {} is not usable: {err}",
+                            requested.display()
+                        ))
+                    })?;
+                    let root = workspace
+                        .as_path()
+                        .canonicalize()
+                        .unwrap_or_else(|_| workspace.to_path_buf());
+                    if !resolved.starts_with(&root) {
+                        return Err(FunctionCallError::RespondToModel(format!(
+                            "`cwd` must be inside this session's workspace ({})",
+                            root.display()
+                        )));
+                    }
+                    resolved
+                }
+            };
+
+            // The child inherits this turn's sandbox. It runs headless, so it
+            // cannot ask for approval either: anything outside the sandbox
+            // fails rather than escalating.
+            let sandbox_mode = crate::session::mesh::turn_permission_mode(&turn)
+                .sandbox
+                .as_str()
+                .to_string();
+            let exe = std::env::current_exe()
+                .map(|exe| exe.display().to_string())
+                .unwrap_or_else(|_| "unieai".to_string());
+            let command = vec![
+                exe,
+                "exec".to_string(),
+                "--sandbox".to_string(),
+                sandbox_mode.clone(),
+                args.prompt.clone(),
+            ];
+
+            // Launching a detached process is always the user's call.
+            let decision = session
+                .request_command_approval(
+                    turn.as_ref(),
+                    codex_protocol::approvals::ExecApprovalKind::Command,
+                    crate::guardian::GuardianReviewContext::from(std::sync::Arc::clone(&turn))
+                        .model_context(),
+                    call_id,
+                    /*approval_id*/ None,
+                    /*environment_id*/ None,
+                    command,
+                    codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&cwd)
+                        .unwrap_or_else(|_| workspace.clone())
+                        .into(),
+                    Some(
+                        "Start a background UnieAI Code session in a separate process with this \
+session's sandbox. It keeps running after this session ends."
+                            .to_string(),
+                    ),
+                    /*network_approval_context*/ None,
+                    /*proposed_execpolicy_amendment*/ None,
+                    /*additional_permissions*/ None,
+                    Some(vec![
+                        codex_protocol::protocol::ReviewDecision::Approved,
+                        codex_protocol::protocol::ReviewDecision::Abort,
+                    ]),
+                    /*plugin_attribution_override*/ None,
+                )
+                .await;
+            if !matches!(
+                decision,
+                codex_protocol::protocol::ReviewDecision::Approved
+                    | codex_protocol::protocol::ReviewDecision::ApprovedForSession
+            ) {
+                return Err(FunctionCallError::RespondToModel(
+                    "the user did not approve starting a background session".to_string(),
+                ));
+            }
+
             let node = mesh_node(&session.services).await?;
             let spawned = node
                 .sender()
                 .spawn_child(unieai_session_mesh::SpawnChildParams {
                     prompt: args.prompt,
-                    cwd: args.cwd.map(std::path::PathBuf::from),
+                    cwd: Some(cwd),
+                    sandbox_mode: Some(sandbox_mode),
                 })
                 .await
                 .map_err(mesh_error)?;

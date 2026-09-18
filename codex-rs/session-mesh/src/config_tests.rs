@@ -45,3 +45,26 @@ fn unrelated_paths_are_not_mistaken_for_session_sockets() {
         );
     }
 }
+
+#[test]
+fn a_deep_codex_home_falls_back_to_a_short_shared_socket_directory() {
+    let deep = format!("/home/user/{}/.codex", "nested/".repeat(12));
+    let config = MeshConfig::new(&deep);
+
+    let socket = config.socket_path(thread_id());
+    assert!(
+        socket.as_os_str().len() < MAX_SOCKET_PATH_LEN,
+        "{}",
+        socket.display()
+    );
+    assert!(!socket.starts_with(&deep));
+    // Another session on the same home computes the same directory; a
+    // different home does not.
+    assert_eq!(MeshConfig::new(&deep).socket_dir(), config.socket_dir());
+    assert_ne!(
+        MeshConfig::new(format!("{deep}2")).socket_dir(),
+        config.socket_dir()
+    );
+    // Child logs stay with the home, not in the runtime directory.
+    assert!(config.child_log_dir().starts_with(&deep));
+}

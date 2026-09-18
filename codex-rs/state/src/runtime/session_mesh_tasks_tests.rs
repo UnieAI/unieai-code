@@ -1,5 +1,6 @@
 use super::*;
 use crate::runtime::test_support::unique_temp_dir;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 fn thread_id(tail: &str) -> ThreadId {
@@ -10,7 +11,11 @@ const A: &str = "5a6b0c0d0e0f";
 const B: &str = "5a6b9a8b7c6d";
 
 async fn runtime() -> anyhow::Result<Arc<StateRuntime>> {
-    StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await
+    StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(unique_temp_dir().as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]

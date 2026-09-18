@@ -52,5 +52,6 @@ pub mod review_format;
 pub mod security_risk;
 pub mod shell_environment;
 pub mod turn_input;
+pub mod unieai_agent_message;
 pub mod unieai_project_config_dir;
 pub mod user_input;

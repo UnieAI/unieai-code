@@ -24,8 +24,12 @@
 //! a security boundary — a hostile process running as you can already read your
 //! credentials. The threat this crate actually defends against is a *legitimate*
 //! peer whose model has been steered by hostile content it just read. That is
-//! handled by consent (the feature flag), rate limiting, hop limits, size caps,
-//! and provenance labelling — not by file modes.
+//! handled by consent (the feature flag), rate limiting, hop limits and a cap
+//! on consecutive peer-started turns ([`unieai_chain`]), size caps, framing
+//! every delivered message with a trust note ([`unieai_framing`]), and holding
+//! messages that would let a more-restricted session act through a
+//! less-restricted one until the recipient's user approves them
+//! ([`unieai_permissions`]) — not by file modes.
 
 mod client;
 mod config;
@@ -36,6 +40,10 @@ mod node;
 mod server;
 mod spawn;
 mod store;
+pub mod unieai_chain;
+pub mod unieai_framing;
+pub mod unieai_permissions;
+pub mod unieai_tools;
 pub mod wire;
 
 pub use config::MeshConfig;
@@ -58,6 +66,9 @@ pub use inbound::InboundFuture;
 pub use inbound::InboundMessage;
 pub use inbound::LocalSnapshot;
 pub use inbound::MeshInbound;
+pub use inbound::MessageKind;
+pub use node::DEFAULT_ENGINE;
+pub use node::HeldResolution;
 pub use node::MeshNode;
 pub use node::MeshSender;
 pub use spawn::SPAWN_ID_ENV;
@@ -67,3 +78,7 @@ pub use spawn::SpawnedChild;
 pub use store::MeshStore;
 pub use store::StateRuntimeStore;
 pub use store::StoreFuture;
+pub use unieai_framing::frame_inbound;
+pub use unieai_permissions::ApprovalLevel;
+pub use unieai_permissions::PermissionMode;
+pub use unieai_permissions::SandboxLevel;

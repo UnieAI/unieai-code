@@ -1,5 +1,6 @@
 use super::*;
 use crate::tools::handlers::session_mesh_spec::create_list_peers_tool;
+use unieai_session_mesh::unieai_tools::ListPeersResult;
 
 pub(crate) struct Handler;
 
@@ -12,7 +13,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_list_peers_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -30,11 +34,15 @@ impl Handler {
 
         // Listing probes every candidate, so the answer reflects who is
         // reachable now rather than who once registered.
-        let peers = mesh_node(&session.services).await?.list_peers().await.map_err(mesh_error)?;
+        let peers = mesh_node(&session.services)
+            .await?
+            .list_peers()
+            .await
+            .map_err(mesh_error)?;
 
-        Ok(boxed_tool_output(ListPeersResult {
-            peers: listed_peers(&peers),
-        }))
+        Ok(boxed_tool_output(ListPeersOutput(ListPeersResult {
+            peers: unieai_session_mesh::unieai_tools::listed_peers(&peers),
+        })))
     }
 }
 
@@ -48,12 +56,12 @@ impl CoreToolRuntime for Handler {
 #[serde(deny_unknown_fields)]
 struct ListPeersArgs {}
 
+/// The engine-neutral result, wrapped so core can implement its output trait.
 #[derive(Debug, Serialize)]
-pub(crate) struct ListPeersResult {
-    peers: Vec<ListedPeer>,
-}
+#[serde(transparent)]
+pub(crate) struct ListPeersOutput(ListPeersResult);
 
-impl ToolOutput for ListPeersResult {
+impl ToolOutput for ListPeersOutput {
     fn log_output(&self) -> String {
         tool_output_json_text(self, "list_peers")
     }

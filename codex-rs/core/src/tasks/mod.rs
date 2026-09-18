@@ -436,22 +436,23 @@ impl Session {
     /// session.
     ///
     /// The turn is created only when the session is idle and mailbox mail either requests a turn
-    /// or can wake an outstanding durable sleep.
+    /// or can wake an outstanding durable sleep. Returns whether a turn was started, so callers
+    /// can report what happened rather than infer it.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
-    ) {
+    ) -> bool {
         if !self.input_queue.has_pending_mailbox_items().await
             || (!self.input_queue.has_trigger_turn_mailbox_items().await
                 && !self.has_outstanding_durable_sleep())
         {
-            return;
+            return false;
         }
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
-                return;
+                return false;
             }
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
@@ -506,6 +507,7 @@ impl Session {
             .await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())
             .await;
+        true
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {

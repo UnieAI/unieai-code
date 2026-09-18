@@ -269,6 +269,25 @@ pub(crate) fn non_delegation_tool_specs() -> Vec<DynamicToolSpec> {
         .collect()
 }
 
+/// Adds the session-mesh peer tools to the `codex_tui` namespace.
+pub(crate) fn with_peer_tools(mut specs: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
+    let namespace = specs.iter_mut().find_map(|spec| match spec {
+        DynamicToolSpec::Namespace(namespace) if namespace.name == NAMESPACE => Some(namespace),
+        _ => None,
+    });
+    match namespace {
+        Some(namespace) => namespace
+            .tools
+            .extend(crate::unieai_mesh::peer_dynamic_tools()),
+        None => specs.push(DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+            name: NAMESPACE.to_string(),
+            description: "Tools hosted by the UnieAI Code terminal.".to_string(),
+            tools: crate::unieai_mesh::peer_dynamic_tools(),
+        })),
+    }
+    specs
+}
+
 pub(crate) fn failure_response(message: impl Into<String>) -> DynamicToolCallResponse {
     DynamicToolCallResponse {
         content_items: vec![DynamicToolCallOutputContentItem::InputText {

@@ -9,6 +9,10 @@
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
+use codex_state::SESSION_MESH_DELIVERY_APPROVED;
+use codex_state::SESSION_MESH_DELIVERY_DELIVERING;
+use codex_state::SESSION_MESH_DELIVERY_HELD;
+use codex_state::SessionMeshMessageRecord;
 use codex_uds::UnixListener;
 use codex_uds::UnixStream;
 use tokio::io::AsyncWriteExt;
@@ -30,7 +34,11 @@ use crate::identity::short_ref_for;
 use crate::inbound::InboundDecision;
 use crate::inbound::InboundMessage;
 use crate::inbound::MeshInbound;
+use crate::inbound::MessageKind;
 use crate::store::MeshStore;
+use crate::unieai_chain::PeerChain;
+use crate::unieai_permissions::PermissionMode;
+use crate::unieai_permissions::must_hold;
 use crate::wire::Ack;
 use crate::wire::Body;
 use crate::wire::Delivery;
@@ -50,6 +58,9 @@ pub(crate) struct ServerContext {
     pub(crate) inbound: Arc<dyn MeshInbound>,
     /// The uid this socket serves. Connections from anyone else are refused.
     pub(crate) local_uid: u32,
+    /// Relay bookkeeping for this session: hop distance and consecutive
+    /// peer-started turns since its user last spoke.
+    pub(crate) chain: Arc<PeerChain>,
 }
 
 /// Accepts connections until cancelled.
@@ -275,6 +286,59 @@ async fn handle_doorbell(
         );
     }
 
+    process_message(
+        context,
+        message,
+        /*force_queue*/ false,
+        peer_cli_version,
+    )
+    .await
+}
+
+/// Checks and delivers one stored message addressed to this session.
+///
+/// Shared by the doorbell and by startup pickup of messages left while this
+/// session was not running (`force_queue`, so a stale message never starts a
+/// turn on its own).
+///
+/// The message is claimed with a compare-and-set before anything else, so a
+/// replayed doorbell, two concurrent doorbells, or a pickup racing a doorbell
+/// deliver it once. Only an untouched message, or one the user has approved
+/// out of `held`, can be claimed.
+pub(crate) async fn process_message(
+    context: &ServerContext,
+    message: SessionMeshMessageRecord,
+    force_queue: bool,
+    peer_cli_version: &str,
+) -> Body {
+    let message_id = message.message_id.as_str();
+    let approved = message.delivery.as_deref() == Some(SESSION_MESH_DELIVERY_APPROVED);
+    let claimable = message.delivered_at_ms.is_none() && (message.delivery.is_none() || approved);
+    let claimed = claimable
+        && match context
+            .store
+            .transition_message(
+                message_id,
+                approved.then_some(SESSION_MESH_DELIVERY_APPROVED),
+                SESSION_MESH_DELIVERY_DELIVERING,
+            )
+            .await
+        {
+            Ok(claimed) => claimed,
+            Err(err) => return error_body(ErrorCode::Internal, err.to_string()),
+        };
+    if !claimed {
+        return error_body(
+            ErrorCode::AlreadyHandled,
+            format!(
+                "message {message_id} was already handled ({})",
+                message.delivery.as_deref().unwrap_or("in progress")
+            ),
+        );
+    }
+
+    let kind = MessageKind::parse(&message.kind);
+
     if message.content.len() > context.config.max_content_bytes {
         return reject(
             context,
@@ -289,7 +353,7 @@ async fn handle_doorbell(
         .await;
     }
 
-    if message.hop >= context.config.max_hops {
+    if kind == MessageKind::Message && message.hop >= context.config.max_hops {
         // Two sessions replying to each other would otherwise burn tokens in
         // both terminals with nobody watching.
         return reject(
@@ -297,18 +361,54 @@ async fn handle_doorbell(
             message_id,
             ErrorCode::HopLimit,
             format!(
-                "message has been relayed {} times, limit is {}",
+                "message has been relayed {} times without a user taking part, limit is {}; \
+ask your user before continuing this exchange",
                 message.hop, context.config.max_hops
             ),
         )
         .await;
     }
 
+    // Permission laundering: a session must not get a less-restricted one to
+    // do what it could not. Such a message waits for the recipient's user.
+    // Notices carry no request, and an approved message has already been seen.
+    if kind == MessageKind::Message && !approved {
+        let sender_mode = PermissionMode::parse(
+            message.sender_sandbox.as_deref(),
+            message.sender_approval.as_deref(),
+        );
+        let recipient_mode = context.inbound.permission_mode().await;
+        if must_hold(sender_mode.as_ref(), recipient_mode.as_ref()) {
+            if let Err(err) = context
+                .store
+                .transition_message(
+                    message_id,
+                    Some(SESSION_MESH_DELIVERY_DELIVERING),
+                    SESSION_MESH_DELIVERY_HELD,
+                )
+                .await
+            {
+                return error_body(ErrorCode::Internal, err.to_string());
+            }
+            return Body::Ack(Ack {
+                accepted: true,
+                delivery: Delivery::Held,
+                reject_reason: Some(format!(
+                    "held for approval: the recipient runs with broader permissions ({}) than \
+yours ({}), so its user must approve this message before it is delivered. You will get a notice \
+when they approve or deny it; do not resend it or try to route around this.",
+                    describe_mode(recipient_mode.as_ref()),
+                    describe_mode(sender_mode.as_ref()),
+                )),
+            });
+        }
+    }
+
     // Rate limiting downgrades rather than drops: the message still arrives,
     // it just does not get to start a turn.
-    let mut trigger_turn = message.trigger_turn;
-    let mut rate_limited = false;
-    if trigger_turn {
+    let mut trigger_turn = message.trigger_turn && kind == MessageKind::Message && !force_queue;
+    let mut downgrade_reason = None;
+    if trigger_turn && !context.config.trigger_turn_min_interval.is_zero() {
         let since_ms =
             now_ms().saturating_sub(context.config.trigger_turn_min_interval.as_millis() as i64);
         match context
@@ -318,16 +418,27 @@ async fn handle_doorbell(
         {
             Ok(count) if count > 0 => {
                 trigger_turn = false;
-                rate_limited = true;
+                downgrade_reason = Some(format!(
+                    "downgraded to queue-only: at most one turn start per {:?} from this peer",
+                    context.config.trigger_turn_min_interval
+                ));
             }
             Ok(_) => {}
             Err(err) => return error_body(ErrorCode::Internal, err.to_string()),
         }
     }
+    if trigger_turn && !context.chain.may_start_turn(message.from_thread_id) {
+        trigger_turn = false;
+        downgrade_reason = Some(format!(
+            "downgraded to queue-only: this peer has started {} turns in a row here without the \
+recipient's user taking part",
+            context.chain.max_auto_turns_per_peer()
+        ));
+    }
 
     // Looked up rather than synthesised from the thread id alone: the
-    // provenance banner exists to tell the reader *who* sent this, and a handle
-    // with no name degrades to the generic fallback, which answers nothing.
+    // framing exists to tell the reader *who* sent this, and a handle with no
+    // name degrades to the generic fallback, which answers nothing.
     let from = sender_handle(context, message.from_thread_id).await;
 
     let decision = context
@@ -339,6 +450,8 @@ async fn handle_doorbell(
                 content: message.content.clone(),
                 trigger_turn,
                 hop: message.hop,
+                kind,
+                sender_engine: message.sender_engine.clone(),
             },
         )
         .await;
@@ -346,15 +459,16 @@ async fn handle_doorbell(
     match decision {
         InboundDecision::Accepted { delivery } => {
             record_delivery(context, message_id, delivery.as_str()).await;
+            if kind == MessageKind::Message {
+                context.chain.note_delivered(message.hop);
+                if delivery == Delivery::StartedTurn {
+                    context.chain.note_turn_started(message.from_thread_id);
+                }
+            }
             Body::Ack(Ack {
                 accepted: true,
                 delivery,
-                reject_reason: rate_limited.then(|| {
-                    format!(
-                        "downgraded to queue-only: at most one turn start per {:?} from this peer",
-                        context.config.trigger_turn_min_interval
-                    )
-                }),
+                reject_reason: downgrade_reason,
             })
         }
         InboundDecision::Rejected { reason } => {
@@ -369,21 +483,20 @@ async fn handle_doorbell(
     }
 }
 
+fn describe_mode(mode: Option<&PermissionMode>) -> String {
+    mode.map_or_else(|| "unknown".to_string(), ToString::to_string)
+}
+
 /// Builds the sender's handle from the registry.
 ///
 /// Falls back to a bare short ref only when the sender has already left, which
 /// is itself information worth showing.
 async fn sender_handle(context: &ServerContext, from_thread_id: ThreadId) -> PeerHandle {
-    let registered = context
-        .store
-        .list_peers()
-        .await
-        .ok()
-        .and_then(|peers| {
-            peers
-                .into_iter()
-                .find(|peer| peer.peer.thread_id == from_thread_id)
-        });
+    let registered = context.store.list_peers().await.ok().and_then(|peers| {
+        peers
+            .into_iter()
+            .find(|peer| peer.peer.thread_id == from_thread_id)
+    });
 
     match registered {
         Some(row) => PeerHandle {

@@ -114,10 +114,34 @@ impl App {
                 Err(err) => self.chat_widget.add_error_message(err),
             },
             AppEvent::PeerBusUpdated {
+                thread_id,
                 peers,
                 new_messages,
+                held,
             } => {
-                self.handle_peer_bus_update(peers, new_messages);
+                self.handle_peer_bus_update(thread_id, peers, new_messages, held);
+            }
+            AppEvent::PeersListed { result } => self.show_peers_picker(result),
+            AppEvent::ResolveHeldPeerMessage {
+                message_id,
+                approve,
+            } => self.resolve_held_peer_message(message_id, approve),
+            AppEvent::UacPeerInbound {
+                thread_id,
+                text,
+                trigger_turn,
+                reply,
+            } => {
+                let delivery = self
+                    .deliver_uac_peer_message(app_server, thread_id, text, trigger_turn)
+                    .await;
+                let _ = reply.send(delivery);
+            }
+            AppEvent::UacPeerProbe { thread_id, reply } => {
+                let _ = reply.send(self.answer_uac_peer_probe(thread_id).await);
+            }
+            AppEvent::UacMeshJoined { thread_id, result } => {
+                self.handle_uac_mesh_joined(thread_id, result);
             }
             AppEvent::OpenDaemonMenu => self.open_daemon_menu(),
             AppEvent::OpenEngineMenu => self.open_engine_menu(),

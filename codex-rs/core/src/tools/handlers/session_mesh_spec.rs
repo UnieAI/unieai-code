@@ -11,15 +11,12 @@ use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
 use std::collections::BTreeMap;
+use unieai_session_mesh::unieai_tools;
 
 pub fn create_list_peers_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "list_peers".to_string(),
-        description: "List other UnieAI Code sessions running on this machine that are reachable \
-right now. Each peer is returned with a handle of the form `name [ref]`; pass that handle verbatim \
-to send_peer_message. Peers are separate sessions owned by their own users — they are not your \
-sub-agents, you cannot interrupt them, and they may decline your messages."
-            .to_string(),
+        description: unieai_tools::LIST_PEERS_DESCRIPTION.to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
@@ -31,36 +28,21 @@ pub fn create_send_peer_message_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "target".to_string(),
-            JsonSchema::string(Some(
-                "Peer handle exactly as returned by list_peers, for example `api [k2f8]`. \
-A bare name is accepted only when it matches exactly one peer; if it matches several the call \
-fails and lists the candidates, because guessing would start a turn in the wrong session."
-                    .to_string(),
-            )),
+            JsonSchema::string(Some(unieai_tools::TARGET_DESCRIPTION.to_string())),
         ),
         (
             "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to deliver to the peer session.".to_string(),
-            )),
+            JsonSchema::string(Some(unieai_tools::MESSAGE_DESCRIPTION.to_string())),
         ),
         (
             "queue_only".to_string(),
-            JsonSchema::boolean(Some(
-                "When true, the message waits for the peer's next turn instead of starting one. \
-Defaults to false."
-                    .to_string(),
-            )),
+            JsonSchema::boolean(Some(unieai_tools::QUEUE_ONLY_DESCRIPTION.to_string())),
         ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_peer_message".to_string(),
-        description: "Send a message to another UnieAI Code session on this machine. If that \
-session is idle it starts a turn to handle the message; if it is busy the message waits for its \
-next turn boundary. The result reports which of those actually happened — do not assume a turn \
-started. The peer may also refuse or rate-limit the message."
-            .to_string(),
+        description: unieai_tools::SEND_PEER_MESSAGE_DESCRIPTION.to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(

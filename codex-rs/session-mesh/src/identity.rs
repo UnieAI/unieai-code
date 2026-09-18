@@ -36,6 +36,9 @@ pub struct LocalSessionIdentity {
     pub cwd: PathBuf,
     pub session_source: String,
     pub cli_version: String,
+    /// Engine the session runs on (`codex`, `uac`), stamped on everything it
+    /// sends so the recipient's framing can say.
+    pub engine: String,
     /// Set when this session was launched by another one. The launcher minted
     /// the value and is polling the registry for it, because a child's thread
     /// id does not exist until the child builds its own session.
@@ -83,10 +86,15 @@ impl PeerHandle {
     /// Name used for matching and display, falling back to the working
     /// directory's basename so an unnamed session is still addressable.
     pub fn name(&self) -> String {
-        if let Some(display_name) = self.display_name.as_ref()
-            && !display_name.trim().is_empty()
+        // A name made only of punctuation or symbols slugs to nothing; fall
+        // back rather than address the session by an empty name.
+        if let Some(name) = self
+            .display_name
+            .as_deref()
+            .map(slugify)
+            .filter(|name| !name.is_empty())
         {
-            return slugify(display_name);
+            return name;
         }
         self.cwd
             .file_name()
@@ -260,18 +268,33 @@ fn render_ambiguity(selector: &PeerSelector, candidates: &[&PeerHandle]) -> Stri
     message
 }
 
-/// Lowercases and collapses a label into the `[a-z0-9_-]` set so that names
+/// Longest name a peer is matched and displayed by, in characters.
+const MAX_NAME_CHARS: usize = 48;
+
+/// Lowercases and collapses a label into letters, digits, `-`, so that names
 /// typed with different punctuation still compare equal.
+///
+/// Letters and digits from any script are kept: a session renamed to
+/// `前端重構` is addressed as `前端重構`, not as an empty name. Anything that is
+/// not a letter or digit (punctuation, quotes, brackets, control characters)
+/// becomes a single `-`, so the result can never contain the `[`/`]` of a
+/// handle or characters that would matter to the framing.
 fn slugify(value: &str) -> String {
     let mut slug = String::with_capacity(value.len());
     let mut last_was_separator = false;
+    let mut kept = 0;
     for ch in value.trim().chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
+        if kept >= MAX_NAME_CHARS {
+            break;
+        }
+        if ch.is_alphanumeric() {
+            slug.extend(ch.to_lowercase());
             last_was_separator = false;
+            kept += 1;
         } else if !slug.is_empty() && !last_was_separator {
             slug.push('-');
             last_was_separator = true;
+            kept += 1;
         }
     }
     while slug.ends_with('-') {

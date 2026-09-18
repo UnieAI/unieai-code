@@ -4,8 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
+use codex_state::SESSION_MESH_DELIVERY_APPROVED;
+use codex_state::SESSION_MESH_DELIVERY_DENIED;
+use codex_state::SESSION_MESH_DELIVERY_HELD;
 use codex_state::SessionMeshMessageRecord;
 use codex_state::SessionMeshPeerRecord;
+use codex_state::SessionMeshPeerWithName;
 use codex_uds::UnixListener;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -23,15 +27,16 @@ use crate::identity::PeerStatus;
 use crate::identity::resolve_peer;
 use crate::identity::short_ref_for;
 use crate::inbound::MeshInbound;
+use crate::inbound::MessageKind;
 use crate::server::ServerContext;
 use crate::server::now_ms;
 use crate::server::run_acceptor;
 use crate::store::MeshStore;
+use crate::unieai_chain::PeerChain;
+use crate::unieai_permissions::PermissionMode;
 use crate::wire::Ack;
 
-/// Conservative bound on a Unix socket path, the smaller of the Linux (108)
-/// and macOS (104) `sun_path` buffers.
-const MAX_SOCKET_PATH_LEN: usize = 104;
+use crate::config::MAX_SOCKET_PATH_LEN;
 
 /// The outbound half of mesh membership: discovery and delivery, with no
 /// listener of its own.
@@ -46,7 +51,21 @@ pub struct MeshSender {
     from_thread_id: ThreadId,
     cli_version: String,
     store: Arc<dyn MeshStore>,
+    /// Engine stamped on outgoing messages.
+    engine: String,
 }
+
+/// What became of a held message the user decided on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeldResolution {
+    /// Approved and delivered; carries the recipient's delivery outcome.
+    Delivered(Ack),
+    /// Refused; the sender has been told.
+    Denied,
+}
+
+/// Engine name used when a caller does not say.
+pub const DEFAULT_ENGINE: &str = "codex";
 
 /// This session's membership. Dropping it withdraws the session.
 pub struct MeshNode {
@@ -57,6 +76,8 @@ pub struct MeshNode {
     /// Held for the session's lifetime so a second process resuming the same
     /// thread fails loudly instead of racing us for the socket path.
     _socket_lock: std::fs::File,
+    /// The acceptor's context, reused to deliver messages picked up at start.
+    context: Arc<ServerContext>,
 }
 
 impl MeshNode {
@@ -106,6 +127,16 @@ Use a shorter CODEX_HOME.",
         // Bind applies the umask, so this must run after it, not before.
         codex_uds::restrict_socket_permissions(&socket_path).await?;
 
+        // Retention runs here because joining is the one moment every session
+        // passes through; it is a single indexed DELETE.
+        let retention_ms = config.message_retention.as_millis() as i64;
+        if let Err(err) = store
+            .prune_messages(now_ms().saturating_sub(retention_ms))
+            .await
+        {
+            warn!("failed to prune old session mesh messages: {err}");
+        }
+
         let process = ProcessIdentity::current().await?;
         store
             .upsert_peer(&SessionMeshPeerRecord {
@@ -134,8 +165,13 @@ Use a shorter CODEX_HOME.",
             store: Arc::clone(&store),
             inbound,
             local_uid: current_uid(),
+            chain: Arc::new(PeerChain::new(config.max_auto_turns_per_peer)),
         });
-        tokio::spawn(run_acceptor(listener, context, shutdown.clone()));
+        tokio::spawn(run_acceptor(
+            listener,
+            Arc::clone(&context),
+            shutdown.clone(),
+        ));
 
         Ok(Self {
             sender: MeshSender {
@@ -143,12 +179,66 @@ Use a shorter CODEX_HOME.",
                 from_thread_id: identity.thread_id,
                 cli_version: identity.cli_version.clone(),
                 store,
+                engine: identity.engine.clone(),
             },
             identity,
             shutdown,
             socket_path,
             _socket_lock: socket_lock,
+            context,
         })
+    }
+
+    /// Delivers messages left for this session while it was not running.
+    ///
+    /// They arrive queued, never starting a turn by themselves: whatever they
+    /// were about may be long over, and the user should see them before the
+    /// model acts on them. Messages older than the retention window are
+    /// ignored (and pruned at join). Returns how many were delivered.
+    pub async fn deliver_pending(&self) -> usize {
+        let retention_ms = self.sender.config.message_retention.as_millis() as i64;
+        let pending = match self
+            .sender
+            .store
+            .list_pending_messages(
+                self.identity.thread_id,
+                now_ms().saturating_sub(retention_ms),
+            )
+            .await
+        {
+            Ok(pending) => pending,
+            Err(err) => {
+                warn!("failed to read pending session mesh messages: {err}");
+                return 0;
+            }
+        };
+        let mut delivered = 0;
+        for message in pending {
+            let body = crate::server::process_message(
+                &self.context,
+                message,
+                /*force_queue*/ true,
+                &self.identity.cli_version,
+            )
+            .await;
+            if matches!(body, crate::wire::Body::Ack(Ack { accepted: true, .. })) {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
+    /// This session's user submitted input, so the conversation has a human
+    /// in it again: hop counting and the consecutive-turn budget restart.
+    pub fn note_user_input(&self) {
+        self.context.chain.note_user_input();
+    }
+
+    /// Hop to stamp on a message this session sends now: one more than the
+    /// furthest-travelled peer message it has received since its user last
+    /// spoke, or zero.
+    pub fn outbound_hop(&self) -> u32 {
+        self.context.chain.outbound_hop()
     }
 
     pub fn thread_id(&self) -> ThreadId {
@@ -182,9 +272,10 @@ Use a shorter CODEX_HOME.",
         content: &str,
         trigger_turn: bool,
         hop: u32,
+        permissions: Option<PermissionMode>,
     ) -> Result<Ack, MeshError> {
         self.sender
-            .send_message(to, content, trigger_turn, hop)
+            .send_message(to, content, trigger_turn, hop, permissions)
             .await
     }
 
@@ -230,7 +321,18 @@ impl MeshSender {
             from_thread_id,
             cli_version,
             store,
+            engine: DEFAULT_ENGINE.to_string(),
         }
+    }
+
+    /// Sets the engine stamped on outgoing messages.
+    pub fn with_engine(mut self, engine: impl Into<String>) -> Self {
+        self.engine = engine.into();
+        self
+    }
+
+    pub fn thread_id(&self) -> ThreadId {
+        self.from_thread_id
     }
 
     /// Lists peers that answer, excluding the sender itself.
@@ -241,43 +343,59 @@ impl MeshSender {
     /// session disappears without any heartbeat machinery.
     pub async fn list_peers(&self) -> Result<Vec<PeerHandle>, MeshError> {
         let rows = self.store.list_peers().await?;
-        let mut peers = Vec::new();
 
-        for row in rows {
+        // Probed concurrently: one wedged peer costs the connect timeout once,
+        // not once per peer after it.
+        let mut probes = tokio::task::JoinSet::new();
+        for (index, row) in rows.into_iter().enumerate() {
             if row.peer.thread_id == self.from_thread_id {
                 continue;
             }
-
-            let identity = ProcessIdentity {
-                pid: row.peer.pid,
-                start_token: row.peer.process_start_token.clone(),
-                boot_id: row.peer.boot_id.clone(),
-            };
-            // Cheap pre-filter first: reading /proc beats opening a socket for
-            // a process that is provably gone.
-            if !identity.is_possibly_alive().await {
-                self.reap(row.peer.thread_id, &row.peer.socket_path).await;
-                continue;
-            }
-
-            let status = match self.probe(&row.peer.socket_path).await {
-                Ok(status) => status,
-                Err(_) => {
-                    self.reap(row.peer.thread_id, &row.peer.socket_path).await;
-                    continue;
-                }
-            };
-
-            peers.push(PeerHandle {
-                thread_id: row.peer.thread_id,
-                short_ref: row.peer.short_ref,
-                display_name: row.display_name,
-                cwd: PathBuf::from(row.peer.cwd),
-                status,
-            });
+            let sender = self.clone();
+            probes.spawn(async move { (index, sender.probe_row(row).await) });
         }
 
-        Ok(peers)
+        let mut peers = Vec::new();
+        while let Some(joined) = probes.join_next().await {
+            if let Ok((index, Some(peer))) = joined {
+                peers.push((index, peer));
+            }
+        }
+        // Keep the registry's newest-first order regardless of which probe
+        // answered first.
+        peers.sort_by_key(|(index, _)| *index);
+        Ok(peers.into_iter().map(|(_, peer)| peer).collect())
+    }
+
+    /// Probes one registry row, reaping it when its owner is gone.
+    async fn probe_row(&self, row: SessionMeshPeerWithName) -> Option<PeerHandle> {
+        let identity = ProcessIdentity {
+            pid: row.peer.pid,
+            start_token: row.peer.process_start_token.clone(),
+            boot_id: row.peer.boot_id.clone(),
+        };
+        // Cheap pre-filter first: reading /proc beats opening a socket for a
+        // process that is provably gone.
+        if !identity.is_possibly_alive().await {
+            self.reap(row.peer.thread_id, &row.peer.socket_path).await;
+            return None;
+        }
+
+        let status = match self.probe(&row.peer.socket_path).await {
+            Ok(status) => status,
+            Err(_) => {
+                self.reap(row.peer.thread_id, &row.peer.socket_path).await;
+                return None;
+            }
+        };
+
+        Some(PeerHandle {
+            thread_id: row.peer.thread_id,
+            short_ref: row.peer.short_ref,
+            display_name: row.display_name,
+            cwd: PathBuf::from(row.peer.cwd),
+            status,
+        })
     }
 
     /// Resolves a selector against the live peers, refusing to guess.
@@ -289,13 +407,16 @@ impl MeshSender {
     /// Stores a message and rings the recipient's doorbell.
     ///
     /// The message is written before the doorbell so a delivery that fails
-    /// mid-flight leaves a record instead of vanishing.
+    /// mid-flight leaves a record instead of vanishing. `permissions` is this
+    /// session's mode right now; the recipient compares it with its own to
+    /// decide whether the message must wait for its user.
     pub async fn send_message(
         &self,
         to: &PeerHandle,
         content: &str,
         trigger_turn: bool,
         hop: u32,
+        permissions: Option<PermissionMode>,
     ) -> Result<Ack, MeshError> {
         if content.len() > self.config.max_content_bytes {
             return Err(MeshError::Wire(format!(
@@ -307,20 +428,147 @@ impl MeshSender {
 
         let message_id = uuid::Uuid::new_v4().to_string();
         self.store
-            .enqueue_message(&SessionMeshMessageRecord {
-                message_id: message_id.clone(),
-                from_thread_id: self.from_thread_id,
-                to_thread_id: to.thread_id,
-                content: content.to_string(),
+            .enqueue_message(&self.record(
+                &message_id,
+                to.thread_id,
+                content,
                 hop,
                 trigger_turn,
-                created_at_ms: now_ms(),
-                delivered_at_ms: None,
-                delivery: None,
-            })
+                MessageKind::Message,
+                permissions,
+            ))
             .await?;
 
-        let socket_path = self.config.socket_path(to.thread_id);
+        let result = self.ring(to.thread_id, &message_id).await;
+        if let Err(err) = &result {
+            // The sender is told this failed, so the message must not turn up
+            // later through startup pickup as if it had been sent. Only an
+            // untouched row is marked: if the recipient did claim it before
+            // the connection broke, its own record stands.
+            let _ = self
+                .store
+                .transition_message(&message_id, None, &format!("failed:{err}"))
+                .await;
+        }
+        result
+    }
+
+    /// Tells `to` what became of a message it sent. Notices never start a
+    /// turn and are never held. Best-effort: stored even when `to` is not
+    /// running, so it is picked up when it next starts.
+    pub async fn send_notice(&self, to: ThreadId, content: &str) -> Result<bool, MeshError> {
+        let message_id = uuid::Uuid::new_v4().to_string();
+        self.store
+            .enqueue_message(&self.record(
+                &message_id,
+                to,
+                content,
+                /*hop*/ 0,
+                /*trigger_turn*/ false,
+                MessageKind::Notice,
+                /*permissions*/ None,
+            ))
+            .await?;
+        Ok(self.ring(to, &message_id).await.is_ok())
+    }
+
+    /// Applies the user's decision on a message held for this session.
+    ///
+    /// Approval moves the message to `approved` and rings this session's own
+    /// doorbell, which delivers it through the normal path (the hold check
+    /// is skipped for an approved message; every other check still applies).
+    /// Denial records it as `denied`. Either way the sender gets a notice.
+    /// A message that is no longer held (already decided, or expired) is an
+    /// error, so a double click cannot deliver twice.
+    pub async fn resolve_held(
+        &self,
+        message_id: &str,
+        approve: bool,
+    ) -> Result<HeldResolution, MeshError> {
+        let message = self
+            .store
+            .get_message(message_id)
+            .await?
+            .filter(|message| message.to_thread_id == self.from_thread_id)
+            .ok_or_else(|| MeshError::Wire(format!("no held message {message_id} here")))?;
+        let next = if approve {
+            SESSION_MESH_DELIVERY_APPROVED
+        } else {
+            SESSION_MESH_DELIVERY_DENIED
+        };
+        if !self
+            .store
+            .transition_message(message_id, Some(SESSION_MESH_DELIVERY_HELD), next)
+            .await?
+        {
+            return Err(MeshError::Wire(format!(
+                "message {message_id} is no longer waiting for approval"
+            )));
+        }
+
+        if !approve {
+            let _ = self
+                .store
+                .mark_delivered(message_id, now_ms(), SESSION_MESH_DELIVERY_DENIED)
+                .await;
+            let _ = self
+                .send_notice(
+                    message.from_thread_id,
+                    &format!(
+                        "Your message {message_id} was DENIED by this session's user and was not \
+delivered. Do not resend it, rephrase it, or route it through another session; tell your user \
+instead."
+                    ),
+                )
+                .await;
+            return Ok(HeldResolution::Denied);
+        }
+
+        let ack = self.ring(self.from_thread_id, message_id).await?;
+        let _ = self
+            .send_notice(
+                message.from_thread_id,
+                &format!(
+                    "Your message {message_id} was approved by this session's user and delivered \
+({}).",
+                    ack.delivery.as_str()
+                ),
+            )
+            .await;
+        Ok(HeldResolution::Delivered(ack))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &self,
+        message_id: &str,
+        to: ThreadId,
+        content: &str,
+        hop: u32,
+        trigger_turn: bool,
+        kind: MessageKind,
+        permissions: Option<PermissionMode>,
+    ) -> SessionMeshMessageRecord {
+        SessionMeshMessageRecord {
+            message_id: message_id.to_string(),
+            from_thread_id: self.from_thread_id,
+            to_thread_id: to,
+            content: content.to_string(),
+            hop,
+            trigger_turn,
+            created_at_ms: now_ms(),
+            delivered_at_ms: None,
+            delivery: None,
+            kind: kind.as_str().to_string(),
+            sender_engine: Some(self.engine.clone()),
+            sender_sandbox: permissions.map(|mode| mode.sandbox.as_str().to_string()),
+            sender_approval: permissions.map(|mode| mode.approval.as_str().to_string()),
+        }
+    }
+
+    /// Rings `to`'s doorbell for a stored message.
+    async fn ring(&self, to: ThreadId, message_id: &str) -> Result<Ack, MeshError> {
+        let socket_path = self.config.socket_path(to);
         let mut connection = PeerConnection::open(
             &self.config,
             &socket_path,
@@ -328,9 +576,8 @@ impl MeshSender {
             &self.cli_version,
         )
         .await?;
-
         connection
-            .send_doorbell(&message_id, &self.from_thread_id.to_string())
+            .send_doorbell(message_id, &self.from_thread_id.to_string())
             .await
     }
 
@@ -447,40 +694,27 @@ impl MeshSender {
         to: ThreadId,
         content: &str,
         hop: u32,
+        permissions: Option<PermissionMode>,
     ) -> Result<bool, MeshError> {
         let message_id = uuid::Uuid::new_v4().to_string();
         self.store
-            .enqueue_message(&SessionMeshMessageRecord {
-                message_id: message_id.clone(),
-                from_thread_id: self.from_thread_id,
-                to_thread_id: to,
-                content: content.to_string(),
+            .enqueue_message(&self.record(
+                &message_id,
+                to,
+                content,
                 hop,
-                // Never starts a turn: nobody asked for a background job ending
-                // to take over their session.
-                trigger_turn: false,
-                created_at_ms: now_ms(),
-                delivered_at_ms: None,
-                delivery: None,
-            })
+                // Never starts a turn: nobody asked for a background job
+                // ending to take over their session.
+                /*trigger_turn*/
+                false,
+                MessageKind::Message,
+                permissions,
+            ))
             .await?;
 
-        let socket_path = self.config.socket_path(to);
-        let Ok(mut connection) = PeerConnection::open(
-            &self.config,
-            &socket_path,
-            &self.from_thread_id.to_string(),
-            &self.cli_version,
-        )
-        .await
-        else {
-            // Stored but undelivered, which is a valid resting state.
-            return Ok(false);
-        };
-        Ok(connection
-            .send_doorbell(&message_id, &self.from_thread_id.to_string())
-            .await
-            .is_ok())
+        // Stored but undelivered is a valid resting state: the recipient's
+        // startup pickup (`MeshNode::deliver_pending`) delivers it later.
+        Ok(self.ring(to, &message_id).await.is_ok())
     }
 
     /// Launches a session that outlives this one and returns it once it has

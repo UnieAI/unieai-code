@@ -39,6 +39,12 @@ pub struct MeshConfig {
     pub request_timeout: Duration,
     /// Concurrent inbound connections served before new ones are refused.
     pub max_inbound_connections: usize,
+    /// Turns one peer may start here in a row before its user takes part
+    /// again (see [`crate::unieai_chain`]).
+    pub max_auto_turns_per_peer: u32,
+    /// How long messages are kept. Older rows are deleted when a session
+    /// joins, and undelivered messages older than this are never picked up.
+    pub message_retention: Duration,
 }
 
 impl MeshConfig {
@@ -54,12 +60,32 @@ impl MeshConfig {
             handshake_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(5),
             max_inbound_connections: 8,
+            max_auto_turns_per_peer: crate::unieai_chain::DEFAULT_MAX_AUTO_TURNS_PER_PEER,
+            message_retention: Duration::from_secs(7 * 24 * 60 * 60),
         }
     }
 
     /// Directory holding every session socket. Created 0700.
+    ///
+    /// Normally `$CODEX_HOME/session-mesh`. `sun_path` holds only about 104
+    /// bytes, so when `CODEX_HOME` is deep enough that a socket there would not
+    /// fit, a short per-home directory under `$XDG_RUNTIME_DIR` (or the
+    /// temporary directory) is used instead. Every session sharing this
+    /// `CODEX_HOME` computes the same path, so they still find each other.
     pub fn socket_dir(&self) -> PathBuf {
-        self.codex_home.join(SOCKET_DIR_NAME)
+        let preferred = self.codex_home.join(SOCKET_DIR_NAME);
+        if preferred.as_os_str().len() + SOCKET_FILE_NAME_LEN < MAX_SOCKET_PATH_LEN {
+            return preferred;
+        }
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .unwrap_or_else(std::env::temp_dir);
+        base.join(format!(
+            "unieai-mesh-{}-{:016x}",
+            current_uid(),
+            fnv1a(self.codex_home.as_os_str().as_encoded_bytes())
+        ))
     }
 
     /// Socket path for `thread_id`.
@@ -72,7 +98,7 @@ impl MeshConfig {
     /// A detached child has no terminal, so without this its output would go
     /// nowhere and a failure to start would be invisible.
     pub fn child_log_dir(&self) -> PathBuf {
-        self.socket_dir().join("logs")
+        self.codex_home.join(SOCKET_DIR_NAME).join("logs")
     }
 
     /// Advisory lock guarding the probe-then-unlink reclaim of a socket path.
@@ -83,6 +109,31 @@ impl MeshConfig {
     pub fn socket_lock_path(&self, thread_id: ThreadId) -> PathBuf {
         self.socket_dir().join(format!("{thread_id}.sock.lock"))
     }
+}
+
+/// Conservative bound on a Unix socket path, the smaller of the Linux (108)
+/// and macOS (104) `sun_path` buffers.
+pub(crate) const MAX_SOCKET_PATH_LEN: usize = 104;
+
+/// `/` + a hyphenated UUID + `.sock`.
+const SOCKET_FILE_NAME_LEN: usize = 1 + 36 + 5;
+
+/// Stable, dependency-free hash naming the fallback socket directory.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: `getuid` takes no arguments and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
 }
 
 /// Extracts the `ThreadId` a socket path belongs to, if it is one of ours.

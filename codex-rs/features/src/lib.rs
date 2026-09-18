@@ -216,6 +216,10 @@ pub enum Feature {
     /// registry row and binds no socket, so it can be neither listed nor
     /// addressed by another process.
     SessionMesh,
+    /// Extra session-mesh tools beyond messaging: the shared task board
+    /// (`publish_task`, `claim_task`, `report_task`, `list_tasks`) and
+    /// `spawn_peer_session`. Off by default; requires `session_mesh`.
+    SessionMeshTasks,
     /// Enable apps.
     Apps,
     /// Route first-party ChatGPT requests through PSP.
@@ -1399,6 +1403,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SessionMesh,
         key: "session_mesh",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SessionMeshTasks,
+        key: "session_mesh_tasks",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use codex_core::config::ConfigBuilder;
 use codex_protocol::ThreadId;
+use codex_utils_cli::CliConfigOverrides;
 use unieai_session_mesh::InboundDecision;
 use unieai_session_mesh::InboundFuture;
 use unieai_session_mesh::InboundMessage;
@@ -22,9 +23,9 @@ use unieai_session_mesh::MeshNode;
 use unieai_session_mesh::MeshStore;
 use unieai_session_mesh::PeerHandle;
 use unieai_session_mesh::PeerSelector;
+use unieai_session_mesh::PermissionMode;
 use unieai_session_mesh::StateRuntimeStore;
 use unieai_session_mesh::short_ref_display_len;
-use codex_utils_cli::CliConfigOverrides;
 
 #[derive(Debug, clap::Parser)]
 pub struct DebugPeersCommand {
@@ -106,6 +107,11 @@ impl MeshInbound for EphemeralInbound {
             }
         })
     }
+
+    fn permission_mode(&self) -> InboundFuture<'_, Option<PermissionMode>> {
+        // Accepts nothing, so nothing can be laundered through it.
+        Box::pin(async move { Some(PermissionMode::MOST_RESTRICTED) })
+    }
 }
 
 /// A mesh member that accepts messages and prints them.
@@ -119,8 +125,10 @@ impl MeshInbound for ServingInbound {
     ) -> InboundFuture<'a, InboundDecision> {
         Box::pin(async move {
             println!(
-                "received from {} (trigger_turn={}, hop={}): {}",
-                from.short_ref, message.trigger_turn, message.hop, message.content
+                "received (trigger_turn={}, hop={}):\n{}",
+                message.trigger_turn,
+                message.hop,
+                unieai_session_mesh::frame_inbound(&from, &message)
             );
             // Reports StartedTurn when asked to, mirroring what an idle session
             // does, so the sender's ack path is exercised for real.
@@ -141,6 +149,11 @@ impl MeshInbound for ServingInbound {
                 cli_version: env!("CARGO_PKG_VERSION").to_string(),
             }
         })
+    }
+
+    fn permission_mode(&self) -> InboundFuture<'_, Option<PermissionMode>> {
+        // Only prints what it receives; it never acts on a message.
+        Box::pin(async move { Some(PermissionMode::MOST_RESTRICTED) })
     }
 }
 
@@ -169,6 +182,7 @@ pub async fn run_debug_peers_command(
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             session_source: "debug".to_string(),
             cli_version: env!("CARGO_PKG_VERSION").to_string(),
+            engine: "debug".to_string(),
             spawn_id: None,
             spawned_by: None,
         },
@@ -209,7 +223,13 @@ async fn dispatch(node: &MeshNode, subcommand: DebugPeersSubcommand) -> anyhow::
         DebugPeersSubcommand::Send(cmd) => {
             let peer = node.resolve(&PeerSelector::new(cmd.target)).await?;
             let ack = node
-                .send_message(&peer, &cmd.message, !cmd.queue_only, /*hop*/ 0)
+                .send_message(
+                    &peer,
+                    &cmd.message,
+                    !cmd.queue_only,
+                    /*hop*/ 0,
+                    /*permissions*/ None,
+                )
                 .await?;
             println!(
                 "accepted={} delivery={}{}",

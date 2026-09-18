@@ -235,3 +235,49 @@ fn display_length_grows_only_as_far_as_collisions_require() {
     assert_eq!(colliding[0].short_ref, colliding[1].short_ref);
     assert_eq!(short_ref_display_len(&colliding), 8);
 }
+
+#[test]
+fn a_cjk_name_is_kept_and_resolves() {
+    let named = peer(
+        "019460c8-1b2a-7c3d-8e4f-5a6b0c0d0e0f",
+        Some("前端 重構"),
+        "/w/web",
+    );
+
+    assert_eq!(named.name(), "前端-重構");
+    let short_ref = named.short_ref[..SHORT_REF_MIN_LEN].to_string();
+    assert_eq!(
+        named.display_handle(SHORT_REF_MIN_LEN),
+        format!("前端-重構 [{short_ref}]")
+    );
+    for selector in ["前端 重構".to_string(), format!("前端-重構 [{short_ref}]")] {
+        assert_eq!(
+            resolve_peer(&PeerSelector::new(selector), std::slice::from_ref(&named))
+                .expect("a CJK name must resolve")
+                .thread_id,
+            named.thread_id
+        );
+    }
+}
+
+#[test]
+fn a_name_without_letters_falls_back_to_the_directory() {
+    let named = peer(
+        "019460c8-1b2a-7c3d-8e4f-5a6b0c0d0e0f",
+        Some("\"]\n[!!"),
+        "/w/api",
+    );
+    assert_eq!(named.name(), "api");
+}
+
+#[test]
+fn names_never_carry_handle_or_markup_characters_and_are_capped() {
+    let named = peer(
+        "019460c8-1b2a-7c3d-8e4f-5a6b0c0d0e0f",
+        Some(&format!("a\"b<c>[d]\n{}", "x".repeat(200))),
+        "/w/api",
+    );
+    let name = named.name();
+    assert!(!name.contains(['"', '<', '>', '[', ']', '\n']), "{name}");
+    assert!(name.chars().count() <= 48, "{name}");
+}

@@ -54,6 +54,10 @@ use uuid::Uuid;
 pub(crate) enum ThreadToolTransport {
     Disabled,
     Dynamic,
+    /// `Dynamic` plus the session-mesh peer tools (`list_peers`,
+    /// `send_peer_message`) in the `codex_tui` namespace. Used for uac
+    /// threads, whose mesh membership this TUI holds.
+    DynamicWithPeers,
     Mcp(Arc<DynamicToolMcpServer>),
 }
 
@@ -63,6 +67,11 @@ impl ThreadToolTransport {
             Self::Disabled => params.dynamic_tools = None,
             Self::Dynamic => {
                 params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
+            }
+            Self::DynamicWithPeers => {
+                params.dynamic_tools = Some(dynamic_tools::with_peer_tools(
+                    dynamic_tools::non_delegation_tool_specs(),
+                ));
             }
             Self::Mcp(_) => {
                 params.dynamic_tools = None;

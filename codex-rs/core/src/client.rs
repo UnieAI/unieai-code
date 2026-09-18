@@ -896,6 +896,9 @@ impl ModelClient {
             )
         };
         if !is_openai {
+            // `agent_message` is an OpenAI-backend item; other gateways drop it
+            // silently, so peer and sub-agent messages never reach the model.
+            codex_protocol::unieai_agent_message::agent_messages_as_user_messages(&mut input);
             for item in &mut input {
                 item.clear_internal_chat_message_metadata_passthrough();
                 if let ResponseItem::FunctionCall {

@@ -51,6 +51,33 @@ pub struct SessionMeshMessageRecord {
     pub created_at_ms: i64,
     pub delivered_at_ms: Option<i64>,
     pub delivery: Option<String>,
+    /// `message` from a peer, or a `notice` the mesh wrote about an earlier
+    /// message.
+    pub kind: String,
+    /// Engine the sender runs on, stamped at send time.
+    pub sender_engine: Option<String>,
+    /// Sender's sandbox mode and approval policy at send time, compared with
+    /// the recipient's to decide whether the message must be held.
+    pub sender_sandbox: Option<String>,
+    pub sender_approval: Option<String>,
+}
+
+/// Delivery state of a message whose recipient has not yet taken it.
+pub const SESSION_MESH_DELIVERY_HELD: &str = "held";
+/// A held message its recipient's user approved; the next doorbell delivers it.
+pub const SESSION_MESH_DELIVERY_APPROVED: &str = "approved";
+/// A held message its recipient's user refused.
+pub const SESSION_MESH_DELIVERY_DENIED: &str = "denied";
+/// A doorbell has claimed the message and is delivering it.
+pub const SESSION_MESH_DELIVERY_DELIVERING: &str = "delivering";
+
+/// Column list shared by every message query, as a macro so each query stays
+/// a single static string.
+macro_rules! message_columns {
+    () => {
+        "message_id, from_thread_id, to_thread_id, content, hop, trigger_turn, created_at_ms, \
+delivered_at_ms, delivery, kind, sender_engine, sender_sandbox, sender_approval"
+    };
 }
 
 impl StateRuntime {
@@ -190,8 +217,9 @@ ORDER BY p.joined_at_ms DESC
             r#"
 INSERT INTO session_mesh_messages (
     message_id, from_thread_id, to_thread_id, content, hop, trigger_turn,
-    created_at_ms, delivered_at_ms, delivery
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at_ms, delivered_at_ms, delivery, kind, sender_engine, sender_sandbox,
+    sender_approval
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&message.message_id)
@@ -203,6 +231,10 @@ INSERT INTO session_mesh_messages (
         .bind(message.created_at_ms)
         .bind(message.delivered_at_ms)
         .bind(message.delivery.as_deref())
+        .bind(&message.kind)
+        .bind(message.sender_engine.as_deref())
+        .bind(message.sender_sandbox.as_deref())
+        .bind(message.sender_approval.as_deref())
         .execute(self.pool.as_ref())
         .await?;
         Ok(())
@@ -213,14 +245,11 @@ INSERT INTO session_mesh_messages (
         &self,
         message_id: &str,
     ) -> anyhow::Result<Option<SessionMeshMessageRecord>> {
-        let row = sqlx::query(
-            r#"
-SELECT message_id, from_thread_id, to_thread_id, content, hop, trigger_turn,
-    created_at_ms, delivered_at_ms, delivery
-FROM session_mesh_messages
-WHERE message_id = ?
-            "#,
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            message_columns!(),
+            " FROM session_mesh_messages WHERE message_id = ?"
+        ))
         .bind(message_id)
         .fetch_optional(self.pool.as_ref())
         .await?;
@@ -237,15 +266,12 @@ WHERE message_id = ?
         thread_id: ThreadId,
         after_ms: i64,
     ) -> anyhow::Result<Vec<SessionMeshMessageRecord>> {
-        let rows = sqlx::query(
-            r#"
-SELECT message_id, from_thread_id, to_thread_id, content, hop, trigger_turn,
-    created_at_ms, delivered_at_ms, delivery
-FROM session_mesh_messages
-WHERE to_thread_id = ? AND created_at_ms > ?
-ORDER BY created_at_ms ASC
-            "#,
-        )
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            message_columns!(),
+            " FROM session_mesh_messages \
+WHERE to_thread_id = ? AND created_at_ms > ? ORDER BY created_at_ms ASC"
+        ))
         .bind(thread_id.to_string())
         .bind(after_ms)
         .fetch_all(self.pool.as_ref())
@@ -254,6 +280,86 @@ ORDER BY created_at_ms ASC
         rows.into_iter()
             .map(session_mesh_message_from_row)
             .collect()
+    }
+
+    /// Messages to `thread_id` nobody has attempted to deliver yet, oldest
+    /// first — typically left while the recipient was not running.
+    pub async fn list_pending_session_mesh_messages(
+        &self,
+        thread_id: ThreadId,
+        created_since_ms: i64,
+    ) -> anyhow::Result<Vec<SessionMeshMessageRecord>> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            message_columns!(),
+            " FROM session_mesh_messages \
+WHERE to_thread_id = ? AND delivered_at_ms IS NULL AND delivery IS NULL AND created_at_ms >= ? \
+ORDER BY created_at_ms ASC"
+        ))
+        .bind(thread_id.to_string())
+        .bind(created_since_ms)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        rows.into_iter()
+            .map(session_mesh_message_from_row)
+            .collect()
+    }
+
+    /// Messages to `thread_id` waiting for its user's approval, oldest first.
+    pub async fn list_held_session_mesh_messages(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Vec<SessionMeshMessageRecord>> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            message_columns!(),
+            " FROM session_mesh_messages \
+WHERE to_thread_id = ? AND delivered_at_ms IS NULL AND delivery = ? ORDER BY created_at_ms ASC"
+        ))
+        .bind(thread_id.to_string())
+        .bind(SESSION_MESH_DELIVERY_HELD)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        rows.into_iter()
+            .map(session_mesh_message_from_row)
+            .collect()
+    }
+
+    /// Moves an undelivered message from `expected` to `next` delivery state,
+    /// atomically. Returns `false` when the row is not in `expected` (or is
+    /// already delivered), which is how a replayed doorbell, a second
+    /// approval, or two concurrent doorbells are turned away.
+    pub async fn transition_session_mesh_message(
+        &self,
+        message_id: &str,
+        expected: Option<&str>,
+        next: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE session_mesh_messages SET delivery = ? \
+WHERE message_id = ? AND delivered_at_ms IS NULL AND delivery IS ?",
+        )
+        .bind(next)
+        .bind(message_id)
+        .bind(expected)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Deletes messages created before `before_ms`, delivered or not.
+    ///
+    /// A message nobody picked up within the retention window is stale: its
+    /// sender has long since moved on, and delivering it now would surprise
+    /// everyone involved.
+    pub async fn prune_session_mesh_messages(&self, before_ms: i64) -> anyhow::Result<u64> {
+        let result = sqlx::query("DELETE FROM session_mesh_messages WHERE created_at_ms < ?")
+            .bind(before_ms)
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Records the outcome of a delivery attempt.
@@ -317,6 +423,10 @@ fn session_mesh_message_from_row(
         created_at_ms: row.try_get("created_at_ms")?,
         delivered_at_ms: row.try_get("delivered_at_ms")?,
         delivery: row.try_get("delivery")?,
+        kind: row.try_get("kind")?,
+        sender_engine: row.try_get("sender_engine")?,
+        sender_sandbox: row.try_get("sender_sandbox")?,
+        sender_approval: row.try_get("sender_approval")?,
     })
 }
 

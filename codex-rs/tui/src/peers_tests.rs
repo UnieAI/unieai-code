@@ -87,6 +87,10 @@ fn a_sender_that_has_since_left_still_renders() {
         created_at_ms: 0,
         delivered_at_ms: None,
         delivery: None,
+        kind: "message".to_string(),
+        sender_engine: None,
+        sender_sandbox: None,
+        sender_approval: None,
     };
 
     // A peer can vanish between sending and being rendered; the transcript must
@@ -114,4 +118,104 @@ fn a_peer_message_cell_names_its_sender_and_keeps_the_body() {
     assert_eq!(rendered[0], "peer message from api [k2f8]");
     assert!(rendered.contains(&"line one".to_string()), "{rendered:?}");
     assert!(rendered.contains(&"line two".to_string()), "{rendered:?}");
+}
+
+fn record(id: &str, created_at_ms: i64, delivery: Option<&str>) -> SessionMeshMessageRecord {
+    SessionMeshMessageRecord {
+        message_id: id.to_string(),
+        from_thread_id: thread_id("5a6b9a8b7c6d"),
+        to_thread_id: thread_id("5a6b0c0d0e0f"),
+        content: format!("body of {id}"),
+        hop: 0,
+        trigger_turn: true,
+        created_at_ms,
+        delivered_at_ms: delivery.map(|_| created_at_ms),
+        delivery: delivery.map(str::to_string),
+        kind: "message".to_string(),
+        sender_engine: Some("codex".to_string()),
+        sender_sandbox: None,
+        sender_approval: None,
+    }
+}
+
+fn ids(messages: &[SessionMeshMessageRecord]) -> Vec<&str> {
+    messages
+        .iter()
+        .map(|message| message.message_id.as_str())
+        .collect()
+}
+
+#[test]
+fn the_feed_shows_each_settled_message_once() {
+    let mut feed = PeerFeed::new(1_000);
+
+    // Still being decided: no card yet, or a message about to be held would
+    // first appear as delivered.
+    let first = feed.take_new(vec![
+        record("pending", 1_500, None),
+        record("delivering", 1_500, Some("delivering")),
+        record("queued", 1_500, Some("queued")),
+    ]);
+    assert_eq!(ids(&first), vec!["queued"]);
+
+    let second = feed.take_new(vec![
+        record("pending", 1_500, Some("held")),
+        record("delivering", 1_500, Some("started_turn")),
+        record("queued", 1_500, Some("queued")),
+    ]);
+    assert_eq!(ids(&second), vec!["pending", "delivering"]);
+}
+
+#[test]
+fn the_feed_skips_old_history_but_keeps_what_was_picked_up_or_held() {
+    let mut feed = PeerFeed::new(1_000);
+    let mut picked_up = record("picked-up", 10, Some("queued"));
+    // Created while this session was not running, delivered at start.
+    picked_up.delivered_at_ms = Some(1_200);
+
+    let shown = feed.take_new(vec![
+        record("seen-last-week", 10, Some("queued")),
+        picked_up,
+        record("still-held", 10, Some("held")),
+    ]);
+
+    assert_eq!(ids(&shown), vec!["picked-up", "still-held"]);
+}
+
+#[test]
+fn listings_never_include_this_session() {
+    let rows = peer_rows(&[
+        peer("5a6b0c0d0e0f", Some("me")),
+        peer("5a6b9a8b7c6d", Some("other")),
+    ]);
+    let others = exclude_thread(rows, Some(thread_id("5a6b0c0d0e0f")));
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].thread_id, thread_id("5a6b9a8b7c6d"));
+}
+
+#[test]
+fn cells_say_when_a_message_is_held_or_a_notice() {
+    let render = |cell: PeerMessageCell| -> String {
+        cell.display_lines(80)[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    };
+    assert_eq!(
+        render(PeerMessageCell::from_record(
+            "api [k2f8]".to_string(),
+            &record("h", 0, Some("held"))
+        )),
+        "peer message (held - awaiting your approval) from api [k2f8]"
+    );
+    let mut notice = record("n", 0, Some("queued"));
+    notice.kind = "notice".to_string();
+    assert_eq!(
+        render(PeerMessageCell::from_record(
+            "api [k2f8]".to_string(),
+            &notice
+        )),
+        "delivery notice from api [k2f8]"
+    );
 }

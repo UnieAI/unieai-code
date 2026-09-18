@@ -323,6 +323,9 @@ pub(crate) struct AppServerSession {
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_completion_pending: AtomicBool,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
+    /// Offer the session-mesh peer tools as dynamic tools (uac engine, whose
+    /// mesh membership the TUI holds).
+    peer_mesh_tools: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -424,7 +427,13 @@ impl AppServerSession {
             managed_new_thread_defaults: None,
             external_agent_config_import_completion_pending: AtomicBool::new(false),
             dynamic_tool_mcp: None,
+            peer_mesh_tools: false,
         }
+    }
+
+    /// Offers the session-mesh peer tools to threads started from here.
+    pub(crate) fn set_peer_mesh_tools(&mut self, enabled: bool) {
+        self.peer_mesh_tools = enabled;
     }
 
     pub(crate) async fn start_dynamic_tool_mcp(
@@ -487,6 +496,8 @@ impl AppServerSession {
             ThreadToolTransport::Disabled
         } else if let Some(server) = self.dynamic_tool_mcp.as_ref() {
             ThreadToolTransport::Mcp(Arc::clone(server))
+        } else if self.peer_mesh_tools {
+            ThreadToolTransport::DynamicWithPeers
         } else {
             ThreadToolTransport::Dynamic
         }
@@ -519,6 +530,7 @@ impl AppServerSession {
     /// Carry capabilities that may exist only in memory when the optional cache is unwritable.
     pub(crate) fn inherit_task_tool_capabilities(&mut self, previous: &Self) {
         self.task_tool_threads.extend(&previous.task_tool_threads);
+        self.peer_mesh_tools = previous.peer_mesh_tools;
     }
 
     pub(crate) fn task_tools_available(&self, thread_id: ThreadId) -> bool {
@@ -1953,7 +1965,7 @@ fn service_tier_override_from_config(config: &Config) -> Option<Option<String>> 
     })
 }
 
-fn sandbox_mode_from_permission_profile(
+pub(crate) fn sandbox_mode_from_permission_profile(
     permission_profile: &PermissionProfile,
     cwd: &std::path::Path,
 ) -> Option<codex_app_server_protocol::SandboxMode> {

@@ -381,8 +381,44 @@ pub(crate) enum AppEvent {
     },
 
     PeerBusUpdated {
+        /// Thread the refresh was read for; stale refreshes are dropped.
+        thread_id: ThreadId,
         peers: Vec<crate::peers::PeerRow>,
         new_messages: Vec<codex_state::SessionMeshMessageRecord>,
+        /// Messages waiting for this session's user to approve or deny.
+        held: Vec<codex_state::SessionMeshMessageRecord>,
+    },
+
+    /// A probed peer listing for `/peers`.
+    PeersListed {
+        result: Result<Vec<crate::peers::PeerRow>, String>,
+    },
+
+    /// The user decided on a held peer message.
+    ResolveHeldPeerMessage {
+        message_id: String,
+        approve: bool,
+    },
+
+    /// A peer's framed message for a uac thread this TUI holds in the mesh.
+    /// The app answers with what it did (started a turn, steered, queued).
+    UacPeerInbound {
+        thread_id: ThreadId,
+        text: String,
+        trigger_turn: bool,
+        reply: tokio::sync::oneshot::Sender<unieai_session_mesh::wire::Delivery>,
+    },
+
+    /// A peer asks whether the uac thread is busy (`true`) or idle.
+    UacPeerProbe {
+        thread_id: ThreadId,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
+
+    /// A uac thread's mesh join finished.
+    UacMeshJoined {
+        thread_id: ThreadId,
+        result: Result<crate::unieai_mesh::JoinedMember, unieai_session_mesh::MeshError>,
     },
 
     /// Merge a completed root-scoped agent-picker refresh without blocking terminal input.

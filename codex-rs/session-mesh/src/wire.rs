@@ -94,8 +94,14 @@ pub struct Ack {
 pub enum Delivery {
     /// The recipient was idle and a turn is now running.
     StartedTurn,
-    /// The recipient was busy; the message waits for the next turn boundary.
+    /// Accepted without starting a turn. A busy recipient takes it into the
+    /// running turn at its next step (after the current tool call or model
+    /// response); an idle one reads it at the start of its next turn.
     Queued,
+    /// The recipient runs with broader permissions than the sender, so the
+    /// message waits until the recipient's user approves it. The sender gets a
+    /// notice either way.
+    Held,
     /// The recipient declined.
     Rejected,
 }
@@ -105,6 +111,7 @@ impl Delivery {
         match self {
             Self::StartedTurn => "started_turn",
             Self::Queued => "queued",
+            Self::Held => "held",
             Self::Rejected => "rejected",
         }
     }
@@ -150,6 +157,9 @@ pub enum ErrorCode {
     HopLimit,
     Busy,
     NotFound,
+    /// The message was already delivered (or held, or refused); a doorbell
+    /// is never honoured twice.
+    AlreadyHandled,
     Internal,
     /// A code this build does not know. Keeps an older peer able to *report* a
     /// newer peer's refusal instead of failing to parse it.

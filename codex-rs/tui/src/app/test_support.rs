@@ -83,6 +83,7 @@ pub(super) async fn make_test_app() -> App {
         peer_bus_poller: None,
         unread_peer_messages: 0,
         peer_rows: Vec::new(),
+        peer_mesh: Default::default(),
         agent_started_at: HashMap::new(),
         agent_tokens: HashMap::new(),
         agent_activity: HashMap::new(),

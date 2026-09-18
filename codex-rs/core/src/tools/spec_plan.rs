@@ -1247,9 +1247,15 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
 #[instrument(level = "trace", skip_all)]
 #[instrument(level = "trace", skip_all)]
 fn add_session_mesh_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
-    if context.turn_context.config.features.enabled(Feature::SessionMesh) {
+    let features = &context.turn_context.config.features;
+    if features.enabled(Feature::SessionMesh) {
         registry.add(crate::tools::handlers::session_mesh::ListPeersHandler);
         registry.add(crate::tools::handlers::session_mesh::SendPeerMessageHandler);
+    }
+    // The task board and detached child sessions go beyond talking to a peer
+    // and widen what a peer-driven turn can set in motion, so they sit behind
+    // their own flag, off by default.
+    if features.enabled(Feature::SessionMesh) && features.enabled(Feature::SessionMeshTasks) {
         registry.add(crate::tools::handlers::session_mesh::PublishTaskHandler);
         registry.add(crate::tools::handlers::session_mesh::ClaimTaskHandler);
         registry.add(crate::tools::handlers::session_mesh::ReportTaskHandler);

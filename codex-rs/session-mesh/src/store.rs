@@ -46,6 +46,27 @@ pub trait MeshStore: Send + Sync {
         since_ms: i64,
     ) -> StoreFuture<'_, i64>;
 
+    /// Moves an undelivered message from `expected` to `next` delivery state
+    /// atomically; `false` when it was not in `expected`. This is the
+    /// compare-and-set that makes delivery idempotent.
+    fn transition_message<'a>(
+        &'a self,
+        message_id: &'a str,
+        expected: Option<&'a str>,
+        next: &'a str,
+    ) -> StoreFuture<'a, bool>;
+
+    /// Messages to `to_thread_id` no delivery was ever attempted for, created
+    /// at or after `since_ms`, oldest first.
+    fn list_pending_messages(
+        &self,
+        to_thread_id: ThreadId,
+        since_ms: i64,
+    ) -> StoreFuture<'_, Vec<SessionMeshMessageRecord>>;
+
+    /// Deletes messages created before `before_ms`.
+    fn prune_messages(&self, before_ms: i64) -> StoreFuture<'_, u64>;
+
     #[allow(clippy::too_many_arguments)]
     fn publish_task<'a>(
         &'a self,
@@ -179,6 +200,42 @@ impl MeshStore for StateRuntimeStore {
         Box::pin(async move {
             self.runtime
                 .count_recent_session_mesh_triggers(from_thread_id, to_thread_id, since_ms)
+                .await
+                .map_err(store_error)
+        })
+    }
+
+    fn transition_message<'a>(
+        &'a self,
+        message_id: &'a str,
+        expected: Option<&'a str>,
+        next: &'a str,
+    ) -> StoreFuture<'a, bool> {
+        Box::pin(async move {
+            self.runtime
+                .transition_session_mesh_message(message_id, expected, next)
+                .await
+                .map_err(store_error)
+        })
+    }
+
+    fn list_pending_messages(
+        &self,
+        to_thread_id: ThreadId,
+        since_ms: i64,
+    ) -> StoreFuture<'_, Vec<SessionMeshMessageRecord>> {
+        Box::pin(async move {
+            self.runtime
+                .list_pending_session_mesh_messages(to_thread_id, since_ms)
+                .await
+                .map_err(store_error)
+        })
+    }
+
+    fn prune_messages(&self, before_ms: i64) -> StoreFuture<'_, u64> {
+        Box::pin(async move {
+            self.runtime
+                .prune_session_mesh_messages(before_ms)
                 .await
                 .map_err(store_error)
         })

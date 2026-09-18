@@ -216,6 +216,7 @@ mod config_persistence;
 mod connector_mentions;
 mod daemon_menu;
 mod unieai_engine_menu;
+mod unieai_peer_mesh;
 mod event_dispatch;
 mod exit_summary;
 mod experimental_features;
@@ -565,6 +566,8 @@ pub(crate) struct App {
     pub(crate) unread_peer_messages: usize,
     /// Latest peer listing, used by the picker and the tree.
     pub(crate) peer_rows: Vec<crate::peers::PeerRow>,
+    /// Poller target, uac membership, and held-message prompts.
+    peer_mesh: unieai_peer_mesh::PeerMeshState,
     /// When each thread first appeared, for the resident tree's elapsed column.
     pub(crate) agent_started_at: HashMap<ThreadId, std::time::Instant>,
     /// Tokens accumulated per thread, so the tree can show cost per agent

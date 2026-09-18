@@ -33,6 +33,9 @@ pub struct SpawnChildParams {
     pub prompt: String,
     /// Working directory for the child. Defaults to the parent's.
     pub cwd: Option<PathBuf>,
+    /// Sandbox mode passed as `--sandbox`, so the child inherits the
+    /// launcher's reach instead of whatever the config file defaults to.
+    pub sandbox_mode: Option<String>,
 }
 
 /// How the launch went, for the caller to report.
@@ -59,9 +62,11 @@ pub(crate) fn child_command(
     stderr: std::fs::File,
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(exe);
+    command.arg("exec").arg("--skip-git-repo-check");
+    if let Some(sandbox_mode) = params.sandbox_mode.as_ref() {
+        command.arg("--sandbox").arg(sandbox_mode);
+    }
     command
-        .arg("exec")
-        .arg("--skip-git-repo-check")
         .arg(&params.prompt)
         .env(SPAWN_ID_ENV, spawn_id)
         .env(SPAWN_PARENT_ENV, parent.to_string())
