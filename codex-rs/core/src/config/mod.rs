@@ -264,6 +264,19 @@ const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
 
+/// Whether the account's model catalog states a context window for `model`.
+fn unieai_catalog_declares_window(
+    catalog: Option<&codex_protocol::openai_models::ModelsResponse>,
+    model: &str,
+) -> bool {
+    catalog.is_some_and(|catalog| {
+        catalog
+            .models
+            .iter()
+            .any(|info| info.slug == model && info.context_window.is_some())
+    })
+}
+
 fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<AbsolutePathBuf> {
     let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
     let trimmed = raw.trim();
@@ -4034,6 +4047,17 @@ impl Config {
         // model — Studio's first model wins). The catalog is injected even
         // when empty so the bundled OpenAI models never leak into the picker;
         // an explicit model_catalog_json still takes precedence.
+        // What a gateway model holds when the account declares no window:
+        // what an earlier rejection taught us, else a conservative default.
+        // Without this the fallback metadata's 272k window means nothing
+        // compacts until the gateway rejects the request mid-turn.
+        let learned_context_windows = if model_provider_id
+            == codex_model_provider_info::UNIEAI_PROVIDER_ID
+        {
+            codex_models_manager::unieai_context_limits::load(&codex_home)
+        } else {
+            std::collections::HashMap::new()
+        };
         let model_catalog = model_catalog.or_else(|| {
             if model_provider_id != codex_model_provider_info::UNIEAI_PROVIDER_ID {
                 return None;
@@ -4047,7 +4071,11 @@ impl Config {
                     codex_models_manager::model_info::model_info_for_gateway_model(
                         &model.id,
                         model.name.as_deref().unwrap_or(&model.id),
-                        model.context_window,
+                        codex_models_manager::unieai_context_limits::resolve_context_window(
+                            model.context_window,
+                            &learned_context_windows,
+                            &model.id,
+                        ),
                         model.input_modalities.as_deref(),
                     )
                 })
@@ -4265,11 +4293,27 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
+        // A gateway model the catalog does not describe (no sign-in, or a
+        // model added since) would otherwise inherit the fallback metadata's
+        // 272k window and never compact before the gateway rejects the turn.
+        let model_context_window = cfg.model_context_window.or_else(|| {
+            let model = model.as_deref()?;
+            if model_provider_id != codex_model_provider_info::UNIEAI_PROVIDER_ID
+                || unieai_catalog_declares_window(model_catalog.as_ref(), model)
+            {
+                return None;
+            }
+            codex_models_manager::unieai_context_limits::resolve_context_window(
+                /*declared*/ None,
+                &learned_context_windows,
+                model,
+            )
+        });
         let config = Self {
             model,
             service_tier,
             review_model,
-            model_context_window: cfg.model_context_window,
+            model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_auto_compact_token_limit_scope: cfg
                 .model_auto_compact_token_limit_scope

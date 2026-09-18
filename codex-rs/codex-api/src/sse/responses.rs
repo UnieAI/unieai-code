@@ -712,7 +712,23 @@ fn try_parse_retry_after(err: &Error) -> Option<Duration> {
 }
 
 fn is_context_window_error(error: &Error) -> bool {
-    error.code.as_deref() == Some("context_length_exceeded")
+    if error.code.as_deref() == Some("context_length_exceeded") {
+        return true;
+    }
+    // A gateway in front of the model reports its own code (UnieAI's says
+    // `upstream_error`) and states the real limit in the message. Reading it
+    // turns a dead turn into a compaction, and the limit is remembered so the
+    // next session sizes the window correctly.
+    let Some(message) = error.message.as_deref() else {
+        return false;
+    };
+    match codex_protocol::unieai_context_limit::parse_context_limit(message) {
+        Some(limit) => {
+            crate::unieai_context_limit::note(limit);
+            true
+        }
+        None => false,
+    }
 }
 
 fn is_quota_exceeded_error(error: &Error) -> bool {

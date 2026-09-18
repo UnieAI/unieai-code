@@ -435,9 +435,21 @@ inference access (Studio → Keys), then retry `unieai login`",
             .and_then(|config| config.base_url()),
     );
 
-    let available_models = provider_config
+    let mut available_models = provider_config
         .as_ref()
         .and_then(models_from_provider_config);
+    if let Some(models) = available_models.as_mut()
+        && let Ok(sizes) = fetch_studio_model_sizes(
+            &client,
+            &studio_url,
+            &tokens.access_token,
+            active_org_id.as_deref(),
+        )
+        .await
+    {
+        apply_studio_model_sizes(models, &sizes);
+    }
+    let available_models = available_models;
 
     let credentials = UnieAICredentials {
         account: UnieAIAccountKind::Studio,
@@ -595,6 +607,69 @@ async fn fetch_gateway_model_capabilities(
         .map(|list| list.data)
 }
 
+/// One entry of Studio's `/api/models` (only what the CLI uses). The model
+/// registry is where a deployment records the context window; `/api/config`
+/// and the gateway's `/models` may both leave it out.
+#[derive(Debug, Deserialize)]
+struct StudioModelEntry {
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default, rename = "providerModelId")]
+    provider_model_id: Option<String>,
+    /// 0 when the deployment has not recorded one.
+    #[serde(default, rename = "contextSize")]
+    context_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudioModelList {
+    #[serde(default)]
+    data: Vec<StudioModelEntry>,
+}
+
+/// Context windows from Studio's model registry, by model id.
+async fn fetch_studio_model_sizes(
+    client: &codex_http_client::HttpClient,
+    studio_url: &str,
+    access_token: &str,
+    org_id: Option<&str>,
+) -> io::Result<HashMap<String, i64>> {
+    let list: StudioModelList = get_json(
+        client,
+        &format!("{studio_url}/api/models"),
+        access_token,
+        org_id,
+    )
+    .await?;
+    Ok(studio_model_sizes(&list.data))
+}
+
+fn studio_model_sizes(entries: &[StudioModelEntry]) -> HashMap<String, i64> {
+    let mut sizes = HashMap::new();
+    for entry in entries {
+        let Some(size) = entry.context_size.filter(|size| *size > 0) else {
+            continue;
+        };
+        for id in [entry.slug.as_deref(), entry.provider_model_id.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|id| !id.is_empty())
+        {
+            sizes.insert(id.to_string(), size);
+        }
+    }
+    sizes
+}
+
+/// Fill in context windows Studio's provider config left out.
+fn apply_studio_model_sizes(models: &mut [UnieAIModel], sizes: &HashMap<String, i64>) {
+    for model in models.iter_mut() {
+        if model.context_window.is_none() {
+            model.context_window = sizes.get(&model.id).copied();
+        }
+    }
+}
+
 /// Fill in what Studio leaves out: context window and input modalities.
 fn apply_gateway_capabilities(models: &mut [UnieAIModel], capabilities: &[GatewayModelEntry]) {
     for model in models.iter_mut() {
@@ -674,6 +749,19 @@ pub async fn sync_unieai_account(codex_home: &Path) -> io::Result<Option<UnieAIC
     // An account with no models is a real state; record it rather than keep
     // serving a stale list.
     let mut models = models_from_provider_config(&provider).unwrap_or_default();
+    // The provider config rarely carries a context window; Studio's model
+    // registry does. Best-effort: an unreachable registry keeps what we have.
+    match fetch_studio_model_sizes(
+        &client,
+        &credentials.studio_url,
+        &credentials.access_token,
+        credentials.active_org_id.as_deref(),
+    )
+    .await
+    {
+        Ok(sizes) => apply_studio_model_sizes(&mut models, &sizes),
+        Err(err) => tracing::debug!(%err, "Studio model registry unavailable"),
+    }
     // Studio lists which models the account has; the gateway knows what each
     // one accepts. Best-effort: a gateway without the listing keeps Studio's.
     match fetch_gateway_model_capabilities(&client, &credentials).await {
@@ -845,6 +933,32 @@ mod tests {
             Some(vec!["text".to_string(), "image".to_string()])
         );
         assert_eq!(models[2].input_modalities, None);
+    }
+
+    #[test]
+    fn studio_model_registry_fills_missing_context_windows() {
+        let list: StudioModelList = serde_json::from_value(serde_json::json!({
+            "data": [
+                {"slug": "flash", "providerModelId": "vendor/flash", "contextSize": 131072},
+                {"slug": "unsized", "contextSize": 0},
+                {"slug": "no-field"}
+            ]
+        }))
+        .expect("parse");
+        let sizes = studio_model_sizes(&list.data);
+        assert_eq!(sizes.get("flash"), Some(&131_072));
+        assert_eq!(sizes.get("vendor/flash"), Some(&131_072));
+        assert_eq!(sizes.get("unsized"), None);
+
+        let mut models = vec![
+            UnieAIModel { id: "flash".to_string(), name: None, context_window: None, input_modalities: None },
+            UnieAIModel { id: "sized".to_string(), name: None, context_window: Some(8_000), input_modalities: None },
+            UnieAIModel { id: "unsized".to_string(), name: None, context_window: None, input_modalities: None },
+        ];
+        apply_studio_model_sizes(&mut models, &sizes);
+        assert_eq!(models[0].context_window, Some(131_072));
+        assert_eq!(models[1].context_window, Some(8_000), "the provider config wins");
+        assert_eq!(models[2].context_window, None);
     }
 
     #[test]

@@ -336,6 +336,7 @@ pub(crate) async fn run_turn(
         {
             return Err(error);
         }
+        crate::unieai_context_limit::note_gateway_context_limit(&turn_context);
         // Incoming evidence can overflow even below the normal history
         // threshold. Keep it pending while compacting, then select once more.
         sess.services
