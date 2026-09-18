@@ -172,10 +172,10 @@ export function createHandlers({
     instructionSources: [],
     approvalPolicy: params?.approvalPolicy || "on-request",
     approvalsReviewer: params?.approvalsReviewer || "user",
-    sandbox: sandboxMode === "readOnly"
+    sandbox: sandboxMode === "readOnly" || t.readOnly
       ? { type: "readOnly", networkAccess: false }
       : { type: "workspaceWrite", networkAccess: true },
-    activePermissionProfile: { id: sandboxMode === "readOnly" ? ":read-only" : ":workspace-write", extends: null },
+    activePermissionProfile: { id: sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write", extends: null },
     reasoningEffort: "none",
     multiAgentMode: "explicitRequestOnly",
   });
@@ -238,6 +238,7 @@ export function createHandlers({
       ids: () => ({ threadId: thread.id, turnId: thread.activeTurn?.id ?? null }),
       newItemId,
       clientTools: () => thread.clientTools ?? null,
+      oneShot: Boolean(thread.oneShot),
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -330,6 +331,11 @@ export function createHandlers({
         ephemeral: params?.ephemeral ?? false,
       });
       thread.connection = ctx;
+      // A hidden, read-only ephemeral thread (the client's title generation
+      // and other structured one-shots): answered by a single model call
+      // with no tools, so "read-only" is true rather than a label.
+      thread.readOnly = ["read-only", "readOnly"].includes(params?.sandbox);
+      thread.oneShot = thread.readOnly && thread.ephemeral;
       // Tools the client hosts (TUI task tools, cross-session messaging); the
       // engine offers them to the model and calls back with item/tool/call.
       thread.clientTools = Array.isArray(params?.dynamicTools) ? params.dynamicTools : null;
@@ -406,7 +412,7 @@ export function createHandlers({
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
-        .send(text, { abortSignal: thread.activeTurn.abort.signal })
+        .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null })
         .then(() => {
           if (reasoningOpened) emitItem("item/completed", { item: reasoningItem(reasoningId, reasoning), completedAtMs: Date.now() });
           if (answer) emitItem("item/completed", { item: agentMessageItem(answerId, answer), completedAtMs: Date.now() });

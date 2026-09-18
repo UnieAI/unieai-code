@@ -477,3 +477,23 @@ test("the client's dynamic tools reach the engine and survive a restart", async 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a read-only ephemeral thread is reported read-only and gets a one-shot engine with the schema", async () => {
+  let built = null;
+  let sentOptions = null;
+  const h = createHandlers({
+    createEngineFor: (opts) => ((built = opts), { send: async (_text, options) => ((sentOptions = options), { text: "{}" }) }),
+    codexHome: "/h",
+  });
+  const ctx = { emit() {}, request: async () => ({}) };
+  const started = await h["thread/start"]({ cwd: "/repo", sandbox: "read-only", ephemeral: true, approvalPolicy: "never" }, ctx);
+  assert.equal(started.sandbox.type, "readOnly");
+  const schema = { type: "object" };
+  await h["turn/start"]({ threadId: started.thread.id, input: [{ type: "text", text: "title" }], outputSchema: schema }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(built.oneShot, true);
+  assert.deepEqual(sentOptions.outputSchema, schema);
+
+  const normal = await h["thread/start"]({ cwd: "/repo" }, ctx);
+  assert.equal(normal.sandbox.type, "workspaceWrite");
+});

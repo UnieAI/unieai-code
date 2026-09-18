@@ -28,6 +28,9 @@ import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
 import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
 import { prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
+import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
+
+const oneShotModel = createOneShotModel();
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -92,7 +95,7 @@ await launchAppServer({
   threadStore: createThreadStore(join(codexHome, "uac", "threads.json")),
   defaultModel: dsh.defaultModel,
   onShutdown: () => host.close(),
-  buildEngine: ({ cwd, model, sandboxMode: _mode, ...callbacks }) => {
+  buildEngine: ({ cwd, model, sandboxMode: _mode, oneShot, ...callbacks }) => {
     // The TUI re-synced unieai.json with Studio when it launched; carry that
     // into dsh's hot-reloaded settings before this thread picks a model.
     let account = dsh;
@@ -101,6 +104,9 @@ await launchAppServer({
     } catch (error) {
       log("[uac] could not refresh the account for dsh:", error.message);
     }
+    const chosen = model && account.models.includes(model) ? model : account.defaultModel;
+    // The client's hidden structured turns (thread titles): one tool-less call.
+    if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
     return createDshEngine({
       host,
       workspace: cwd,
