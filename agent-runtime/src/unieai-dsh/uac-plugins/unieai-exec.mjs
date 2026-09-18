@@ -39,6 +39,9 @@ import {
 import { TOOL_ABORTED, defineTool } from "@deepseek-ai/dsh-tools";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 
+/** Waits on the command instead of exec-ing it, so it stays the parent. */
+export const DETACH_HOLDER = 'trap "" HUP; "$@"; status=$?; exit $status';
+
 export const name = "unieai-exec";
 export const inject = ["tools", "subprocess", "sandboxPolicy", "shellEnv", "systemPrompt"];
 
@@ -658,6 +661,12 @@ export function apply(ctx, config = {}) {
    * `setsid` do not survive — so a detached command is spawned here, outside
    * that lifetime, but through the same sandbox confinement (`argv`).
    * Output goes to a log file; a command that dies at once is reported.
+   *
+   * The sandbox runner (bubblewrap) is started with `--die-with-parent`, so
+   * spawned straight from dsh it died with dsh and took the service along.
+   * A shell in its own session holds it instead: that shell is the runner's
+   * parent, outlives dsh, and exits with the service. Killing the reported
+   * PID (the shell) still stops the whole service.
    */
   const launchDetached = async ({ argv, cwd, env, confined, mode }) => {
     const dir = join(tmpdir(), "unieai-exec-detached");
@@ -666,7 +675,7 @@ export function apply(ctx, config = {}) {
     const fd = openSync(log, "a", 0o600);
     let child;
     try {
-      child = spawnDetached(argv[0], argv.slice(1), {
+      child = spawnDetached("/bin/sh", ["-c", DETACH_HOLDER, "unieai-detached", ...argv], {
         cwd,
         env: { ...process.env, ...env },
         detached: true,

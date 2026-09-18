@@ -10,8 +10,11 @@
  *
  *   Budget   `maxSteps` steps (config, else env `UNIEAI_TURN_MAX_STEPS`) and
  *            `deadlineMs` (config, else `UNIEAI_TURN_DEADLINE_MS`). One notice
- *            at 75% of the steps (budgets of 8+), one when `warnRatio` of the
- *            time is left.
+ *            at 75% of the steps (budgets of 8+). With a deadline, one notice
+ *            when `deliverableRatio` of the time is used (make sure the
+ *            deliverable exists) and one when `warnRatio` of it is left.
+ *            Runs that hit a wall clock without ever writing their output
+ *            score nothing; a rough deliverable written early can be refined.
  *   Landing  From the last step (or when the deadline passed, or doom layer 2
  *            forced it) the model is told to wrap up in text, and an
  *            agent-scoped `tools.guard` makes every further call return
@@ -43,6 +46,7 @@ export const inject = ["tools"];
 
 export const DEFAULTS = Object.freeze({
   warnRatio: 0.2,
+  deliverableRatio: 0.5,
   minRetryWindowMs: 15_000,
   cancelGraceMs: 60_000,
   doom: true,
@@ -72,9 +76,16 @@ export const MESSAGES = Object.freeze({
   budgetNotice: (used, max) =>
     `[loop guardrail] You have used ${used} of ${max} tool steps this turn. Start converging: ` +
     "finish the remaining work and verify it before the budget runs out.",
+  deliverableNotice: (seconds) =>
+    `[loop guardrail] Half of this turn's time is used; about ${seconds} seconds remain. If the task asks ` +
+    "for an output (a file, a running service, a fix in place), make sure a working version of it exists " +
+    "in its final location now, even a rough one, and commit it if the task asks you to commit; then keep " +
+    "improving it. Work that is never written down or committed counts for nothing.",
   deadlineNotice: (seconds) =>
-    `[loop guardrail] About ${seconds} seconds remain for this turn. Stop exploring: finish the change ` +
-    "you are making, run the most relevant check once, and give your final answer.",
+    `[loop guardrail] About ${seconds} seconds remain for this turn. Stop exploring: write your best ` +
+    "current result to where the task expects it (and commit, if the task says to) if you have not, " +
+    "finish the change you are making, " +
+    "run the most relevant check once, and give your final answer.",
   repeated: (tool, count) =>
     `You have already called ${tool} with these exact arguments ${count} times. Do not repeat it — ` +
     "use the earlier result or change your approach. If you cannot proceed, answer with what you have.",
@@ -91,11 +102,14 @@ const flag = (value, fallback) => {
 
 export function resolveConfig(config = {}, env = process.env) {
   const ratio = Number(config.warnRatio);
+  const deliverable = Number(config.deliverableRatio);
   const streakWarn = Math.max(2, positiveInt(config.streakWarn, positiveInt(env.UNIEAI_DOOM_STREAK_WARN, DEFAULTS.streakWarn)));
   return {
     deadlineMs: positiveInt(config.deadlineMs, positiveInt(env.UNIEAI_TURN_DEADLINE_MS, 0)),
     maxSteps: positiveInt(config.maxSteps, positiveInt(env.UNIEAI_TURN_MAX_STEPS, 0)),
     warnRatio: Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULTS.warnRatio,
+    // 0 turns the half-time notice off.
+    deliverableRatio: Number.isFinite(deliverable) && deliverable >= 0 && deliverable < 1 ? deliverable : DEFAULTS.deliverableRatio,
     minRetryWindowMs: positiveInt(config.minRetryWindowMs, DEFAULTS.minRetryWindowMs),
     cancelGraceMs: positiveInt(config.cancelGraceMs, DEFAULTS.cancelGraceMs),
     doom: flag(config.doom, flag(env.UNIEAI_DOOM_GUARD, DEFAULTS.doom)),
@@ -134,7 +148,7 @@ export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = proce
     let clock = clocks.get(agent);
     if (clock && clock.turn === turn) return clock;
     clearTimer(clock);
-    clock = { turn, startedAt: now(), deadlineWarned: false, timer: null };
+    clock = { turn, startedAt: now(), deliverableWarned: false, deadlineWarned: false, timer: null };
     clocks.set(agent, clock);
     if (config.deadlineMs) {
       const timer = setTimeout(() => {
@@ -228,7 +242,20 @@ export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = proce
           state.budgetNoticed = true;
           notices.push(pluginNotice(name, MESSAGES.budgetNotice(used, state.maxSteps), "step budget mostly used"));
         }
-        if (clock && config.deadlineMs > 0 && !clock.deadlineWarned && config.deadlineMs - elapsed <= config.deadlineMs * config.warnRatio) {
+        const late = clock && config.deadlineMs > 0 && config.deadlineMs - elapsed <= config.deadlineMs * config.warnRatio;
+        if (
+          clock &&
+          config.deadlineMs > 0 &&
+          config.deliverableRatio > 0 &&
+          !clock.deliverableWarned &&
+          !late &&
+          elapsed >= config.deadlineMs * config.deliverableRatio
+        ) {
+          clock.deliverableWarned = true;
+          const seconds = Math.max(0, Math.round((config.deadlineMs - elapsed) / 1000));
+          notices.push(pluginNotice(name, MESSAGES.deliverableNotice(seconds), "half the time budget used"));
+        }
+        if (late && !clock.deadlineWarned) {
           clock.deadlineWarned = true;
           const seconds = Math.max(0, Math.round((config.deadlineMs - elapsed) / 1000));
           notices.push(pluginNotice(name, MESSAGES.deadlineNotice(seconds), "time budget nearly used"));
