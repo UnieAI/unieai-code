@@ -359,6 +359,20 @@ test("uac loads the vendored uac-plugins cli profile; UNIEAI_DSH_PLUGINS narrows
   assert.doesNotMatch(patch, /repeat-tool-reminder/);
 });
 
+test("a text-only default model gets a vision model of its own family", async () => {
+  const { pickVisionModel } = await import("./config.mjs");
+  const catalog = [
+    { id: "DeepSeek-V4-Flash-0731", input_modalities: ["text"] },
+    { id: "Qwen3.6-35B-A3B", input_modalities: ["text", "image"] },
+    { id: "DeepSeek-V4-Flash-Vision-Exp", input_modalities: ["text", "image"] },
+  ];
+  assert.equal(pickVisionModel(catalog, "DeepSeek-V4-Flash-0731"), "DeepSeek-V4-Flash-Vision-Exp");
+  assert.equal(pickVisionModel(catalog, "Qwen3.6-35B-A3B"), null, "it can see images itself");
+  assert.equal(pickVisionModel([{ id: "t", input_modalities: ["text"] }], "t"), null);
+  const patch = renderPatch({ defaultModel: "A", gatewayBaseUrl: "https://gw/v1", visionModel: "V", plugins: selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-vision-fallback" }) });
+  assert.match(patch, / {4}- id: unieai-vision-fallback\n {6}name: "file:[^"]+"\n {6}config:\n {8}gatewayBaseUrl: "https:\/\/gw\/v1"\n {8}visionModel: "V"/);
+});
+
 test("AGENTS.md and skills come from the UnieAI home", () => {
   const patch = renderPatch({ defaultModel: "A", home: "/h/.unieai", plugins: selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-skills" }) });
   assert.match(patch, /- id: agent-instructions\n {2}config:\n {4}maxBytes: 65536\n {4}dshHome: "\/h\/\.unieai"/);

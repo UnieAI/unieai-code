@@ -172,6 +172,8 @@ export function renderPatch({
   acp = true,
   persona = true,
   home = unieaiHome(),
+  gatewayBaseUrl = null,
+  visionModel = null,
 }) {
   const q = yamlQuote;
   const execTools = plugins.some((plugin) => plugin.execTools);
@@ -207,9 +209,11 @@ export function renderPatch({
     "- id: spill-policy",
     "  config:",
     `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    // Above dsh's own 50 KiB default: a lower cap turned single reads into
+    // windowed ones (41 reads where 57 KiB would have been one).
     "- id: tool-fs",
     "  config:",
-    "    readMaxBytes: 32768",
+    "    readMaxBytes: 65536",
     "- id: tool-jobs",
     "  config:",
     "    waitTimeoutMs: 60000",
@@ -217,17 +221,24 @@ export function renderPatch({
     "- id: jobs",
     "  config:",
     "    maxConcurrentJobsPerOwner: 16",
-    // web_search needs a DeepSeek key uac does not have; don't advertise it.
-    "- id: tool-web",
-    "  config:",
-    "    fetch: true",
-    "    search: false",
-    "    searchTimeoutMs: 60000",
   );
+  // dsh's web_search needs a DeepSeek key uac does not have. unieai-web-search
+  // replaces it (and owns this row); without that plugin, just turn it off.
+  if (!plugins.some((plugin) => plugin.id === "unieai-web-search")) {
+    lines.push("- id: tool-web", "  config:", "    fetch: true", "    search: false", "    searchTimeoutMs: 60000");
+  }
   // One layout for both engines: the user's AGENTS.md (and, through
   // unieai-skills, their skills) live in the UnieAI home, not dsh's.
   lines.push("- id: agent-instructions", "  config:", "    maxBytes: 65536", `    dshHome: ${q(home)}`);
-  const parts = renderPatchParts({ plugins, profile: "cli", config: { "unieai-skills": { home } } });
+  const parts = renderPatchParts({
+    plugins,
+    profile: "cli",
+    config: {
+      "unieai-skills": { home },
+      "unieai-web-search": { gatewayBaseUrl },
+      "unieai-vision-fallback": visionModel ? { gatewayBaseUrl, visionModel } : {},
+    },
+  });
   lines.push(...parts.rows);
   const inserts = [];
   if (controlSocket) {
@@ -250,6 +261,22 @@ export function renderPatch({
   inserts.push(...parts.inserts);
   lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The account model to describe images with when `defaultModel` cannot see
+ * them: null when the default model takes images or no model does. Prefers a
+ * model of the same family (a shared name prefix), then one named for vision.
+ */
+export function pickVisionModel(catalog, defaultModel) {
+  const accepts = (model) => (model?.input_modalities ?? model?.inputModalities ?? []).includes("image");
+  const current = catalog.find((model) => model?.id === defaultModel);
+  if (current && accepts(current)) return null;
+  const candidates = catalog.filter(accepts).map((model) => model.id);
+  if (candidates.length === 0) return null;
+  const family = String(defaultModel ?? "").split(/[-_]/).slice(0, 2).join("-").toLowerCase();
+  const score = (id) => (family && id.toLowerCase().startsWith(family) ? 2 : 0) + (/vision|-vl\b|-vl-/i.test(id) ? 1 : 0);
+  return [...candidates].sort((a, b) => score(b) - score(a))[0];
 }
 
 /**
@@ -295,7 +322,7 @@ export function writeDshAccount({ env = process.env } = {}) {
   const declared = models.map((id) => catalog.find((m) => m.id === id) ?? { id });
   writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: credentials.gatewayApiKey || "" }));
   writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models: declared, defaultModel }));
-  return { home, defaultModel, models };
+  return { home, defaultModel, models, gatewayBaseUrl: credentials.gatewayBaseUrl, visionModel: pickVisionModel(catalog, defaultModel) };
 }
 
 /**
@@ -303,10 +330,10 @@ export function writeDshAccount({ env = process.env } = {}) {
  * Throws when the user is not signed in: without a gateway dsh has no model.
  */
 export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null } = {}) {
-  const { home, defaultModel, models } = writeDshAccount({ env });
+  const { home, defaultModel, models, gatewayBaseUrl, visionModel } = writeDshAccount({ env });
   const patchPath = join(home, "uac.patch.yml");
   const plugins = selectPlugins(env);
-  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins }));
+  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel }));
 
   const childEnv = {
     ...env,

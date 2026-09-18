@@ -15,12 +15,14 @@
 const COMMANDS_BASH = `# Running commands
 - Every bash call starts a fresh shell: pass \`workdir\` instead of \`cd\`, and chain dependent steps with \`&&\` in one command.
 - Always check the \`[exit code: N]\` marker and read errors before moving on. Never claim a command succeeded without seeing its result.
+- Never retype a value you have not seen in full — a hash, key, token, or long id. Move it with a command (\`sha256sum f > out\`, \`cp\`, a redirect) instead of transcribing it.
 - Commands time out. For builds, test suites, servers, or anything that may run long, set a larger \`timeoutMs\` or use \`run_in_background: true\`, then collect the result with job_output; you are notified when a job finishes, so keep working instead of sleeping or polling. Kill jobs you no longer need with job_kill.
 - Prefer non-interactive flags (\`--yes\`, \`-y\`, \`CI=1\`, \`git --no-pager\`); commands cannot read from a terminal.`;
 
 const COMMANDS_EXEC = `# Running commands
 - Run shell commands with exec_command. A command that is still running after \`yield_time_ms\` returns a session ID instead of blocking: poll it with write_stdin (empty \`chars\`) and a long \`yield_time_ms\` rather than sleeping, and stop it with \`chars: "\\u0003"\` when you no longer need it. Builds, test suites, and servers should run this way.
 - Always check \`Process exited with code N\` and read errors before moving on. Never claim a command succeeded without seeing its result.
+- Never retype a value you have not seen in full — a hash, key, token, or long id. Move it with a command (\`sha256sum f > out\`, \`cp\`, a redirect), and treat \`[output ended without a newline]\` as a warning that the last line may be cut off.
 - Pass \`workdir\` instead of \`cd\`, and chain dependent steps with \`&&\` in one command.
 - Use \`tty: true\` only when a program must be typed into; otherwise prefer non-interactive flags (\`--yes\`, \`-y\`, \`CI=1\`, \`git --no-pager\`).`;
 

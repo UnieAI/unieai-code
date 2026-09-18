@@ -56,13 +56,17 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     forward: (method, params) => forwarder.forward(method, params),
     onError: (error) => log("[app-server]", error.message),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState }) =>
+    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools }) =>
       buildEngine({
         cwd,
         model,
         sandboxMode: mode,
         resumeState,
         onState,
+        clientTools,
+        // A client-hosted tool runs in the client: ask it, as the Rust server does.
+        callClientTool: ({ callId, namespace, tool, arguments: args }) =>
+          request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }),
         onText: (delta) => emit("item/agentMessage/delta", { delta }),
         onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
         // Engine events carry our vocabulary; the client only renders the protocol's.

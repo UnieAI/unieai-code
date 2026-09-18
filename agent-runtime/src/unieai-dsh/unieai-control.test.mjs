@@ -55,3 +55,24 @@ test("a fork cuts at the next prompted turn, never inside an open one", () => {
   const finished = events.slice(0, -2);
   assert.equal(forkCut(finished, 2), finished.at(-1).seq + 1);
 });
+
+test("client tool specs flatten across namespaces; responses become MCP results", async () => {
+  const { flattenClientTools, mcpResultOf } = await import("./unieai-control.mjs");
+  const specs = [
+    { type: "namespace", name: "codex_tui", description: "", tools: [
+      { type: "function", name: "list_peers", description: "List peers", inputSchema: { type: "object", properties: {} } },
+      { type: "function", name: "broken" },
+    ] },
+    { type: "function", name: "solo", description: "", inputSchema: { type: "object" } },
+  ];
+  assert.deepEqual(flattenClientTools(specs), [
+    { name: "list_peers", description: "List peers", inputSchema: { type: "object", properties: {} }, namespace: "codex_tui" },
+    { name: "solo", description: "", inputSchema: { type: "object" }, namespace: null },
+  ]);
+  assert.deepEqual(flattenClientTools(null), []);
+  assert.deepEqual(
+    mcpResultOf({ contentItems: [{ type: "inputText", text: "a" }, { type: "inputImage", imageUrl: "data:x" }], success: true }),
+    { content: [{ type: "text", text: "a" }, { type: "text", text: "[image: data:x]" }], isError: false },
+  );
+  assert.equal(mcpResultOf({ contentItems: [], success: false }).isError, true);
+});

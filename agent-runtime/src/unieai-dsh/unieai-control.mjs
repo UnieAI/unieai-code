@@ -12,6 +12,12 @@
  *
  * Session ids are shared with ACP: an ACP session id is the dsh session id.
  *
+ * Client tools: the app-server client (the TUI) may offer its own tools at
+ * thread start (`dynamicTools`: session list, cross-session messages, thread
+ * delegation). `registerTools` registers them in that session's agent scope;
+ * a call is sent back over the SAME connection as a `callTool` request, and
+ * the bridge answers it by asking the client (`item/tool/call`).
+ *
  * Loaded through the uac patch (see config.mjs `renderPatch`).
  */
 import { randomUUID } from "node:crypto";
@@ -19,9 +25,40 @@ import { chmodSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createMcpToolDefinition } from "@deepseek-ai/dsh-mcp-client";
 
 export const name = "unieai-control";
-export const inject = ["agents", "compaction", "sessionQuery", "sessions"];
+export const inject = ["agents", "compaction", "sessionQuery", "sessions", "tools"];
+
+/** Client tool specs (the app-server `DynamicToolSpec` shape) -> flat tool list. */
+export function flattenClientTools(specs) {
+  const out = [];
+  for (const spec of Array.isArray(specs) ? specs : []) {
+    if (spec?.type === "namespace") {
+      for (const tool of spec.tools ?? []) {
+        if (tool?.type === "function" || tool?.type === undefined) out.push({ ...tool, namespace: spec.name });
+      }
+    } else if (spec?.type === "function" || spec?.type === undefined) {
+      out.push({ ...spec, namespace: null });
+    }
+  }
+  return out
+    .filter((tool) => typeof tool.name === "string" && tool.name && tool.inputSchema && typeof tool.inputSchema === "object")
+    .map(({ name: toolName, description = "", inputSchema, namespace }) => ({ name: toolName, description, inputSchema, namespace }));
+}
+
+/** The client's `DynamicToolCallResponse` -> an MCP `CallToolResult`. */
+export function mcpResultOf(response) {
+  const items = Array.isArray(response?.contentItems) ? response.contentItems : [];
+  const content = items.map((item) => {
+    if (item?.type === "inputText") return { type: "text", text: String(item.text ?? "") };
+    // Images and audio are URLs to the client; name them rather than drop them.
+    if (item?.type === "inputImage") return { type: "text", text: `[image: ${item.imageUrl}]` };
+    if (item?.type === "inputAudio") return { type: "text", text: `[audio: ${item.audioUrl}]` };
+    return { type: "text", text: JSON.stringify(item) };
+  });
+  return { content: content.length ? content : [{ type: "text", text: "" }], isError: response?.success === false };
+}
 
 /** Plain text of a message's content blocks. */
 export function textOf(content) {
@@ -153,8 +190,57 @@ export function apply(ctx, config = {}) {
     return;
   }
   const route = { provider: config.provider, model: config.model };
+  /** sessionId -> disposers of the client tools registered for it. */
+  const clientTools = new Map();
+  const dropClientTools = (sessionId) => {
+    for (const dispose of clientTools.get(sessionId) ?? []) {
+      try {
+        dispose();
+      } catch {
+        // The agent scope is already gone.
+      }
+    }
+    clientTools.delete(sessionId);
+  };
+  ctx.on("agent/disposed", ({ agent }) => dropClientTools(agent.id));
 
   const methods = {
+    /**
+     * Register the client's tools for one session (replacing earlier ones).
+     * Calls go back to the client over the connection that registered them.
+     */
+    async registerTools({ sessionId, tools }, peer) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      dropClientTools(sessionId);
+      const disposers = [];
+      for (const tool of flattenClientTools(tools)) {
+        const definition = createMcpToolDefinition(ctx, {
+          name: tool.name,
+          rawName: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          call: async (args, exec) =>
+            mcpResultOf(
+              await peer.request("callTool", {
+                sessionId,
+                callId: exec.callId,
+                namespace: tool.namespace,
+                tool: tool.name,
+                arguments: args,
+              }),
+            ),
+        });
+        try {
+          disposers.push(agent.ctx.tools.register(definition));
+        } catch (error) {
+          ctx.logger.warn(`unieai-control: client tool ${tool.name} not registered: ${error?.message ?? error}`);
+        }
+      }
+      clientTools.set(sessionId, disposers);
+      return { registered: disposers.length };
+    },
+
     async steer({ sessionId, text }) {
       const agent = ctx.agents.get(sessionId);
       if (!agent || !String(text ?? "").trim()) return { delivered: false };
@@ -209,11 +295,32 @@ export function apply(ctx, config = {}) {
   rmSync(socketPath, { force: true });
   const server = createServer((socket) => {
     const write = (message) => socket.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+    // The connection is two-way: the bridge calls methods here, and client
+    // tools call back to the bridge (`callTool`) on the same socket.
+    let nextId = 0;
+    const pending = new Map();
+    const peer = {
+      request(method, params) {
+        const id = `unieai-control:${(nextId += 1)}`;
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject });
+          write({ id, method, params });
+        });
+      },
+    };
     createInterface({ input: socket }).on("line", async (line) => {
       let request;
       try {
         request = JSON.parse(line);
       } catch {
+        return;
+      }
+      if (request.method === undefined) {
+        const waiter = pending.get(request.id);
+        if (!waiter) return;
+        pending.delete(request.id);
+        if (request.error) waiter.reject(new Error(request.error.message ?? "client tool failed"));
+        else waiter.resolve(request.result);
         return;
       }
       const handler = methods[request.method];
@@ -222,11 +329,16 @@ export function apply(ctx, config = {}) {
         return;
       }
       try {
-        write({ id: request.id, result: await handler(request.params ?? {}) });
+        write({ id: request.id, result: await handler(request.params ?? {}, peer) });
       } catch (error) {
         write({ id: request.id, error: { code: -32603, message: String(error?.message || error) } });
       }
     });
+    const failPending = () => {
+      for (const waiter of pending.values()) waiter.reject(new Error("the bridge disconnected"));
+      pending.clear();
+    };
+    socket.on("close", failPending);
     socket.on("error", () => {});
   });
   server.listen(socketPath, () => {

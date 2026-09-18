@@ -26,6 +26,9 @@ const FIELDS = [
   "updatedAtEpoch",
   "turnIds",
   "engineState",
+  // The client's tools (thread/start `dynamicTools`); thread/resume does not
+  // resend them, as with the Rust server, which keeps them with the thread.
+  "clientTools",
 ];
 
 export function createThreadStore(path) {

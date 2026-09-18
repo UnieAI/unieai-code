@@ -48,6 +48,23 @@ export const PLUGINS = Object.freeze([
   { id: "unieai-edit-feedback", file: "unieai-edit-feedback.mjs", profiles: ["cli"], summary: "diff and context after each edit" },
   { id: "unieai-apply-patch", file: "unieai-apply-patch.mjs", profiles: ["cli"], summary: "codex apply_patch tool" },
   {
+    id: "unieai-web-search",
+    file: "unieai-web-search.mjs",
+    // dsh's own search needs a DeepSeek key; keep its web_fetch, drop its web_search.
+    rows: ["- id: tool-web", "  config:", "    fetch: true", "    search: false", "    searchTimeoutMs: 60000"],
+    profiles: ["cli"],
+    // The host passes { gatewayBaseUrl }.
+    summary: "web_search via the UnieAI gateway, else the user's Brave/Tavily/SerpAPI key",
+  },
+  {
+    id: "unieai-vision-fallback",
+    file: "unieai-vision-fallback.mjs",
+    profiles: ["cli"],
+    // The host passes { gatewayBaseUrl, visionModel } only when the default model is text-only.
+    summary: "describe_image: a vision model on the same gateway describes images for a text-only model",
+  },
+  { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
+  {
     id: "unieai-loop-truncation",
     file: "unieai-loop-truncation.mjs",
     config: { maxRetries: 2, growth: 2 },

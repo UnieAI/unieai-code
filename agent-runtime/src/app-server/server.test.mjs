@@ -455,3 +455,25 @@ test("listing items returns protocol items, without the engine's synthetic wrapp
   assert.equal(items.find((i) => i.type === "userMessage").content[0].text, "fix the bug");
   assert.ok(items.some((i) => i.type === "agentMessage" && i.text === "fixed it"));
 });
+
+test("the client's dynamic tools reach the engine and survive a restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "uac-client-tools-"));
+  try {
+    const { createThreadStore } = await import("./unieai-thread-store.mjs");
+    const tools = [{ type: "namespace", name: "codex_tui", description: "d", tools: [{ type: "function", name: "list_peers", description: "l", inputSchema: { type: "object" } }] }];
+    let seen = null;
+    const store = createThreadStore(join(dir, "threads.json"));
+    const h = createHandlers({ createEngineFor: ({ clientTools }) => ((seen = clientTools), { send: async () => ({ text: "" }) }), codexHome: "/h", threadStore: store });
+    const ctx = { emit() {}, request: async () => ({}) };
+    const { thread } = await h["thread/start"]({ cwd: "/repo", dynamicTools: tools }, ctx);
+    await h["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "hi" }] }, ctx);
+    assert.deepEqual(seen(), tools);
+
+    // A new server process reads the thread back with its tools.
+    const again = createHandlers({ createEngineFor: ({ clientTools }) => ((seen = clientTools), { send: async () => ({ text: "" }) }), codexHome: "/h", threadStore: createThreadStore(join(dir, "threads.json")) });
+    await again["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "again" }] }, ctx);
+    assert.deepEqual(seen(), tools);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

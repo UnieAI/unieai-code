@@ -22,8 +22,10 @@
  * managed DSH_* facts). Load it with a patch `insert` by file URL and disable
  * the `tool-bash` row (see config.mjs).
  */
+import { spawn as spawnDetached } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { constants as osConstants } from "node:os";
+import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { constants as osConstants, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
   ESCALATION_TARGETS,
@@ -42,7 +44,9 @@ export const inject = ["tools", "subprocess", "sandboxPolicy", "shellEnv", "syst
 
 /** Codex's constants (unified_exec/mod.rs), plus the dsh-side knobs. */
 export const DEFAULTS = Object.freeze({
-  defaultYieldMs: 10_000, // exec_command
+  // 10s made the model poll a finished-in-12s build three or four times; a
+  // longer first wait costs nothing when the command exits earlier.
+  defaultYieldMs: 30_000, // exec_command
   defaultWriteYieldMs: 250, // write_stdin with input
   minYieldMs: 250,
   maxYieldMs: 30_000,
@@ -52,6 +56,8 @@ export const DEFAULTS = Object.freeze({
   // Kept under spill-policy's 50000-byte inline cap so a result is never
   // truncated twice.
   maxOutputTokensCap: 11_000,
+  // How long a detached command is watched for an immediate crash.
+  detachProbeMs: 1_500,
   bufferBytes: 1 << 20, // per-call head/tail window
   spillBytes: 64 << 20,
   maxSessions: 16, // per agent
@@ -489,7 +495,8 @@ function execDescription(escalation) {
 }
 
 export const SYSTEM_PROMPT_TEXT = [
-  "Running commands: exec_command waits up to `yield_time_ms` (default 10 s) and then returns, so it never blocks on a long command.",
+  "Running commands: exec_command waits up to `yield_time_ms` (default 30 s) and then returns, so it never blocks on a long command.",
+  "- A server or other service that must stay up after you finish (a test or the user connects to it later) needs `detach: true`: background jobs started with `&`, `nohup` or `setsid` are stopped when the session ends.",
   "- A result with `Process running with session ID N` means the command is still going. For builds and test suites, poll it with write_stdin {session_id: N, chars: \"\"} and a long `yield_time_ms` (up to 300000); a poll returns as soon as the command exits. Do not run `sleep` to wait.",
   "- Start servers and watchers with exec_command; the session keeps them running while you run clients or tests in other exec_command calls. Poll the server's session to read its log.",
   "- Commands that prompt for input (REPLs, `npm init`, confirmations) need `tty: true`; then send input with write_stdin, including the trailing \"\\n\". Without tty, stdin is closed: prefer non-interactive flags (`--yes`, `-y`) when they exist.",
@@ -635,9 +642,76 @@ export function apply(ctx, config = {}) {
     } else {
       value.session_id = session.id;
     }
+    // A command whose stdout has no final newline (`printf`, a bare hash)
+    // otherwise runs into whatever the model prints next, and it cannot see
+    // where the value ended.
+    if (output && !output.endsWith("\n")) notices.push("[output ended without a newline]");
     if (notices.length) output += `${output && !output.endsWith("\n") ? "\n" : ""}${notices.join("\n")}`;
     value.output = output;
     return value;
+  };
+
+  /**
+   * A service the task needs running after this session ends (a server the
+   * user or a test connects to later). dsh stops every subprocess it owns
+   * when it exits — on systemd hosts the whole scope, so `nohup … &` and even
+   * `setsid` do not survive — so a detached command is spawned here, outside
+   * that lifetime, but through the same sandbox confinement (`argv`).
+   * Output goes to a log file; a command that dies at once is reported.
+   */
+  const launchDetached = async ({ argv, cwd, env, confined, mode }) => {
+    const dir = join(tmpdir(), "unieai-exec-detached");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const log = join(dir, `${Date.now()}-${randomBytes(3).toString("hex")}.log`);
+    const fd = openSync(log, "a", 0o600);
+    let child;
+    try {
+      child = spawnDetached(argv[0], argv.slice(1), {
+        cwd,
+        env: { ...process.env, ...env },
+        detached: true,
+        stdio: ["ignore", fd, fd],
+      });
+    } finally {
+      closeSync(fd);
+    }
+    const early = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), cfg.detachProbeMs);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code, signal });
+      });
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        resolve({ error });
+      });
+    });
+    const tail = () => {
+      try {
+        return readFileSync(log, "utf8").slice(-4_000);
+      } catch {
+        return "";
+      }
+    };
+    if (early === null) {
+      child.unref();
+      return {
+        running: true,
+        output:
+          `Started a detached process, PID ${child.pid}. It keeps running after this session ends.\n` +
+          `Log: ${log}\nStop it with \`kill ${child.pid}\` when it is no longer needed.\n${tail()}`,
+        mode,
+        confined,
+      };
+    }
+    if (early.error) throw new Error(`could not start the detached command: ${early.error.message}`);
+    return {
+      running: false,
+      exitCode: early.signal ? signalExitCode(early.signal) : early.code,
+      output: `The detached command exited immediately.\nLog: ${log}\n${tail()}`,
+      mode,
+      confined,
+    };
   };
 
   const spawnSession = async (args, exec) => {
@@ -678,6 +752,7 @@ export function apply(ctx, config = {}) {
       LC_CTYPE: "C.UTF-8",
       ...(ctx.shellEnv?.collect(exec) ?? {}),
     };
+    if (args.detach === true) return { detached: await launchDetached({ argv, cwd, env, confined, mode }) };
     const table = tableOf(owner);
     pruneIfNeeded(table);
     const id = nextId++;
@@ -740,6 +815,12 @@ export function apply(ctx, config = {}) {
         description: `Output token budget. Defaults to ${cfg.maxOutputTokens} tokens.`,
       },
       login: { type: "boolean", description: "True runs bash as a login shell (-l). Defaults to false." },
+      detach: {
+        type: "boolean",
+        description:
+          "True starts a long-running service that must keep running after your work ends (a server a test or the user will connect to). " +
+          "Its output goes to a log file whose path is returned. Background jobs started with `&`, `nohup` or `setsid` are stopped when the session ends; use this instead.",
+      },
       ...(escalation
         ? {
             sandbox_permissions: {
@@ -766,7 +847,18 @@ export function apply(ctx, config = {}) {
       validateEscalationArgs(args.sandbox_permissions, args.justification);
       if (disposed) throw new Error("unieai-exec is shutting down");
       const startedAt = Date.now();
-      const { session, table } = await spawnSession(args, exec);
+      if (args.detach === true && args.tty === true) throw new Error("detach and tty cannot be combined");
+      const spawned = await spawnSession(args, exec);
+      if (spawned.detached) {
+        const { detached } = spawned;
+        return {
+          chunk_id: randomBytes(3).toString("hex"),
+          wall_time_seconds: (Date.now() - startedAt) / 1000,
+          exit_code: detached.running ? null : detached.exitCode,
+          output: detached.output,
+        };
+      }
+      const { session, table } = spawned;
       const waitMs = clampYield(args.yield_time_ms, { fallback: cfg.defaultYieldMs, min: cfg.minYieldMs, max: cfg.maxYieldMs });
       return session.withLock(async () => {
         const collected = await collect(session, waitMs, exec.signal);

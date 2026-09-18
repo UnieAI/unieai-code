@@ -227,6 +227,15 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       });
     }
     const channel = await controlPromise;
+    if (!channel.unieaiToolRoute) {
+      // Client tools registered through this channel call back on it.
+      channel.unieaiToolRoute = true;
+      channel.onRequest?.("callTool", (call) => {
+        const session = sessions.get(call?.sessionId);
+        if (!session?.onToolCall) throw new Error(`no client tools for session ${call?.sessionId}`);
+        return session.onToolCall(call);
+      });
+    }
     try {
       return await channel.request(method, params);
     } catch (error) {
@@ -346,6 +355,10 @@ export function createDshEngine({
   // `{ sessionId }` of a conversation to continue, and where to report it.
   resumeState = null,
   onState = () => {},
+  // Tools the app-server client hosts (`dynamicTools` from thread/start), and
+  // how to run one (the client answers `item/tool/call`).
+  clientTools = () => null,
+  callClientTool = null,
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -434,6 +447,23 @@ export function createDshEngine({
     }
   };
 
+  const onToolCall = async (call) => {
+    if (!callClientTool) throw new Error("this client hosts no tools");
+    return callClientTool(call);
+  };
+
+  /** Offer the client's tools in `sessionId` (dsh forgets them when it restarts). */
+  const registerClientTools = async () => {
+    const tools = typeof clientTools === "function" ? clientTools() : clientTools;
+    if (!Array.isArray(tools) || tools.length === 0 || !callClientTool) return;
+    try {
+      const { registered } = await host.control("registerTools", { sessionId, tools });
+      onLog(`offered ${registered} client tool(s) to dsh session ${sessionId}`);
+    } catch (error) {
+      onLog(`could not offer client tools to dsh: ${error.message}`);
+    }
+  };
+
   /** Open `sessionId` on the current dsh process, or start a new session. */
   const ensureSession = async () => {
     const acp = await host.agent();
@@ -444,9 +474,10 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: [] });
-        host.register(sessionId, { onUpdate, onPermission });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
+        await registerClientTools();
         return acp;
       } catch (error) {
         onLog(`dsh could not resume ${sessionId} (${error.message}); starting a new session`);
@@ -455,9 +486,10 @@ export function createDshEngine({
     const created = await newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: [] });
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
+    await registerClientTools();
     return acp;
   };
 

@@ -237,6 +237,7 @@ export function createHandlers({
       // any one turn.
       ids: () => ({ threadId: thread.id, turnId: thread.activeTurn?.id ?? null }),
       newItemId,
+      clientTools: () => thread.clientTools ?? null,
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -329,6 +330,9 @@ export function createHandlers({
         ephemeral: params?.ephemeral ?? false,
       });
       thread.connection = ctx;
+      // Tools the client hosts (TUI task tools, cross-session messaging); the
+      // engine offers them to the model and calls back with item/tool/call.
+      thread.clientTools = Array.isArray(params?.dynamicTools) ? params.dynamicTools : null;
       threads.set(thread.id, thread);
       persist(thread);
       const response = sessionResponse(thread, params);
