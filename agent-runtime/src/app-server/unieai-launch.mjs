@@ -23,7 +23,7 @@ export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
  * thread. `threadStore` (see unieai-thread-store.mjs) makes threads persistent.
  * `onShutdown` runs before the process exits.
  */
-export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, onShutdown = async () => {} }) {
+export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, threadMode, onShutdown = async () => {} }) {
   const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
   const socketPath =
     process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "app-server-control", "app-server-control.sock");
@@ -53,12 +53,14 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     sandboxMode,
     threadStore,
     defaultModel,
+    threadMode,
     forward: (method, params) => forwarder.forward(method, params),
     onError: (error) => log("[app-server]", error.message),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot }) =>
+    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant }) =>
       buildEngine({
         oneShot,
+        variant,
         cwd,
         model,
         sandboxMode: mode,

@@ -26,11 +26,20 @@ const COMMANDS_EXEC = `# Running commands
 - Pass \`workdir\` instead of \`cd\`, and chain dependent steps with \`&&\` in one command.
 - Use \`tty: true\` only when a program must be typed into; otherwise prefer non-interactive flags (\`--yes\`, \`-y\`, \`CI=1\`, \`git --no-pager\`).`;
 
+const COMMANDS_SHELL_ONLY = `# Your one tool
+- You have a single tool, \`bash\`: one persistent shell. The working directory, environment variables, and shell state carry over between calls.
+- Explore with \`ls\`, \`rg\`/\`grep\`, and \`sed -n 'A,Bp' file\` (read in windows, not whole large files). Edit with a heredoc for new files, and with a small script (\`python3\`, \`sed -i\`, \`patch\`) for targeted changes; check the result with \`git diff\`.
+- Always read the command's output and exit status before moving on. Never claim a command succeeded without seeing its result.
+- Never retype a value you have not seen in full — a hash, key, token, or long id. Move it with a command instead of transcribing it.
+- Start long-running work in the background (\`cmd > log 2>&1 &\`) and check its log, and prefer non-interactive flags (\`--yes\`, \`-y\`, \`CI=1\`, \`git --no-pager\`).`;
+
 /**
  * The persona text. `execTools` selects exec_command/write_stdin guidance
- * (unieai-exec loaded) over bash/jobs guidance.
+ * (unieai-exec loaded) over bash/jobs guidance; `shellOnly` is the minimal
+ * mode, whose only tool is a persistent shell.
  */
-export function buildPersona({ execTools = false } = {}) {
+export function buildPersona({ execTools = false, shellOnly = false } = {}) {
+  if (shellOnly) return shellOnlyPersona();
   return `You are UnieAI Code, a coding agent powered by the {{model}} model, running inside the unieai-agent-core harness (its runtime is referred to as DSH in tool output and environment variables). You and the user share the same machine and workspace.
 
 # Working style
@@ -78,4 +87,19 @@ ${execTools ? COMMANDS_EXEC : COMMANDS_BASH}
 - Before a group of tool calls, write one short sentence saying what you are about to do. On long tasks, give a brief progress note every few steps.
 - Final message: lead with the outcome. Be concise (usually under 10 lines) unless detail is needed. Wrap commands, paths, and identifiers in backticks; reference code as \`path/to/file.ts:42\`. Summarize what changed and how it was verified; mention anything left undone.
 - Reply in the user's language.`;
+}
+
+/** The minimal mode's persona: the same working rules, one persistent shell. */
+function shellOnlyPersona() {
+  const full = buildPersona({ execTools: false });
+  const keep = (heading) => full.match(new RegExp(`# ${heading}\\n[\\s\\S]*?(?=\\n\\n# |$)`))?.[0] ?? "";
+  return [
+    full.split("\n\n# ")[0],
+    keep("Working style"),
+    COMMANDS_SHELL_ONLY,
+    keep("Safety"),
+    keep("Verifying your work"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }

@@ -148,6 +148,131 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
 }
 
 /**
+ * dsh's agent modes, as its web app offers them (`dsh-agent-presets`): the
+ * ACP profile uac runs is `standard` laid out flat, so each other mode is a
+ * patch on top of it.
+ *
+ *   standard  the full coding agent
+ *   ptc       tools presented as a TypeScript SDK the model drives with one
+ *             `run_code` program, instead of one round trip per tool
+ *   cordis    standard plus runtime inspection and composition authoring
+ *   minimal   one persistent shell and nothing else
+ */
+export const UAC_MODES = Object.freeze(["standard", "ptc", "cordis", "minimal"]);
+
+export function parseUacMode(raw) {
+  const mode = String(raw ?? "").trim().toLowerCase();
+  if (mode === "creator" || mode === "創造") return "cordis";
+  return UAC_MODES.includes(mode) ? mode : null;
+}
+
+/**
+ * The mode new threads use: `UNIEAI_UAC_MODE`, else what `/engine` saved in
+ * `$CODEX_HOME/uac/mode`, else standard. Read per thread, so a switch applies
+ * to the next session without restarting the server.
+ */
+export function configuredUacMode({ env = process.env, home = unieaiHome() } = {}) {
+  const fromEnv = parseUacMode(env.UNIEAI_UAC_MODE);
+  if (fromEnv) return fromEnv;
+  try {
+    return parseUacMode(readFileSync(join(home, "uac", "mode"), "utf8")) ?? "standard";
+  } catch {
+    return "standard";
+  }
+}
+
+/** unieai plugins that add tools; minimal mode has only its shell. */
+const TOOL_PLUGINS = new Set([
+  "unieai-exec",
+  "unieai-edit-observe",
+  "unieai-skills",
+  "unieai-edit-rescue",
+  "unieai-edit-feedback",
+  "unieai-apply-patch",
+  "unieai-web-search",
+  "unieai-vision-fallback",
+  "unieai-wait-agents",
+]);
+
+/** The ACP profile's tool rows that minimal mode turns off. */
+const MINIMAL_DISABLED = [
+  "tool-bash",
+  "tool-pwsh",
+  "tool-jobs",
+  "tool-fs",
+  "tool-fs-search",
+  "tool-skill",
+  "tool-subagent-control",
+  "tool-subagent-list-agents",
+  "tool-subagent",
+  "tool-subagent-fork",
+  "tool-workflow",
+  "tool-todo",
+  "tool-goal",
+  "tool-ralph",
+  "tool-web",
+  "tool-plugin-manager",
+  "plan-mode",
+];
+
+/** The plugins `mode` keeps from `plugins`. */
+export function pluginsForMode(plugins, mode) {
+  return mode === "minimal" ? plugins.filter((plugin) => !TOOL_PLUGINS.has(plugin.id)) : plugins;
+}
+
+/** The rows and inserts that turn the flat standard composition into `mode`. */
+export function modePatch(mode) {
+  const disable = (id) => [`- id: ${id}`, "  disabled: true"];
+  switch (mode) {
+    case "ptc":
+      // The presentation is the `tools` row's own `mode` in a flat
+      // composition (the preset's `tool-presentation` row only works under a
+      // preset's scope). run_code is PTC mode's composition surface; a second
+      // model-authored orchestration tool beside it is what the preset turns off.
+      return {
+        rows: ["- id: tools", "  config:", "    mode: ptc", ...disable("tool-workflow")],
+        inserts: [],
+      };
+    case "cordis":
+      // tool-cordis waits on `cordisInspect`, which the host runner provides
+      // (dsh's web app mounts it; the ACP profile does not).
+      return {
+        rows: [],
+        inserts: [
+          "    - id: cordis-host-runner",
+          "      name: '@deepseek-ai/dsh-cordis-host-runner'",
+          "    - id: tool-cordis",
+          "      name: '@deepseek-ai/dsh-tool-cordis'",
+        ],
+      };
+    case "minimal":
+      return {
+        rows: MINIMAL_DISABLED.flatMap(disable),
+        inserts: [
+          "    - id: persistent-shell",
+          "      name: cordis:group",
+          "      group: true",
+          "      isolate:",
+          "        terminals: true",
+          "      config:",
+          "        - id: pty",
+          "          name: '@deepseek-ai/dsh-terminal'",
+          "        - id: terminal-bash",
+          "          name: '@deepseek-ai/dsh-terminal-bash'",
+          "          config:",
+          "            timeoutMs: 300000",
+          "        - id: persistent-bash",
+          "          name: '@deepseek-ai/dsh-tool-bash-persistent'",
+          "          config:",
+          "            timeoutMs: 300000",
+        ],
+      };
+    default:
+      return { rows: [], inserts: [] };
+  }
+}
+
+/**
  * The plugins uac loads: the `cli` profile of the vendored uac-plugins
  * catalog, narrowed by `UNIEAI_DSH_PLUGINS` (`off`, or a comma list of ids)
  * for A/B runs.
@@ -174,15 +299,17 @@ export function renderPatch({
   home = unieaiHome(),
   gatewayBaseUrl = null,
   visionModel = null,
+  mode = "standard",
 }) {
   const q = yamlQuote;
+  plugins = pluginsForMode(plugins, mode);
   const execTools = plugins.some((plugin) => plugin.execTools);
   const lines = [];
   if (acp) {
     lines.push("- id: acp", "  config:", `    provider: ${DSH_PROVIDER_ID}`, `    model: ${q(defaultModel)}`);
   }
   if (persona) {
-    const text = buildPersona({ execTools });
+    const text = buildPersona({ execTools, shellOnly: mode === "minimal" });
     lines.push(
       "- id: system-prompt",
       "  config:",
@@ -224,7 +351,7 @@ export function renderPatch({
   );
   // dsh's web_search needs a DeepSeek key uac does not have. unieai-web-search
   // replaces it (and owns this row); without that plugin, just turn it off.
-  if (!plugins.some((plugin) => plugin.id === "unieai-web-search")) {
+  if (mode !== "minimal" && !plugins.some((plugin) => plugin.id === "unieai-web-search")) {
     lines.push("- id: tool-web", "  config:", "    fetch: true", "    search: false", "    searchTimeoutMs: 60000");
   }
   // One layout for both engines: the user's AGENTS.md (and, through
@@ -240,6 +367,8 @@ export function renderPatch({
     },
   });
   lines.push(...parts.rows);
+  const modeRows = modePatch(mode);
+  lines.push(...modeRows.rows);
   const inserts = [];
   if (controlSocket) {
     inserts.push(
@@ -258,7 +387,7 @@ export function renderPatch({
     "      config:",
     "        refreshIntervalMs: 1800000",
   );
-  inserts.push(...parts.inserts);
+  inserts.push(...parts.inserts, ...modeRows.inserts);
   lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;
 }
@@ -329,11 +458,13 @@ export function writeDshAccount({ env = process.env } = {}) {
  * Write dsh's home for the account and return the child environment and command.
  * Throws when the user is not signed in: without a gateway dsh has no model.
  */
-export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null } = {}) {
+export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null, mode = "standard" } = {}) {
   const { home, defaultModel, models, gatewayBaseUrl, visionModel } = writeDshAccount({ env });
-  const patchPath = join(home, "uac.patch.yml");
-  const plugins = selectPlugins(env);
-  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel }));
+  // One dsh process per mode, each with its own patch; standard keeps the
+  // name it always had.
+  const patchPath = join(home, mode === "standard" ? "uac.patch.yml" : `uac.${mode}.patch.yml`);
+  const plugins = pluginsForMode(selectPlugins(env), mode);
+  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel, mode }));
 
   const childEnv = {
     ...env,
@@ -345,7 +476,7 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // The launch environment outranks the credential store and is frozen at
   // launch, so a key there would pin dsh to it across a Studio key rotation.
   delete childEnv[GATEWAY_KEY_ENV];
-  return { env: childEnv, defaultModel, models, controlSocket, plugins: plugins.map((p) => p.id), ...dshCommand(childEnv) };
+  return { env: childEnv, defaultModel, models, controlSocket, mode, plugins: plugins.map((p) => p.id), ...dshCommand(childEnv) };
 }
 
 /** The app-server protocol's sandbox names -> dsh's permission modes. */

@@ -2,13 +2,15 @@
 //! `/engine`: pick the agent engine for new sessions.
 //!
 //! The choice is persisted and the CLI relaunches onto it; the current
-//! conversation stays with the engine that started it.
+//! conversation stays with the engine that started it. uac is listed once per
+//! dsh mode.
 
 use super::*;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::unieai_engine;
 use crate::unieai_engine::EngineKind;
+use crate::unieai_engine::UacMode;
 use crate::wrapping::word_wrap_lines;
 use ratatui::buffer::Buffer;
 use ratatui::widgets::Paragraph;
@@ -57,27 +59,65 @@ impl App {
         header.push(Line::from(
             "Switching restarts UnieAI Code in a new session.".dim(),
         ));
-        let items = EngineKind::ALL
-            .into_iter()
-            .map(|engine| {
-                let unavailable = unieai_engine::engine_unavailable_reason(&codex_home, engine);
-                SelectionItem {
-                    name: engine.display_name().to_string(),
-                    description: Some(engine.description().to_string()),
-                    is_current: engine == running,
-                    is_disabled: unavailable.is_some(),
-                    disabled_reason: unavailable,
-                    actions: vec![Box::new(move |tx| tx.send(AppEvent::SwitchEngine(engine)))],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                }
-            })
-            .collect();
+        let codex_unavailable =
+            unieai_engine::engine_unavailable_reason(&codex_home, EngineKind::Codex);
+        let mut items = vec![SelectionItem {
+            name: EngineKind::Codex.display_name().to_string(),
+            description: Some(EngineKind::Codex.description().to_string()),
+            is_current: running == EngineKind::Codex,
+            is_disabled: codex_unavailable.is_some(),
+            disabled_reason: codex_unavailable,
+            actions: vec![Box::new(|tx| tx.send(AppEvent::SwitchEngine(EngineKind::Codex)))],
+            dismiss_on_select: true,
+            ..Default::default()
+        }];
+        let mode = unieai_engine::configured_uac_mode(&codex_home);
+        items.extend(UacMode::ALL.into_iter().map(|candidate| SelectionItem {
+            name: format!(
+                "{} · {}",
+                EngineKind::Uac.display_name(),
+                candidate.display_name()
+            ),
+            description: Some(candidate.description().to_string()),
+            is_current: running == EngineKind::Uac && candidate == mode,
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::SwitchUacMode(candidate))
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        }));
         self.chat_widget.show_selection_view(SelectionViewParams {
             header: Box::new(EngineMenuHeader(header)),
             items,
             ..Default::default()
         });
+    }
+
+    /// Persist uac in `mode` and report whether the CLI should relaunch: a
+    /// new session is where a mode starts, even when uac is already running.
+    pub(super) fn switch_uac_mode(&mut self, mode: UacMode) -> bool {
+        let codex_home = self.config.codex_home.to_path_buf();
+        let current = unieai_engine::configured_uac_mode(&codex_home);
+        if let Err(err) = unieai_engine::write_uac_mode(&codex_home, mode) {
+            self.chat_widget
+                .add_error_message(format!("Failed to save the uac mode: {err}"));
+            return false;
+        }
+        if self.running_engine() == EngineKind::Uac && mode == current {
+            self.chat_widget.add_info_message(
+                format!(
+                    "Already running on {} in {} mode.",
+                    EngineKind::Uac.display_name(),
+                    mode.display_name()
+                ),
+                /*hint*/ None,
+            );
+            return false;
+        }
+        if self.running_engine() == EngineKind::Uac {
+            return true;
+        }
+        self.switch_engine(EngineKind::Uac)
     }
 
     /// Persist `engine` and report whether the CLI should relaunch onto it.

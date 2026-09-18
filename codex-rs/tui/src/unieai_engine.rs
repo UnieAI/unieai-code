@@ -10,6 +10,11 @@
 //! The choice is stored in `$CODEX_HOME/engine` and read at startup;
 //! `UNIEAI_ENGINE` overrides it for one launch. `/engine` writes the file and
 //! relaunches, because an app-server connection is not swapped mid-session.
+//! Without a choice, sessions run on uac.
+//!
+//! uac also has dsh's agent modes ([`UacMode`]), stored in
+//! `$CODEX_HOME/uac/mode`. The uac server reads it when a thread starts, so
+//! the mode belongs to the thread: a resumed session keeps the one it began in.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -23,6 +28,7 @@ pub(crate) const ENGINE_ENV_VAR: &str = "UNIEAI_ENGINE";
 pub(crate) const UAC_SERVER_ENV_VAR: &str = "UNIEAI_UAC_SERVER";
 const ENGINE_FILE: &str = "engine";
 const UAC_DIR: &str = "uac";
+const UAC_MODE_FILE: &str = "mode";
 const UAC_SOCKET: &str = "app-server.sock";
 const UAC_LOG: &str = "server.log";
 const UAC_SCRIPT: &str = "agent-runtime/bin/unieai-uac-server.mjs";
@@ -36,8 +42,6 @@ pub(crate) enum EngineKind {
 }
 
 impl EngineKind {
-    pub(crate) const ALL: [EngineKind; 2] = [EngineKind::Codex, EngineKind::Uac];
-
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "codex" => Some(Self::Codex),
@@ -69,16 +73,100 @@ impl EngineKind {
     }
 }
 
+/// dsh's agent modes, as its web app names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UacMode {
+    Standard,
+    Ptc,
+    Cordis,
+    Minimal,
+}
+
+impl UacMode {
+    pub(crate) const ALL: [UacMode; 4] = [
+        UacMode::Standard,
+        UacMode::Ptc,
+        UacMode::Cordis,
+        UacMode::Minimal,
+    ];
+
+    /// Accepts the mode id, with or without a `uac-` / `uac:` prefix.
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim().to_ascii_lowercase();
+        let raw = raw
+            .strip_prefix("uac-")
+            .or_else(|| raw.strip_prefix("uac:"))
+            .unwrap_or(&raw);
+        match raw {
+            "standard" => Some(Self::Standard),
+            "ptc" => Some(Self::Ptc),
+            "cordis" | "creator" => Some(Self::Cordis),
+            "minimal" => Some(Self::Minimal),
+            _ => None,
+        }
+    }
+
+    /// The value written to the mode file; the uac server reads the same ids.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Ptc => "ptc",
+            Self::Cordis => "cordis",
+            Self::Minimal => "minimal",
+        }
+    }
+
+    pub(crate) fn display_name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Ptc => "PTC",
+            Self::Cordis => "creator (cordis)",
+            Self::Minimal => "minimal",
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Standard => "the full coding agent: shell, files, search, web, skills, subagents",
+            Self::Ptc => "tools as a TypeScript SDK; the model chains steps in one run_code program",
+            Self::Cordis => "standard, plus inspecting and extending the harness itself",
+            Self::Minimal => "one persistent shell and nothing else",
+        }
+    }
+}
+
+fn uac_mode_file(codex_home: &Path) -> PathBuf {
+    codex_home.join(UAC_DIR).join(UAC_MODE_FILE)
+}
+
+/// The dsh mode new uac sessions start in.
+pub(crate) fn configured_uac_mode(codex_home: &Path) -> UacMode {
+    std::fs::read_to_string(uac_mode_file(codex_home))
+        .ok()
+        .and_then(|raw| UacMode::parse(&raw))
+        .unwrap_or(UacMode::Standard)
+}
+
+pub(crate) fn write_uac_mode(codex_home: &Path, mode: UacMode) -> std::io::Result<()> {
+    let path = uac_mode_file(codex_home);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{}\n", mode.id()))
+}
+
 fn engine_file(codex_home: &Path) -> PathBuf {
     codex_home.join(ENGINE_FILE)
 }
 
 /// The engine configured for new sessions, ignoring the environment override.
+/// uac unless the user chose codex: on the same model it scored at least as
+/// well with fewer tokens in total, and it serves every account kind.
 pub(crate) fn configured_engine(codex_home: &Path) -> EngineKind {
     std::fs::read_to_string(engine_file(codex_home))
         .ok()
         .and_then(|raw| EngineKind::parse(&raw))
-        .unwrap_or(EngineKind::Codex)
+        .unwrap_or(EngineKind::Uac)
 }
 
 /// The startup warning for a uac engine that did not start: the reason, the

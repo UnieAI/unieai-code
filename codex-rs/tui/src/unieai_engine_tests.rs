@@ -15,13 +15,30 @@ fn parse_accepts_ids_and_full_name() {
 }
 
 #[test]
-fn engine_file_round_trips_and_defaults_to_codex() {
+fn engine_file_round_trips_and_defaults_to_uac() {
     let home = tempfile::tempdir().expect("tempdir");
-    assert_eq!(configured_engine(home.path()), EngineKind::Codex);
-    write_engine(home.path(), EngineKind::Uac).expect("write");
     assert_eq!(configured_engine(home.path()), EngineKind::Uac);
     write_engine(home.path(), EngineKind::Codex).expect("write");
     assert_eq!(configured_engine(home.path()), EngineKind::Codex);
+    write_engine(home.path(), EngineKind::Uac).expect("write");
+    assert_eq!(configured_engine(home.path()), EngineKind::Uac);
+}
+
+#[test]
+fn uac_mode_parses_round_trips_and_defaults_to_standard() {
+    assert_eq!(UacMode::parse(" PTC\n"), Some(UacMode::Ptc));
+    assert_eq!(UacMode::parse("uac-minimal"), Some(UacMode::Minimal));
+    assert_eq!(UacMode::parse("uac:creator"), Some(UacMode::Cordis));
+    assert_eq!(UacMode::parse("codex"), None);
+    let home = tempfile::tempdir().expect("tempdir");
+    assert_eq!(configured_uac_mode(home.path()), UacMode::Standard);
+    write_uac_mode(home.path(), UacMode::Cordis).expect("write");
+    assert_eq!(configured_uac_mode(home.path()), UacMode::Cordis);
+    // The file the uac server reads (agent-runtime configuredUacMode).
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("uac").join("mode")).expect("read"),
+        "cordis\n"
+    );
 }
 
 #[test]

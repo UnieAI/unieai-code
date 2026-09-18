@@ -830,9 +830,12 @@ impl ChatWidget {
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
             SlashCommand::Engine if !trimmed.is_empty() => {
-                match crate::unieai_engine::EngineKind::parse(trimmed) {
-                    Some(engine) => self.app_event_tx.send(AppEvent::SwitchEngine(engine)),
-                    None => self.add_error_message(ENGINE_USAGE.to_string()),
+                if let Some(engine) = crate::unieai_engine::EngineKind::parse(trimmed) {
+                    self.app_event_tx.send(AppEvent::SwitchEngine(engine));
+                } else if let Some(mode) = crate::unieai_engine::UacMode::parse(trimmed) {
+                    self.app_event_tx.send(AppEvent::SwitchUacMode(mode));
+                } else {
+                    self.add_error_message(ENGINE_USAGE.to_string());
                 }
             }
             SlashCommand::Peer if !trimmed.is_empty() => {
@@ -1349,7 +1352,7 @@ impl ChatWidget {
     }
 }
 
-const ENGINE_USAGE: &str = "Usage: /engine [codex|uac]";
+const ENGINE_USAGE: &str = "Usage: /engine [codex|uac|standard|ptc|cordis|minimal]";
 
 const PEER_USAGE: &str =
     "Usage: /peer <handle> <message>  (run /peers to see handles, for example `api [k2f8]`)";

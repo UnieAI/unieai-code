@@ -86,6 +86,9 @@ export function createHandlers({
   sandboxMode = "workspace-write",
   now = () => new Date().toISOString(),
   threadStore = null,
+  // The engine variant a new thread runs in (uac: the dsh mode), read when
+  // the thread starts; a forked thread keeps its source's.
+  threadMode = () => null,
 }) {
   // Thread state lives here, not in the Rust process: its ThreadStateManager
   // keeps threads in an in-process HashMap, so a thread created there is not
@@ -244,6 +247,7 @@ export function createHandlers({
       newItemId,
       clientTools: () => thread.clientTools ?? null,
       oneShot: Boolean(thread.oneShot),
+      mode: thread.mode ?? null,
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -334,6 +338,7 @@ export function createHandlers({
         model: params?.model,
         modelProvider: params?.modelProvider,
         ephemeral: params?.ephemeral ?? false,
+        mode: threadMode(),
       });
       thread.connection = ctx;
       // A hidden, read-only ephemeral thread (the client's title generation
@@ -596,6 +601,7 @@ export function createHandlers({
         ephemeral: params?.ephemeral ?? false,
         preview: source.preview,
         forkedFromId: source.id,
+        mode: source.mode ?? null,
         engineState: state,
         turnIds: source.turnIds.slice(0, keptTurns),
       });
@@ -767,8 +773,8 @@ export function textOf(input) {
  * — useful in tests, wrong in production, where the platform surface has to
  * reach the Rust app-server.
  */
-export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, forward = null, onError = () => {}, onTrace = null }) {
-  const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel });
+export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, forward = null, onError = () => {}, onTrace = null }) {
+  const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel, threadMode });
   const dispatch = createDispatcher({ handlers, fallback: forward, onError });
   const trace = typeof onTrace === "function" ? onTrace : () => {};
   // Full payloads are large; opt in when a client renders something wrong.

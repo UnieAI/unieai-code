@@ -145,6 +145,16 @@ impl App {
             }
             AppEvent::OpenDaemonMenu => self.open_daemon_menu(),
             AppEvent::OpenEngineMenu => self.open_engine_menu(),
+            AppEvent::SwitchUacMode(mode) => {
+                if self.switch_uac_mode(mode) {
+                    return Ok(
+                        match self.handle_exit_mode(app_server, ExitMode::ShutdownFirst).await {
+                            AppRunControl::Exit(_) => AppRunControl::Exit(ExitReason::EngineSwitched),
+                            other => other,
+                        },
+                    );
+                }
+            }
             AppEvent::SwitchEngine(engine) => {
                 if self.switch_engine(engine) {
                     return Ok(

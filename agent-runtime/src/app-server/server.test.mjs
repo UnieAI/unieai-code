@@ -540,3 +540,25 @@ test("a title thread started with a named profile and no environments is a one-s
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(built.oneShot, true);
 });
+
+test("a thread keeps the mode it started in, and a fork inherits it", async () => {
+  let mode = "ptc";
+  const seen = [];
+  const h = createHandlers({
+    createEngineFor: ({ mode: m }) => {
+      seen.push(m);
+      return { send: async () => ({}), fork: async () => ({ state: {}, keptTurns: 0 }) };
+    },
+    codexHome: "/h",
+    threadMode: () => mode,
+  });
+  const ctx = { emit: () => {} };
+  const { thread } = await h["thread/start"]({}, ctx);
+  mode = "minimal";
+  await h["turn/start"]({ threadId: thread.id, input: "hi" }, ctx);
+  assert.deepEqual(seen, ["ptc"], "the mode is the one at thread start");
+  await new Promise((r) => setTimeout(r, 10));
+  const forked = await h["thread/fork"]({ threadId: thread.id }, ctx);
+  await h["turn/start"]({ threadId: forked.thread.id, input: "again" }, ctx);
+  assert.deepEqual(seen, ["ptc", "ptc"]);
+});

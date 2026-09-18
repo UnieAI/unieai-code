@@ -14,7 +14,7 @@ import {
   historyTurn,
   newSessionWhenRoutesReady,
 } from "./engine.mjs";
-import { permissionMode, pickDefaultModel, renderCredentials, renderPatch, renderSettings, selectPlugins } from "./config.mjs";
+import { configuredUacMode, parseUacMode, permissionMode, pickDefaultModel, renderCredentials, renderPatch, renderSettings, selectPlugins } from "./config.mjs";
 
 /** A fake agent: `script(request, agent)` answers each client request. */
 function fakeAgent(script) {
@@ -416,4 +416,38 @@ test("terminal cards show the command's output and exit code, not the model-faci
   assert.deepEqual(terminalView("write_stdin", running), { output: "building\n", exitCode: null, running: true });
   assert.equal(terminalView("read", text), null, "other tools are left alone");
   assert.equal(terminalView("exec_command", "no header"), null);
+});
+
+test("dsh modes: each is a patch on the flat standard composition", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const plugins = selectPlugins({});
+  const standard = renderPatch({ defaultModel: "A", plugins });
+  assert.equal(renderPatch({ defaultModel: "A", plugins, mode: "standard" }), standard);
+
+  const ptc = renderPatch({ defaultModel: "A", plugins, mode: "ptc" });
+  assert.match(ptc, /- id: tools\n {2}config:\n {4}mode: ptc\n/);
+  assert.match(ptc, /- id: tool-workflow\n {2}disabled: true/);
+
+  const cordis = renderPatch({ defaultModel: "A", plugins, mode: "cordis" });
+  assert.match(cordis, /- id: cordis-host-runner[\s\S]*- id: tool-cordis/, "tool-cordis waits on the host runner");
+
+  const minimal = renderPatch({ defaultModel: "A", plugins, mode: "minimal" });
+  for (const id of ["tool-bash", "tool-fs", "tool-subagent", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
+  assert.match(minimal, /- id: persistent-bash/);
+  assert.doesNotMatch(minimal, /unieai-exec|unieai-apply-patch|unieai-web-search/, "no tool plugins in minimal");
+  assert.match(minimal, /unieai-loop-guard/, "the loop plugins stay");
+  assert.match(minimal, /Your one tool/);
+  assert.doesNotMatch(minimal, /todo_write/);
+
+  assert.equal(parseUacMode(" PTC\n"), "ptc");
+  assert.equal(parseUacMode("creator"), "cordis");
+  assert.equal(parseUacMode("fast"), null);
+  const home = mkdtempSync(join(tmpdir(), "uac-mode-"));
+  assert.equal(configuredUacMode({ env: {}, home }), "standard");
+  mkdirSync(join(home, "uac"));
+  writeFileSync(join(home, "uac", "mode"), "minimal\n");
+  assert.equal(configuredUacMode({ env: {}, home }), "minimal");
+  assert.equal(configuredUacMode({ env: { UNIEAI_UAC_MODE: "ptc" }, home }), "ptc", "the environment wins");
 });

@@ -18,6 +18,11 @@
  *   UNIEAI_MODEL       default model (default: config.toml `model`)
  *   UNIEAI_SANDBOX     read-only | workspace-write | danger-full-access
  *   DSH_HOME           dsh's home (default: $CODEX_HOME/uac/dsh-home)
+ *   UNIEAI_UAC_MODE    dsh mode for new threads (default: $CODEX_HOME/uac/mode,
+ *                      then standard): standard | ptc | cordis | minimal
+ *
+ * Each dsh mode runs in its own dsh process, started when a thread first
+ * needs it; a thread keeps the mode it started in.
  */
 import { createRequire } from "node:module";
 import { connect } from "node:net";
@@ -26,7 +31,7 @@ import { join } from "node:path";
 import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
 import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
 import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
-import { prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
+import { configuredUacMode, prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
@@ -57,43 +62,60 @@ const sandboxMode = process.env.UNIEAI_SANDBOX || "workspace-write";
 const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
 const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac", "app-server.sock");
 // Next to the app-server socket, whose path the TUI already kept short.
-const controlSocket = appSocket.replace(/(\.sock)?$/, ".dsh.sock");
+// Next to the app-server socket, whose path the TUI already kept short.
+const controlSocketFor = (mode) => appSocket.replace(/(\.sock)?$/, mode === "standard" ? ".dsh.sock" : `.${mode}.dsh.sock`);
 // Fail at startup, where the TUI reports it, rather than on the first turn.
-const dsh = prepareDsh({ sandboxMode, controlSocket });
+const dsh = prepareDsh({ sandboxMode, controlSocket: controlSocketFor("standard") });
 log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel})`);
 
-// dsh's recent stderr: when it dies, its own error (a missing export, a bad
-// patch) is what the user needs, not "the connection closed".
-const dshStderr = [];
-const rememberDsh = (line) => {
-  dshStderr.push(line);
-  if (dshStderr.length > 40) dshStderr.shift();
-};
+const hosts = new Map(); // mode -> dsh host
 
-const host = createDshHost({
-  onLog: (line) => log("[uac]", line),
-  connect: async () => {
-    try {
-      return await spawnAcpAgent({
-        command: dsh.command,
-        args: dsh.args,
-        env: dsh.env,
-        cwd: process.cwd(),
-        onLog: (line) => {
-          rememberDsh(line);
-          log("[dsh]", line);
-        },
-      });
-    } catch (error) {
-      const reason = agentFailureReason(dshStderr);
-      throw new Error(
-        `deepseek-harness (dsh) failed to start${reason ? `: ${reason}` : `: ${error.message}`}. ` +
-          "Reinstall UnieAI Code if it persists; details are in the uac server log.",
-      );
-    }
-  },
-  connectControl: () => connectControlSocket(controlSocket),
-});
+/** The dsh process for `mode`, started on first use. */
+function hostFor(mode = "standard") {
+  const existing = hosts.get(mode);
+  if (existing) return existing;
+  const controlSocket = controlSocketFor(mode);
+  const setup = mode === "standard" ? dsh : prepareDsh({ sandboxMode, controlSocket, mode });
+  // dsh's recent stderr: when it dies, its own error (a missing export, a bad
+  // patch) is what the user needs, not "the connection closed".
+  const stderr = [];
+  const tag = mode === "standard" ? "[dsh]" : `[dsh:${mode}]`;
+  const host = createDshHost({
+    onLog: (line) => log("[uac]", line),
+    connect: async () => {
+      try {
+        return await spawnAcpAgent({
+          command: setup.command,
+          args: setup.args,
+          env: setup.env,
+          cwd: process.cwd(),
+          onLog: (line) => {
+            stderr.push(line);
+            if (stderr.length > 40) stderr.shift();
+            log(tag, line);
+          },
+        });
+      } catch (error) {
+        const reason = agentFailureReason(stderr);
+        throw new Error(
+          `deepseek-harness (dsh, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}. ` +
+            "Reinstall UnieAI Code if it persists; details are in the uac server log.",
+        );
+      }
+    },
+    connectControl: () => connectControlSocket(controlSocket),
+  });
+  hosts.set(mode, host);
+  // Start dsh now so a broken install shows up in the log before the first turn.
+  host.agent().then(
+    (acp) => log(`uac: dsh ${mode} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
+    (error) => log(`uac: dsh ${mode} failed to start: ${error.message}`),
+  );
+  return host;
+}
+
+const threadMode = () => configuredUacMode({ home: codexHome });
+hostFor(threadMode());
 
 /** The unieai-control plugin listens once dsh has loaded it; wait briefly for it. */
 async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = {}) {
@@ -110,11 +132,6 @@ async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = 
     }
   }
 }
-// Start dsh now so a broken install shows up in the log before the first turn.
-host.agent().then(
-  (acp) => log(`uac: dsh ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
-  (error) => log(`uac: dsh failed to start: ${error.message}`),
-);
 
 await launchAppServer({
   name: "unieai-agent-core (uac)",
@@ -124,8 +141,9 @@ await launchAppServer({
   // dsh sessions persist, so uac threads do too: listed, resumed, forked.
   threadStore: createThreadStore(join(codexHome, "uac", "threads.json")),
   defaultModel: dsh.defaultModel,
-  onShutdown: () => host.close(),
-  buildEngine: ({ cwd, model, sandboxMode: _mode, oneShot, ...callbacks }) => {
+  threadMode,
+  onShutdown: () => Promise.all([...hosts.values()].map((host) => host.close())),
+  buildEngine: ({ cwd, model, sandboxMode: _mode, oneShot, variant, ...callbacks }) => {
     // The TUI re-synced unieai.json with Studio when it launched; carry that
     // into dsh's hot-reloaded settings before this thread picks a model.
     let account = dsh;
@@ -138,7 +156,8 @@ await launchAppServer({
     // The client's hidden structured turns (thread titles): one tool-less call.
     if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
     return createDshEngine({
-      host,
+      // Threads stored before modes existed have none: standard.
+      host: hostFor(variant ?? "standard"),
       workspace: cwd,
       model: model && account.models.includes(model) ? model : account.defaultModel,
       onLog: (line) => log("[uac]", line),

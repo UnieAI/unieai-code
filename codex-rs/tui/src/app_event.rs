@@ -275,6 +275,8 @@ pub(crate) enum AppEvent {
     OpenEngineMenu,
     /// Persist the engine choice and relaunch onto it.
     SwitchEngine(crate::unieai_engine::EngineKind),
+    /// Persist uac with this dsh mode and relaunch into a new session on it.
+    SwitchUacMode(crate::unieai_engine::UacMode),
     ConfirmDaemonUpdate(crate::update_action::DaemonUpdateSource),
     RunDaemonUpdate(crate::update_action::DaemonUpdateSource),
     ReviewMisalignment(Arc<crate::chatwidget::MisalignmentReview>),
