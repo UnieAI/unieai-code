@@ -49,30 +49,43 @@ export function createOneShotModel({ fetchImpl = globalThis.fetch, credentials =
   return async function oneShot({ model, prompt, outputSchema = null, signal } = {}) {
     const account = credentials();
     if (!account?.gatewayBaseUrl || !account?.gatewayApiKey) throw new Error("not signed in to UnieAI");
-    const body = {
+    // Thinking off: a title needs no deliberation, and a thinking model
+    // otherwise spends the whole budget reasoning and returns empty content
+    // (DeepSeek-V4-Flash at 512 tokens did, every time). Models that reject
+    // the field are asked again without it.
+    const base = {
       model,
       messages: oneShotMessages(prompt, outputSchema),
-      max_tokens: 512,
+      max_tokens: 2048,
       ...(outputSchema
         ? { response_format: { type: "json_schema", json_schema: { name: "output", schema: outputSchema, strict: true } } }
         : {}),
     };
-    const response = await fetchImpl(`${account.gatewayBaseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${account.gatewayApiKey}` },
-      body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-    });
-    const raw = await response.text();
-    let json = null;
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      // Reported below.
-    }
+    const call = async (body) => {
+      const response = await fetchImpl(`${account.gatewayBaseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${account.gatewayApiKey}` },
+        body: JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      });
+      const raw = await response.text();
+      let json = null;
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        // Reported below.
+      }
+      return { response, json };
+    };
+    let { response, json } = await call({ ...base, reasoning_effort: "none" });
+    if (response.status === 400) ({ response, json } = await call(base));
     if (!response.ok) throw new Error(`model call failed (HTTP ${response.status})${json?.error?.message ? `: ${String(json.error.message).slice(0, 200)}` : ""}`);
-    const content = json?.choices?.[0]?.message?.content;
+    const choice = json?.choices?.[0];
+    const content = choice?.message?.content;
     const text = Array.isArray(content) ? content.map((part) => part?.text ?? "").join("") : String(content ?? "");
+    // An empty answer is a failure, not an answer: the client would otherwise
+    // see a turn complete with nothing in it and give up without a reason.
+    if (!text.trim()) throw new Error(`${model} returned no answer${choice?.finish_reason === "length" ? " (it ran out of tokens, likely while thinking)" : ""}`);
     return outputSchema ? extractJsonObject(text) : text.trim();
   };
 }

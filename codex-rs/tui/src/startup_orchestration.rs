@@ -220,6 +220,9 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
+    // Why the configured uac engine is not running, shown at startup: a
+    // silent fall back to codex looked exactly like uac working.
+    let mut uac_unavailable: Option<String> = None;
     let uac_socket = if explicit_remote_endpoint.is_none()
         && unieai_engine::resolve_engine(&codex_home) == unieai_engine::EngineKind::Uac
     {
@@ -232,6 +235,7 @@ pub(super) async fn run_main_inner(
                 // Falling back keeps the TUI usable; `/engine` reports the
                 // session is on codex and points at the server log.
                 tracing::warn!(%err, "uac engine unavailable; using the codex engine");
+                uac_unavailable = Some(unieai_engine::uac_unavailable_warning(&codex_home, &err));
                 None
             }
         }
@@ -428,6 +432,9 @@ pub(super) async fn run_main_inner(
             strict_config,
         ))
         .await?;
+    if let Some(warning) = uac_unavailable.take() {
+        config.startup_warnings.push(warning);
+    }
     let auto_start_daemon = config.features.enabled(Feature::DaemonAutoStart)
         && !cli.agents_overview
         && !cli.no_daemon

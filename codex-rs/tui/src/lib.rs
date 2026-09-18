@@ -528,7 +528,7 @@ async fn maybe_probe_default_daemon_socket(codex_home: &Path) -> Option<Absolute
 async fn start_app_server(
     target: &mut AppServerTarget,
     arg0_paths: Arg0DispatchPaths,
-    config: Config,
+    mut config: Config,
     cli_kv_overrides: Vec<(String, toml::Value)>,
     loader_overrides: LoaderOverrides,
     strict_config: bool,
@@ -556,6 +556,19 @@ async fn start_app_server(
                 ) =>
             {
                 tracing::debug!(%err, "local daemon connection failed; starting embedded app server");
+                // Falling back from the uac engine must be visible: a silent
+                // switch to codex looks exactly like uac running.
+                if let AppServerTarget::LocalDaemon {
+                    endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+                    ..
+                } = &*target
+                    && unieai_engine::is_uac_socket(&config.codex_home, socket_path.as_path())
+                {
+                    config.startup_warnings.push(unieai_engine::uac_unavailable_warning(
+                        &config.codex_home,
+                        &std::io::Error::other(format!("could not connect to the uac server ({err})")),
+                    ));
+                }
                 *target = AppServerTarget::Embedded;
                 *state_db = init_state_db_for_app_server_target(&config, target).await?;
             }

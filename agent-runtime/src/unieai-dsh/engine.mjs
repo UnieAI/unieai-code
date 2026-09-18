@@ -30,6 +30,27 @@ const TOOL_NAMES = {
   apply_patch: "edit",
 };
 
+/**
+ * What a terminal card shows for an exec_command / write_stdin result. The
+ * tool's text is written for the model (chunk id, wall time, token count,
+ * then `Output:`); the user sees the command's output and its exit code, as
+ * codex's own cards do.
+ */
+export function terminalView(dshName, text) {
+  if (dshName !== "exec_command" && dshName !== "write_stdin") return null;
+  const raw = String(text ?? "");
+  const marker = raw.match(/^Output:\n?/m);
+  if (!marker) return null;
+  const header = raw.slice(0, marker.index);
+  const exit = header.match(/Process exited with code (-?\d+)/);
+  const running = header.match(/Process running with session ID (\d+)/);
+  return {
+    output: raw.slice(marker.index + marker[0].length),
+    exitCode: exit ? Number(exit[1]) : null,
+    running: Boolean(running),
+  };
+}
+
 export function engineToolName(dshName) {
   return TOOL_NAMES[dshName] ?? dshName;
 }
@@ -401,14 +422,18 @@ export function createDshEngine({
         const call = toolCalls.get(update.toolCallId) ?? { name: update.title || "tool", rawInput: update.rawInput };
         toolCalls.delete(update.toolCallId);
         const output = contentText(update.content);
-        const failed = update.status === "failed";
-        const edit = failed ? null : diffFromArgs(call.name, call.rawInput ?? {});
+        const terminal = terminalView(call.name, output);
+        // A command that ran and exited non-zero is a failed card, as in codex.
+        const failed = update.status === "failed" || (terminal?.exitCode != null && terminal.exitCode !== 0);
+        const edit = update.status === "failed" ? null : diffFromArgs(call.name, call.rawInput ?? {});
+        const shown = terminal ? terminal.output : output;
         onToolEvent({
           type: failed ? "tool_use_failed" : edit ? "file_diff" : "tool_use_completed",
           tool_use_id: update.toolCallId,
           tool_name: engineToolName(call.name),
-          output_preview: output,
-          error: failed ? output : undefined,
+          output_preview: shown,
+          error: failed ? shown : undefined,
+          ...(terminal?.exitCode != null ? { exit_code: terminal.exitCode } : {}),
           ...(edit ? { path: edit.path, diff: edit.diff, kind: edit.kind } : {}),
         });
         break;

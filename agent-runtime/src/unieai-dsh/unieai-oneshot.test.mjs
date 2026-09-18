@@ -37,3 +37,27 @@ test("the one-shot engine streams the answer as the turn's text", async () => {
   await engine.send("hi", { outputSchema: {} });
   assert.deepEqual(texts, ["hi:json"]);
 });
+
+test("thinking is turned off, and a model that rejects that is asked again without it", async () => {
+  const bodies = [];
+  const reply = (status, json) => ({ ok: status === 200, status, text: async () => JSON.stringify(json) });
+  const oneShot = createOneShotModel({
+    credentials: () => ({ gatewayBaseUrl: "https://gw/v1", gatewayApiKey: "k" }),
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      return "reasoning_effort" in body ? reply(400, { error: { message: "unknown field" } }) : reply(200, { choices: [{ message: { content: '{"title":"T"}' } }] });
+    },
+  });
+  assert.equal(await oneShot({ model: "M", prompt: "p", outputSchema: {} }), '{"title":"T"}');
+  assert.equal(bodies[0].reasoning_effort, "none");
+  assert.equal(bodies.length, 2);
+});
+
+test("an empty answer is an error that says why, not an empty turn", async () => {
+  const oneShot = createOneShotModel({
+    credentials: () => ({ gatewayBaseUrl: "https://gw/v1", gatewayApiKey: "k" }),
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "", reasoning_content: "hmm" } }] }) }),
+  });
+  await assert.rejects(oneShot({ model: "M", prompt: "p", outputSchema: {} }), /M returned no answer \(it ran out of tokens/);
+});

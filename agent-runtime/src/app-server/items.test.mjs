@@ -166,3 +166,21 @@ test("a single-argument tool call still renders its argument", () => {
   onEvent2({ type: "tool_use_started", tool_use_id: "t2", tool_name: "grep", args_preview: "add(" });
   assert.equal(seen2[0][1].item.command, 'rg "add("');
 });
+
+test("reads and searches say what they did, so the TUI draws them as exploration", async () => {
+  const { commandActions } = await import("./items.mjs");
+  assert.deepEqual(commandActions("read", { filePath: "/p/calc.py" }), [
+    { type: "read", command: "cat /p/calc.py", name: "calc.py", path: "/p/calc.py" },
+  ]);
+  assert.equal(commandActions("read", { filePath: "calc.py" }, "/p")[0].path, "/p/calc.py");
+  assert.deepEqual(commandActions("grep", { pattern: "add", path: "src" }), [
+    { type: "search", command: 'rg "add" src', query: "add", path: "src" },
+  ]);
+  assert.deepEqual(commandActions("bash", { cmd: "cat x" }), [], "shell lines are not guessed at");
+  const events = [];
+  const bridge = createItemBridge((m, p) => events.push(p.item));
+  bridge({ type: "tool_use_started", tool_use_id: "u", tool_name: "read", args: { filePath: "/p/a.py" } });
+  bridge({ type: "file_read", tool_use_id: "u", tool_name: "read", output_preview: "<content>x</content>" });
+  assert.equal(events[0].commandActions[0].type, "read");
+  assert.equal(events[1].commandActions[0].name, "a.py", "the completed card keeps the action");
+});

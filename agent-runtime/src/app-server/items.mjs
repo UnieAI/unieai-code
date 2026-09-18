@@ -13,6 +13,7 @@
  * reads, and a missing field shows up as an empty pane rather than an error.
  */
 import { randomUUID } from "node:crypto";
+import { basename, isAbsolute, join } from "node:path";
 
 /**
  * Protocol item types we produce, by tool.
@@ -66,6 +67,30 @@ export function commandLabel(tool, args = {}) {
   }
 }
 
+/**
+ * What a read or search did, in the protocol's CommandAction shape. These are
+ * facts from the call's arguments, not a parse of a shell line, and with them
+ * the TUI draws codex's compact "Explored" cell (Read calc.py, Search foo)
+ * instead of dumping the tool's raw output under a pretend `cat`.
+ */
+export function commandActions(tool, args = {}, cwd = null) {
+  const command = commandLabel(tool, args);
+  const under = (p) => (!p ? null : isAbsolute(p) || !cwd ? p : join(cwd, p));
+  switch (tool) {
+    case "read": {
+      const path = String(args.filePath || args.__raw || "");
+      if (!path) return [];
+      return [{ type: "read", command, name: basename(path), path: under(path) }];
+    }
+    case "grep":
+      return [{ type: "search", command, query: String(args.pattern || args.__raw || "") || null, path: args.path ? String(args.path) : null }];
+    case "glob":
+      return [{ type: "search", command, query: String(args.pattern || args.__raw || "") || null, path: args.path ? String(args.path) : null }];
+    default:
+      return [];
+  }
+}
+
 /** A protocol item id. The client correlates started/completed by it. */
 export const newItemId = () => randomUUID();
 
@@ -93,12 +118,12 @@ export function startedItem({ tool, args = {}, id = newItemId(), cwd = null, cha
     ...base,
     command: commandLabel(tool, args),
     cwd: cwd ?? process.cwd(),
-    // We do not run these through a PTY, and we do not pre-parse the command:
-    // both are optional in the type, and inventing values would put guesses in
-    // front of the user as though they were facts.
+    // We do not run these through a PTY. Shell lines are not pre-parsed —
+    // that would put guesses in front of the user as facts — but reads and
+    // searches say exactly what they did.
     processId: null,
     source: "agent",
-    commandActions: [],
+    commandActions: commandActions(tool, args, cwd),
     aggregatedOutput: "",
     exitCode: null,
     durationMs: null,
@@ -118,7 +143,7 @@ export function completedItem({ tool, id, ok = true, output = "", extra = {}, cw
     cwd: cwd ?? process.cwd(),
     processId: null,
     source: "agent",
-    commandActions: [],
+    commandActions: commandActions(tool, extra.args ?? {}, cwd),
     aggregatedOutput: String(output).slice(0, 20_000),
     exitCode: extra.exitCode ?? (ok ? 0 : 1),
     durationMs: extra.durationMs ?? null,
@@ -226,11 +251,13 @@ export function createItemBridge(emit) {
             output: event.output_preview || event.error || "",
             extra: {
               command: commandLabel(entry.tool || tool, entry.args),
+              args: entry.args,
               path: event.path ?? entry.args.filePath ?? entry.args.__raw,
               query: entry.args.pattern,
               diff: event.diff,
               kind: event.kind,
               matches: event.matches,
+              ...(Number.isInteger(event.exit_code) ? { exitCode: event.exit_code } : {}),
             },
           }),
           completedAtMs: Date.now(),

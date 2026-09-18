@@ -166,3 +166,13 @@ export async function spawnAcpAgent({ command, args = [], env, cwd, onLog = () =
     },
   };
 }
+
+/**
+ * The line of an agent's stderr that says why it died: the first error line
+ * (a stack's `SyntaxError: …`), else the last non-empty line.
+ */
+export function agentFailureReason(lines) {
+  const meaningful = lines.map((line) => String(line).trim()).filter(Boolean);
+  const error = meaningful.find((line) => /^(?:\w*Error\b|error:)/i.test(line) || /\b(?:SyntaxError|TypeError|ReferenceError|RangeError)\b/.test(line));
+  return error ?? meaningful.at(-1) ?? null;
+}

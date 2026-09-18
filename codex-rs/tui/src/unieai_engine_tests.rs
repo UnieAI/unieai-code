@@ -77,3 +77,16 @@ fn rabi_accounts_cannot_run_the_codex_engine() {
     write_engine(home.path(), EngineKind::Codex).expect("write");
     assert_eq!(resolve_engine(home.path()), EngineKind::Uac);
 }
+
+#[test]
+fn a_uac_start_failure_names_the_reason_and_the_log() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let log = uac_log_path(home.path());
+    std::fs::create_dir_all(log.parent().expect("log dir")).expect("mkdir");
+    std::fs::write(&log, "uac: starting\nunieai-uac-server needs Node.js 22 or newer (found v20.11.0)\n[trace] x\n").expect("write log");
+    let warning = uac_unavailable_warning(home.path(), &std::io::Error::other("the uac server did not come up within 20s"));
+    assert!(warning.contains("did not start"), "{warning}");
+    assert!(warning.contains("within 20s"), "{warning}");
+    assert!(warning.contains("needs Node.js 22 or newer"), "{warning}");
+    assert!(warning.contains(&log.display().to_string()), "{warning}");
+}

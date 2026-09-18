@@ -175,8 +175,13 @@ export function createHandlers({
     sandbox: sandboxMode === "readOnly" || t.readOnly
       ? { type: "readOnly", networkAccess: false }
       : { type: "workspaceWrite", networkAccess: true },
-    activePermissionProfile: { id: sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write", extends: null },
-    reasoningEffort: "none",
+    activePermissionProfile: {
+      id: t.permissionProfile ?? (sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write"),
+      extends: null,
+    },
+    // dsh decides how much the model thinks; no effort is chosen here, and
+    // "none" would read as thinking turned off.
+    reasoningEffort: null,
     multiAgentMode: "explicitRequestOnly",
   });
 
@@ -335,7 +340,15 @@ export function createHandlers({
       // and other structured one-shots): answered by a single model call
       // with no tools, so "read-only" is true rather than a label.
       thread.readOnly = ["read-only", "readOnly"].includes(params?.sandbox);
-      thread.oneShot = thread.readOnly && thread.ephemeral;
+      // No execution environment at all (`environments: []`) means the
+      // client wants an answer, not an agent: the TUI starts its title
+      // threads this way whether it asks for read-only or for a named
+      // permission profile.
+      const noEnvironment = Array.isArray(params?.environments) && params.environments.length === 0;
+      thread.oneShot = Boolean(thread.ephemeral) && (thread.readOnly || noEnvironment);
+      if (thread.oneShot) thread.readOnly = true;
+      // A named profile the client asked for is the one in force: echo it.
+      thread.permissionProfile = typeof params?.permissions === "string" ? params.permissions : null;
       // Tools the client hosts (TUI task tools, cross-session messaging); the
       // engine offers them to the model and calls back with item/tool/call.
       thread.clientTools = Array.isArray(params?.dynamicTools) ? params.dynamicTools : null;
@@ -380,44 +393,61 @@ export function createHandlers({
       emitItem("item/started", { item: userMessageItem(userItemId, text), startedAtMs: Date.now() });
       emitItem("item/completed", { item: userMessageItem(userItemId, text), completedAtMs: Date.now() });
 
-      const answerId = newItemId();
-      let answer = "";
-      let answerOpened = false;
+      // The model's text comes in segments between tool calls. Each segment
+      // is its own agentMessage (and reasoning) item, closed when a tool card
+      // opens, so the transcript interleaves them as codex does; one item for
+      // the whole turn put every remark after every command.
       // Streamed text has to name the item it belongs to; without `itemId` the
       // client cannot attach the delta to a card and drops it, which looks
       // exactly like the engine producing nothing at all.
+      let answerSegment = null; // { id, text }
+      let reasoningSegment = null; // { id, text }
       const emitAnswerDelta = (delta) => {
-        if (!answerOpened) {
-          answerOpened = true;
-          emitItem("item/started", { item: agentMessageItem(answerId, ""), startedAtMs: Date.now() });
+        if (!answerSegment) {
+          answerSegment = { id: newItemId(), text: "" };
+          emitItem("item/started", { item: agentMessageItem(answerSegment.id, ""), startedAtMs: Date.now() });
         }
-        answer += delta;
-        emitItem("item/agentMessage/delta", { itemId: answerId, delta });
+        answerSegment.text += delta;
+        emitItem("item/agentMessage/delta", { itemId: answerSegment.id, delta });
       };
-      // Reasoning gets its own item, opened on the first delta, for the same
-      // reason as the answer: a delta that names no item is dropped.
-      const reasoningId = newItemId();
-      let reasoning = "";
-      let reasoningOpened = false;
       const emitReasoningDelta = (delta) => {
-        if (!reasoningOpened) {
-          reasoningOpened = true;
-          emitItem("item/started", { item: reasoningItem(reasoningId), startedAtMs: Date.now() });
+        if (!reasoningSegment) {
+          reasoningSegment = { id: newItemId(), text: "" };
+          emitItem("item/started", { item: reasoningItem(reasoningSegment.id), startedAtMs: Date.now() });
         }
-        reasoning += delta;
-        emitItem("item/reasoning/textDelta", { itemId: reasoningId, delta, contentIndex: 0 });
+        reasoningSegment.text += delta;
+        emitItem("item/reasoning/textDelta", { itemId: reasoningSegment.id, delta, contentIndex: 0 });
       };
-      thread.pendingAnswer = { id: answerId, emitItem, emitAnswerDelta, emitReasoningDelta };
+      const closeText = () => {
+        if (reasoningSegment) {
+          emitItem("item/completed", { item: reasoningItem(reasoningSegment.id, reasoningSegment.text), completedAtMs: Date.now() });
+          reasoningSegment = null;
+        }
+        if (answerSegment) {
+          if (answerSegment.text) emitItem("item/completed", { item: agentMessageItem(answerSegment.id, answerSegment.text), completedAtMs: Date.now() });
+          answerSegment = null;
+        }
+      };
+      // Any other card, including a steered user message, ends the segment.
+      const TEXT_ITEMS = new Set(["agentMessage", "reasoning"]);
+      thread.pendingAnswer = {
+        emitItem: (method, itemParams) => {
+          // A tool card opening ends the text segment before it.
+          if (method === "item/started" && !TEXT_ITEMS.has(itemParams?.item?.type)) closeText();
+          return emitItem(method, itemParams);
+        },
+        emitAnswerDelta,
+        emitReasoningDelta,
+      };
 
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
         .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null })
-        .then(() => {
-          if (reasoningOpened) emitItem("item/completed", { item: reasoningItem(reasoningId, reasoning), completedAtMs: Date.now() });
-          if (answer) emitItem("item/completed", { item: agentMessageItem(answerId, answer), completedAtMs: Date.now() });
-        })
+        .then(() => closeText())
         .catch((error) => {
+          // What was said before the failure stays on screen.
+          closeText();
           if (thread.activeTurn) {
             thread.activeTurn.status = "failed";
             thread.activeTurn.error = { message: String(error?.message || error) };
@@ -766,7 +796,10 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
       const ctx = {
         // Engine progress reaches the client as notifications, which carry no id.
         emit: (method, params) => {
-          trace(`connection ${connId} ← ${method}${tracePayloads ? ` ${JSON.stringify(params)}` : ""}`);
+          // Which thread, always: the client runs hidden threads (titles)
+          // alongside the visible one, and their traffic interleaves.
+          const on = params?.threadId ? ` [${String(params.threadId).slice(0, 8)}]` : "";
+          trace(`connection ${connId} ← ${method}${on}${tracePayloads ? ` ${JSON.stringify(params)}` : ""}`);
           return conn.send({ method, params });
         },
         request: (method, params, { timeoutMs = 0 } = {}) =>
@@ -791,7 +824,12 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
         if (message?.method) {
           // turn/start is where clients differ most (the `input` shape), so its
           // params are worth seeing when something silently does nothing.
-          const detail = message.method === "turn/start" ? ` ${JSON.stringify(message.params ?? {}).slice(0, 300)}` : "";
+          const p = message.params ?? {};
+          const detail = message.method === "turn/start"
+            ? ` ${JSON.stringify(p).slice(0, 300)}`
+            : message.method === "thread/start"
+              ? ` ${JSON.stringify({ ephemeral: p.ephemeral, sandbox: p.sandbox, permissions: p.permissions, environments: p.environments })}`
+              : "";
           trace(`connection ${connId} → ${message.method}${detail}`);
         }
         // A response to something WE asked — route it to its waiter, not the

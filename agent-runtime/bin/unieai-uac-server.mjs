@@ -28,9 +28,19 @@ import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
 import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
 import { prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
+import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
 
-const oneShotModel = createOneShotModel();
+const oneShotCall = createOneShotModel();
+// Logged with its duration: the client gives these turns 30 seconds.
+const oneShotModel = async (request) => {
+  const started = Date.now();
+  try {
+    return await oneShotCall(request);
+  } finally {
+    log(`[uac] one-shot ${request.model} answered in ${Date.now() - started} ms`);
+  }
+};
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -52,16 +62,36 @@ const controlSocket = appSocket.replace(/(\.sock)?$/, ".dsh.sock");
 const dsh = prepareDsh({ sandboxMode, controlSocket });
 log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel})`);
 
+// dsh's recent stderr: when it dies, its own error (a missing export, a bad
+// patch) is what the user needs, not "the connection closed".
+const dshStderr = [];
+const rememberDsh = (line) => {
+  dshStderr.push(line);
+  if (dshStderr.length > 40) dshStderr.shift();
+};
+
 const host = createDshHost({
   onLog: (line) => log("[uac]", line),
-  connect: () =>
-    spawnAcpAgent({
-      command: dsh.command,
-      args: dsh.args,
-      env: dsh.env,
-      cwd: process.cwd(),
-      onLog: (line) => log("[dsh]", line),
-    }),
+  connect: async () => {
+    try {
+      return await spawnAcpAgent({
+        command: dsh.command,
+        args: dsh.args,
+        env: dsh.env,
+        cwd: process.cwd(),
+        onLog: (line) => {
+          rememberDsh(line);
+          log("[dsh]", line);
+        },
+      });
+    } catch (error) {
+      const reason = agentFailureReason(dshStderr);
+      throw new Error(
+        `deepseek-harness (dsh) failed to start${reason ? `: ${reason}` : `: ${error.message}`}. ` +
+          "Reinstall UnieAI Code if it persists; details are in the uac server log.",
+      );
+    }
+  },
   connectControl: () => connectControlSocket(controlSocket),
 });
 

@@ -81,6 +81,30 @@ pub(crate) fn configured_engine(codex_home: &Path) -> EngineKind {
         .unwrap_or(EngineKind::Codex)
 }
 
+/// The startup warning for a uac engine that did not start: the reason, the
+/// last line of the server log (where node / dsh report what broke), and
+/// where to look.
+pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error) -> String {
+    let log = uac_log_path(codex_home);
+    let last_line = std::fs::read_to_string(&log).ok().and_then(|text| {
+        text.lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("[trace]"))
+            .map(|line| line.chars().take(200).collect::<String>())
+    });
+    let mut warning = format!(
+        "{} (uac) did not start, so this session runs on {}: {error}.",
+        EngineKind::Uac.display_name(),
+        EngineKind::Codex.display_name()
+    );
+    if let Some(line) = last_line {
+        warning.push_str(&format!(" Last log line: {line}."));
+    }
+    warning.push_str(&format!(" Log: {}", log.display()));
+    warning
+}
+
 /// Why the signed-in account cannot run `engine`, if it cannot. A UnieAI
 /// Rabi account's relay serves chat completions only, which the codex engine
 /// (Responses API) cannot use.

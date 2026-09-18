@@ -315,6 +315,38 @@ test("streamed answer text names the item it belongs to", async () => {
   assert.equal(done[1].item.text, "hello", "the completed item carries the full answer");
 });
 
+test("text between tool calls is its own item, so it interleaves with the cards", async () => {
+  const h = createHandlers({
+    createEngineFor: ({ emit }) => ({
+      send: async () => {
+        emit("item/agentMessage/delta", { delta: "look first" });
+        emit("item/started", { item: { type: "commandExecution", id: "c1" } });
+        emit("item/completed", { item: { type: "commandExecution", id: "c1" } });
+        emit("item/agentMessage/delta", { delta: "found it" });
+      },
+    }),
+    codexHome: "/h",
+  });
+  const emitted = [];
+  const ctx = { emit: (m, p) => emitted.push([m, p]) };
+  const { thread } = await h["thread/start"]({}, ctx);
+  await h["turn/start"]({ threadId: thread.id, input: "hi" }, ctx);
+  await new Promise((r) => setTimeout(r, 10));
+
+  const order = emitted
+    .filter(([m]) => m === "item/started" || m === "item/completed")
+    .map(([m, p]) => `${m.slice(5)}:${p.item.type}${p.item.text ? `=${p.item.text}` : ""}`)
+    .filter((s) => !s.includes("userMessage"));
+  assert.deepEqual(order, [
+    "started:agentMessage",
+    "completed:agentMessage=look first",
+    "started:commandExecution",
+    "completed:commandExecution",
+    "started:agentMessage",
+    "completed:agentMessage=found it",
+  ]);
+});
+
 test("the reported sandbox is the one the engine actually runs under", async () => {
   // The first cut hardcoded readOnly while the engine executed with
   // workspace-write: the client's header promised a restriction that nothing
@@ -496,4 +528,15 @@ test("a read-only ephemeral thread is reported read-only and gets a one-shot eng
 
   const normal = await h["thread/start"]({ cwd: "/repo" }, ctx);
   assert.equal(normal.sandbox.type, "workspaceWrite");
+});
+
+test("a title thread started with a named profile and no environments is a one-shot, and keeps its profile", async () => {
+  let built = null;
+  const h = createHandlers({ createEngineFor: (opts) => ((built = opts), { send: async () => ({ text: "{}" }) }), codexHome: "/h" });
+  const ctx = { emit() {}, request: async () => ({}) };
+  const started = await h["thread/start"]({ cwd: "/repo", permissions: ":workspace-write", ephemeral: true, environments: [], dynamicTools: [] }, ctx);
+  assert.equal(started.activePermissionProfile.id, ":workspace-write");
+  await h["turn/start"]({ threadId: started.thread.id, input: [{ type: "text", text: "title" }], outputSchema: { type: "object" } }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(built.oneShot, true);
 });

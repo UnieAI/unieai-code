@@ -123,3 +123,40 @@ test("a child that dies rejects everything still in flight", async () => {
     await assert.rejects(() => f.forward("fs/readFile", {}), /exited/);
   } finally { f.close(); rmSync(stub.dir, { recursive: true, force: true }); }
 });
+
+test("a child that dies at startup does not crash us, and the next call restarts it", async () => {
+  // First start exits immediately (the state-database failure seen live);
+  // the flag file makes the second start behave.
+  const dir = mkdtempSync(join(tmpdir(), "fwd-flaky-"));
+  const flag = join(dir, "started-once");
+  const flaky = stubServer(`
+import fs from "node:fs";
+if (!fs.existsSync(${JSON.stringify(flag)})) { fs.writeFileSync(${JSON.stringify(flag)}, "1"); process.exit(1); }
+${ECHO}`);
+  const errors = [];
+  const f = createForwarder({ bin: process.execPath, args: [flaky.path], onError: (e) => errors.push(e.message) });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300)); // the first child is gone by now
+    assert.ok(errors.some((m) => /exited \(1\)/.test(m)), errors.join("; "));
+    const result = await f.forward("config/read", { n: 1 });
+    assert.deepEqual(result, { method: "config/read", params: { n: 1 } });
+  } finally {
+    f.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(flaky.dir, { recursive: true, force: true });
+  }
+});
+
+test("a child that keeps dying stops being restarted", async () => {
+  const dead = stubServer(`process.exit(3);`);
+  const f = createForwarder({ bin: process.execPath, args: [dead.path], maxRestarts: 2 });
+  try {
+    // The first child and two restarts, then no more.
+    for (let i = 0; i < 3; i += 1) await assert.rejects(f.forward("x", {}), /exited|not running/);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await assert.rejects(f.forward("x", {}), /keeps exiting/);
+  } finally {
+    f.close();
+    rmSync(dead.dir, { recursive: true, force: true });
+  }
+});

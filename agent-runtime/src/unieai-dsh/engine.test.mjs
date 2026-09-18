@@ -390,3 +390,30 @@ test("apply_patch calls render as a diff of the first file they change", async (
   assert.deepEqual(add, { path: "n.txt", kind: "add", diff: "hello\nworld\n" });
   assert.equal(diffFromApplyPatch("nonsense"), null);
 });
+
+test("a dying agent's own error is what gets reported", async () => {
+  const { agentFailureReason } = await import("./acp-client.mjs");
+  assert.equal(
+    agentFailureReason([
+      "file:///x/profile-boot.js:1",
+      "import { watchUserPatches } from '@deepseek-ai/dsh-app-boot';",
+      "        ^",
+      "SyntaxError: The requested module '@deepseek-ai/dsh-app-boot' does not provide an export named 'watchUserPatches'",
+      "    at ModuleJob._instantiate (node:internal/modules/esm/module_job:226:21)",
+      "Node.js v22.23.2",
+    ]),
+    "SyntaxError: The requested module '@deepseek-ai/dsh-app-boot' does not provide an export named 'watchUserPatches'",
+  );
+  assert.equal(agentFailureReason(["", "just stopped"]), "just stopped");
+  assert.equal(agentFailureReason([]), null);
+});
+
+test("terminal cards show the command's output and exit code, not the model-facing header", async () => {
+  const { terminalView } = await import("./engine.mjs");
+  const text = "Chunk ID: 926d2c\nWall time: 0.2580 seconds\nProcess exited with code 1\nOriginal token count: 40\nOutput:\nTraceback...\nAssertionError\n";
+  assert.deepEqual(terminalView("exec_command", text), { output: "Traceback...\nAssertionError\n", exitCode: 1, running: false });
+  const running = "Chunk ID: a\nWall time: 30.0 seconds\nProcess running with session ID 1000\nOriginal token count: 3\nOutput:\nbuilding\n";
+  assert.deepEqual(terminalView("write_stdin", running), { output: "building\n", exitCode: null, running: true });
+  assert.equal(terminalView("read", text), null, "other tools are left alone");
+  assert.equal(terminalView("exec_command", "no header"), null);
+});
