@@ -159,6 +159,15 @@ fn engine_file(codex_home: &Path) -> PathBuf {
     codex_home.join(ENGINE_FILE)
 }
 
+/// Whether UnieAI's provider is active with nothing to authenticate it: no
+/// UnieAI sign-in and no `UNIEAI_API_KEY`. The provider does not use OpenAI
+/// auth, so the regular login check never fires for it.
+pub(crate) fn needs_unieai_sign_in(provider_id: &str, codex_home: &Path) -> bool {
+    provider_id == codex_model_provider_info::UNIEAI_PROVIDER_ID
+        && std::env::var("UNIEAI_API_KEY").map_or(true, |key| key.trim().is_empty())
+        && codex_login::unieai::load_unieai_credentials(codex_home).is_none()
+}
+
 /// The engine configured for new sessions, ignoring the environment override.
 /// uac unless the user chose codex: on the same model it scored at least as
 /// well with fewer tokens in total, and it serves every account kind.

@@ -107,3 +107,19 @@ fn a_uac_start_failure_names_the_reason_and_the_log() {
     assert!(warning.contains("needs Node.js 22 or newer"), "{warning}");
     assert!(warning.contains(&log.display().to_string()), "{warning}");
 }
+
+#[test]
+fn unieai_provider_without_a_sign_in_needs_one() {
+    let home = tempfile::tempdir().expect("tempdir");
+    // SAFETY: tests in this module do not read UNIEAI_API_KEY concurrently.
+    let saved = std::env::var_os("UNIEAI_API_KEY");
+    unsafe { std::env::remove_var("UNIEAI_API_KEY") };
+    assert!(needs_unieai_sign_in("unieai", home.path()));
+    assert!(!needs_unieai_sign_in("openai", home.path()), "other providers keep their own login check");
+    unsafe { std::env::set_var("UNIEAI_API_KEY", "k") };
+    assert!(!needs_unieai_sign_in("unieai", home.path()), "an API key is enough");
+    match saved {
+        Some(value) => unsafe { std::env::set_var("UNIEAI_API_KEY", value) },
+        None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
+    }
+}

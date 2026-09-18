@@ -1235,10 +1235,22 @@ async fn run_ratatui_app(
             }
         }
     };
+    // UnieAI's own provider is not an OpenAI login, so account/read never asks
+    // for one; but with no UnieAI sign-in (and no UNIEAI_API_KEY) it has
+    // nothing to call. Show the sign-in screen: after `unieai logout` the TUI
+    // went straight into a session whose every request failed.
+    let needs_unieai_sign_in =
+        unieai_engine::needs_unieai_sign_in(&startup_model_provider, &initial_config.codex_home);
+    let login_status = if needs_unieai_sign_in {
+        LoginStatus::NotAuthenticated
+    } else {
+        login_status
+    };
     // Workload identity bypasses interactive login; every other provider uses account/read.
-    let requires_openai_auth = startup_account
-        .as_ref()
-        .is_some_and(|account| account.requires_openai_auth);
+    let requires_openai_auth = needs_unieai_sign_in
+        || startup_account
+            .as_ref()
+            .is_some_and(|account| account.requires_openai_auth);
     let should_show_onboarding = should_show_onboarding(
         login_status,
         requires_openai_auth,
