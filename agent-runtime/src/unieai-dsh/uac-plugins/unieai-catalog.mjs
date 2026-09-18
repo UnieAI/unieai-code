@@ -63,6 +63,12 @@ export const PLUGINS = Object.freeze([
     // The host passes { gatewayBaseUrl, visionModel } only when the default model is text-only.
     summary: "describe_image: a vision model on the same gateway describes images for a text-only model",
   },
+  {
+    id: "unieai-secret-redact",
+    file: "unieai-secret-redact.mjs",
+    profiles: ["cli", "studio"],
+    summary: "this machine's credentials (npm, git, registry, UnieAI keys, credential env vars) never reach the model",
+  },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
     id: "unieai-loop-truncation",
