@@ -140,11 +140,16 @@ export function createSubagentThreads({ turnShape, threadShape, refreshMs = 300 
     child.activities += 1;
     const item = { type: "subAgentActivity", id: `${child.id}:activity:${child.activities}`, kind, agentThreadId: child.id, agentPath: child.path };
     // In the root's running turn, through the turn's own emitter: like any
-    // card, the row ends the text the model was streaming before it.
-    const turnEmit = parent.activeTurn ? parent.pendingAnswer?.emitItem : null;
-    if (turnEmit) {
-      turnEmit("item/started", { item, startedAtMs: Date.now() });
-      turnEmit("item/completed", { item, completedAtMs: Date.now() });
+    // card, the row ends the text the model was streaming before it. It
+    // waits for a running card (the parent's wait_agents) to finish first.
+    const turn = parent.activeTurn ? parent.pendingAnswer : null;
+    if (turn?.emitItem) {
+      const place = () => {
+        turn.emitItem("item/started", { item, startedAtMs: Date.now() });
+        turn.emitItem("item/completed", { item, completedAtMs: Date.now() });
+      };
+      if (turn.whenNoOpenCards) turn.whenNoOpenCards(place);
+      else place();
       return;
     }
     emitOf(child)?.("item/completed", { threadId: parent.id, turnId, item, completedAtMs: Date.now() });

@@ -353,11 +353,32 @@ export function createHandlers({
     };
     // Any other card, including a steered user message, ends the segment.
     const TEXT_ITEMS = new Set(["agentMessage", "reasoning"]);
+    // Cards started and not yet completed, and rows waiting for them to
+    // close: a row placed while a card runs pushes the unfinished card into
+    // the transcript, where it stays as "Running …" above its result.
+    const openCards = new Set();
+    let afterCards = [];
+    const runAfterCards = () => {
+      const waiting = afterCards;
+      afterCards = [];
+      for (const run of waiting) run();
+    };
     thread.pendingAnswer = {
       emitItem: (method, itemParams) => {
+        const item = itemParams?.item;
         // A tool card opening ends the text segment before it.
-        if (method === "item/started" && !TEXT_ITEMS.has(itemParams?.item?.type)) closeText();
-        return emitItem(method, itemParams);
+        if (method === "item/started" && !TEXT_ITEMS.has(item?.type)) {
+          closeText();
+          if (item?.id) openCards.add(item.id);
+        }
+        const sent = emitItem(method, itemParams);
+        if (method === "item/completed" && openCards.delete(item?.id) && openCards.size === 0) runAfterCards();
+        return sent;
+      },
+      /** Run `place` now, or once the cards open in this turn have completed. */
+      whenNoOpenCards: (place) => {
+        if (openCards.size === 0) place();
+        else afterCards.push(place);
       },
       emitAnswerDelta,
       emitReasoningDelta,
@@ -369,6 +390,8 @@ export function createHandlers({
       finished = true;
       // What was said before a failure stays on screen.
       closeText();
+      openCards.clear();
+      runAfterCards();
       const current = thread.activeTurn;
       if (error) {
         if (current) {

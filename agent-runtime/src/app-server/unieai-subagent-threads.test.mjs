@@ -120,3 +120,19 @@ test("a subagent is a row in its parent and a live thread of its own", { skip },
   await assert.rejects(handlers["turn/start"]({ threadId: CHILD, input: "hi" }), /subagent's thread/);
   finishTurn();
 });
+
+test("a row that arrives while a card runs waits for that card", async () => {
+  const { emitted, hooks, finishTurn } = await parentWithTurn(() => []);
+  const base = { sessionId: CHILD, parentSessionId: "parent-session" };
+  hooks.onSubagent({ ...base, phase: "start", label: "count" });
+  const card = completedItem({ tool: "wait_agents", id: "wait-1", ok: true, output: "", extra: { args: {} } });
+  hooks.emit("item/started", { item: { ...card, status: "inProgress" }, startedAtMs: 1 });
+  hooks.onSubagent({ ...base, phase: "end", stopReason: "completed" });
+  await settle();
+  hooks.emit("item/completed", { item: card, completedAtMs: 2 });
+  const order = emitted
+    .filter(([method, params]) => method === "item/completed" && (params.item.type === "subAgentActivity" || params.item.id === "wait-1"))
+    .map(([, params]) => (params.item.type === "subAgentActivity" ? params.item.kind : params.item.id));
+  assert.deepEqual(order, ["started", "wait-1", "completed"]);
+  finishTurn();
+});
