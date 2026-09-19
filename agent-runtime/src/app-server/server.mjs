@@ -480,7 +480,7 @@ export function createHandlers({
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
-        .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null })
+        .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null, images: imagesOf(params?.input) })
         .then(() => closeText())
         .catch((error) => {
           // What was said before the failure stays on screen.
@@ -790,6 +790,19 @@ function isSynthetic(text) {
 }
 
 /** Pull the user's text out of the protocol's input shape. */
+/**
+ * The images in a turn's input (`-i`, pasted images): `{ path }` for a local
+ * file, `{ url }` for an inline data URL. Other references are not carried.
+ */
+export function imagesOf(input) {
+  if (!Array.isArray(input)) return [];
+  return input.flatMap((part) => {
+    if (part?.type === "localImage" && typeof part.path === "string") return [{ path: part.path }];
+    if (part?.type === "image" && typeof part.url === "string") return [{ url: part.url }];
+    return [];
+  });
+}
+
 export function textOf(input) {
   if (typeof input === "string") return input;
   if (Array.isArray(input)) {

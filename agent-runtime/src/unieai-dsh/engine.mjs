@@ -8,6 +8,10 @@
  * tool lifecycle; this file turns those into agent-runtime's engine events so
  * items.mjs and approval.mjs work unchanged.
  */
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
 import { AcpError } from "./acp-client.mjs";
 import { DSH_PROVIDER_ID } from "./config.mjs";
 import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from "../app-server/items.mjs";
@@ -364,6 +368,53 @@ function permissionOptionId(options = [], allow) {
  * One conversation. `host` is shared across conversations; everything else is
  * the same contract agent-runtime's createEngine takes.
  */
+const IMAGE_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+
+/**
+ * A turn's ACP prompt: the text, then its images. A model that takes images
+ * gets them inline (dsh advertises `promptCapabilities.image` only then). A
+ * text-only model gets each image's path and is told to describe it with
+ * describe_image (unieai-vision-fallback); inline images are written to a
+ * temporary file for that.
+ */
+export async function promptContent(text, images = [], { imageInput = false, tmp = tmpdir() } = {}) {
+  const content = [{ type: "text", text }];
+  const notes = [];
+  for (const image of images) {
+    let data = null;
+    let mimeType = null;
+    let path = image.path ?? null;
+    if (image.url?.startsWith("data:")) {
+      const match = image.url.match(/^data:([^;,]+)(;base64)?,(.*)$/s);
+      if (match) {
+        mimeType = match[1];
+        data = match[2] ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3]));
+      }
+    } else if (path) {
+      mimeType = IMAGE_TYPES[extname(path).toLowerCase()] ?? null;
+      data = await readFile(path).catch(() => null);
+    }
+    if (!data) {
+      notes.push(`[An attached image could not be read${path ? `: ${path}` : ""}.]`);
+      continue;
+    }
+    if (imageInput && mimeType && Object.values(IMAGE_TYPES).includes(mimeType)) {
+      content.push({ type: "image", mimeType, data: data.toString("base64") });
+      continue;
+    }
+    if (!path) {
+      const dir = join(tmp, "unieai-images");
+      await mkdir(dir, { recursive: true });
+      const ext = Object.entries(IMAGE_TYPES).find(([, type]) => type === mimeType)?.[0] ?? ".png";
+      path = join(dir, `${randomUUID()}${ext}`);
+      await writeFile(path, data);
+    }
+    notes.push(`[The user attached an image: ${path}. You cannot see images directly; look at it with describe_image.]`);
+  }
+  if (notes.length > 0) content[0] = { type: "text", text: `${text}\n\n${notes.join("\n")}` };
+  return content;
+}
+
 export function createDshEngine({
   host,
   workspace,
@@ -572,18 +623,16 @@ export function createDshEngine({
       return sessionId;
     },
 
-    async send(text, { abortSignal } = {}) {
+    async send(text, { abortSignal, images = [] } = {}) {
       const acp = await ensureSession();
+      const prompt = await promptContent(text, images, { imageInput: Boolean(acp.agentCapabilities?.promptCapabilities?.image) });
       messages.push({ role: "user", content: text });
       turnText = "";
       turnActive = true;
       const cancel = () => acp.notify("session/cancel", { sessionId });
       abortSignal?.addEventListener("abort", cancel, { once: true });
       try {
-        const result = await acp.request("session/prompt", {
-          sessionId,
-          prompt: [{ type: "text", text }],
-        });
+        const result = await acp.request("session/prompt", { sessionId, prompt });
         if (result?.stopReason === "refusal") {
           throw new AcpError("the model refused this request");
         }

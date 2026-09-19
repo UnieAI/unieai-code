@@ -452,3 +452,30 @@ test("dsh modes: each is a patch on the flat standard composition", async () => 
   assert.equal(configuredUacMode({ env: {}, home }), "minimal");
   assert.equal(configuredUacMode({ env: { UNIEAI_UAC_MODE: "ptc" }, home }), "ptc", "the environment wins");
 });
+
+test("images: inline for a vision model, a path and describe_image for a text-only one", async () => {
+  const { promptContent } = await import("./engine.mjs");
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "uac-img-"));
+  const png = join(dir, "shot.png");
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const dataUrl = "data:image/jpeg;base64,/9j/AA==";
+
+  const vision = await promptContent("what is this?", [{ path: png }, { url: dataUrl }], { imageInput: true });
+  assert.deepEqual(vision, [
+    { type: "text", text: "what is this?" },
+    { type: "image", mimeType: "image/png", data: "iVBORw==" },
+    { type: "image", mimeType: "image/jpeg", data: "/9j/AA==" },
+  ]);
+
+  const textOnly = await promptContent("what is this?", [{ path: png }, { url: dataUrl }], { imageInput: false, tmp: dir });
+  assert.equal(textOnly.length, 1);
+  assert.match(textOnly[0].text, new RegExp(`attached an image: ${png.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. You cannot see images directly; look at it with describe_image`));
+  const written = textOnly[0].text.match(/attached an image: (\S+\.jpg)\./)[1];
+  assert.deepEqual(readFileSync(written), Buffer.from("/9j/AA==", "base64"), "an inline image is saved for describe_image");
+
+  const missing = await promptContent("x", [{ path: join(dir, "nope.png") }], { imageInput: true });
+  assert.match(missing[0].text, /could not be read/);
+});

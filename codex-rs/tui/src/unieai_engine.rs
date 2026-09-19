@@ -159,6 +159,21 @@ fn engine_file(codex_home: &Path) -> PathBuf {
     codex_home.join(ENGINE_FILE)
 }
 
+/// The engine this process's session runs on, recorded once the startup
+/// connection is settled (switching engines restarts the CLI).
+static SESSION_ENGINE: std::sync::OnceLock<EngineKind> = std::sync::OnceLock::new();
+
+pub(crate) fn record_session_engine(engine: EngineKind) {
+    let _ = SESSION_ENGINE.set(engine);
+}
+
+/// Whether images reach the model whatever its own modalities: uac passes
+/// them inline to a vision model and describes them for a text-only one
+/// (unieai-vision-fallback's describe_image).
+pub(crate) fn session_takes_any_image() -> bool {
+    SESSION_ENGINE.get() == Some(&EngineKind::Uac)
+}
+
 /// Whether UnieAI's provider is active with nothing to authenticate it: no
 /// UnieAI sign-in and no `UNIEAI_API_KEY`. The provider does not use OpenAI
 /// auth, so the regular login check never fires for it.

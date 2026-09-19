@@ -309,6 +309,9 @@ impl ChatWidget {
     /// We intentionally default to `true` when model metadata cannot be read so transient catalog
     /// failures do not hard-block user input in the UI.
     pub(super) fn current_model_supports_images(&self) -> bool {
+        if crate::unieai_engine::session_takes_any_image() {
+            return true;
+        }
         let model = self.current_model();
         self.model_catalog
             .try_list_models()

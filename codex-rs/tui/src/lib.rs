@@ -1165,6 +1165,10 @@ async fn run_ratatui_app(
         )
         .await;
     launch_telemetry.record(&app_server_target, matches!(&startup_app_server, Ok(Ok(_))));
+    unieai_engine::record_session_engine(unieai_engine::target_engine(
+        &initial_config.codex_home,
+        &app_server_target,
+    ));
     let app_server_session = match startup_app_server {
         Ok(Ok(app_server)) => {
             AppServerSession::new(app_server, app_server_target.thread_params_mode())
