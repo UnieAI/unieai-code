@@ -91,3 +91,34 @@ test("token usage: totals and the last model call, in the protocol's shape", asy
     last: { totalTokens: 1505, inputTokens: 1500, cachedInputTokens: 900, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0 },
   });
 });
+
+test("a steered message is reported to the client when the model takes it, not when queued", async () => {
+  const { apply } = await import("./unieai-control.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { connect } = await import("node:net");
+  const { createInterface } = await import("node:readline");
+  const handlers = {};
+  const steered = [];
+  const agent = { id: "s1", session: { header: { id: "s1" } }, steer: (message) => steered.push(message) };
+  const socket = join(mkdtempSync(join(tmpdir(), "ctl-")), "c.sock");
+  apply(
+    { on: (name, fn) => (handlers[name] = fn), agents: { get: (id) => (id === "s1" ? agent : undefined) }, logger: { warn() {}, info() {} }, effect: () => {} },
+    { socket },
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  const client = connect(socket);
+  const lines = [];
+  createInterface({ input: client }).on("line", (line) => lines.push(JSON.parse(line)));
+  client.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "steer", params: { sessionId: "s1", text: "also this", clientId: "c-42" } })}\n`);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(steered.length, 1);
+  assert.deepEqual(lines.filter((m) => m.method), [], "queued, not yet delivered");
+  handlers["session/event"](agent.session, { type: "user/message", data: { content: [{ type: "text", text: "unrelated" }] } });
+  handlers["session/event"](agent.session, { type: "user/message", data: { content: [{ type: "text", text: "also this" }] } });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(lines.filter((m) => m.method), [{ jsonrpc: "2.0", method: "steerDelivered", params: { sessionId: "s1", clientId: "c-42", text: "also this" } }]);
+  client.destroy();
+  handlers.dispose();
+});

@@ -321,7 +321,7 @@ test("steer only reaches dsh while a turn is running", async () => {
   assert.equal(await engine.steer("now"), true);
   finish();
   await turn;
-  assert.deepEqual(steers, [["steer", { sessionId: "s9", text: "now" }]]);
+  assert.deepEqual(steers, [["steer", { sessionId: "s9", text: "now", clientId: null }]]);
 });
 
 test("history turns become protocol items with tool cards", () => {

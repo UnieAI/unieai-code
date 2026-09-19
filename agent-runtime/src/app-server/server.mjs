@@ -71,6 +71,14 @@ export function requestedPermissions(params) {
 
 const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
 
+/** Emit a user message item into the thread's running turn. */
+function emitUserMessage(thread, text, clientId = null) {
+  const itemId = randomUUID();
+  const emitItem = thread.pendingAnswer?.emitItem;
+  emitItem?.("item/started", { item: userMessageItem(itemId, text, clientId), startedAtMs: Date.now() });
+  emitItem?.("item/completed", { item: userMessageItem(itemId, text, clientId), completedAtMs: Date.now() });
+}
+
 /**
  * The user agent string. The daemon probe parses a version out of this
  * (`originator/version …`), and refuses the socket if it cannot — so the shape
@@ -279,6 +287,7 @@ export function createHandlers({
       oneShot: Boolean(thread.oneShot),
       mode: thread.mode ?? null,
       permissions: () => thread.permissions ?? null,
+      onSteerDelivered: ({ clientId, text }) => emitUserMessage(thread, text, clientId),
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -534,12 +543,14 @@ export function createHandlers({
       }
       // The engine refuses when what is running cannot act on an interjection
       // (a compaction), and says so rather than dropping the text.
-      const delivered = Boolean(await thread.engine?.steer?.(text));
+      const clientId = params?.clientUserMessageId ?? null;
+      const delivered = Boolean(await thread.engine?.steer?.(text, { clientId }));
       if (!delivered) throw new RpcError(RPC.INVALID_REQUEST, "the running turn did not accept the message");
-      const itemId = newItemId();
-      const emitItem = thread.pendingAnswer?.emitItem;
-      emitItem?.("item/started", { item: userMessageItem(itemId, text), startedAtMs: Date.now() });
-      emitItem?.("item/completed", { item: userMessageItem(itemId, text), completedAtMs: Date.now() });
+      // An engine that reports when the model takes the message (dsh:
+      // at its next step) emits the user message then, through
+      // steerDelivered; the client keeps it pending until that point, as it
+      // does for codex. Others count it as delivered now.
+      if (!thread.engine?.reportsSteerDelivery) emitUserMessage(thread, text, clientId);
       return { turnId: turn.id };
     },
 

@@ -199,10 +199,10 @@ export const reasoningItem = (id, content = "") => ({
 });
 
 /** Echo of what the user asked — the Rust server emits this before working. */
-export const userMessageItem = (id, text) => ({
+export const userMessageItem = (id, text, clientId = null) => ({
   type: "userMessage",
   id,
-  clientId: null,
+  clientId,
   content: [{ type: "text", text, text_elements: [] }],
 });
 

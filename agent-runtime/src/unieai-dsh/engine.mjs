@@ -259,6 +259,9 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
     if (!channel.unieaiToolRoute) {
       // Client tools registered through this channel call back on it.
       channel.unieaiToolRoute = true;
+      channel.onNotification?.("steerDelivered", (note) => {
+        sessions.get(note?.sessionId)?.onSteerDelivered?.(note);
+      });
       channel.onRequest?.("callTool", (call) => {
         const session = sessions.get(call?.sessionId);
         if (!session?.onToolCall) throw new Error(`no client tools for session ${call?.sessionId}`);
@@ -444,6 +447,8 @@ export function createDshEngine({
   prepare = null,
   // Called with { total, last, modelContextWindow } as the session's token usage grows.
   onUsage = () => {},
+  // Called with { clientId, text } when a steered message reaches the model.
+  onSteerDelivered = () => {},
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -614,7 +619,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: [] });
-        host.register(sessionId, { onUpdate, onPermission, onToolCall });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -627,7 +632,7 @@ export function createDshEngine({
     const created = await newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: [] });
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
@@ -675,10 +680,13 @@ export function createDshEngine({
       }
     },
 
+    /** The user message for a steer is emitted when dsh hands it to the model. */
+    reportsSteerDelivery: true,
+
     /** Mid-turn input, delivered through dsh's own steering queue. */
-    async steer(text) {
+    async steer(text, { clientId = null } = {}) {
       if (!turnActive || !sessionId) return false;
-      const { delivered } = await host.control("steer", { sessionId, text });
+      const { delivered } = await host.control("steer", { sessionId, text, clientId });
       if (delivered) messages.push({ role: "user", content: text });
       return Boolean(delivered);
     },

@@ -233,7 +233,26 @@ export function apply(ctx, config = {}) {
     }
     clientTools.delete(sessionId);
   };
-  ctx.on("agent/disposed", ({ agent }) => dropClientTools(agent.id));
+  ctx.on("agent/disposed", ({ agent }) => {
+    dropClientTools(agent.id);
+    steersWaiting.delete(agent.id);
+  });
+
+  // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].
+  // dsh queues a steer for the next step and logs it as a user message when
+  // that step takes it; the client is told then, so it can keep showing the
+  // message as pending until the model has really received it.
+  const steersWaiting = new Map();
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "user/message") return;
+    const waiting = steersWaiting.get(session.header.id);
+    if (!waiting?.length) return;
+    const text = textOf(event.data?.content);
+    const index = waiting.findIndex((entry) => entry.text === text);
+    if (index < 0) return;
+    const [delivered] = waiting.splice(index, 1);
+    delivered.peer.notify?.("steerDelivered", { sessionId: session.header.id, clientId: delivered.clientId, text });
+  });
 
   const methods = {
     /**
@@ -304,9 +323,12 @@ export function apply(ctx, config = {}) {
       return { total, last, modelContextWindow: Number.isFinite(window) ? window : null };
     },
 
-    async steer({ sessionId, text }) {
+    async steer({ sessionId, text, clientId = null }, peer) {
       const agent = ctx.agents.get(sessionId);
       if (!agent || !String(text ?? "").trim()) return { delivered: false };
+      const waiting = steersWaiting.get(sessionId) ?? [];
+      waiting.push({ text, clientId, peer });
+      steersWaiting.set(sessionId, waiting);
       agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
       return { delivered: true };
     },
@@ -363,6 +385,9 @@ export function apply(ctx, config = {}) {
     let nextId = 0;
     const pending = new Map();
     const peer = {
+      notify(method, params) {
+        write({ method, params });
+      },
       request(method, params) {
         const id = `unieai-control:${(nextId += 1)}`;
         return new Promise((resolve, reject) => {
