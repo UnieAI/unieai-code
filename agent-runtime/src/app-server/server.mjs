@@ -18,8 +18,9 @@
 import { serveJsonOverUnixSocket } from "./ws.mjs";
 import { createDispatcher, RpcError, RPC } from "./rpc.mjs";
 import { randomUUID } from "node:crypto";
-import { createItemBridge, userMessageItem, agentMessageItem, reasoningItem, newItemId } from "./items.mjs";
+import { createItemBridge, startedItem, userMessageItem, agentMessageItem, reasoningItem, newItemId } from "./items.mjs";
 import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
+import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -43,8 +44,19 @@ export const ENGINE_METHODS = [
   "thread/goal/get",
   "thread/goal/set",
   "thread/goal/clear",
+  "thread/settings/update",
+  "thread/shellCommand",
+  "thread/backgroundTerminals/list",
+  "thread/backgroundTerminals/clean",
   "review/start",
 ];
+
+/**
+ * Platform methods that take an optional thread id: forwarded without it,
+ * since the Rust side has never heard of our threads and answers "thread not
+ * found". Without one it answers for the whole configuration.
+ */
+export const FORWARD_WITHOUT_THREAD = new Set(["experimentalFeature/list", "mcpServerStatus/list", "app/list"]);
 
 const PROFILE_SANDBOX = { ":read-only": "read-only", ":workspace": "workspace-write", ":danger-full-access": "danger-full-access" };
 const SANDBOX_NAMES = {
@@ -64,7 +76,9 @@ const SANDBOX_NAMES = {
  * engine's default stands. A custom permission profile is not mapped.
  */
 export function requestedPermissions(params) {
-  const sandbox = PROFILE_SANDBOX[params?.permissions] ?? SANDBOX_NAMES[params?.sandbox] ?? null;
+  // thread/start and /resume say `sandbox`; turn/start and
+  // thread/settings/update send the whole `sandboxPolicy`.
+  const sandbox = PROFILE_SANDBOX[params?.permissions] ?? SANDBOX_NAMES[params?.sandbox] ?? SANDBOX_NAMES[params?.sandboxPolicy?.type] ?? null;
   const policy = params?.approvalPolicy;
   const approval = typeof policy !== "string" ? null : policy === "never" ? "never" : "ask";
   return { sandbox, approval };
@@ -472,6 +486,7 @@ export function createHandlers({
     thread.engine = createEngineFor({
       cwd: thread.cwd,
       model: thread.model,
+      effort: thread.effort ?? null,
       modelProvider: thread.modelProvider,
       // What thread/start told the client is in force. Passing it on is what
       // makes that answer true rather than decorative.
@@ -517,6 +532,26 @@ export function createHandlers({
       },
     });
     return thread.engine;
+  };
+
+  /**
+   * /model, /permissions and the settings every turn/start carries: kept on
+   * the thread (so a resumed thread has them) and handed to its engine,
+   * which applies them from the next step on.
+   */
+  const applySettings = async (thread, params) => {
+    const changed = (value, current) => (typeof value === "string" && value && value !== current ? value : null);
+    const model = changed(params?.model, thread.model);
+    const effort = changed(params?.effort, thread.effort);
+    const wanted = Object.fromEntries(Object.entries(requestedPermissions(params)).filter(([, value]) => value));
+    const permissions = { ...thread.permissions, ...wanted };
+    const permissionsChanged = JSON.stringify(permissions) !== JSON.stringify(thread.permissions ?? {});
+    if (!model && !effort && !permissionsChanged) return;
+    if (model) thread.model = model;
+    if (effort) thread.effort = effort;
+    if (permissionsChanged) thread.permissions = permissions;
+    persist(thread);
+    await thread.engine?.configure?.({ model, effort, permissions: permissionsChanged });
   };
 
   const requireIdle = (thread, what) => {
@@ -622,6 +657,48 @@ export function createHandlers({
       return response;
     },
 
+    /** /model, /permissions: kept on the thread and applied from the next step. */
+    async "thread/settings/update"(params) {
+      const thread = getThread(params?.threadId);
+      await applySettings(thread, params);
+      return {};
+    },
+
+    /**
+     * The composer's `!command`: run here, shown as a user shell card (in the
+     * running turn, or a turn of its own), and noted for the model's next
+     * prompt. Answered at once, as codex does; the card follows.
+     */
+    async "thread/shellCommand"(params, ctx) {
+      const thread = getThread(params?.threadId);
+      const command = String(params?.command ?? "").trim();
+      if (!command) throw new RpcError(RPC.INVALID_PARAMS, "thread/shellCommand needs a command");
+      thread.connection = ctx ?? thread.connection;
+      const own = thread.activeTurn ? null : beginTurn(thread, ctx);
+      const emitItem = thread.pendingAnswer?.emitItem;
+      const card = { ...startedItem({ tool: "bash", args: {}, cwd: thread.cwd }), command, source: "userShell" };
+      emitItem?.("item/started", { item: card, startedAtMs: Date.now() });
+      runUserShellCommand({ command, cwd: thread.cwd, timeoutMs: params?.timeoutMs ?? null }).then((result) => {
+        const done = { ...card, status: result.exitCode === 0 ? "completed" : "failed", aggregatedOutput: result.output, exitCode: result.exitCode, durationMs: result.durationMs };
+        emitItem?.("item/completed", { item: done, completedAtMs: Date.now() });
+        thread.shellNotes = [...(thread.shellNotes ?? []), shellNote(command, result)].slice(-NOTES_KEPT);
+        own?.finish();
+      });
+      return {};
+    },
+
+    // The TUI's background terminals are codex's unified exec; dsh's commands
+    // are not among them, so there are none to list (and /cd is not blocked).
+    async "thread/backgroundTerminals/list"(params) {
+      getThread(params?.threadId);
+      return { data: [], nextCursor: null };
+    },
+
+    async "thread/backgroundTerminals/clean"(params) {
+      getThread(params?.threadId);
+      return {};
+    },
+
     async "thread/read"(params, ctx) {
       const child = subagentThread(params?.threadId);
       if (child) return { thread: threadShape(child, params?.includeTurns ? await subagents.turns(subagents.get(child.id)) : []) };
@@ -636,11 +713,16 @@ export function createHandlers({
       const text = textOf(params?.input);
       if (!thread.preview) thread.preview = text.slice(0, 120);
       ensureEngine(thread, ctx);
+      // Every turn/start carries the client's current model and permissions.
+      await applySettings(thread, params);
       const turn = beginTurn(thread, ctx, { userText: text });
+      // The user's `!` commands since the last turn go to the model with it.
+      const notes = thread.shellNotes ?? [];
+      thread.shellNotes = [];
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
-        .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null, images: imagesOf(params?.input) })
+        .send(withShellNotes(notes, text), { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null, images: imagesOf(params?.input) })
         .then(() => turn.finish())
         .catch((error) => turn.finish({ error }));
       return { turn: turnShape(thread.activeTurn) };
@@ -965,7 +1047,17 @@ export function textOf(input) {
  */
 export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, forward = null, onError = () => {}, onTrace = null }) {
   const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel, threadMode });
-  const dispatch = createDispatcher({ handlers, fallback: forward, onError });
+  // Ours are unknown to the Rust side: a thread id it would look up is dropped.
+  const forwardPlatform = forward
+    ? (method, params, ...context) => {
+        if (FORWARD_WITHOUT_THREAD.has(method) && params?.threadId) {
+          const { threadId: _ours, ...rest } = params;
+          return forward(method, rest, ...context);
+        }
+        return forward(method, params, ...context);
+      }
+    : null;
+  const dispatch = createDispatcher({ handlers, fallback: forwardPlatform, onError });
   const trace = typeof onTrace === "function" ? onTrace : () => {};
   // Full payloads are large; opt in when a client renders something wrong.
   const tracePayloads = Boolean(process.env.UNIEAI_TRACE_PAYLOADS);

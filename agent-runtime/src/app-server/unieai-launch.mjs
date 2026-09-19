@@ -57,7 +57,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     forward: (method, params) => forwarder.forward(method, params),
     onError: (error) => log("[app-server]", error.message),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onSubagent, onChildActivity }) =>
+    createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onSubagent, onChildActivity }) =>
       buildEngine({
         oneShot,
         variant,
@@ -70,6 +70,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onChildActivity,
         cwd,
         model,
+        effort,
         sandboxMode: mode,
         resumeState,
         onState,

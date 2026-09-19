@@ -17,6 +17,7 @@ const FIELDS = [
   "id",
   "cwd",
   "model",
+  "effort",
   "modelProvider",
   "preview",
   "name",

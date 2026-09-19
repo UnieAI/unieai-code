@@ -467,6 +467,8 @@ export function createDshEngine({
   host,
   workspace,
   model = null,
+  // Reasoning effort for the model (codex's low / medium / high ...), when it offers one.
+  effort = null,
   onText = () => {},
   onReasoning = () => {},
   onToolEvent = () => {},
@@ -617,7 +619,33 @@ export function createDshEngine({
     return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
   };
 
-  const selectModel = async (acp, configOptions) => {
+  // dsh's config options as last reported (model list, reasoning efforts).
+  let configOptions = null;
+  const setOption = async (acp, configId, value) => {
+    const answer = await acp.request("session/set_config_option", { sessionId, configId, value });
+    if (answer?.configOptions) configOptions = answer.configOptions;
+    return answer;
+  };
+
+  /** The reasoning effort asked for, when the selected model offers it. */
+  const selectEffort = async (acp) => {
+    if (!effort) return;
+    const option = configOptions?.find((entry) => entry?.id === "reasoning_effort");
+    if (!option || option.currentValue === effort) return;
+    if (!option.options?.some((choice) => choice?.value === effort)) {
+      onLog(`${model ?? "the model"} offers no reasoning effort "${effort}"; keeping ${option.currentValue}`);
+      return;
+    }
+    await setOption(acp, "reasoning_effort", effort);
+  };
+
+  const selectModel = async (acp, offered) => {
+    configOptions = offered ?? configOptions;
+    await selectModelOnly(acp);
+    await selectEffort(acp);
+  };
+
+  const selectModelOnly = async (acp) => {
     if (!model) return;
     if (provider !== DSH_PROVIDER_ID) {
       // dsh reloads settings.yaml on its own schedule: the provider just
@@ -627,13 +655,13 @@ export function createDshEngine({
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const value = findModelOption(options, model, provider);
         if (value) {
-          await acp.request("session/set_config_option", { sessionId, configId: "model", value });
+          await setOption(acp, "model", value);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
         const current = options?.find((option) => option?.id === "model")?.currentValue;
         if (current) {
-          const refreshed = await acp.request("session/set_config_option", { sessionId, configId: "model", value: current }).catch(() => null);
+          const refreshed = await setOption(acp, "model", current).catch(() => null);
           options = refreshed?.configOptions ?? options;
         }
       }
@@ -641,7 +669,7 @@ export function createDshEngine({
     }
     const value = findModelOption(configOptions, model, provider);
     if (value) {
-      await acp.request("session/set_config_option", { sessionId, configId: "model", value });
+      if (configOptions?.find((entry) => entry?.id === "model")?.currentValue !== value) await setOption(acp, "model", value);
     } else {
       onLog(`dsh offers no model "${model}"; using its default`);
     }
@@ -806,6 +834,21 @@ export function createDshEngine({
 
     /** The user message for a steer is emitted when dsh hands it to the model. */
     reportsSteerDelivery: true,
+
+    /**
+     * The client's /model and /permissions: the next step uses them. Model
+     * and effort take effect on the open session now, or when it opens.
+     */
+    async configure({ model: nextModel = null, effort: nextEffort = null, permissions: nextPermissions = false } = {}) {
+      const modelChanged = Boolean(nextModel) && nextModel !== model;
+      const effortChanged = Boolean(nextEffort) && nextEffort !== effort;
+      if (modelChanged) model = nextModel;
+      if (effortChanged) effort = nextEffort;
+      if (!sessionId || !sessionAgent) return;
+      if (modelChanged) await selectModel(sessionAgent);
+      else if (effortChanged) await selectEffort(sessionAgent);
+      if (nextPermissions) await applyPermissions();
+    },
 
     /** Mid-turn input, delivered through dsh's own steering queue. */
     async steer(text, { clientId = null } = {}) {
