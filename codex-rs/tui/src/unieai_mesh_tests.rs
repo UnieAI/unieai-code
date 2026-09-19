@@ -71,7 +71,17 @@ fn uac_threads_get_the_same_peer_tools_as_the_codex_engine() {
             function.name
         })
         .collect();
-    assert_eq!(names, vec!["list_peers", "send_peer_message"]);
+    assert_eq!(
+        names,
+        vec![
+            "list_peers",
+            "send_peer_message",
+            "publish_task",
+            "claim_task",
+            "report_task",
+            "list_tasks",
+        ]
+    );
 
     let specs =
         crate::dynamic_tools::with_peer_tools(crate::dynamic_tools::non_delegation_tool_specs());
@@ -79,7 +89,7 @@ fn uac_threads_get_the_same_peer_tools_as_the_codex_engine() {
         panic!("expected one codex_tui namespace, got {specs:?}");
     };
     assert_eq!(namespace.name, crate::dynamic_tools::NAMESPACE);
-    for peer_tool in ["list_peers", "send_peer_message"] {
+    for peer_tool in ["list_peers", "send_peer_message", "publish_task", "list_tasks"] {
         assert!(
             namespace
                 .tools

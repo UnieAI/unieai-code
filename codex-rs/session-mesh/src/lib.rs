@@ -43,6 +43,7 @@ mod store;
 pub mod unieai_chain;
 pub mod unieai_framing;
 pub mod unieai_permissions;
+pub mod unieai_task_tools;
 pub mod unieai_tools;
 pub mod wire;
 

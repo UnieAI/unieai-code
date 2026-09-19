@@ -49,6 +49,7 @@ use unieai_session_mesh::PeerSelector;
 use unieai_session_mesh::PermissionMode;
 use unieai_session_mesh::SandboxLevel;
 use unieai_session_mesh::StateRuntimeStore;
+use unieai_session_mesh::unieai_task_tools;
 use unieai_session_mesh::unieai_tools;
 use unieai_session_mesh::wire::Delivery;
 
@@ -249,12 +250,13 @@ impl MeshInbound for UacInbound {
     }
 }
 
-/// Whether `tool` in the `codex_tui` namespace is one of the peer tools.
+/// Whether `tool` in the `codex_tui` namespace is one of the peer tools
+/// (the task queue tools included).
 pub(crate) fn is_peer_tool(tool: &str) -> bool {
     matches!(
         tool,
         unieai_tools::LIST_PEERS_TOOL | unieai_tools::SEND_PEER_MESSAGE_TOOL
-    )
+    ) || unieai_task_tools::is_task_tool(tool)
 }
 
 /// The peer tools as `codex_tui` namespace entries for a uac thread's
@@ -275,6 +277,18 @@ pub(crate) fn peer_dynamic_tools() -> Vec<DynamicToolNamespaceTool> {
             defer_loading: false,
         }),
     ]
+    .into_iter()
+    .chain(unieai_task_tools::task_tool_specs().into_iter().map(
+        |(name, description, input_schema)| {
+            DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+                name: name.to_string(),
+                description: description.to_string(),
+                input_schema,
+                defer_loading: false,
+            })
+        },
+    ))
+    .collect()
 }
 
 /// Runs one peer tool call for the member thread.
@@ -296,6 +310,9 @@ pub(crate) async fn execute_peer_tool(
                 .map_err(|err| err.to_string())
             }),
         unieai_tools::SEND_PEER_MESSAGE_TOOL => send(node, permissions, arguments).await,
+        task if unieai_task_tools::is_task_tool(task) => {
+            unieai_task_tools::run_task_tool(&node, task, arguments).await
+        }
         other => Err(format!("unknown peer tool {other}")),
     };
     match result {

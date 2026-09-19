@@ -1349,3 +1349,73 @@ async fn one_peer_cannot_start_turns_forever_without_the_user() {
         .expect("delivery should succeed");
     assert_eq!(ack.delivery, Delivery::StartedTurn);
 }
+
+#[tokio::test]
+async fn the_task_tools_publish_claim_report_and_list_as_the_model_calls_them() {
+    use crate::unieai_task_tools::run_task_tool;
+    use serde_json::Value;
+    use serde_json::json;
+
+    let harness = Harness::new();
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b = harness
+        .join(thread_id(B), Arc::new(FakeInbound::new("idle")))
+        .await;
+    async fn call(node: &MeshNode, tool: &str, arguments: Value) -> Value {
+        let text = run_task_tool(node, tool, arguments)
+            .await
+            .expect("the call should succeed");
+        serde_json::from_str(&text).expect("the result is JSON")
+    }
+
+    let published = call(
+        &a,
+        "publish_task",
+        json!({"title": "run the tests", "body": "cargo test -p api"}),
+    )
+    .await;
+    let task_id = published["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_string();
+
+    let claimed = call(&b, "claim_task", Value::Null).await;
+    assert_eq!(
+        (
+            claimed["task"]["task_id"].as_str(),
+            claimed["task"]["title"].as_str(),
+            claimed["task"]["body"].as_str(),
+        ),
+        (
+            Some(task_id.as_str()),
+            Some("run the tests"),
+            Some("cargo test -p api")
+        ),
+    );
+    let token = claimed["task"]["claim_token"].as_str().expect("a token");
+
+    let reported = call(
+        &b,
+        "report_task",
+        json!({"task_id": task_id, "claim_token": token, "status": "done", "result": "all green"}),
+    )
+    .await;
+    assert_eq!(reported, json!({"recorded": true}));
+
+    let listed = call(&a, "list_tasks", json!({})).await;
+    assert_eq!(
+        listed["tasks"][0]["status"].as_str(),
+        Some("done"),
+        "listed: {listed}"
+    );
+
+    let bad = run_task_tool(
+        &b,
+        "report_task",
+        json!({"task_id": task_id, "claim_token": token, "status": "finished"}),
+    )
+    .await;
+    assert_eq!(bad, Err("`status` must be `done` or `failed`".to_string()));
+}

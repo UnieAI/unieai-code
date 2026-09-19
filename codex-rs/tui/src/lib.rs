@@ -528,7 +528,7 @@ async fn maybe_probe_default_daemon_socket(codex_home: &Path) -> Option<Absolute
 async fn start_app_server(
     target: &mut AppServerTarget,
     arg0_paths: Arg0DispatchPaths,
-    mut config: Config,
+    config: Config,
     cli_kv_overrides: Vec<(String, toml::Value)>,
     loader_overrides: LoaderOverrides,
     strict_config: bool,

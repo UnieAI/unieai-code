@@ -10,246 +10,168 @@ use super::*;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use std::collections::BTreeMap;
-
-const DEFAULT_QUEUE: &str = "default";
-const TASK_LIST_LIMIT: i64 = 50;
+use unieai_session_mesh::unieai_task_tools as shared;
+use unieai_session_mesh::unieai_task_tools::NoArgs;
+use unieai_session_mesh::unieai_task_tools::PublishTaskArgs;
+use unieai_session_mesh::unieai_task_tools::ReportTaskArgs;
 
 pub(crate) struct PublishTaskHandler;
 pub(crate) struct ClaimTaskHandler;
 pub(crate) struct ReportTaskHandler;
 pub(crate) struct ListTasksHandler;
 
-pub fn create_publish_task_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "title".to_string(),
-            JsonSchema::string(Some("Short summary of the work.".to_string())),
-        ),
-        (
-            "body".to_string(),
-            JsonSchema::string(Some(
-                "Everything the claiming session needs to do the work without asking you."
-                    .to_string(),
-            )),
-        ),
-        (
-            "priority".to_string(),
-            JsonSchema::number(Some("Higher is claimed first. Defaults to 0.".to_string())),
-        ),
-        (
-            "assign_to".to_string(),
-            JsonSchema::string(Some(
-                "Optional peer handle from list_peers. An assigned task can only be claimed by \
-that session, and is offered to it ahead of open work."
-                    .to_string(),
-            )),
-        ),
-    ]);
+// Names, descriptions, arguments and results are shared with the uac engine,
+// which offers these tools through the TUI (see unieai_session_mesh).
+fn string_schema(description: &str) -> JsonSchema {
+    JsonSchema::string(Some(description.to_string()))
+}
 
+fn function_tool(
+    name: &str,
+    description: &str,
+    properties: BTreeMap<String, JsonSchema>,
+    required: Option<Vec<String>>,
+) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
-        name: "publish_task".to_string(),
-        description: "Publish work to the machine-local queue for another UnieAI Code session to \
-pick up. Returns the task id."
-            .to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["title".to_string(), "body".to_string()]),
-            Some(false.into()),
-        ),
+        parameters: JsonSchema::object(properties, required, Some(false.into())),
         output_schema: None,
     })
 }
 
+pub fn create_publish_task_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "title".to_string(),
+            string_schema(shared::TITLE_DESCRIPTION),
+        ),
+        ("body".to_string(), string_schema(shared::BODY_DESCRIPTION)),
+        (
+            "priority".to_string(),
+            JsonSchema::number(Some(shared::PRIORITY_DESCRIPTION.to_string())),
+        ),
+        (
+            "assign_to".to_string(),
+            string_schema(shared::ASSIGN_TO_DESCRIPTION),
+        ),
+    ]);
+    function_tool(
+        shared::PUBLISH_TASK_TOOL,
+        shared::PUBLISH_TASK_DESCRIPTION,
+        properties,
+        Some(vec!["title".to_string(), "body".to_string()]),
+    )
+}
+
 pub fn create_claim_task_tool() -> ToolSpec {
-    ToolSpec::Function(ResponsesApiTool {
-        name: "claim_task".to_string(),
-        description: "Claim the next task from the machine-local queue. Returns the task and a \
-claim token; pass that token to report_task when you finish. Returns nothing when the queue is \
-empty. Tasks assigned to this session are offered first."
-            .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
-        output_schema: None,
-    })
+    function_tool(
+        shared::CLAIM_TASK_TOOL,
+        shared::CLAIM_TASK_DESCRIPTION,
+        BTreeMap::new(),
+        /*required*/ None,
+    )
 }
 
 pub fn create_report_task_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "task_id".to_string(),
-            JsonSchema::string(Some("Task id from claim_task.".to_string())),
+            string_schema(shared::TASK_ID_DESCRIPTION),
         ),
         (
             "claim_token".to_string(),
-            JsonSchema::string(Some("Claim token from claim_task.".to_string())),
+            string_schema(shared::CLAIM_TOKEN_DESCRIPTION),
         ),
         (
             "status".to_string(),
-            JsonSchema::string(Some("`done` or `failed`.".to_string())),
+            string_schema(shared::STATUS_DESCRIPTION),
         ),
         (
             "result".to_string(),
-            JsonSchema::string(Some(
-                "What you produced, for the session that published the task.".to_string(),
-            )),
+            string_schema(shared::RESULT_DESCRIPTION),
         ),
         (
             "error".to_string(),
-            JsonSchema::string(Some("Why it failed, when it failed.".to_string())),
+            string_schema(shared::ERROR_DESCRIPTION),
         ),
     ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "report_task".to_string(),
-        description:
-            "Report the outcome of a task you claimed. If your claim expired because this \
-session was considered gone, the report is refused and says so — stop working on that task rather \
-than continuing."
-                .to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec![
-                "task_id".to_string(),
-                "claim_token".to_string(),
-                "status".to_string(),
-            ]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-    })
+    function_tool(
+        shared::REPORT_TASK_TOOL,
+        shared::REPORT_TASK_DESCRIPTION,
+        properties,
+        Some(vec![
+            "task_id".to_string(),
+            "claim_token".to_string(),
+            "status".to_string(),
+        ]),
+    )
 }
 
 pub fn create_list_tasks_tool() -> ToolSpec {
-    ToolSpec::Function(ResponsesApiTool {
-        name: "list_tasks".to_string(),
-        description: "List tasks on the machine-local queue with their status.".to_string(),
-        strict: false,
-        defer_loading: None,
-        parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
-        output_schema: None,
-    })
+    function_tool(
+        shared::LIST_TASKS_TOOL,
+        shared::LIST_TASKS_DESCRIPTION,
+        BTreeMap::new(),
+        /*required*/ None,
+    )
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublishTaskArgs {
-    title: String,
-    body: String,
-    #[serde(default)]
-    priority: i64,
-    #[serde(default)]
-    assign_to: Option<String>,
+/// A shared task tool result as core's tool output (the result types live in
+/// `unieai_session_mesh`, the trait in `codex_tools`).
+struct TaskOutput<T> {
+    result: T,
+    name: &'static str,
+    success: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NoArgs {}
+impl<T: serde::Serialize + Send + Sync> ToolOutput for TaskOutput<T> {
+    fn log_output(&self) -> String {
+        tool_output_json_text(&self.result, self.name)
+    }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReportTaskArgs {
-    task_id: String,
-    claim_token: String,
-    status: String,
-    #[serde(default)]
-    result: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
+    fn success_for_logging(&self) -> bool {
+        self.success
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        tool_output_response_item(
+            call_id,
+            payload,
+            &self.result,
+            Some(self.success),
+            self.name,
+        )
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        tool_output_code_mode_result(&self.result, self.name)
+    }
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct PublishTaskResult {
-    task_id: String,
+fn task_output<T>(result: T, name: &'static str, success: bool) -> TaskOutput<T> {
+    TaskOutput {
+        result,
+        name,
+        success,
+    }
 }
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ClaimTaskResult {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task: Option<ClaimedTask>,
-}
-
-#[derive(Debug, Serialize)]
-struct ClaimedTask {
-    task_id: String,
-    claim_token: String,
-    title: String,
-    body: String,
-    attempt: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ReportTaskResult {
-    recorded: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ListTasksResult {
-    tasks: Vec<ListedTask>,
-}
-
-#[derive(Debug, Serialize)]
-struct ListedTask {
-    task_id: String,
-    title: String,
-    status: String,
-    attempt_count: i64,
-}
-
-macro_rules! tool_output_impl {
-    ($ty:ty, $name:literal, $success:expr) => {
-        impl ToolOutput for $ty {
-            fn log_output(&self) -> String {
-                tool_output_json_text(self, $name)
-            }
-
-            fn success_for_logging(&self) -> bool {
-                #[allow(clippy::redundant_closure_call)]
-                ($success)(self)
-            }
-
-            fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-                #[allow(clippy::redundant_closure_call)]
-                let success = ($success)(self);
-                tool_output_response_item(call_id, payload, self, Some(success), $name)
-            }
-
-            fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-                tool_output_code_mode_result(self, $name)
-            }
-        }
-    };
-}
-
-tool_output_impl!(
-    PublishTaskResult,
-    "publish_task",
-    |_: &PublishTaskResult| true
-);
-tool_output_impl!(ClaimTaskResult, "claim_task", |_: &ClaimTaskResult| true);
-tool_output_impl!(
-    ReportTaskResult,
-    "report_task",
-    |result: &ReportTaskResult| { result.recorded }
-);
-tool_output_impl!(ListTasksResult, "list_tasks", |_: &ListTasksResult| true);
 
 impl ToolExecutor<ToolInvocation> for PublishTaskHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("publish_task")
+        ToolName::plain(shared::PUBLISH_TASK_TOOL)
     }
 
     fn spec(&self) -> ToolSpec {
         create_publish_task_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -258,46 +180,31 @@ impl ToolExecutor<ToolInvocation> for PublishTaskHandler {
             let args: PublishTaskArgs = parse_arguments(&arguments)?;
 
             let node = mesh_node(&session.services).await?;
-
-            // An assignment is resolved before publishing so a typo fails here
-            // rather than parking work nobody can claim.
-            let assigned_to = match args.assign_to.as_deref() {
-                Some(handle) => Some(
-                    node.resolve(&unieai_session_mesh::PeerSelector::new(handle))
-                        .await
-                        .map_err(mesh_error)?
-                        .thread_id,
-                ),
-                None => None,
-            };
-
-            let task_id = node
-                .sender()
-                .publish_task(
-                    DEFAULT_QUEUE,
-                    &args.title,
-                    &args.body,
-                    args.priority,
-                    assigned_to,
-                )
+            let result = shared::publish_task(&node, args)
                 .await
                 .map_err(mesh_error)?;
-
-            Ok(boxed_tool_output(PublishTaskResult { task_id }))
+            Ok(boxed_tool_output(task_output(
+                result,
+                shared::PUBLISH_TASK_TOOL,
+                /*success*/ true,
+            )))
         })
     }
 }
 
 impl ToolExecutor<ToolInvocation> for ClaimTaskHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("claim_task")
+        ToolName::plain(shared::CLAIM_TASK_TOOL)
     }
 
     fn spec(&self) -> ToolSpec {
         create_claim_task_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -305,35 +212,30 @@ impl ToolExecutor<ToolInvocation> for ClaimTaskHandler {
             let arguments = function_arguments(payload)?;
             let _args: NoArgs = parse_arguments(&arguments)?;
 
-            let claimed = mesh_node(&session.services).await?
-                .sender()
-                .claim_task(DEFAULT_QUEUE)
-                .await
-                .map_err(mesh_error)?;
-
-            Ok(boxed_tool_output(ClaimTaskResult {
-                task: claimed.map(|(task, claim_token)| ClaimedTask {
-                    task_id: task.task_id,
-                    claim_token,
-                    title: task.title,
-                    body: task.body,
-                    attempt: task.attempt_count,
-                }),
-            }))
+            let node = mesh_node(&session.services).await?;
+            let result = shared::claim_task(&node).await.map_err(mesh_error)?;
+            Ok(boxed_tool_output(task_output(
+                result,
+                shared::CLAIM_TASK_TOOL,
+                /*success*/ true,
+            )))
         })
     }
 }
 
 impl ToolExecutor<ToolInvocation> for ReportTaskHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("report_task")
+        ToolName::plain(shared::REPORT_TASK_TOOL)
     }
 
     fn spec(&self) -> ToolSpec {
         create_report_task_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -341,39 +243,30 @@ impl ToolExecutor<ToolInvocation> for ReportTaskHandler {
             let arguments = function_arguments(payload)?;
             let args: ReportTaskArgs = parse_arguments(&arguments)?;
 
-            let outcome = mesh_node(&session.services).await?
-                .sender()
-                .report_task(
-                    &args.task_id,
-                    &args.claim_token,
-                    &args.status,
-                    args.result.as_deref(),
-                    args.error.as_deref(),
-                )
-                .await
-                .map_err(mesh_error)?;
-
-            let recorded = outcome == codex_state::TaskReportOutcome::Recorded;
-            Ok(boxed_tool_output(ReportTaskResult {
-                recorded,
-                note: (!recorded).then(|| {
-                    "your claim expired and the task was reassigned; stop working on it".to_string()
-                }),
-            }))
+            let node = mesh_node(&session.services).await?;
+            let result = shared::report_task(&node, args).await.map_err(mesh_error)?;
+            Ok(boxed_tool_output(task_output(
+                result.clone(),
+                shared::REPORT_TASK_TOOL,
+                result.recorded,
+            )))
         })
     }
 }
 
 impl ToolExecutor<ToolInvocation> for ListTasksHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("list_tasks")
+        ToolName::plain(shared::LIST_TASKS_TOOL)
     }
 
     fn spec(&self) -> ToolSpec {
         create_list_tasks_tool()
     }
 
-    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a> where ToolInvocation: 'a {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session, payload, ..
@@ -381,23 +274,13 @@ impl ToolExecutor<ToolInvocation> for ListTasksHandler {
             let arguments = function_arguments(payload)?;
             let _args: NoArgs = parse_arguments(&arguments)?;
 
-            let tasks = mesh_node(&session.services).await?
-                .sender()
-                .list_tasks(DEFAULT_QUEUE, TASK_LIST_LIMIT)
-                .await
-                .map_err(mesh_error)?;
-
-            Ok(boxed_tool_output(ListTasksResult {
-                tasks: tasks
-                    .into_iter()
-                    .map(|task| ListedTask {
-                        task_id: task.task_id,
-                        title: task.title,
-                        status: task.status,
-                        attempt_count: task.attempt_count,
-                    })
-                    .collect(),
-            }))
+            let node = mesh_node(&session.services).await?;
+            let result = shared::list_tasks(&node).await.map_err(mesh_error)?;
+            Ok(boxed_tool_output(task_output(
+                result,
+                shared::LIST_TASKS_TOOL,
+                /*success*/ true,
+            )))
         })
     }
 }
