@@ -17,6 +17,9 @@ import { blamedServer } from "./unieai-mcp-servers.mjs";
 import { DSH_PROVIDER_ID } from "./config.mjs";
 import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from "../app-server/items.mjs";
 
+/** Tools the client shows some other way: a card only when one fails. */
+const QUIET_WHEN_OK = new Set(["subagent", "ask_user_question"]);
+
 /** dsh tool names -> the vocabulary items.mjs maps to protocol items. */
 const TOOL_NAMES = {
   bash: "bash",
@@ -281,6 +284,11 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       };
       channel.onNotification?.("subagent", (note) => routeChild(note)?.onSubagent?.(note));
       channel.onNotification?.("childActivity", (note) => routeChild(note)?.onChildActivity?.(note));
+      channel.onRequest?.("askUser", (asked) => {
+        const session = sessions.get(asked?.sessionId);
+        if (!session?.onAskUser) throw new Error(`no one to ask for session ${asked?.sessionId}`);
+        return session.onAskUser(asked);
+      });
       channel.onRequest?.("callTool", (call) => {
         const session = sessions.get(call?.sessionId);
         if (!session?.onToolCall) throw new Error(`no client tools for session ${call?.sessionId}`);
@@ -508,6 +516,9 @@ export function createDshEngine({
   // () => Promise<ACP mcpServers[]>: the servers each session opens with
   // (see unieai-mcp-servers.mjs). One that cannot start is left out.
   mcpServers = null,
+  // ({ questions }) => Promise<{ answers: [{ id, selected, custom? }] }>:
+  // the model's questions to the user (ask_user_question, plan review).
+  askUser = null,
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -547,9 +558,9 @@ export function createDshEngine({
           }
         }
         toolCalls.set(update.toolCallId, { name, rawInput: update.rawInput });
-        // A started subagent shows as its own thread; only a failure to start
-        // one is a card (below).
-        if (name === "subagent") {
+        // A started subagent shows as its own thread, a question as the
+        // client's question screen and its answer; only a failure is a card.
+        if (QUIET_WHEN_OK.has(name)) {
           quietCalls.add(update.toolCallId);
           break;
         }
@@ -568,7 +579,7 @@ export function createDshEngine({
         if (quietCalls.delete(update.toolCallId)) {
           const quiet = toolCalls.get(update.toolCallId);
           toolCalls.delete(update.toolCallId);
-          if (quiet?.name === "subagent" && update.status === "failed") {
+          if (QUIET_WHEN_OK.has(quiet?.name) && update.status === "failed") {
             const error = contentText(update.content);
             const card = { tool_use_id: update.toolCallId, tool_name: engineToolName(quiet.name) };
             onToolEvent({ ...card, type: "tool_use_started", args: engineToolArgs(quiet.name, quiet.rawInput) });
@@ -738,6 +749,11 @@ export function createDshEngine({
     }
   };
 
+  const onAskUser = async ({ questions }) => {
+    if (!askUser) throw new Error("this client cannot ask the user");
+    return askUser({ questions });
+  };
+
   /**
    * `open(servers)` with the thread's MCP servers. dsh refuses a session when
    * one of them cannot start; that one is dropped (and said so) and the rest
@@ -773,7 +789,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await withMcpServers((servers) => acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: servers }));
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -786,7 +802,7 @@ export function createDshEngine({
     const created = await withMcpServers((servers) => newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: servers }));
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();

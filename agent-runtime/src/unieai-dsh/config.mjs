@@ -418,6 +418,11 @@ export function renderPatch({
       `        model: ${q(defaultModel)}`,
     );
   }
+  // dsh-base (the ACP profile) leaves out the ask tool; the control plugin
+  // answers it through the client, so it is only offered with one.
+  if (controlSocket) {
+    inserts.push("    - id: tool-ask-user", "      name: '@deepseek-ai/dsh-tool-ask-user'");
+  }
   // The date, appended as a user-role snapshot so the system prefix stays put.
   inserts.push(
     "    - id: time-context",

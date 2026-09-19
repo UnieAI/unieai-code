@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { createItemBridge, startedItem, userMessageItem, agentMessageItem, reasoningItem, newItemId } from "./items.mjs";
 import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
+import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -506,6 +507,24 @@ export function createHandlers({
       mode: thread.mode ?? null,
       permissions: () => thread.permissions ?? null,
       onSteerDelivered: ({ clientId, text }) => emitUserMessage(thread, text, clientId),
+      // The model's questions, through the client's request_user_input screen.
+      askUser: async ({ questions }) => {
+        const emitItem = thread.pendingAnswer?.emitItem;
+        for (const detail of questionDetails(questions)) {
+          const item = agentMessageItem(newItemId(), detail);
+          emitItem?.("item/started", { item, startedAtMs: Date.now() });
+          emitItem?.("item/completed", { item, completedAtMs: Date.now() });
+        }
+        const response = await thread.connection.request("item/tool/requestUserInput", {
+          threadId: thread.id,
+          turnId: thread.activeTurn?.id ?? thread.turnIds?.at(-1) ?? "",
+          itemId: newItemId(),
+          questions: protocolQuestions(questions),
+          isBlocking: true,
+          autoResolutionMs: null,
+        });
+        return { answers: dshAnswers(questions, response) };
+      },
       onSubagent: (note) => subagents.onSubagent(thread, note),
       onChildActivity: (note) => subagents.onChildActivity(thread, note),
       // Turns dsh runs without a prompt from the client (a goal round, a

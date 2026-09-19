@@ -331,6 +331,32 @@ export function apply(ctx, config = {}) {
     for (const [child, parent] of childParent) if (parent === agent.id) childParent.delete(child);
   });
 
+  // The model's questions to the user (ask_user_question, and exit_plan_mode's
+  // plan review) go to the bridge, which asks through the client. Without a
+  // bridge the next answerer (none, under ACP) decides.
+  ctx.on("user-questions/request", async (request, next) => {
+    const sessionId = request?.agent?.id;
+    if (!bridge || !sessionId) return next();
+    const asked = bridge.request("askUser", {
+      sessionId,
+      questions: request.questions.map((question) => ({
+        id: question.id,
+        question: question.question,
+        header: question.header ?? null,
+        detail: question.detail ?? null,
+        options: question.options ?? [],
+        multiSelect: Boolean(question.multiSelect),
+      })),
+    });
+    const signal = request.signal;
+    const aborted = new Promise((_, reject) => {
+      if (signal?.aborted) reject(new Error("ask_user_question was aborted before the user answered"));
+      signal?.addEventListener("abort", () => reject(new Error("ask_user_question was aborted before the user answered")), { once: true });
+    });
+    const { answers } = await Promise.race([asked, aborted]);
+    return { answers };
+  });
+
   // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].
   // dsh queues a steer for the next step and logs it as a user message when
   // that step takes it; the client is told then, so it can keep showing the
