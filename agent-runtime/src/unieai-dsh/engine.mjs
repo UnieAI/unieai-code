@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { AcpError } from "./acp-client.mjs";
+import { blamedServer } from "./unieai-mcp-servers.mjs";
 import { DSH_PROVIDER_ID } from "./config.mjs";
 import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from "../app-server/items.mjs";
 
@@ -504,6 +505,9 @@ export function createDshEngine({
   // `childActivity` note when one's session gains something to show.
   onSubagent = () => {},
   onChildActivity = () => {},
+  // () => Promise<ACP mcpServers[]>: the servers each session opens with
+  // (see unieai-mcp-servers.mjs). One that cannot start is left out.
+  mcpServers = null,
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -734,6 +738,30 @@ export function createDshEngine({
     }
   };
 
+  /**
+   * `open(servers)` with the thread's MCP servers. dsh refuses a session when
+   * one of them cannot start; that one is dropped (and said so) and the rest
+   * tried again, so an unreachable server never costs the conversation.
+   */
+  const withMcpServers = async (open) => {
+    let servers = [];
+    try {
+      servers = (await mcpServers?.()) ?? [];
+    } catch (error) {
+      onLog(`could not read the MCP servers: ${error.message}`);
+    }
+    for (;;) {
+      try {
+        return await open(servers);
+      } catch (error) {
+        const blamed = blamedServer(error, servers);
+        if (!blamed) throw error;
+        onLog(`MCP server ${blamed.name} is unavailable (${error.message}); continuing without it`);
+        servers = servers.filter((server) => server !== blamed);
+      }
+    }
+  };
+
   /** Open `sessionId` on the current dsh process, or start a new session. */
   const ensureSession = async () => {
     if (prepare) await prepare();
@@ -744,7 +772,7 @@ export function createDshEngine({
       // persisted, so resume.
       host.unregister(sessionId);
       try {
-        const resumed = await acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: [] });
+        const resumed = await withMcpServers((servers) => acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: servers }));
         host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
@@ -755,7 +783,7 @@ export function createDshEngine({
         onLog(`dsh could not resume ${sessionId} (${error.message}); starting a new session`);
       }
     }
-    const created = await newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: [] });
+    const created = await withMcpServers((servers) => newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: servers }));
     sessionId = created.sessionId;
     sessionAgent = acp;
     host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });

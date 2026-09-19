@@ -526,3 +526,32 @@ test("a command in history shows its output and exit code, not the tool's text",
     ],
   );
 });
+
+test("a session opens with its MCP servers, leaving out one that cannot start", async () => {
+  const studio = { type: "http", name: "unieai_studio", url: "https://gw/mcp", headers: [] };
+  const docs = { name: "docs", command: "/usr/bin/node", args: [], env: [] };
+  const { client, calls } = fakeAgent(async ({ method, params }) => {
+    if (method === "session/new") {
+      if (params.mcpServers.some((server) => server.name === "unieai_studio")) {
+        throw new Error("mcp-client(unieai_studio): initial connection or tool synchronization failed");
+      }
+      return { sessionId: "s1", configOptions: MODEL_OPTIONS };
+    }
+    if (method === "session/prompt") return { stopReason: "end_turn" };
+    return { configOptions: MODEL_OPTIONS };
+  });
+  const logs = [];
+  const engine = createDshEngine({
+    host: createDshHost({ connect: async () => client }),
+    workspace: "/w",
+    model: "GLM-5.2",
+    mcpServers: async () => [studio, docs],
+    onLog: (line) => logs.push(line),
+  });
+  await engine.send("hi");
+  assert.deepEqual(
+    calls.filter((call) => call.method === "session/new").map((call) => call.params.mcpServers.map((server) => server.name)),
+    [["unieai_studio", "docs"], ["docs"]],
+  );
+  assert.match(logs.join("\n"), /MCP server unieai_studio is unavailable/);
+});

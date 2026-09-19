@@ -59,6 +59,9 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     onTrace: (line) => log("[trace]", line),
     createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onSubagent, onChildActivity }) =>
       buildEngine({
+        // The effective config as codex resolves it for this directory
+        // (profiles, project layers): where `[mcp_servers]` comes from.
+        readConfig: () => forwarder.forward("config/read", { cwd }),
         oneShot,
         variant,
         permissions,

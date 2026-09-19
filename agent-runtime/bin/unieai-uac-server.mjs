@@ -40,6 +40,8 @@ import {
   writeDshAccount,
 } from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
+import { loadCredentials } from "../src/config.mjs";
+import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-dsh/unieai-mcp-servers.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
 
@@ -175,7 +177,15 @@ await launchAppServer({
   defaultModel: dsh.defaultModel,
   threadMode,
   onShutdown: () => Promise.all([...hosts.values()].map((host) => host.close())),
-  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, ...callbacks }) => {
+  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, ...callbacks }) => {
+    // The user's `[mcp_servers]` and Studio's (knowledge bases, SQL, skills),
+    // read when each session opens so a config edit or new sign-in counts.
+    const mcpServers = async () => {
+      const { config } = (await readConfig?.()) ?? {};
+      const { servers, skipped } = acpMcpServers(config?.mcp_servers);
+      for (const reason of skipped) log("[uac] MCP server skipped:", reason);
+      return sessionMcpServers({ configured: servers, studio: studioMcpServer(loadCredentials()) });
+    };
     // The TUI re-synced unieai.json with Studio when it launched; carry that
     // into dsh's hot-reloaded settings before this thread picks a model.
     let account = dsh;
@@ -197,6 +207,7 @@ await launchAppServer({
         provider: modelProvider,
         prepare: () => declareLocalProvider(modelProvider),
         onLog: (line) => log("[uac]", line),
+        mcpServers,
         ...callbacks,
       });
     }
@@ -206,6 +217,7 @@ await launchAppServer({
       workspace: cwd,
       model: model && account.models.includes(model) ? model : account.defaultModel,
       onLog: (line) => log("[uac]", line),
+      mcpServers,
       ...callbacks,
     });
   },
