@@ -123,3 +123,18 @@ fn unieai_provider_without_a_sign_in_needs_one() {
         None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
     }
 }
+
+#[test]
+fn node_versions_parse_to_their_major() {
+    assert_eq!(parse_node_major("v22.21.1\n"), Some(22));
+    assert_eq!(parse_node_major("v20.19.5"), Some(20));
+    assert_eq!(parse_node_major("not node"), None);
+}
+
+#[test]
+fn version_manager_installs_are_searched() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(home.path().join(".nvm/versions/node/v22.21.1/bin")).expect("mkdir");
+    let candidates = node_candidates(Some(home.path()));
+    assert!(candidates.contains(&home.path().join(".nvm/versions/node/v22.21.1/bin/node")));
+}

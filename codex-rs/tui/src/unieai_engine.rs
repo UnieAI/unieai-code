@@ -384,9 +384,7 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         .create(true)
         .append(true)
         .open(&log_path)?;
-    let mut command = tokio::process::Command::new(
-        std::env::var_os("UNIEAI_NODE").unwrap_or_else(|| "node".into()),
-    );
+    let mut command = tokio::process::Command::new(uac_node());
     command
         .arg(&script)
         .env("CODEX_HOME", codex_home)
@@ -432,6 +430,88 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         }
         tokio::time::sleep(UAC_PROBE_INTERVAL).await;
     }
+}
+
+/// The oldest Node.js major uac (deepseek-harness) runs on.
+const UAC_MIN_NODE_MAJOR: u64 = 22;
+
+/// The node to run the uac server with: `UNIEAI_NODE`, else `node` on PATH
+/// when it is new enough, else the newest 22+ install in the usual version
+/// managers' directories. Many machines default to an older node (nvm with
+/// 20 as the default) while a 22 sits beside it; without this the session
+/// silently fell back to codex. Falls back to `node`, whose version error
+/// the server then reports.
+fn uac_node() -> std::ffi::OsString {
+    if let Some(node) = std::env::var_os("UNIEAI_NODE") {
+        return node;
+    }
+    if node_major(Path::new("node")).is_some_and(|major| major >= UAC_MIN_NODE_MAJOR) {
+        return "node".into();
+    }
+    let home = dirs::home_dir();
+    newest_node(&node_candidates(home.as_deref()))
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| "node".into())
+}
+
+/// Where version managers and package managers put node binaries.
+fn node_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut versions_under = |dir: PathBuf, bin: &[&str]| {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let mut path = entry.path();
+                for part in bin {
+                    path.push(part);
+                }
+                found.push(path);
+            }
+        }
+    };
+    if let Some(home) = home {
+        versions_under(home.join(".nvm/versions/node"), &["bin", "node"]);
+        versions_under(home.join(".local/share/fnm/node-versions"), &["installation", "bin", "node"]);
+        versions_under(home.join("Library/Application Support/fnm/node-versions"), &["installation", "bin", "node"]);
+        versions_under(home.join(".volta/tools/image/node"), &["bin", "node"]);
+        versions_under(home.join(".asdf/installs/nodejs"), &["bin", "node"]);
+    }
+    for fixed in [
+        "/opt/homebrew/bin/node",
+        "/opt/homebrew/opt/node@22/bin/node",
+        "/opt/homebrew/opt/node@24/bin/node",
+        "/usr/local/bin/node",
+        "/usr/local/opt/node@22/bin/node",
+        "/usr/bin/node",
+    ] {
+        found.push(PathBuf::from(fixed));
+    }
+    found
+}
+
+/// The candidate with the highest major version at or above the minimum.
+fn newest_node(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .filter(|path| path.is_file())
+        .filter_map(|path| node_major(path).map(|major| (major, path)))
+        .filter(|(major, _)| *major >= UAC_MIN_NODE_MAJOR)
+        .max_by_key(|(major, _)| *major)
+        .map(|(_, path)| path.clone())
+}
+
+/// `node --version`'s major number (`v22.21.1` -> 22).
+fn node_major(node: &Path) -> Option<u64> {
+    let output = std::process::Command::new(node)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    parse_node_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_node_major(version: &str) -> Option<u64> {
+    version.trim().trim_start_matches('v').split('.').next()?.parse().ok()
 }
 
 #[cfg(test)]
