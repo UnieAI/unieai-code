@@ -960,8 +960,40 @@ fn handle_app_exit(
     }
     if let Some(action) = update_action {
         run_update_action(action, cli_executable)?;
+        // The user chose "Update now" from the startup prompt: bring them back
+        // on the new version instead of leaving them at a shell prompt.
+        if !matches!(action, UpdateAction::Daemon(_)) {
+            println!("Restarting UnieAI...");
+            return relaunch_after_update();
+        }
     }
     Ok(())
+}
+
+/// Start the updated CLI with the same leading options.
+///
+/// The launcher on PATH is preferred over this process's executable: a global
+/// npm update replaces the package directory this binary was started from.
+fn relaunch_after_update() -> anyhow::Result<()> {
+    let mut args = std::env::args_os();
+    let program = args.next().unwrap_or_else(|| "unieai".into());
+    let program = which::which("unieai")
+        .map(std::ffi::OsString::from)
+        .or_else(|_| std::env::current_exe().map(std::ffi::OsString::from))
+        .unwrap_or(program);
+    let kept = relaunch_args(&MultitoolCli::command(), args.collect());
+    let mut command = std::process::Command::new(program);
+    command.args(kept);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(anyhow::Error::new(command.exec()).context("failed to restart after the update"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 /// Re-run this CLI after `/engine` so the new engine takes the next session.
@@ -1081,7 +1113,7 @@ fn run_update_action(
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!("\n🎉 Update ran successfully! Please restart UnieAI.");
+    println!("\n🎉 Update ran successfully!");
     Ok(())
 }
 
@@ -1117,7 +1149,9 @@ fn run_update_command() -> anyhow::Result<()> {
                 "Could not detect the UnieAI installation method. Please update manually."
             );
         };
-        run_update_action(action, /*cli_executable*/ None)
+        run_update_action(action, /*cli_executable*/ None)?;
+        println!("Start UnieAI again to use the new version.");
+        Ok(())
     }
 }
 

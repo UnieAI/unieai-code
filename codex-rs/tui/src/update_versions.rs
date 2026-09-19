@@ -15,14 +15,6 @@ pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
 }
 
 #[cfg(any(not(debug_assertions), test))]
-pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
-        .strip_prefix("cli-v")
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
-}
-
-#[cfg(any(not(debug_assertions), test))]
 pub(crate) fn is_source_build_version(version: &str) -> bool {
     parse_build_version(version) == Some((0, 0, 0))
 }
@@ -79,19 +71,6 @@ fn parse_build_version(v: &str) -> Option<(u64, u64, u64)> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-
-    #[test]
-    fn extracts_version_from_latest_tag() {
-        assert_eq!(
-            extract_version_from_latest_tag("cli-v1.5.0").expect("failed to parse version"),
-            "1.5.0"
-        );
-    }
-
-    #[test]
-    fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
-    }
 
     #[test]
     fn prerelease_version_is_not_considered_newer() {

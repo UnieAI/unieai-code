@@ -5,7 +5,6 @@ use crate::npm_registry;
 use crate::npm_registry::NpmPackageInfo;
 use crate::update_action;
 use crate::update_action::UpdateAction;
-use crate::update_versions::extract_version_from_latest_tag;
 use crate::update_versions::is_newer;
 use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
@@ -59,10 +58,6 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-// Public distribution repo. Resolved via the html /releases/latest redirect
-// rather than api.github.com: the REST API is limited to 60 unauthenticated
-// requests/hour and returns 403 once exhausted; the redirect has no such cap.
-const LATEST_RELEASE_URL: &str = "https://github.com/UnieAI/Unieai-Code-Publish/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct HomebrewCaskInfo {
@@ -92,11 +87,17 @@ async fn check_for_update(
                 .await?;
             version
         }
+        // UnieAI Code is published to npm (`@unieai/code`); its `latest`
+        // dist-tag is the release. The GitHub publish repo was used before,
+        // but its newest release is the VS Code extension's (`vscode-v…`) and
+        // its CLI releases stopped at 0.0.15, so the check never succeeded.
         Some(UpdateAction::NpmGlobalLatest)
         | Some(UpdateAction::BunGlobalLatest)
         | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
+        | Some(UpdateAction::PnpmGlobalLatest)
+        | Some(UpdateAction::StandaloneUnix)
+        | Some(UpdateAction::StandaloneWindows)
+        | None => {
             let package_info = client_pool
                 .get(npm_registry::PACKAGE_URL)
                 .headers(default_headers())
@@ -105,11 +106,7 @@ async fn check_for_update(
                 .error_for_status()?
                 .json::<NpmPackageInfo>()
                 .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
-        }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
+            npm_registry::latest_ready_version(&package_info)?
         }
     };
 
@@ -127,26 +124,6 @@ async fn check_for_update(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
-}
-
-async fn fetch_latest_github_release_version(
-    client_pool: &RouteAwareClientPool,
-) -> anyhow::Result<String> {
-    // The pool follows the redirect; the tag is the last path segment of the
-    // final URL, e.g. .../releases/tag/npm-v0.0.27.
-    let response = client_pool
-        .get(LATEST_RELEASE_URL)
-        .headers(default_headers())
-        .send()
-        .await?
-        .error_for_status()?;
-    let latest_tag_name = response
-        .url()
-        .path_segments()
-        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to resolve latest release tag from redirect"))?;
-    extract_version_from_latest_tag(&latest_tag_name)
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
