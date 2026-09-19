@@ -440,7 +440,17 @@ export function apply(ctx, config = {}) {
       if (!agent) throw new Error(`session is not open: ${sessionId}`);
       const { total, last } = usageFromEvents(agent.session.snapshotEvents?.() ?? []);
       const window = agent.session.requestContext?.()?.contextWindow ?? null;
-      return { total, last, modelContextWindow: Number.isFinite(window) ? window : null };
+      // dsh's own measure of the context (what auto-compaction goes by), from
+      // the token meter in the agent's scope or the root.
+      let contextUsed = null;
+      try {
+        const meter = agent.ctx?.get?.("tokenMeter") ?? ctx.get?.("tokenMeter");
+        const measured = meter?.measure(agent.session)?.totalTokens;
+        if (Number.isFinite(measured)) contextUsed = measured;
+      } catch {
+        // No meter in this profile: the last call's counts stand in.
+      }
+      return { total, last, modelContextWindow: Number.isFinite(window) ? window : null, contextUsed };
     },
 
     /** The session's current goal (null when none). */

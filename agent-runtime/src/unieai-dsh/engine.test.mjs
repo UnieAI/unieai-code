@@ -589,3 +589,21 @@ test("a result whose start never arrived is named from dsh's log, not shown as \
     ],
   );
 });
+
+test("the context meter is dsh's own measure of the context, from usage_update", async () => {
+  const { client } = fakeAgent(async ({ method, params }, agent) => {
+    if (method === "session/new") return { sessionId: "s1", configOptions: MODEL_OPTIONS };
+    if (method === "session/prompt") {
+      update(agent, params.sessionId, { sessionUpdate: "usage_update", used: 41000, size: 131072 });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { stopReason: "end_turn" };
+    }
+    return { configOptions: MODEL_OPTIONS };
+  });
+  const last = { totalTokens: 14000, inputTokens: 13800, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 200, reasoningOutputTokens: 0 };
+  const control = async (method) => (method === "usage" ? { total: last, last, modelContextWindow: null } : {});
+  const reported = [];
+  const engine = createDshEngine({ host: scriptedHost(client, control), workspace: "/w", model: "GLM-5.2", onUsage: (usage) => reported.push(usage) });
+  await engine.send("go");
+  assert.deepEqual(reported.at(-1), { total: last, last: { ...last, totalTokens: 41000 }, modelContextWindow: 131072 });
+});

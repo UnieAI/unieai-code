@@ -20,6 +20,23 @@ import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from 
 /** Tools the client shows some other way: a card only when one fails. */
 const QUIET_WHEN_OK = new Set(["subagent", "ask_user_question"]);
 
+/**
+ * Token usage with the context meter set from dsh's own occupancy, when it
+ * reported one: the client reads `last.totalTokens` against
+ * `modelContextWindow` as how full the context is. The last call's own
+ * counts would lag a compaction by one model call.
+ */
+export function withOccupancy(usage, occupancy) {
+  const { contextUsed = null, ...counts } = usage ?? {};
+  const used = Number.isFinite(contextUsed) ? contextUsed : occupancy?.used;
+  if (!Number.isFinite(used)) return counts;
+  return {
+    ...counts,
+    last: { ...counts.last, totalTokens: used },
+    modelContextWindow: occupancy?.size ?? counts.modelContextWindow,
+  };
+}
+
 /** dsh tool names -> the vocabulary items.mjs maps to protocol items. */
 const TOOL_NAMES = {
   bash: "bash",
@@ -614,7 +631,12 @@ export function createDshEngine({
         break;
       }
       case "usage_update":
-        // dsh committed a model call: refresh the token counts.
+        // dsh committed a model call. `used` / `size` are its own measure of
+        // the context (what auto-compaction goes by); the counts come from
+        // the log.
+        if (Number.isFinite(update.used) && Number.isFinite(update.size) && update.size > 0) {
+          contextOccupancy = { used: update.used, size: update.size };
+        }
         reportUsage();
         break;
       default:
@@ -768,11 +790,13 @@ export function createDshEngine({
 
   /** Read the session's token usage from dsh and hand it to the client. */
   let usageInFlight = null;
+  // dsh's latest { used, size } of the context window, from usage_update.
+  let contextOccupancy = null;
   const reportUsage = () => {
     if (!sessionId || usageInFlight) return usageInFlight;
     usageInFlight = host
       .control("usage", { sessionId })
-      .then((usage) => onUsage(usage))
+      .then((usage) => onUsage(withOccupancy(usage, contextOccupancy)))
       .catch((error) => onLog(`could not read token usage: ${error.message}`))
       .finally(() => {
         usageInFlight = null;
@@ -948,6 +972,8 @@ export function createDshEngine({
     async compact() {
       await ensureSession();
       const { compacted } = await host.control("compact", { sessionId });
+      // The context just shrank: the meter shows it now, not after the next call.
+      if (compacted) await reportUsage();
       return Boolean(compacted);
     },
 
