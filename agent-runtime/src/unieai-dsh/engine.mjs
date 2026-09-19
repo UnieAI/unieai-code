@@ -438,7 +438,11 @@ const IMAGE_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image
 export async function promptContent(text, images = [], { imageInput = false, tmp = tmpdir() } = {}) {
   const content = [{ type: "text", text }];
   const notes = [];
+  // The client's text names its attachments `[Image #1]`, `[Image #2]`, in
+  // the order it sends them: the notes say which file each one is.
+  let index = 0;
   for (const image of images) {
+    index += 1;
     let data = null;
     let mimeType = null;
     let path = image.path ?? null;
@@ -453,7 +457,7 @@ export async function promptContent(text, images = [], { imageInput = false, tmp
       data = await readFile(path).catch(() => null);
     }
     if (!data) {
-      notes.push(`[An attached image could not be read${path ? `: ${path}` : ""}.]`);
+      notes.push(`[Image #${index} could not be read${path ? `: ${path}` : ""}.]`);
       continue;
     }
     if (imageInput && mimeType && Object.values(IMAGE_TYPES).includes(mimeType)) {
@@ -467,7 +471,7 @@ export async function promptContent(text, images = [], { imageInput = false, tmp
       path = join(dir, `${randomUUID()}${ext}`);
       await writeFile(path, data);
     }
-    notes.push(`[The user attached an image: ${path}. You cannot see images directly; look at it with describe_image.]`);
+    notes.push(`[Image #${index} is the file ${path}. You cannot see images directly; look at it with describe_image.]`);
   }
   if (notes.length > 0) content[0] = { type: "text", text: `${text}\n\n${notes.join("\n")}` };
   return content;

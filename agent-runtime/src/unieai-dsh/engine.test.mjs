@@ -474,8 +474,8 @@ test("images: inline for a vision model, a path and describe_image for a text-on
 
   const textOnly = await promptContent("what is this?", [{ path: png }, { url: dataUrl }], { imageInput: false, tmp: dir });
   assert.equal(textOnly.length, 1);
-  assert.match(textOnly[0].text, new RegExp(`attached an image: ${png.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. You cannot see images directly; look at it with describe_image`));
-  const written = textOnly[0].text.match(/attached an image: (\S+\.jpg)\./)[1];
+  assert.match(textOnly[0].text, new RegExp(`Image #1 is the file ${png.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. You cannot see images directly; look at it with describe_image`));
+  const written = textOnly[0].text.match(/Image #2 is the file (\S+\.jpg)\./)[1];
   assert.deepEqual(readFileSync(written), Buffer.from("/9j/AA==", "base64"), "an inline image is saved for describe_image");
 
   const missing = await promptContent("x", [{ path: join(dir, "nope.png") }], { imageInput: true });
@@ -636,6 +636,6 @@ test("a steered message carries its image the way a prompt does: for a model tha
   await turn;
   assert.equal(steers[0].text, "what is this?", "the client's text is what the delivered message is matched by");
   assert.deepEqual(steers[0].content, [
-    { type: "text", text: `what is this?\n\n[The user attached an image: ${png}. You cannot see images directly; look at it with describe_image.]` },
+    { type: "text", text: `what is this?\n\n[Image #1 is the file ${png}. You cannot see images directly; look at it with describe_image.]` },
   ]);
 });
