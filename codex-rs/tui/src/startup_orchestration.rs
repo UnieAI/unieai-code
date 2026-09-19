@@ -433,7 +433,7 @@ pub(super) async fn run_main_inner(
         ))
         .await?;
     if let Some(warning) = uac_unavailable.take() {
-        config.startup_warnings.push(warning);
+        unieai_engine::record_uac_unavailable(warning);
     }
     let auto_start_daemon = config.features.enabled(Feature::DaemonAutoStart)
         && !cli.agents_overview

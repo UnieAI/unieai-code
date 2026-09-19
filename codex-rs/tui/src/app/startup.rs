@@ -191,6 +191,11 @@ impl App {
             )));
         }
         emit_system_bwrap_warning(&app_event_tx, &config);
+        if let Some(message) = crate::unieai_engine::take_uac_unavailable() {
+            app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::new_warning_event(message),
+            )));
+        }
         tui.set_notification_settings(
             local_settings.tui.notification_settings.method,
             local_settings.tui.notification_settings.condition,

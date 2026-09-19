@@ -163,6 +163,21 @@ fn engine_file(codex_home: &Path) -> PathBuf {
 /// connection is settled (switching engines restarts the CLI).
 static SESSION_ENGINE: std::sync::OnceLock<EngineKind> = std::sync::OnceLock::new();
 
+/// Why uac did not start this launch, shown in full at the top of the
+/// session rather than folded into the startup-issues summary: it is the
+/// one startup problem that changes which engine the user is on.
+static UAC_UNAVAILABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn record_uac_unavailable(warning: String) {
+    if let Ok(mut slot) = UAC_UNAVAILABLE.lock() {
+        *slot = Some(warning);
+    }
+}
+
+pub(crate) fn take_uac_unavailable() -> Option<String> {
+    UAC_UNAVAILABLE.lock().ok().and_then(|mut slot| slot.take())
+}
+
 pub(crate) fn record_session_engine(engine: EngineKind) {
     let _ = SESSION_ENGINE.set(engine);
 }
@@ -197,6 +212,17 @@ pub(crate) fn configured_engine(codex_home: &Path) -> EngineKind {
 /// last line of the server log (where node / dsh report what broke), and
 /// where to look.
 pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error) -> String {
+    // The one cause users can fix themselves: say exactly how.
+    if error.to_string().starts_with(NODE_TOO_OLD) {
+        return format!(
+            "{}, the default engine, {error}, so this session runs on {}. \
+             Install Node.js {UAC_MIN_NODE_MAJOR} (for example `nvm install {UAC_MIN_NODE_MAJOR}` \
+             or `brew install node@{UAC_MIN_NODE_MAJOR}`) and restart UnieAI Code; if Node \
+             {UAC_MIN_NODE_MAJOR} is installed somewhere unusual, set UNIEAI_NODE to its path.",
+            EngineKind::Uac.display_name(),
+            EngineKind::Codex.display_name()
+        );
+    }
     let log = uac_log_path(codex_home);
     let last_line = std::fs::read_to_string(&log).ok().and_then(|text| {
         text.lines()
@@ -384,7 +410,7 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         .create(true)
         .append(true)
         .open(&log_path)?;
-    let mut command = tokio::process::Command::new(uac_node());
+    let mut command = tokio::process::Command::new(uac_node()?);
     command
         .arg(&script)
         .env("CODEX_HOME", codex_home)
@@ -439,19 +465,36 @@ const UAC_MIN_NODE_MAJOR: u64 = 22;
 /// when it is new enough, else the newest 22+ install in the usual version
 /// managers' directories. Many machines default to an older node (nvm with
 /// 20 as the default) while a 22 sits beside it; without this the session
-/// silently fell back to codex. Falls back to `node`, whose version error
-/// the server then reports.
-fn uac_node() -> std::ffi::OsString {
+/// silently fell back to codex. Without a usable node the error says which
+/// one was found, so the TUI can tell the user what to install.
+fn uac_node() -> std::io::Result<std::ffi::OsString> {
     if let Some(node) = std::env::var_os("UNIEAI_NODE") {
-        return node;
+        return match node_major(Path::new(&node)) {
+            Some(major) if major >= UAC_MIN_NODE_MAJOR => Ok(node),
+            found => Err(node_too_old(found, Some(&node))),
+        };
     }
-    if node_major(Path::new("node")).is_some_and(|major| major >= UAC_MIN_NODE_MAJOR) {
-        return "node".into();
+    let on_path = node_major(Path::new("node"));
+    if on_path.is_some_and(|major| major >= UAC_MIN_NODE_MAJOR) {
+        return Ok("node".into());
     }
     let home = dirs::home_dir();
     newest_node(&node_candidates(home.as_deref()))
         .map(std::ffi::OsString::from)
-        .unwrap_or_else(|| "node".into())
+        .ok_or_else(|| node_too_old(on_path, /*unieai_node*/ None))
+}
+
+/// Marks the error that `uac_unavailable_warning` turns into install advice.
+const NODE_TOO_OLD: &str = "needs Node.js";
+
+fn node_too_old(found: Option<u64>, unieai_node: Option<&std::ffi::OsStr>) -> std::io::Error {
+    let found = match (found, unieai_node) {
+        (Some(major), Some(node)) => format!("UNIEAI_NODE ({}) is Node {major}", Path::new(node).display()),
+        (None, Some(node)) => format!("UNIEAI_NODE ({}) does not run", Path::new(node).display()),
+        (Some(major), None) => format!("the node on PATH is Node {major}"),
+        (None, None) => "no node was found".to_string(),
+    };
+    std::io::Error::other(format!("{NODE_TOO_OLD} {UAC_MIN_NODE_MAJOR} or newer; {found}"))
 }
 
 /// Where version managers and package managers put node binaries.

@@ -564,7 +564,7 @@ async fn start_app_server(
                 } = &*target
                     && unieai_engine::is_uac_socket(&config.codex_home, socket_path.as_path())
                 {
-                    config.startup_warnings.push(unieai_engine::uac_unavailable_warning(
+                    unieai_engine::record_uac_unavailable(unieai_engine::uac_unavailable_warning(
                         &config.codex_home,
                         &std::io::Error::other(format!("could not connect to the uac server ({err})")),
                     ));

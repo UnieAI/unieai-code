@@ -138,3 +138,15 @@ fn version_manager_installs_are_searched() {
     let candidates = node_candidates(Some(home.path()));
     assert!(candidates.contains(&home.path().join(".nvm/versions/node/v22.21.1/bin/node")));
 }
+
+#[test]
+fn an_old_node_gets_install_advice() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let warning = uac_unavailable_warning(home.path(), &node_too_old(Some(20), /*unieai_node*/ None));
+    assert_eq!(
+        warning,
+        "unieai-agent-core (uac), the default engine, needs Node.js 22 or newer; the node on PATH is Node 20, \
+         so this session runs on codex. Install Node.js 22 (for example `nvm install 22` or `brew install node@22`) \
+         and restart UnieAI Code; if Node 22 is installed somewhere unusual, set UNIEAI_NODE to its path."
+    );
+}
