@@ -562,3 +562,33 @@ test("a thread keeps the mode it started in, and a fork inherits it", async () =
   await h["turn/start"]({ threadId: forked.thread.id, input: "again" }, ctx);
   assert.deepEqual(seen, ["ptc", "ptc"]);
 });
+
+test("a turn the engine starts on its own becomes a client turn, after any open one", async () => {
+  let hooks;
+  let release;
+  const h = createHandlers({
+    createEngineFor: (callbacks) => {
+      hooks = callbacks;
+      return { send: () => new Promise((resolve) => (release = resolve)) };
+    },
+    codexHome: "/h",
+  });
+  const emitted = [];
+  const ctx = { emit: (m, p) => emitted.push([m, p]) };
+  const { thread } = await h["thread/start"]({}, ctx);
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, ctx);
+  // dsh starts its next turn (a goal round) before the client's has closed.
+  hooks.onEngineTurn({ phase: "start" });
+  assert.equal(emitted.filter(([m]) => m === "turn/started").length, 1, "waits for the open turn");
+  release();
+  await new Promise((r) => setTimeout(r, 10));
+  const started = emitted.filter(([m]) => m === "turn/started");
+  assert.equal(started.length, 2, "then opens its own");
+  hooks.emit("item/agentMessage/delta", { delta: "working on the goal" });
+  hooks.onEngineTurn({ phase: "end", reason: "completed" });
+  const second = started[1][1].turnId;
+  const text = emitted.find(([m, p]) => m === "item/agentMessage/delta" && p.turnId === second);
+  assert.equal(text[1].delta, "working on the goal", "its output is filed under that turn");
+  const done = emitted.filter(([m]) => m === "turn/completed").map(([, p]) => p.turn.id);
+  assert.deepEqual(done.slice(-1), [second]);
+});

@@ -71,6 +71,34 @@ export function requestedPermissions(params) {
 
 const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
 
+const GOAL_STATUS = { active: "active", paused: "paused", blocked: "blocked", complete: "complete" };
+const GOAL_STATUS_TO_ENGINE = { active: "active", paused: "paused", complete: "complete" };
+
+/**
+ * An engine goal ({ objective, phase, ... }) as the protocol's ThreadGoal.
+ * dsh budgets goals in rounds, not tokens, so there is no token budget;
+ * timestamps are when this server first and last saw the goal.
+ */
+function threadGoal(thread, goal) {
+  if (!goal) {
+    thread.goalSeen = null;
+    return null;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const seen = thread.goalSeen?.id === goal.id ? thread.goalSeen : { id: goal.id, createdAt: now };
+  thread.goalSeen = { ...seen, updatedAt: now };
+  return {
+    threadId: thread.id,
+    objective: goal.objective,
+    status: GOAL_STATUS[goal.phase] ?? "active",
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: now - seen.createdAt,
+    createdAt: seen.createdAt,
+    updatedAt: now,
+  };
+}
+
 /** Emit a user message item into the thread's running turn. */
 function emitUserMessage(thread, text, clientId = null) {
   const itemId = randomUUID();
@@ -250,6 +278,145 @@ export function createHandlers({
     if (threadStore && !t.ephemeral) threadStore.save(t);
   };
 
+  /**
+   * Open a turn on the client: status, turn/started, the user's message (for
+   * a prompted turn), and the text segmenting every item of the turn goes
+   * through. Returns `finish({ error, status })`, which closes it. Used for
+   * the client's own turns and for turns the engine starts itself.
+   */
+  const beginTurn = (thread, ctx, { userText = null } = {}) => {
+    const turnId = randomUUID();
+    const startedAt = epochNow();
+    thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null };
+    thread.turnIds.push(turnId);
+    thread.updatedAtEpoch = startedAt;
+    persist(thread);
+
+    // The lifecycle the client actually watches, in the order the Rust server
+    // sends it: status, turn/started, the echoed user message, then items.
+    ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
+    ctx?.emit?.("turn/started", { threadId: thread.id, turnId, turn: turnShape(thread.activeTurn) });
+
+    // Every item notification carries the thread and turn it belongs to; the
+    // client files them by those and ignores anything it cannot place.
+    const emitItem = (method, params) => ctx?.emit?.(method, { threadId: thread.id, turnId, ...params });
+    if (userText !== null) {
+      const userItemId = newItemId();
+      emitItem("item/started", { item: userMessageItem(userItemId, userText), startedAtMs: Date.now() });
+      emitItem("item/completed", { item: userMessageItem(userItemId, userText), completedAtMs: Date.now() });
+    }
+
+    // The model's text comes in segments between tool calls. Each segment
+    // is its own agentMessage (and reasoning) item, closed when a tool card
+    // opens, so the transcript interleaves them as codex does; one item for
+    // the whole turn put every remark after every command.
+    // Streamed text has to name the item it belongs to; without `itemId` the
+    // client cannot attach the delta to a card and drops it, which looks
+    // exactly like the engine producing nothing at all.
+    let answerSegment = null; // { id, text }
+    let reasoningSegment = null; // { id, text }
+    const emitAnswerDelta = (delta) => {
+      if (!answerSegment) {
+        answerSegment = { id: newItemId(), text: "" };
+        emitItem("item/started", { item: agentMessageItem(answerSegment.id, ""), startedAtMs: Date.now() });
+      }
+      answerSegment.text += delta;
+      emitItem("item/agentMessage/delta", { itemId: answerSegment.id, delta });
+    };
+    const emitReasoningDelta = (delta) => {
+      if (!reasoningSegment) {
+        reasoningSegment = { id: newItemId(), text: "" };
+        emitItem("item/started", { item: reasoningItem(reasoningSegment.id), startedAtMs: Date.now() });
+      }
+      reasoningSegment.text += delta;
+      emitItem("item/reasoning/textDelta", { itemId: reasoningSegment.id, delta, contentIndex: 0 });
+    };
+    const closeText = () => {
+      if (reasoningSegment) {
+        emitItem("item/completed", { item: reasoningItem(reasoningSegment.id, reasoningSegment.text), completedAtMs: Date.now() });
+        reasoningSegment = null;
+      }
+      if (answerSegment) {
+        if (answerSegment.text) emitItem("item/completed", { item: agentMessageItem(answerSegment.id, answerSegment.text), completedAtMs: Date.now() });
+        answerSegment = null;
+      }
+    };
+    // Any other card, including a steered user message, ends the segment.
+    const TEXT_ITEMS = new Set(["agentMessage", "reasoning"]);
+    thread.pendingAnswer = {
+      emitItem: (method, itemParams) => {
+        // A tool card opening ends the text segment before it.
+        if (method === "item/started" && !TEXT_ITEMS.has(itemParams?.item?.type)) closeText();
+        return emitItem(method, itemParams);
+      },
+      emitAnswerDelta,
+      emitReasoningDelta,
+    };
+
+    let finished = false;
+    const finish = ({ error = null, status = null } = {}) => {
+      if (finished) return;
+      finished = true;
+      // What was said before a failure stays on screen.
+      closeText();
+      const current = thread.activeTurn;
+      if (error) {
+        if (current) {
+          current.status = "failed";
+          current.error = { message: String(error?.message || error) };
+        }
+        // The client files an error by thread and turn and needs to know
+        // whether to expect a retry; without those it cannot place the error
+        // at all, so an engine failure was invisible.
+        ctx?.emit?.("error", { error: { message: String(error?.message || error) }, willRetry: false, threadId: thread.id, turnId });
+      }
+      thread.activeTurn = null;
+      thread.pendingAnswer = null;
+      thread.updatedAtEpoch = epochNow();
+      persist(thread);
+      const completedAt = epochNow();
+      ctx?.emit?.("turn/completed", {
+        threadId: thread.id,
+        turn: turnShape({
+          id: turnId,
+          status: current?.status === "failed" ? "failed" : status ?? "completed",
+          error: current?.error ?? null,
+          startedAt: current?.startedAt ?? null,
+          completedAt,
+          durationMs: current?.startedAt ? (completedAt - current.startedAt) * 1000 : null,
+        }),
+      });
+      ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
+      // dsh began its next turn while this one was still open (a goal round).
+      if (thread.engineTurnWaiting) {
+        thread.engineTurnWaiting = false;
+        startEngineTurn(thread);
+      }
+    };
+    return { turnId, finish };
+  };
+
+  /** Show a turn the engine started on its own (see onEngineTurn). */
+  const startEngineTurn = (thread) => {
+    if (thread.activeTurn) {
+      thread.engineTurnWaiting = true;
+      return;
+    }
+    const turn = beginTurn(thread, thread.connection);
+    thread.engineTurn = turn;
+    // Esc in the client interrupts it like any turn.
+    thread.activeTurn.abort.signal.addEventListener("abort", () => thread.engine?.cancel?.(), { once: true });
+  };
+
+  const endEngineTurn = (thread, reason) => {
+    thread.engineTurnWaiting = false;
+    const turn = thread.engineTurn;
+    thread.engineTurn = null;
+    if (!turn) return;
+    if (reason === "error") turn.finish({ error: new Error("the engine's turn failed") });
+    else turn.finish({ status: reason === "aborted" || reason === "interrupted" ? "interrupted" : "completed" });
+  };
+
   /** A live thread, loading a stored one on first use. */
   const getThread = (threadId) => {
     const live = threads.get(threadId);
@@ -288,6 +455,15 @@ export function createHandlers({
       mode: thread.mode ?? null,
       permissions: () => thread.permissions ?? null,
       onSteerDelivered: ({ clientId, text }) => emitUserMessage(thread, text, clientId),
+      // Turns dsh runs without a prompt from the client (a goal round, a
+      // background subagent's result waking this agent) become client turns.
+      onEngineTurn: ({ phase, reason }) => (phase === "start" ? startEngineTurn(thread) : endEngineTurn(thread, reason)),
+      // The model's own goal edits (its goal tools) reach the client too.
+      onGoalChanged: (goal) => {
+        const emit = thread.connection?.emit;
+        if (goal) emit?.("thread/goal/updated", { threadId: thread.id, turnId: thread.activeTurn?.id ?? null, goal: threadGoal(thread, goal) });
+        else emit?.("thread/goal/cleared", { threadId: thread.id });
+      },
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -420,115 +596,13 @@ export function createHandlers({
       const text = textOf(params?.input);
       if (!thread.preview) thread.preview = text.slice(0, 120);
       ensureEngine(thread, ctx);
-      const turnId = randomUUID();
-      const startedAt = epochNow();
-      thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null };
-      thread.turnIds.push(turnId);
-      thread.updatedAtEpoch = startedAt;
-      persist(thread);
-
-      // The lifecycle the client actually watches, in the order the Rust server
-      // sends it: status, turn/started, the echoed user message, then items.
-      ctx.emit("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
-      ctx.emit("turn/started", { threadId: thread.id, turnId, turn: turnShape(thread.activeTurn) });
-
-      // Every item notification carries the thread and turn it belongs to; the
-      // client files them by those and ignores anything it cannot place.
-      const emitItem = (method, params) =>
-        ctx.emit(method, { threadId: thread.id, turnId, ...params });
-      const userItemId = newItemId();
-      emitItem("item/started", { item: userMessageItem(userItemId, text), startedAtMs: Date.now() });
-      emitItem("item/completed", { item: userMessageItem(userItemId, text), completedAtMs: Date.now() });
-
-      // The model's text comes in segments between tool calls. Each segment
-      // is its own agentMessage (and reasoning) item, closed when a tool card
-      // opens, so the transcript interleaves them as codex does; one item for
-      // the whole turn put every remark after every command.
-      // Streamed text has to name the item it belongs to; without `itemId` the
-      // client cannot attach the delta to a card and drops it, which looks
-      // exactly like the engine producing nothing at all.
-      let answerSegment = null; // { id, text }
-      let reasoningSegment = null; // { id, text }
-      const emitAnswerDelta = (delta) => {
-        if (!answerSegment) {
-          answerSegment = { id: newItemId(), text: "" };
-          emitItem("item/started", { item: agentMessageItem(answerSegment.id, ""), startedAtMs: Date.now() });
-        }
-        answerSegment.text += delta;
-        emitItem("item/agentMessage/delta", { itemId: answerSegment.id, delta });
-      };
-      const emitReasoningDelta = (delta) => {
-        if (!reasoningSegment) {
-          reasoningSegment = { id: newItemId(), text: "" };
-          emitItem("item/started", { item: reasoningItem(reasoningSegment.id), startedAtMs: Date.now() });
-        }
-        reasoningSegment.text += delta;
-        emitItem("item/reasoning/textDelta", { itemId: reasoningSegment.id, delta, contentIndex: 0 });
-      };
-      const closeText = () => {
-        if (reasoningSegment) {
-          emitItem("item/completed", { item: reasoningItem(reasoningSegment.id, reasoningSegment.text), completedAtMs: Date.now() });
-          reasoningSegment = null;
-        }
-        if (answerSegment) {
-          if (answerSegment.text) emitItem("item/completed", { item: agentMessageItem(answerSegment.id, answerSegment.text), completedAtMs: Date.now() });
-          answerSegment = null;
-        }
-      };
-      // Any other card, including a steered user message, ends the segment.
-      const TEXT_ITEMS = new Set(["agentMessage", "reasoning"]);
-      thread.pendingAnswer = {
-        emitItem: (method, itemParams) => {
-          // A tool card opening ends the text segment before it.
-          if (method === "item/started" && !TEXT_ITEMS.has(itemParams?.item?.type)) closeText();
-          return emitItem(method, itemParams);
-        },
-        emitAnswerDelta,
-        emitReasoningDelta,
-      };
-
+      const turn = beginTurn(thread, ctx, { userText: text });
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
       thread.engine
         .send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null, images: imagesOf(params?.input) })
-        .then(() => closeText())
-        .catch((error) => {
-          // What was said before the failure stays on screen.
-          closeText();
-          if (thread.activeTurn) {
-            thread.activeTurn.status = "failed";
-            thread.activeTurn.error = { message: String(error?.message || error) };
-          }
-          // The client files an error by thread and turn and needs to know
-          // whether to expect a retry; without those it cannot place the error
-          // at all, so an engine failure was invisible.
-          ctx.emit("error", {
-            error: { message: String(error?.message || error) },
-            willRetry: false,
-            threadId: thread.id,
-            turnId,
-          });
-        })
-        .finally(() => {
-          const finished = thread.activeTurn;
-          thread.activeTurn = null;
-          thread.pendingAnswer = null;
-          thread.updatedAtEpoch = epochNow();
-          persist(thread);
-          const completedAt = epochNow();
-          ctx.emit("turn/completed", {
-            threadId: thread.id,
-            turn: turnShape({
-              id: turnId,
-              status: finished?.status === "failed" ? "failed" : "completed",
-              error: finished?.error ?? null,
-              startedAt: finished?.startedAt ?? null,
-              completedAt,
-              durationMs: finished?.startedAt ? (completedAt - finished.startedAt) * 1000 : null,
-            }),
-          });
-          ctx.emit("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
-        });
+        .then(() => turn.finish())
+        .catch((error) => turn.finish({ error }));
       return { turn: turnShape(thread.activeTurn) };
     },
 
@@ -681,16 +755,28 @@ export function createHandlers({
 
     // Goals are codex's long-running task loop; no engine here has one. Asking
     // for the goal is routine (the TUI does it on resume), so answer "none".
-    async "thread/goal/get"(params) {
-      getThread(params?.threadId);
-      return { goal: null };
+    async "thread/goal/get"(params, ctx) {
+      const thread = getThread(params?.threadId);
+      const engine = ensureEngine(thread, ctx);
+      if (typeof engine.goal !== "function") return { goal: null };
+      return { goal: threadGoal(thread, await engine.goal()) };
     },
-    async "thread/goal/clear"(params) {
-      getThread(params?.threadId);
-      return { cleared: false };
+    async "thread/goal/clear"(params, ctx) {
+      const thread = getThread(params?.threadId);
+      const engine = ensureEngine(thread, ctx);
+      if (typeof engine.clearGoal !== "function") return { cleared: false };
+      const cleared = Boolean(await engine.clearGoal());
+      if (cleared) ctx?.emit?.("thread/goal/cleared", { threadId: thread.id });
+      return { cleared };
     },
-    async "thread/goal/set"() {
-      throw new RpcError(RPC.METHOD_NOT_FOUND, "goals are not supported by this engine");
+    async "thread/goal/set"(params, ctx) {
+      const thread = getThread(params?.threadId);
+      const engine = ensureEngine(thread, ctx);
+      if (typeof engine.setGoal !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "goals are not supported by this engine");
+      const status = GOAL_STATUS_TO_ENGINE[params?.status] ?? null;
+      const goal = threadGoal(thread, await engine.setGoal({ objective: params?.objective ?? null, status }));
+      ctx?.emit?.("thread/goal/updated", { threadId: thread.id, turnId: thread.activeTurn?.id ?? null, goal });
+      return { goal };
     },
 
     // Reviews run codex's review flow, which no engine here implements.

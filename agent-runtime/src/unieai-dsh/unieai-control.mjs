@@ -238,6 +238,37 @@ export function apply(ctx, config = {}) {
     steersWaiting.delete(agent.id);
   });
 
+  // The bridge's connection, for changes it did not ask about (goal edits
+  // the model makes with its goal tools).
+  let bridge = null;
+  const goalsOf = () => ctx.get?.("goals");
+  const goalView = (goal) =>
+    goal === undefined || goal === null
+      ? null
+      : { id: goal.id, revision: goal.revision, objective: goal.objective, phase: goal.phase, roundsStarted: goal.roundsStarted ?? 0, maxGoalRounds: goal.maxGoalRounds ?? null };
+  // Turn boundaries, so the bridge can show turns dsh starts on its own
+  // (a goal round, a background subagent's result waking its parent).
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || (event?.type !== "turn/start" && event?.type !== "turn/end")) return;
+    bridge.notify?.("turnBoundary", {
+      sessionId: session.header.id,
+      phase: event.type === "turn/start" ? "start" : "end",
+      turn: event.data?.turn ?? null,
+      reason: event.data?.reason?.kind ?? null,
+    });
+  });
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "goal/change" || !bridge) return;
+    const agent = ctx.agents.get(session.header.id);
+    let goal = null;
+    try {
+      goal = agent ? goalView(goalsOf()?.get(agent)) : null;
+    } catch {
+      // Not the live agent: the next read reports it.
+    }
+    bridge.notify?.("goalChanged", { sessionId: session.header.id, goal });
+  });
+
   // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].
   // dsh queues a steer for the next step and logs it as a user message when
   // that step takes it; the client is told then, so it can keep showing the
@@ -260,6 +291,7 @@ export function apply(ctx, config = {}) {
      * Calls go back to the client over the connection that registered them.
      */
     async registerTools({ sessionId, tools }, peer) {
+      bridge = peer;
       const agent = ctx.agents.get(sessionId);
       if (!agent) throw new Error(`session is not open: ${sessionId}`);
       dropClientTools(sessionId);
@@ -321,6 +353,53 @@ export function apply(ctx, config = {}) {
       const { total, last } = usageFromEvents(agent.session.snapshotEvents?.() ?? []);
       const window = agent.session.requestContext?.()?.contextWindow ?? null;
       return { total, last, modelContextWindow: Number.isFinite(window) ? window : null };
+    },
+
+    /** The session's current goal (null when none). */
+    async goalGet({ sessionId }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      if (!agent || !goals) return { goal: null, supported: Boolean(goals) };
+      return { goal: goalView(goals.get(agent)), supported: true };
+    },
+
+    /**
+     * The client's goal edit (TUI /goal): a new objective creates or edits
+     * the goal (replacing a completed one, as dsh's own /goal does), a status
+     * pauses, resumes or completes it.
+     */
+    async goalSet({ sessionId, objective = null, status = null }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      if (!goals) throw new Error("this dsh composition has no goal service");
+      const ref = (goal) => ({ id: goal.id, revision: goal.revision });
+      let current = goals.get(agent);
+      if (objective?.trim()) {
+        current =
+          current === undefined || current.phase === "complete"
+            ? goals.create(agent, { objective })
+            : goals.edit(agent, ref(current), { objective });
+      }
+      if (status && current !== undefined) {
+        if (status === "paused" && current.phase === "active") current = goals.pause(agent, ref(current));
+        else if (status === "active" && current.phase !== "active") current = goals.resume(agent, ref(current));
+        else if (status === "complete" && current.phase !== "complete") current = goals.complete(agent, ref(current));
+      }
+      if (current === undefined) throw new Error("no goal is set; give an objective");
+      return { goal: goalView(current) };
+    },
+
+    async goalClear({ sessionId }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      const current = agent && goals ? goals.get(agent) : undefined;
+      if (current === undefined) return { cleared: false };
+      goals.clear(agent, { id: current.id, revision: current.revision });
+      return { cleared: true };
     },
 
     async steer({ sessionId, text, clientId = null }, peer) {
@@ -416,6 +495,7 @@ export function apply(ctx, config = {}) {
         write({ id: request.id, error: { code: -32601, message: `unknown method: ${request.method}` } });
         return;
       }
+      bridge = peer;
       try {
         write({ id: request.id, result: await handler(request.params ?? {}, peer) });
       } catch (error) {

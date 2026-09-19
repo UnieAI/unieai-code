@@ -259,6 +259,12 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
     if (!channel.unieaiToolRoute) {
       // Client tools registered through this channel call back on it.
       channel.unieaiToolRoute = true;
+      channel.onNotification?.("turnBoundary", (note) => {
+        sessions.get(note?.sessionId)?.onTurnBoundary?.(note);
+      });
+      channel.onNotification?.("goalChanged", (note) => {
+        sessions.get(note?.sessionId)?.onGoalChanged?.(note.goal);
+      });
       channel.onNotification?.("steerDelivered", (note) => {
         sessions.get(note?.sessionId)?.onSteerDelivered?.(note);
       });
@@ -449,6 +455,11 @@ export function createDshEngine({
   onUsage = () => {},
   // Called with { clientId, text } when a steered message reaches the model.
   onSteerDelivered = () => {},
+  // Called with the session's goal (null once cleared) whenever it changes.
+  onGoalChanged = () => {},
+  // Called with { phase: "start" | "end", reason } for turns dsh runs on its
+  // own, not in answer to send() (a goal round, a subagent waking the parent).
+  onEngineTurn = () => {},
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -582,6 +593,22 @@ export function createDshEngine({
     }
   };
 
+  // dsh's turn boundaries: the ones inside send() are the client's own
+  // turn; any other is dsh working on its own.
+  let engineTurn = false;
+  let dshTurnOpen = false;
+  const onTurnBoundary = ({ phase, reason }) => {
+    dshTurnOpen = phase === "start";
+    if (phase === "start" && !turnActive && !engineTurn) {
+      engineTurn = true;
+      onEngineTurn({ phase: "start" });
+    } else if (phase === "end" && engineTurn) {
+      engineTurn = false;
+      reportUsage();
+      onEngineTurn({ phase: "end", reason });
+    }
+  };
+
   /** Read the session's token usage from dsh and hand it to the client. */
   let usageInFlight = null;
   const reportUsage = () => {
@@ -619,7 +646,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: [] });
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -632,7 +659,7 @@ export function createDshEngine({
     const created = await newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: [] });
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
@@ -677,7 +704,33 @@ export function createDshEngine({
         turnActive = false;
         abortSignal?.removeEventListener("abort", cancel);
         if (turnText) messages.push({ role: "assistant", content: turnText });
+        // dsh may already be running its next turn (a goal round) whose start
+        // arrived while this one was still ours.
+        if (dshTurnOpen && !engineTurn) {
+          engineTurn = true;
+          queueMicrotask(() => onEngineTurn({ phase: "start" }));
+        }
       }
+    },
+
+    /** Stop the running turn, including one dsh started on its own. */
+    async cancel() {
+      if (!sessionId || !sessionAgent) return;
+      sessionAgent.notify("session/cancel", { sessionId });
+    },
+
+    /** dsh's goal for this conversation (see unieai-control goal*). */
+    async goal() {
+      await ensureSession();
+      return (await host.control("goalGet", { sessionId })).goal;
+    },
+    async setGoal({ objective = null, status = null } = {}) {
+      await ensureSession();
+      return (await host.control("goalSet", { sessionId, objective, status })).goal;
+    },
+    async clearGoal() {
+      await ensureSession();
+      return (await host.control("goalClear", { sessionId })).cleared;
     },
 
     /** The user message for a steer is emitted when dsh hands it to the model. */
