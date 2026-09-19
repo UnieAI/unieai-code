@@ -4,6 +4,7 @@ use codex_features::FeatureSpec;
 use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
+use std::str::FromStr;
 
 const ANNOUNCEMENT_TIP_URL: &str =
     "https://raw.githubusercontent.com/openai/codex/main/announcement_tip.toml";
@@ -63,13 +64,30 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, _fast_mode_enabled: bool) -> O
 }
 
 fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
-    if ALL_TOOLTIPS.is_empty() {
+    // A tip about a command this engine lacks (uac: /review, /side, ...)
+    // would send the user to an error.
+    let tips: Vec<&'static str> = ALL_TOOLTIPS
+        .iter()
+        .copied()
+        .filter(|tip| !mentions_unavailable_command(tip))
+        .collect();
+    if tips.is_empty() {
         None
     } else {
-        ALL_TOOLTIPS
-            .get(rng.random_range(0..ALL_TOOLTIPS.len()))
-            .copied()
+        tips.get(rng.random_range(0..tips.len())).copied()
     }
+}
+
+fn mentions_unavailable_command(tip: &str) -> bool {
+    tip.split(|c: char| c.is_whitespace() || c == '`')
+        .filter_map(|word| word.strip_prefix('/'))
+        .filter_map(|name| {
+            crate::slash_command::SlashCommand::from_str(
+                name.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()),
+            )
+            .ok()
+        })
+        .any(crate::unieai_engine::uac_lacks_command)
 }
 
 pub(crate) mod announcement {

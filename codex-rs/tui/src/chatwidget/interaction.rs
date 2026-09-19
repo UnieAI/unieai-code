@@ -242,6 +242,18 @@ impl ChatWidget {
                     self.cycle_collaboration_mode();
                 }
             }
+            // uac has no plan mode: Shift+Tab opens the engine picker instead
+            // (a switch restarts the session, so it is chosen, not toggled).
+            KeyEvent {
+                code: KeyCode::BackTab,
+                kind: KeyEventKind::Press,
+                ..
+            } if crate::unieai_engine::session_is_uac()
+                && !self.bottom_pane.is_task_running()
+                && self.bottom_pane.no_modal_or_popup_active() =>
+            {
+                self.app_event_tx.send(AppEvent::OpenEngineMenu);
+            }
             _ => {
                 let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
                 let should_pause_active_goal =
