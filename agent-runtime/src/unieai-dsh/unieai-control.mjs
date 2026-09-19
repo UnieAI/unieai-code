@@ -500,13 +500,16 @@ export function apply(ctx, config = {}) {
       return { cleared: true };
     },
 
-    async steer({ sessionId, text, clientId = null }, peer) {
+    async steer({ sessionId, text, content = null, clientId = null }, peer) {
       const agent = ctx.agents.get(sessionId);
       if (!agent || !String(text ?? "").trim()) return { delivered: false };
       const waiting = steersWaiting.get(sessionId) ?? [];
       waiting.push({ text, clientId, peer });
       steersWaiting.set(sessionId, waiting);
-      agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
+      // `content` carries the message's images; `text` is what the client
+      // showed, and what the delivered message is matched by.
+      const blocks = Array.isArray(content) && content.length ? content : [{ type: "text", text }];
+      agent.steer(createUserMessage({ content: blocks, source: { kind: "user" } }));
       return { delivered: true };
     },
 

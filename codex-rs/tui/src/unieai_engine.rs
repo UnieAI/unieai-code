@@ -400,6 +400,59 @@ fn locate_uac_script() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// What the running server left beside its socket: which release started it,
+/// and the process to stop when a different one needs the socket.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UacServerStamp {
+    pid: Option<i32>,
+    #[serde(default)]
+    cli_version: Option<String>,
+}
+
+fn server_stamp(socket: &Path) -> Option<UacServerStamp> {
+    let path = PathBuf::from(format!("{}.json", socket.display()));
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// Whether the server holding `socket` was started by this release.
+///
+/// The server outlives the TUI that started it, so an update leaves the old
+/// one running: its engine then behaves as the older release did, which looks
+/// like the update having done nothing.
+fn stamp_matches_this_release(stamp: Option<&UacServerStamp>) -> bool {
+    stamp
+        .and_then(|stamp| stamp.cli_version.as_deref())
+        .is_some_and(|version| version == crate::version::CODEX_CLI_VERSION)
+}
+
+/// Ask the server that holds `socket` to exit, and wait for the socket to go.
+async fn stop_uac_server(socket: &Path, pid: Option<i32>) -> bool {
+    let Some(pid) = pid.filter(|pid| *pid > 1) else {
+        return false;
+    };
+    #[cfg(unix)]
+    // SAFETY: kill(2) with a pid this process read from the server's own
+    // stamp file; the worst case is an ESRCH we ignore.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let deadline = tokio::time::Instant::now() + UAC_START_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if !socket_is_live(socket).await {
+            return true;
+        }
+        tokio::time::sleep(UAC_PROBE_INTERVAL).await;
+    }
+    false
+}
+
 async fn socket_is_live(socket: &Path) -> bool {
     matches!(
         tokio::time::timeout(
@@ -418,7 +471,20 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
     let socket = uac_socket_path(codex_home);
     let socket_abs = AbsolutePathBuf::from_absolute_path_checked(&socket)?;
     if socket_is_live(&socket).await {
-        return Ok(socket_abs);
+        let stamp = server_stamp(&socket);
+        if stamp_matches_this_release(stamp.as_ref()) {
+            return Ok(socket_abs);
+        }
+        // An older (or unknown) server holds the socket: replace it, or this
+        // release's engine changes never reach the user.
+        let pid = stamp.as_ref().and_then(|stamp| stamp.pid);
+        if !stop_uac_server(&socket, pid).await {
+            return Err(std::io::Error::other(format!(
+                "a uac server from another version of UnieAI Code is running on {}; \
+                 stop it and start UnieAI Code again",
+                socket.display()
+            )));
+        }
     }
     let script = locate_uac_script().ok_or_else(|| {
         std::io::Error::other(format!(
@@ -439,6 +505,8 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         .arg(&script)
         .env("CODEX_HOME", codex_home)
         .env("UNIEAI_APP_SERVER_SOCKET", &socket)
+        // Stamped beside the socket, so a later release knows to replace it.
+        .env("UNIEAI_CLI_VERSION", crate::version::CODEX_CLI_VERSION)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))

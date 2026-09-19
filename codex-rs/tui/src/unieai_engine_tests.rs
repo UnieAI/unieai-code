@@ -173,3 +173,40 @@ fn an_old_node_gets_install_advice() {
          and restart UnieAI Code; if Node 22 is installed somewhere unusual, set UNIEAI_NODE to its path."
     );
 }
+
+#[test]
+fn a_server_started_by_another_release_does_not_count_as_ours() {
+    let ours = UacServerStamp {
+        pid: Some(42),
+        cli_version: Some(crate::version::CODEX_CLI_VERSION.to_string()),
+    };
+    let older = UacServerStamp {
+        pid: Some(42),
+        cli_version: Some("0.0.1".to_string()),
+    };
+    let unknown = UacServerStamp {
+        pid: Some(42),
+        cli_version: None,
+    };
+    assert!(stamp_matches_this_release(Some(&ours)));
+    assert!(!stamp_matches_this_release(Some(&older)));
+    assert!(!stamp_matches_this_release(Some(&unknown)));
+    assert!(!stamp_matches_this_release(None));
+}
+
+#[test]
+fn the_stamp_is_read_from_beside_the_socket() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("app-server.sock");
+    assert!(server_stamp(&socket).is_none());
+    std::fs::write(
+        dir.path().join("app-server.sock.json"),
+        br#"{"pid":4321,"cliVersion":"0.0.29","engineVersion":"0.5.0"}"#,
+    )
+    .expect("write stamp");
+    let stamp = server_stamp(&socket).expect("a stamp");
+    assert_eq!(
+        (stamp.pid, stamp.cli_version.as_deref()),
+        (Some(4321), Some("0.0.29"))
+    );
+}

@@ -962,9 +962,13 @@ export function createDshEngine({
     },
 
     /** Mid-turn input, delivered through dsh's own steering queue. */
-    async steer(text, { clientId = null } = {}) {
+    async steer(text, { clientId = null, images = [] } = {}) {
       if (!turnActive || !sessionId) return false;
-      const { delivered } = await host.control("steer", { sessionId, text, clientId });
+      // A steered message carries its images too, the way a prompt does.
+      const content = await promptContent(text, images, {
+        imageInput: Boolean(sessionAgent?.agentCapabilities?.promptCapabilities?.image),
+      });
+      const { delivered } = await host.control("steer", { sessionId, text, content, clientId });
       if (delivered) messages.push({ role: "user", content: text });
       return Boolean(delivered);
     },

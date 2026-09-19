@@ -321,7 +321,9 @@ test("steer only reaches dsh while a turn is running", async () => {
   assert.equal(await engine.steer("now"), true);
   finish();
   await turn;
-  assert.deepEqual(steers, [["steer", { sessionId: "s9", text: "now", clientId: null }]]);
+  assert.deepEqual(steers, [
+    ["steer", { sessionId: "s9", text: "now", content: [{ type: "text", text: "now" }], clientId: null }],
+  ]);
 });
 
 test("history turns become protocol items with tool cards", () => {
@@ -606,4 +608,34 @@ test("the context meter is dsh's own measure of the context, from usage_update",
   const engine = createDshEngine({ host: scriptedHost(client, control), workspace: "/w", model: "GLM-5.2", onUsage: (usage) => reported.push(usage) });
   await engine.send("go");
   assert.deepEqual(reported.at(-1), { total: last, last: { ...last, totalTokens: 41000 }, modelContextWindow: 131072 });
+});
+
+test("a steered message carries its image the way a prompt does: for a model that cannot see, its path", async () => {
+  const { writeFile, mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "steer-image-"));
+  const png = join(dir, "shot.png");
+  await writeFile(png, Buffer.from("89504e470d0a1a0a", "hex"));
+  let release = null;
+  const { client } = fakeAgent(async ({ method }) => {
+    if (method === "session/new") return { sessionId: "s1", configOptions: MODEL_OPTIONS, agentCapabilities: { promptCapabilities: { image: true } } };
+    if (method === "session/prompt") return new Promise((resolve) => (release = () => resolve({ stopReason: "end_turn" })));
+    return { configOptions: MODEL_OPTIONS };
+  });
+  const steers = [];
+  const control = async (method, params) => {
+    if (method === "steer") steers.push(params);
+    return { delivered: true };
+  };
+  const engine = createDshEngine({ host: scriptedHost(client, control), workspace: "/w", model: "GLM-5.2" });
+  const turn = engine.send("look at this");
+  while (!release) await new Promise((resolve) => setTimeout(resolve, 5));
+  await engine.steer("what is this?", { images: [{ path: png }] });
+  release();
+  await turn;
+  assert.equal(steers[0].text, "what is this?", "the client's text is what the delivered message is matched by");
+  assert.deepEqual(steers[0].content, [
+    { type: "text", text: `what is this?\n\n[The user attached an image: ${png}. You cannot see images directly; look at it with describe_image.]` },
+  ]);
 });

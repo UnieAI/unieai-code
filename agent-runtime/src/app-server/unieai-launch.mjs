@@ -6,7 +6,7 @@
  * built; the socket, the forwarder to the Rust app-server, and shutdown are the
  * same for all of them.
  */
-import { chmodSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { startAppServer } from "./server.mjs";
@@ -105,6 +105,22 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   // Only this user may drive the engine: the socket accepts turns that run
   // commands in the user's workspace.
   chmodSync(socketPath, 0o600);
+  // The server outlives the client that started it, so the next client can
+  // find it running an older release than itself. This says which release it
+  // is and how to stop it (see the TUI's ensure_uac_server).
+  const stampPath = `${socketPath}.json`;
+  const stamp = {
+    pid: process.pid,
+    cliVersion: process.env.UNIEAI_CLI_VERSION ?? null,
+    engineVersion: version,
+    socket: socketPath,
+    startedAt: new Date().toISOString(),
+  };
+  try {
+    writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    log(`[app-server] could not write ${stampPath}: ${error.message}`);
+  }
   log(`${name} app-server ${version} listening on ${socketPath}`);
 
   let stopping = false;
@@ -116,6 +132,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     await onShutdown().catch((error) => log("[shutdown]", error.message));
     await server.close();
     rmSync(socketPath, { force: true });
+    rmSync(stampPath, { force: true });
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

@@ -759,7 +759,7 @@ export function createHandlers({
       // The engine refuses when what is running cannot act on an interjection
       // (a compaction), and says so rather than dropping the text.
       const clientId = params?.clientUserMessageId ?? null;
-      const delivered = Boolean(await thread.engine?.steer?.(text, { clientId }));
+      const delivered = Boolean(await thread.engine?.steer?.(text, { clientId, images: imagesOf(params?.input) }));
       if (!delivered) throw new RpcError(RPC.INVALID_REQUEST, "the running turn did not accept the message");
       // An engine that reports when the model takes the message (dsh:
       // at its next step) emits the user message then, through
