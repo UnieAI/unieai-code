@@ -508,3 +508,21 @@ test("todo_write becomes the client's plan checklist", async () => {
   assert.deepEqual(planFromTodos('{"todos":[{"content":"x","status":"done"}]}'), [{ step: "x", status: "completed" }]);
   assert.equal(planFromTodos({ other: 1 }), null);
 });
+
+test("a command in history shows its output and exit code, not the tool's text", () => {
+  const tool = (output) => ({ type: "tool", name: "exec_command", arguments: '{"cmd":"wc -l calc.py"}', status: "completed", output });
+  const turn = historyTurn({
+    endSeq: 3,
+    items: [
+      tool("Chunk ID: 37894d\nWall time: 0.2710 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\n10 calc.py\n"),
+      tool("Chunk ID: 1\nWall time: 0.1 seconds\nProcess exited with code 2\nOutput:\nno such file\n"),
+    ],
+  });
+  assert.deepEqual(
+    turn.items.map((item) => [item.status, item.exitCode, item.aggregatedOutput]),
+    [
+      ["completed", 0, "10 calc.py\n"],
+      ["failed", 2, "no such file\n"],
+    ],
+  );
+});

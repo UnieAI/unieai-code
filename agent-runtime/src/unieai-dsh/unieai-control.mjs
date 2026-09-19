@@ -214,6 +214,9 @@ export function usageFromEvents(events) {
   return { total, last };
 }
 
+/** A subagent's session events that change what its thread shows. */
+const CHILD_ACTIVITY = new Set(["turn/start", "turn/end", "user/message", "assistant/message", "tool/call", "tool/result"]);
+
 export function apply(ctx, config = {}) {
   const socketPath = config.socket || process.env.UAC_CONTROL_SOCKET;
   if (!socketPath) {
@@ -267,6 +270,65 @@ export function apply(ctx, config = {}) {
       // Not the live agent: the next read reports it.
     }
     bridge.notify?.("goalChanged", { sessionId: session.header.id, goal });
+  });
+
+  // Subagents, so the bridge can show each child as its own thread: when one
+  // starts and ends (with its parent and label), and a ping whenever its
+  // session gains something to show. The bridge reads the child's turns
+  // itself (`history`), so events are not copied here.
+  const childParent = new Map(); // child session id -> parent session id
+  const startsWaiting = new Map(); // child session id -> timer, until its descriptor is logged
+  const parentOfChild = (id) => childParent.get(id) ?? ctx.agents.get(id)?.session?.header?.parentSession;
+  const announceStart = (id, descriptor) => {
+    clearTimeout(startsWaiting.get(id));
+    startsWaiting.delete(id);
+    const header = ctx.agents.get(id)?.session?.header;
+    bridge?.notify?.("subagent", {
+      phase: "start",
+      sessionId: id,
+      parentSessionId: childParent.get(id),
+      depth: header?.delegationDepth ?? 1,
+      cwd: header?.cwd ?? null,
+      label: descriptor?.label ?? null,
+      model: descriptor?.agentModel ?? null,
+    });
+  };
+  ctx.on("subagent/start", (info) => {
+    const id = String(info.id);
+    const parent = parentOfChild(id);
+    if (!parent) return; // not an in-process child
+    childParent.set(id, parent);
+    // A one-shot child logs its descriptor (its label) at its first step,
+    // just after this; a continuable one already has it.
+    const descriptor = ctx.agents.get(id)?.session?.snapshotEvents?.().find((event) => event.type === "subagent/descriptor");
+    if (descriptor) announceStart(id, descriptor.data);
+    else startsWaiting.set(id, setTimeout(() => announceStart(id, null), 2000));
+  });
+  ctx.on("subagent/end", (info) => {
+    const id = String(info.id);
+    const parent = parentOfChild(id);
+    if (!parent) return;
+    if (startsWaiting.has(id)) announceStart(id, null);
+    const message = info.lastAssistantMessage;
+    bridge?.notify?.("subagent", {
+      phase: "end",
+      sessionId: id,
+      parentSessionId: parent,
+      stopReason: info.stopReason ?? null,
+      lastAssistantMessage: typeof message === "string" ? message : message == null ? null : textOf(message),
+    });
+  });
+  ctx.on("session/event", (session, event) => {
+    const header = session?.header;
+    if (header?.origin !== "subagent" || !header.parentSession) return;
+    if (event?.type === "subagent/descriptor" && startsWaiting.has(header.id)) announceStart(header.id, event.data);
+    if (!bridge || !CHILD_ACTIVITY.has(event?.type)) return;
+    bridge.notify?.("childActivity", { sessionId: header.id, parentSessionId: header.parentSession, type: event.type });
+  });
+  ctx.on("agent/disposed", ({ agent }) => {
+    // A child's own disposal can come before its subagent/end: its link
+    // outlives it, and goes with its parent.
+    for (const [child, parent] of childParent) if (parent === agent.id) childParent.delete(child);
   });
 
   // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].

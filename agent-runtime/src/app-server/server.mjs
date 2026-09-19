@@ -19,6 +19,7 @@ import { serveJsonOverUnixSocket } from "./ws.mjs";
 import { createDispatcher, RpcError, RPC } from "./rpc.mjs";
 import { randomUUID } from "node:crypto";
 import { createItemBridge, userMessageItem, agentMessageItem, reasoningItem, newItemId } from "./items.mjs";
+import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -197,7 +198,7 @@ export function createHandlers({
     extra: null,
     sessionId: t.id,
     forkedFromId: t.forkedFromId ?? null,
-    parentThreadId: null,
+    parentThreadId: t.parentThreadId ?? null,
     // Required since the upstream Thread gained project assignment.
     projectId: null,
     preview: t.preview ?? "",
@@ -209,21 +210,30 @@ export function createHandlers({
     createdAt: t.createdAtEpoch,
     updatedAt: t.updatedAtEpoch,
     recencyAt: t.updatedAtEpoch,
-    status: threadStatus(t),
+    status: t.statusOverride ?? threadStatus(t),
     path: null,
     cwd: t.cwd,
     cliVersion: version,
-    source: "vscode",
+    // A subagent's thread says whose it is (see unieai-subagent-threads.mjs).
+    source: t.source ?? "vscode",
     threadSource: null,
-    agentNickname: null,
-    agentRole: null,
+    agentNickname: t.agentNickname ?? null,
+    agentRole: t.agentRole ?? null,
     gitInfo: null,
     name: t.name ?? null,
     turns,
     // Not optional on the Rust side (no serde default), so a Thread without it
     // fails to deserialize and the client shows an empty pane.
-    canAcceptDirectInput: true,
+    canAcceptDirectInput: t.canAcceptDirectInput ?? true,
   });
+
+  // dsh subagents, each shown as a thread of its own.
+  const subagents = createSubagentThreads({ turnShape, threadShape });
+  /** A subagent's thread fields, or null when `threadId` is not a subagent. */
+  const subagentThread = (threadId) => {
+    const child = subagents.get(threadId);
+    return child ? subagents.threadFields(child) : null;
+  };
 
   /** The session-settings half of thread/start, /resume and /fork responses. */
   const sessionResponse = (t, params, turns = []) => ({
@@ -421,6 +431,9 @@ export function createHandlers({
   const getThread = (threadId) => {
     const live = threads.get(threadId);
     if (live) return live;
+    if (subagents.get(threadId)) {
+      throw new RpcError(RPC.INVALID_REQUEST, "this is a subagent's thread: the agent that started it gives it its input");
+    }
     const stored = threadStore?.get(threadId);
     if (!stored) throw new RpcError(RPC.INVALID_PARAMS, `unknown thread: ${threadId}`);
     const thread = { ...newThread(stored), ...stored, engine: null, activeTurn: null };
@@ -455,6 +468,8 @@ export function createHandlers({
       mode: thread.mode ?? null,
       permissions: () => thread.permissions ?? null,
       onSteerDelivered: ({ clientId, text }) => emitUserMessage(thread, text, clientId),
+      onSubagent: (note) => subagents.onSubagent(thread, note),
+      onChildActivity: (note) => subagents.onChildActivity(thread, note),
       // Turns dsh runs without a prompt from the client (a goal round, a
       // background subagent's result waking this agent) become client turns.
       onEngineTurn: ({ phase, reason }) => (phase === "start" ? startEngineTurn(thread) : endEngineTurn(thread, reason)),
@@ -585,6 +600,8 @@ export function createHandlers({
     },
 
     async "thread/read"(params, ctx) {
+      const child = subagentThread(params?.threadId);
+      if (child) return { thread: threadShape(child, params?.includeTurns ? await subagents.turns(subagents.get(child.id)) : []) };
       const thread = getThread(params?.threadId);
       const turns = params?.includeTurns ? await historyTurns(thread, ctx) : [];
       return { thread: threadShape(thread, turns) };
@@ -668,16 +685,16 @@ export function createHandlers({
     },
 
     async "thread/turns/list"(params, ctx) {
-      const thread = getThread(params?.threadId);
-      let turns = await historyTurns(thread, ctx);
+      const child = subagents.get(params?.threadId);
+      let turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId), ctx);
       if (params?.itemsView === "notLoaded") turns = turns.map((turn) => ({ ...turn, items: [], itemsView: "notLoaded" }));
       if (params?.sortDirection !== "asc") turns.reverse();
       return { data: turns, nextCursor: null, backwardsCursor: null };
     },
 
     async "thread/items/list"(params, ctx) {
-      const thread = getThread(params?.threadId);
-      const turns = await historyTurns(thread, ctx);
+      const child = subagents.get(params?.threadId);
+      const turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId), ctx);
       const data = turns
         .filter((turn) => !params?.turnId || turn.id === params.turnId)
         .flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item })));
@@ -692,6 +709,8 @@ export function createHandlers({
     },
 
     async "thread/resume"(params, ctx) {
+      const child = subagentThread(params?.threadId);
+      if (child) return sessionResponse(child, params, await subagents.turns(subagents.get(child.id)));
       const thread = getThread(params?.threadId);
       // A resumed session takes the options of the launch resuming it.
       const wanted = requestedPermissions(params);
@@ -790,6 +809,8 @@ export function createHandlers({
     // Without an index these threads are this process's alone: nothing to
     // list, and a resumed id could only be one we are still holding.
     handlers["thread/resume"] = async (params, ctx) => {
+      const child = subagentThread(params?.threadId);
+      if (child) return sessionResponse(child, params, await subagents.turns(subagents.get(child.id)));
       const thread = threads.get(params?.threadId);
       if (!thread) throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/resume is not supported by this engine");
       return sessionResponse(thread, params, await historyTurns(thread, ctx));

@@ -218,6 +218,7 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
   let agentPromise = null;
   let controlPromise = null;
   const sessions = new Map(); // sessionId -> { onUpdate, onPermission }
+  const childRoots = new Map(); // subagent session id -> the registered session it belongs to
 
   const agent = () => {
     if (!agentPromise) {
@@ -268,6 +269,17 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       channel.onNotification?.("steerDelivered", (note) => {
         sessions.get(note?.sessionId)?.onSteerDelivered?.(note);
       });
+      // A subagent belongs to the thread whose session started it, or whose
+      // subagent did (a grandchild): its notes go to that root session.
+      const routeChild = (note) => {
+        const parent = note?.parentSessionId;
+        const root = sessions.has(parent) ? parent : childRoots.get(parent);
+        if (!root) return null;
+        childRoots.set(note.sessionId, root);
+        return sessions.get(root);
+      };
+      channel.onNotification?.("subagent", (note) => routeChild(note)?.onSubagent?.(note));
+      channel.onNotification?.("childActivity", (note) => routeChild(note)?.onChildActivity?.(note));
       channel.onRequest?.("callTool", (call) => {
         const session = sessions.get(call?.sessionId);
         if (!session?.onToolCall) throw new Error(`no client tools for session ${call?.sessionId}`);
@@ -342,13 +354,17 @@ export function historyTurn(turn) {
           // Malformed model output stays a raw string, as the live card shows it.
         }
         const edit = entry.status === "failed" ? null : diffFromArgs(entry.name, rawInput ?? {});
+        // A command's output as its live card showed it, not the tool text.
+        const terminal = terminalView(entry.name, entry.output);
+        const exitCode = terminal?.exitCode ?? null;
         const item = completedItem({
           tool: engineToolName(entry.name),
           id: "",
-          ok: entry.status !== "failed",
-          output: entry.output,
+          ok: entry.status !== "failed" && (exitCode === null || exitCode === 0),
+          output: terminal ? terminal.output : entry.output,
           extra: {
             args: engineToolArgs(entry.name, rawInput),
+            ...(exitCode !== null ? { exitCode } : {}),
             ...(edit ? { path: edit.path, diff: edit.diff, kind: edit.kind } : {}),
           },
         });
@@ -481,6 +497,11 @@ export function createDshEngine({
   // Called with { phase: "start" | "end", reason } for turns dsh runs on its
   // own, not in answer to send() (a goal round, a subagent waking the parent).
   onEngineTurn = () => {},
+  // unieai-control's `subagent` note ({ phase: "start" | "end", sessionId,
+  // parentSessionId, ... }) for this session's subagents, and its
+  // `childActivity` note when one's session gains something to show.
+  onSubagent = () => {},
+  onChildActivity = () => {},
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -490,7 +511,8 @@ export function createDshEngine({
   const allowedForSession = new Set();
   let turnText = "";
 
-  // Tool calls shown some other way than as a card (todo_write -> the plan).
+  // Tool calls shown some other way than as a card (todo_write -> the plan,
+  // subagent -> the child's own thread).
   const quietCalls = new Set();
   const onUpdate = (update) => {
     switch (update?.sessionUpdate) {
@@ -519,6 +541,12 @@ export function createDshEngine({
           }
         }
         toolCalls.set(update.toolCallId, { name, rawInput: update.rawInput });
+        // A started subagent shows as its own thread; only a failure to start
+        // one is a card (below).
+        if (name === "subagent") {
+          quietCalls.add(update.toolCallId);
+          break;
+        }
         const edit = diffFromArgs(name, update.rawInput ?? {});
         onToolEvent({
           type: "tool_use_started",
@@ -531,7 +559,17 @@ export function createDshEngine({
       }
       case "tool_call_update": {
         if (update.status !== "completed" && update.status !== "failed") break;
-        if (quietCalls.delete(update.toolCallId)) break;
+        if (quietCalls.delete(update.toolCallId)) {
+          const quiet = toolCalls.get(update.toolCallId);
+          toolCalls.delete(update.toolCallId);
+          if (quiet?.name === "subagent" && update.status === "failed") {
+            const error = contentText(update.content);
+            const card = { tool_use_id: update.toolCallId, tool_name: engineToolName(quiet.name) };
+            onToolEvent({ ...card, type: "tool_use_started", args: engineToolArgs(quiet.name, quiet.rawInput) });
+            onToolEvent({ ...card, type: "tool_use_failed", output_preview: error, error });
+          }
+          break;
+        }
         const call = toolCalls.get(update.toolCallId) ?? { name: update.title || "tool", rawInput: update.rawInput };
         toolCalls.delete(update.toolCallId);
         const output = contentText(update.content);
@@ -679,7 +717,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: [] });
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -692,7 +730,7 @@ export function createDshEngine({
     const created = await newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: [] });
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
@@ -787,6 +825,12 @@ export function createDshEngine({
     async history() {
       if (!sessionId) return [];
       const { turns } = await host.control("history", { sessionId });
+      return turns.map(historyTurn);
+    },
+
+    /** One of this session's subagents' turns, the same way. */
+    async subagentHistory(childSessionId) {
+      const { turns } = await host.control("history", { sessionId: childSessionId });
       return turns.map(historyTurn);
     },
 
