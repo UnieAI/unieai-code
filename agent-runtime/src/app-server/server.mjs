@@ -45,6 +45,32 @@ export const ENGINE_METHODS = [
   "review/start",
 ];
 
+const PROFILE_SANDBOX = { ":read-only": "read-only", ":workspace": "workspace-write", ":danger-full-access": "danger-full-access" };
+const SANDBOX_NAMES = {
+  "read-only": "read-only",
+  readOnly: "read-only",
+  "workspace-write": "workspace-write",
+  workspaceWrite: "workspace-write",
+  "danger-full-access": "danger-full-access",
+  dangerFullAccess: "danger-full-access",
+};
+
+/**
+ * The client's `-s` and `-a` from thread/start or thread/resume params, in
+ * the engine's terms: `sandbox` is read-only | workspace-write |
+ * danger-full-access, `approval` is "never" or "ask" (every codex policy
+ * other than never still asks). Null where the client said nothing, so the
+ * engine's default stands. A custom permission profile is not mapped.
+ */
+export function requestedPermissions(params) {
+  const sandbox = PROFILE_SANDBOX[params?.permissions] ?? SANDBOX_NAMES[params?.sandbox] ?? null;
+  const policy = params?.approvalPolicy;
+  const approval = typeof policy !== "string" ? null : policy === "never" ? "never" : "ask";
+  return { sandbox, approval };
+}
+
+const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
+
 /**
  * The user agent string. The daemon probe parses a version out of this
  * (`originator/version …`), and refuses the socket if it cannot — so the shape
@@ -175,9 +201,12 @@ export function createHandlers({
     instructionSources: [],
     approvalPolicy: params?.approvalPolicy || "on-request",
     approvalsReviewer: params?.approvalsReviewer || "user",
-    sandbox: sandboxMode === "readOnly" || t.readOnly
+    // What the thread runs under: its own -s when it has one.
+    sandbox: t.readOnly || (t.permissions?.sandbox ?? (sandboxMode === "readOnly" ? "read-only" : null)) === "read-only"
       ? { type: "readOnly", networkAccess: false }
-      : { type: "workspaceWrite", networkAccess: true },
+      : t.permissions?.sandbox === "danger-full-access" || sandboxMode === "dangerFullAccess"
+        ? { type: PROTOCOL_SANDBOX["danger-full-access"] }
+        : { type: "workspaceWrite", networkAccess: true },
     activePermissionProfile: {
       id: t.permissionProfile ?? (sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write"),
       extends: null,
@@ -248,6 +277,7 @@ export function createHandlers({
       clientTools: () => thread.clientTools ?? null,
       oneShot: Boolean(thread.oneShot),
       mode: thread.mode ?? null,
+      permissions: () => thread.permissions ?? null,
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
@@ -354,6 +384,8 @@ export function createHandlers({
       if (thread.oneShot) thread.readOnly = true;
       // A named profile the client asked for is the one in force: echo it.
       thread.permissionProfile = typeof params?.permissions === "string" ? params.permissions : null;
+      // The client's -s / -a, applied to the engine session (see requestedPermissions).
+      thread.permissions = thread.oneShot ? null : requestedPermissions(params);
       // Tools the client hosts (TUI task tools, cross-session messaging); the
       // engine offers them to the model and calls back with item/tool/call.
       thread.clientTools = Array.isArray(params?.dynamicTools) ? params.dynamicTools : null;
@@ -575,6 +607,9 @@ export function createHandlers({
 
     async "thread/resume"(params, ctx) {
       const thread = getThread(params?.threadId);
+      // A resumed session takes the options of the launch resuming it.
+      const wanted = requestedPermissions(params);
+      if (wanted.sandbox || wanted.approval) thread.permissions = { ...thread.permissions, ...Object.fromEntries(Object.entries(wanted).filter(([, v]) => v)) };
       ensureEngine(thread, ctx);
       const turns = await historyTurns(thread, ctx);
       return sessionResponse(thread, params, turns);

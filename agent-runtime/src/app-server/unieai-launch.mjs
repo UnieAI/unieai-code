@@ -57,10 +57,11 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     forward: (method, params) => forwarder.forward(method, params),
     onError: (error) => log("[app-server]", error.message),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant }) =>
+    createEngineFor: ({ cwd, model, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions }) =>
       buildEngine({
         oneShot,
         variant,
+        permissions,
         cwd,
         model,
         sandboxMode: mode,
@@ -71,6 +72,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         callClientTool: ({ callId, namespace, tool, arguments: args }) =>
           request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }),
         onText: (delta) => emit("item/agentMessage/delta", { delta }),
+        // /status and the context meter read these.
+        onUsage: (tokenUsage) => emit("thread/tokenUsage/updated", { ...ids(), tokenUsage }),
         onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
         // Engine events carry our vocabulary; the client only renders the protocol's.
         onToolEvent: createItemBridge(emit),

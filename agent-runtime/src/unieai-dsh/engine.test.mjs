@@ -258,7 +258,8 @@ test("fork, revert and history go through the control channel; revert reopens th
     return {};
   });
   const control = async (method, params) => {
-    controlCalls.push([method, params]);
+    // Token usage is read after every turn; it is not what this test is about.
+    if (method !== "usage") controlCalls.push([method, params]);
     if (method === "fork") return { sessionId: `child-of-${params.sessionId}`, keptTurns: params.keepTurns ?? 2 };
     if (method === "history") return { turns: [{ startedAt: 1, completedAt: 2, endSeq: 5, reason: "completed", items: [{ type: "user", text: "hi" }] }] };
     return {};
@@ -310,7 +311,7 @@ test("steer only reaches dsh while a turn is running", async () => {
     return {};
   });
   const host = scriptedHost(client, async (method, params) => {
-    steers.push([method, params]);
+    if (method !== "usage") steers.push([method, params]);
     return { delivered: true };
   });
   const engine = createDshEngine({ host, workspace: "/w" });

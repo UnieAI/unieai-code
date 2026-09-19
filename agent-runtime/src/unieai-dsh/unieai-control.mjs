@@ -26,6 +26,8 @@ import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createMcpToolDefinition } from "@deepseek-ai/dsh-mcp-client";
+import { SANDBOX_MODES, setSandboxMode } from "@deepseek-ai/dsh-sandbox-policy";
+import { APPROVAL_POLICIES, setApprovalPolicy } from "@deepseek-ai/dsh-user-approval";
 
 export const name = "unieai-control";
 export const inject = ["agents", "compaction", "sessionQuery", "sessions", "tools"];
@@ -183,6 +185,35 @@ async function withObservation(ctx, sessionId, read) {
   }
 }
 
+/** One dsh usage record as the app-server protocol's TokenUsageBreakdown. */
+export function usageBreakdown(usage = {}) {
+  const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0) || 0;
+  const output = Number(usage.outputTokens ?? usage.output_tokens ?? 0) || 0;
+  const cached = Number(usage.cacheReadTokens ?? usage.cachedInputTokens ?? usage.cachedTokens ?? 0) || 0;
+  const cacheWrite = Number(usage.cacheWriteTokens ?? 0) || 0;
+  const reasoning = Number(usage.reasoningTokens ?? usage.reasoningOutputTokens ?? 0) || 0;
+  return {
+    totalTokens: Number(usage.totalTokens ?? 0) || input + output,
+    inputTokens: input,
+    cachedInputTokens: cached,
+    cacheWriteInputTokens: cacheWrite,
+    outputTokens: output,
+    reasoningOutputTokens: reasoning,
+  };
+}
+
+/** Totals and the last model call, from a session's assistant messages. */
+export function usageFromEvents(events) {
+  const total = usageBreakdown({});
+  let last = usageBreakdown({});
+  for (const event of events ?? []) {
+    if (event?.type !== "assistant/message" || !event.data?.usage) continue;
+    last = usageBreakdown(event.data.usage);
+    for (const key of Object.keys(total)) total[key] += last[key];
+  }
+  return { total, last };
+}
+
 export function apply(ctx, config = {}) {
   const socketPath = config.socket || process.env.UAC_CONTROL_SOCKET;
   if (!socketPath) {
@@ -239,6 +270,38 @@ export function apply(ctx, config = {}) {
       }
       clientTools.set(sessionId, disposers);
       return { registered: disposers.length };
+    },
+
+    /**
+     * The client's `-s` / `-a` for one session, as dsh's own per-session
+     * `sandbox/mode` and `approval/policy` events (what its permission
+     * picker writes). Only a change is appended, so resuming a session does
+     * not grow its log.
+     */
+    async setPermissions({ sessionId, sandbox = null, approval = null }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const events = agent.session.snapshotEvents?.() ?? [];
+      const last = (type, key) => events.findLast?.((event) => event?.type === type)?.data?.[key] ?? null;
+      const applied = {};
+      if (sandbox && SANDBOX_MODES.includes(sandbox) && last("sandbox/mode", "mode") !== sandbox) {
+        setSandboxMode(agent.session, sandbox);
+        applied.sandbox = sandbox;
+      }
+      if (approval && APPROVAL_POLICIES.includes(approval) && last("approval/policy", "policy") !== approval) {
+        setApprovalPolicy(agent.session, approval);
+        applied.approval = approval;
+      }
+      return { applied };
+    },
+
+    /** Token usage so far in the session (the TUI's /status and header). */
+    async usage({ sessionId }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const { total, last } = usageFromEvents(agent.session.snapshotEvents?.() ?? []);
+      const window = agent.session.requestContext?.()?.contextWindow ?? null;
+      return { total, last, modelContextWindow: Number.isFinite(window) ? window : null };
     },
 
     async steer({ sessionId, text }) {

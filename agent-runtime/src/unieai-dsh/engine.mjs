@@ -380,6 +380,11 @@ export function createDshEngine({
   // how to run one (the client answers `item/tool/call`).
   clientTools = () => null,
   callClientTool = null,
+  // The client's sandbox and approval for this thread ({ sandbox, approval }
+  // in dsh's terms), applied to the dsh session whenever it is opened.
+  permissions = () => null,
+  // Called with { total, last, modelContextWindow } as the session's token usage grows.
+  onUsage = () => {},
 }) {
   let sessionId = resumeState?.sessionId ?? null;
   let sessionAgent = null;
@@ -438,8 +443,12 @@ export function createDshEngine({
         });
         break;
       }
+      case "usage_update":
+        // dsh committed a model call: refresh the token counts.
+        reportUsage();
+        break;
       default:
-        break; // usage_update and anything newer have no card
+        break; // anything newer has no card
     }
   };
 
@@ -489,6 +498,32 @@ export function createDshEngine({
     }
   };
 
+  /** Read the session's token usage from dsh and hand it to the client. */
+  let usageInFlight = null;
+  const reportUsage = () => {
+    if (!sessionId || usageInFlight) return usageInFlight;
+    usageInFlight = host
+      .control("usage", { sessionId })
+      .then((usage) => onUsage(usage))
+      .catch((error) => onLog(`could not read token usage: ${error.message}`))
+      .finally(() => {
+        usageInFlight = null;
+      });
+    return usageInFlight;
+  };
+
+  /** Apply the thread's `-s` / `-a` to the open session. */
+  const applyPermissions = async () => {
+    const wanted = typeof permissions === "function" ? permissions() : permissions;
+    if (!wanted || (!wanted.sandbox && !wanted.approval)) return;
+    try {
+      const { applied } = await host.control("setPermissions", { sessionId, ...wanted });
+      if (Object.keys(applied ?? {}).length > 0) onLog(`dsh session ${sessionId}: ${JSON.stringify(applied)}`);
+    } catch (error) {
+      onLog(`could not apply sandbox/approval to dsh: ${error.message}`);
+    }
+  };
+
   /** Open `sessionId` on the current dsh process, or start a new session. */
   const ensureSession = async () => {
     const acp = await host.agent();
@@ -503,6 +538,7 @@ export function createDshEngine({
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
+        await applyPermissions();
         return acp;
       } catch (error) {
         onLog(`dsh could not resume ${sessionId} (${error.message}); starting a new session`);
@@ -515,6 +551,7 @@ export function createDshEngine({
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
+    await applyPermissions();
     return acp;
   };
 
@@ -550,6 +587,8 @@ export function createDshEngine({
         if (result?.stopReason === "refusal") {
           throw new AcpError("the model refused this request");
         }
+        await usageInFlight;
+        await reportUsage();
         return result;
       } finally {
         turnActive = false;

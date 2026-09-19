@@ -76,3 +76,18 @@ test("client tool specs flatten across namespaces; responses become MCP results"
   );
   assert.equal(mcpResultOf({ contentItems: [], success: false }).isError, true);
 });
+
+test("token usage: totals and the last model call, in the protocol's shape", async () => {
+  const { usageFromEvents } = await import("./unieai-control.mjs");
+  const events = [
+    { type: "user/message", data: {} },
+    { type: "assistant/message", data: { usage: { inputTokens: 1000, outputTokens: 20, totalTokens: 1020 } } },
+    { type: "tool/result", data: {} },
+    { type: "assistant/message", data: { usage: { inputTokens: 1500, outputTokens: 5, cacheReadTokens: 900, totalTokens: 1505 } } },
+    { type: "assistant/message", data: {} },
+  ];
+  assert.deepEqual(usageFromEvents(events), {
+    total: { totalTokens: 2525, inputTokens: 2500, cachedInputTokens: 900, cacheWriteInputTokens: 0, outputTokens: 25, reasoningOutputTokens: 0 },
+    last: { totalTokens: 1505, inputTokens: 1500, cachedInputTokens: 900, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0 },
+  });
+});

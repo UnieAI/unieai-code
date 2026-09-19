@@ -31,6 +31,8 @@ const FIELDS = [
   "clientTools",
   // The engine variant it runs in (uac: the dsh mode); a resumed thread stays in it.
   "mode",
+  // The client's -s / -a for the thread ({ sandbox, approval }).
+  "permissions",
 ];
 
 export function createThreadStore(path) {
