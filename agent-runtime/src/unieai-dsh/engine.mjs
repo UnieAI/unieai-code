@@ -428,6 +428,25 @@ export async function promptContent(text, images = [], { imageInput = false, tmp
   return content;
 }
 
+const PLAN_STATUS = { pending: "pending", in_progress: "inProgress", inProgress: "inProgress", completed: "completed", done: "completed" };
+
+/** dsh's todo_write arguments as the protocol's plan steps; null if not a todo list. */
+export function planFromTodos(rawInput) {
+  let input = rawInput;
+  if (typeof input === "string") {
+    try {
+      input = JSON.parse(input);
+    } catch {
+      return null;
+    }
+  }
+  const todos = input?.todos;
+  if (!Array.isArray(todos)) return null;
+  return todos
+    .map((todo) => ({ step: String(todo?.content ?? todo?.title ?? "").trim(), status: PLAN_STATUS[todo?.status] ?? "pending" }))
+    .filter((step) => step.step);
+}
+
 export function createDshEngine({
   host,
   workspace,
@@ -457,6 +476,8 @@ export function createDshEngine({
   onSteerDelivered = () => {},
   // Called with the session's goal (null once cleared) whenever it changes.
   onGoalChanged = () => {},
+  // Called with [{ step, status }] when the model updates its todo list.
+  onPlan = () => {},
   // Called with { phase: "start" | "end", reason } for turns dsh runs on its
   // own, not in answer to send() (a goal round, a subagent waking the parent).
   onEngineTurn = () => {},
@@ -469,6 +490,8 @@ export function createDshEngine({
   const allowedForSession = new Set();
   let turnText = "";
 
+  // Tool calls shown some other way than as a card (todo_write -> the plan).
+  const quietCalls = new Set();
   const onUpdate = (update) => {
     switch (update?.sessionUpdate) {
       case "agent_message_chunk": {
@@ -486,6 +509,15 @@ export function createDshEngine({
       }
       case "tool_call": {
         const name = update.title || "tool";
+        // The model's todo list is the client's plan checklist, not a card.
+        if (name === "todo_write") {
+          const plan = planFromTodos(update.rawInput);
+          if (plan) {
+            quietCalls.add(update.toolCallId);
+            onPlan(plan);
+            break;
+          }
+        }
         toolCalls.set(update.toolCallId, { name, rawInput: update.rawInput });
         const edit = diffFromArgs(name, update.rawInput ?? {});
         onToolEvent({
@@ -499,6 +531,7 @@ export function createDshEngine({
       }
       case "tool_call_update": {
         if (update.status !== "completed" && update.status !== "failed") break;
+        if (quietCalls.delete(update.toolCallId)) break;
         const call = toolCalls.get(update.toolCallId) ?? { name: update.title || "tool", rawInput: update.rawInput };
         toolCalls.delete(update.toolCallId);
         const output = contentText(update.content);

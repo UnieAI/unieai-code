@@ -497,3 +497,14 @@ test("local providers: settings declare them with a placeholder key, and their m
   const gatewayOnly = [{ id: "model", options: [{ value: value("unieai", "qwen3:8b") }] }];
   assert.equal(findModelOption(gatewayOnly, "qwen3:8b", "ollama"), null, "a local thread never falls back to the gateway's same-named model");
 });
+
+test("todo_write becomes the client's plan checklist", async () => {
+  const { planFromTodos } = await import("./engine.mjs");
+  assert.deepEqual(planFromTodos({ todos: [{ content: "Read calc.py", status: "completed" }, { content: "Add mul", status: "in_progress" }, { content: "Run tests", status: "pending" }] }), [
+    { step: "Read calc.py", status: "completed" },
+    { step: "Add mul", status: "inProgress" },
+    { step: "Run tests", status: "pending" },
+  ]);
+  assert.deepEqual(planFromTodos('{"todos":[{"content":"x","status":"done"}]}'), [{ step: "x", status: "completed" }]);
+  assert.equal(planFromTodos({ other: 1 }), null);
+});

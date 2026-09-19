@@ -78,6 +78,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onText: (delta) => emit("item/agentMessage/delta", { delta }),
         // /status and the context meter read these.
         onUsage: (tokenUsage) => emit("thread/tokenUsage/updated", { ...ids(), tokenUsage }),
+        // The model's todo list, as the client's plan checklist.
+        onPlan: (plan) => emit("turn/plan/updated", { ...ids(), explanation: null, plan }),
         onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
         // Engine events carry our vocabulary; the client only renders the protocol's.
         onToolEvent: createItemBridge(emit),
