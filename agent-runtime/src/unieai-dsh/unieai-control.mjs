@@ -507,6 +507,14 @@ export function apply(ctx, config = {}) {
       return { compacted: result !== null };
     },
 
+    /** A tool call's name and arguments, for a result whose start the bridge missed. */
+    async toolCall({ sessionId, callId }) {
+      return withObservation(ctx, sessionId, (observed) => {
+        const call = observed.events.findLast((event) => event.type === "tool/call" && event.data?.callId === callId);
+        return call ? { name: call.data.name, arguments: call.data.arguments } : { name: null, arguments: null };
+      });
+    },
+
     async history({ sessionId }) {
       return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events) }));
     },

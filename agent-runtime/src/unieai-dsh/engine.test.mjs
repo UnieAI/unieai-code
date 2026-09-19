@@ -555,3 +555,37 @@ test("a session opens with its MCP servers, leaving out one that cannot start", 
   );
   assert.match(logs.join("\n"), /MCP server unieai_studio is unavailable/);
 });
+
+test("a result whose start never arrived is named from dsh's log, not shown as \"tool\"", async () => {
+  const { client } = fakeAgent(async ({ method, params }, agent) => {
+    if (method === "session/new") return { sessionId: "s1", configOptions: MODEL_OPTIONS };
+    if (method === "session/prompt") {
+      update(agent, params.sessionId, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "lost",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "Chunk ID: 1\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nhello\n" } }],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { stopReason: "end_turn" };
+    }
+    return { configOptions: MODEL_OPTIONS };
+  });
+  const control = async (method, params) => {
+    if (method === "toolCall") {
+      assert.deepEqual(params, { sessionId: "s1", callId: "lost" });
+      return { name: "exec_command", arguments: '{"cmd":"echo hello"}' };
+    }
+    return {};
+  };
+  const events = [];
+  const engine = createDshEngine({ host: scriptedHost(client, control), workspace: "/w", model: "GLM-5.2", onToolEvent: (event) => events.push(event) });
+  await engine.send("go");
+  assert.deepEqual(
+    events.map((event) => [event.type, event.tool_name, event.args?.cmd ?? null, event.output_preview ?? null]),
+    [
+      ["tool_use_started", "bash", "bash -lc 'echo hello'", null],
+      ["tool_use_completed", "bash", null, "hello\n"],
+    ],
+  );
+});

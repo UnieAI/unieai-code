@@ -30,6 +30,8 @@ const TOOL_NAMES = {
   write_stdin: "bash",
   read: "read",
   read_image: "read",
+  // Loading a skill is reading its instructions: an "Explored" row.
+  skill: "read",
   grep: "grep",
   glob: "glob",
   edit: "edit",
@@ -78,7 +80,8 @@ export function engineToolArgs(dshName, rawInput) {
     return rawInput == null ? {} : { __raw: String(rawInput) };
   }
   const args = { ...rawInput };
-  const path = rawInput.file_path ?? rawInput.path;
+  if (dshName === "skill" && rawInput.name !== undefined) args.file_path = `skill:${rawInput.name}`;
+  const path = args.file_path ?? rawInput.file_path ?? rawInput.path;
   if (path !== undefined) args.filePath = path;
   // The TUI splits the command with shlex and unwraps `bash -lc <script>`, so
   // a bare script with `&&` would render as `'&&'`. Send it the way codex does.
@@ -587,22 +590,26 @@ export function createDshEngine({
           }
           break;
         }
-        const call = toolCalls.get(update.toolCallId) ?? { name: update.title || "tool", rawInput: update.rawInput };
+        const call = toolCalls.get(update.toolCallId);
         toolCalls.delete(update.toolCallId);
-        const output = contentText(update.content);
-        const terminal = terminalView(call.name, output);
-        // A command that ran and exited non-zero is a failed card, as in codex.
-        const failed = update.status === "failed" || (terminal?.exitCode != null && terminal.exitCode !== 0);
-        const edit = update.status === "failed" ? null : diffFromArgs(call.name, call.rawInput ?? {});
-        const shown = terminal ? terminal.output : output;
-        onToolEvent({
-          type: failed ? "tool_use_failed" : edit ? "file_diff" : "tool_use_completed",
-          tool_use_id: update.toolCallId,
-          tool_name: engineToolName(call.name),
-          output_preview: shown,
-          error: failed ? shown : undefined,
-          ...(terminal?.exitCode != null ? { exit_code: terminal.exitCode } : {}),
-          ...(edit ? { path: edit.path, diff: edit.diff, kind: edit.kind } : {}),
+        if (call) {
+          finishCard(call, update);
+          break;
+        }
+        // A result whose start never reached us: ask dsh which call it was,
+        // rather than show an anonymous "tool" card.
+        onLog(`tool result ${update.toolCallId} arrived without its start; looking the call up`);
+        lookUpCall(update.toolCallId).then((found) => {
+          const named = found ?? { name: update.title || "tool", rawInput: update.rawInput };
+          const shownElsewhere = named.name === "todo_write" || QUIET_WHEN_OK.has(named.name);
+          if (shownElsewhere && update.status !== "failed") return;
+          onToolEvent({
+            type: "tool_use_started",
+            tool_use_id: update.toolCallId,
+            tool_name: engineToolName(named.name),
+            args: engineToolArgs(named.name, named.rawInput),
+          });
+          finishCard(named, update);
         });
         break;
       }
@@ -612,6 +619,42 @@ export function createDshEngine({
         break;
       default:
         break; // anything newer has no card
+    }
+  };
+
+  /** The card for a finished call. */
+  const finishCard = (call, update) => {
+    const output = contentText(update.content);
+    const terminal = terminalView(call.name, output);
+    // A command that ran and exited non-zero is a failed card, as in codex.
+    const failed = update.status === "failed" || (terminal?.exitCode != null && terminal.exitCode !== 0);
+    const edit = update.status === "failed" ? null : diffFromArgs(call.name, call.rawInput ?? {});
+    const shown = terminal ? terminal.output : output;
+    onToolEvent({
+      type: failed ? "tool_use_failed" : edit ? "file_diff" : "tool_use_completed",
+      tool_use_id: update.toolCallId,
+      tool_name: engineToolName(call.name),
+      output_preview: shown,
+      error: failed ? shown : undefined,
+      ...(terminal?.exitCode != null ? { exit_code: terminal.exitCode } : {}),
+      ...(edit ? { path: edit.path, diff: edit.diff, kind: edit.kind } : {}),
+    });
+  };
+
+  /** A call's name and arguments from dsh's log, or null. */
+  const lookUpCall = async (callId) => {
+    try {
+      const found = await host.control("toolCall", { sessionId, callId });
+      if (!found?.name) return null;
+      let rawInput = found.arguments;
+      try {
+        rawInput = JSON.parse(found.arguments);
+      } catch {
+        // Kept as the model wrote it.
+      }
+      return { name: found.name, rawInput };
+    } catch {
+      return null;
     }
   };
 
