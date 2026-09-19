@@ -89,7 +89,11 @@ pub(crate) fn commands_for_input(
 ) -> Vec<SlashCommandItem> {
     let mut commands = Vec::new();
     let tiers_enabled = flags.service_tier_commands_enabled;
-    for (_, cmd) in builtins_for_input(flags) {
+    // Hidden here, but still found by name: dispatch says why uac lacks it.
+    for (_, cmd) in builtins_for_input(flags)
+        .into_iter()
+        .filter(|(_, cmd)| !crate::unieai_engine::uac_lacks_command(*cmd))
+    {
         commands.push(SlashCommandItem::Builtin(cmd));
         if cmd == SlashCommand::Model && tiers_enabled {
             commands.extend(
@@ -120,6 +124,9 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
     builtins_for_input(BuiltinCommandFlags {
         token_activity_command_enabled: true,
         side_conversation_active: false,
+        // Off only on uac, whose dispatch explains why /plan is missing.
+        collaboration_modes_enabled: flags.collaboration_modes_enabled
+            || crate::unieai_engine::session_is_uac(),
         ..flags
     })
     .into_iter()

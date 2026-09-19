@@ -103,7 +103,8 @@ mod tests {
         }))
         .expect("valid npm package metadata");
 
-        let err = latest_ready_version(&package_info).expect_err("root package must have dist metadata");
+        let err =
+            latest_ready_version(&package_info).expect_err("root package must have dist metadata");
         assert!(
             err.to_string().contains("missing dist metadata"),
             "error should name missing dist metadata: {err}"

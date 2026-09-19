@@ -128,7 +128,9 @@ impl UacMode {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Standard => "the full coding agent: shell, files, search, web, skills, subagents",
-            Self::Ptc => "tools as a TypeScript SDK; the model chains steps in one run_code program",
+            Self::Ptc => {
+                "tools as a TypeScript SDK; the model chains steps in one run_code program"
+            }
             Self::Cordis => "standard, plus inspecting and extending the harness itself",
             Self::Minimal => "one persistent shell and nothing else",
         }
@@ -182,11 +184,33 @@ pub(crate) fn record_session_engine(engine: EngineKind) {
     let _ = SESSION_ENGINE.set(engine);
 }
 
+/// Whether this session runs on uac.
+pub(crate) fn session_is_uac() -> bool {
+    SESSION_ENGINE.get() == Some(&EngineKind::Uac)
+}
+
+/// Slash commands the uac engine cannot serve yet: code review mode, side
+/// conversations (they inject items into a fork), codex's memories, and plan
+/// mode (a collaboration mode uac does not apply, so the TUI would claim a
+/// mode the model is not in). Hidden from the popup, refused when typed.
+pub(crate) fn uac_lacks_command(command: crate::slash_command::SlashCommand) -> bool {
+    use crate::slash_command::SlashCommand;
+    session_is_uac()
+        && matches!(
+            command,
+            SlashCommand::Review
+                | SlashCommand::Side
+                | SlashCommand::Btw
+                | SlashCommand::Memories
+                | SlashCommand::Plan
+        )
+}
+
 /// Whether images reach the model whatever its own modalities: uac passes
 /// them inline to a vision model and describes them for a text-only one
 /// (unieai-vision-fallback's describe_image).
 pub(crate) fn session_takes_any_image() -> bool {
-    SESSION_ENGINE.get() == Some(&EngineKind::Uac)
+    session_is_uac()
 }
 
 /// Whether UnieAI's provider is active with nothing to authenticate it: no
@@ -489,12 +513,17 @@ const NODE_TOO_OLD: &str = "needs Node.js";
 
 fn node_too_old(found: Option<u64>, unieai_node: Option<&std::ffi::OsStr>) -> std::io::Error {
     let found = match (found, unieai_node) {
-        (Some(major), Some(node)) => format!("UNIEAI_NODE ({}) is Node {major}", Path::new(node).display()),
+        (Some(major), Some(node)) => format!(
+            "UNIEAI_NODE ({}) is Node {major}",
+            Path::new(node).display()
+        ),
         (None, Some(node)) => format!("UNIEAI_NODE ({}) does not run", Path::new(node).display()),
         (Some(major), None) => format!("the node on PATH is Node {major}"),
         (None, None) => "no node was found".to_string(),
     };
-    std::io::Error::other(format!("{NODE_TOO_OLD} {UAC_MIN_NODE_MAJOR} or newer; {found}"))
+    std::io::Error::other(format!(
+        "{NODE_TOO_OLD} {UAC_MIN_NODE_MAJOR} or newer; {found}"
+    ))
 }
 
 /// Where version managers and package managers put node binaries.
@@ -513,8 +542,14 @@ fn node_candidates(home: Option<&Path>) -> Vec<PathBuf> {
     };
     if let Some(home) = home {
         versions_under(home.join(".nvm/versions/node"), &["bin", "node"]);
-        versions_under(home.join(".local/share/fnm/node-versions"), &["installation", "bin", "node"]);
-        versions_under(home.join("Library/Application Support/fnm/node-versions"), &["installation", "bin", "node"]);
+        versions_under(
+            home.join(".local/share/fnm/node-versions"),
+            &["installation", "bin", "node"],
+        );
+        versions_under(
+            home.join("Library/Application Support/fnm/node-versions"),
+            &["installation", "bin", "node"],
+        );
         versions_under(home.join(".volta/tools/image/node"), &["bin", "node"]);
         versions_under(home.join(".asdf/installs/nodejs"), &["bin", "node"]);
     }
@@ -554,7 +589,13 @@ fn node_major(node: &Path) -> Option<u64> {
 }
 
 fn parse_node_major(version: &str) -> Option<u64> {
-    version.trim().trim_start_matches('v').split('.').next()?.parse().ok()
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]

@@ -296,7 +296,7 @@ impl ChatWidget {
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
         widget
             .bottom_pane
-            .set_collaboration_modes_enabled(/*enabled*/ true);
+            .set_collaboration_modes_enabled(!crate::unieai_engine::session_is_uac());
         widget.sync_service_tier_commands();
         widget.sync_worktrees_enabled();
         widget.sync_plugins_command_enabled();

@@ -83,14 +83,23 @@ fn write_account(home: &std::path::Path, account: &str) {
 #[test]
 fn rabi_accounts_cannot_run_the_codex_engine() {
     let home = tempfile::tempdir().expect("tempdir");
-    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Codex), None);
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Codex),
+        None
+    );
     write_account(home.path(), "studio");
-    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Codex), None);
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Codex),
+        None
+    );
 
     write_account(home.path(), "rabi");
     let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
     assert!(reason.contains("UnieAI Rabi"), "{reason}");
-    assert_eq!(engine_unavailable_reason(home.path(), EngineKind::Uac), None);
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Uac),
+        None
+    );
     write_engine(home.path(), EngineKind::Codex).expect("write");
     assert_eq!(resolve_engine(home.path()), EngineKind::Uac);
 }
@@ -100,8 +109,15 @@ fn a_uac_start_failure_names_the_reason_and_the_log() {
     let home = tempfile::tempdir().expect("tempdir");
     let log = uac_log_path(home.path());
     std::fs::create_dir_all(log.parent().expect("log dir")).expect("mkdir");
-    std::fs::write(&log, "uac: starting\nunieai-uac-server needs Node.js 22 or newer (found v20.11.0)\n[trace] x\n").expect("write log");
-    let warning = uac_unavailable_warning(home.path(), &std::io::Error::other("the uac server did not come up within 20s"));
+    std::fs::write(
+        &log,
+        "uac: starting\nunieai-uac-server needs Node.js 22 or newer (found v20.11.0)\n[trace] x\n",
+    )
+    .expect("write log");
+    let warning = uac_unavailable_warning(
+        home.path(),
+        &std::io::Error::other("the uac server did not come up within 20s"),
+    );
     assert!(warning.contains("did not start"), "{warning}");
     assert!(warning.contains("within 20s"), "{warning}");
     assert!(warning.contains("needs Node.js 22 or newer"), "{warning}");
@@ -115,9 +131,15 @@ fn unieai_provider_without_a_sign_in_needs_one() {
     let saved = std::env::var_os("UNIEAI_API_KEY");
     unsafe { std::env::remove_var("UNIEAI_API_KEY") };
     assert!(needs_unieai_sign_in("unieai", home.path()));
-    assert!(!needs_unieai_sign_in("openai", home.path()), "other providers keep their own login check");
+    assert!(
+        !needs_unieai_sign_in("openai", home.path()),
+        "other providers keep their own login check"
+    );
     unsafe { std::env::set_var("UNIEAI_API_KEY", "k") };
-    assert!(!needs_unieai_sign_in("unieai", home.path()), "an API key is enough");
+    assert!(
+        !needs_unieai_sign_in("unieai", home.path()),
+        "an API key is enough"
+    );
     match saved {
         Some(value) => unsafe { std::env::set_var("UNIEAI_API_KEY", value) },
         None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
@@ -142,7 +164,8 @@ fn version_manager_installs_are_searched() {
 #[test]
 fn an_old_node_gets_install_advice() {
     let home = tempfile::tempdir().expect("tempdir");
-    let warning = uac_unavailable_warning(home.path(), &node_too_old(Some(20), /*unieai_node*/ None));
+    let warning =
+        uac_unavailable_warning(home.path(), &node_too_old(Some(20), /*unieai_node*/ None));
     assert_eq!(
         warning,
         "unieai-agent-core (uac), the default engine, needs Node.js 22 or newer; the node on PATH is Node 20, \

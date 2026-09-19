@@ -372,8 +372,10 @@ impl ChatWidget {
         self.thread_id.is_some()
     }
 
+    /// Plan mode is codex's: uac does not apply collaboration modes, so it
+    /// offers none rather than show a mode the model is not in.
     pub(super) fn collaboration_modes_enabled(&self) -> bool {
-        true
+        !crate::unieai_engine::session_is_uac()
     }
 
     pub(super) fn initial_collaboration_mask(

@@ -104,8 +104,6 @@ mod analytics;
 mod app;
 mod app_backtrack;
 mod app_command;
-mod unieai_engine;
-mod unieai_mesh;
 mod app_event;
 mod app_event_sender;
 mod app_info;
@@ -124,6 +122,8 @@ mod clipboard_html;
 mod clipboard_paste;
 mod collaboration_modes;
 mod color;
+mod unieai_engine;
+mod unieai_mesh;
 // Terminal color-level detection + RGB quantization. Infrastructure for the
 // JSON theme system (deferred); wired to nothing yet, so allow dead_code.
 #[allow(dead_code)]
@@ -142,13 +142,13 @@ mod composer_tip;
 // warnings internally.
 mod config_update;
 pub(crate) mod custom_terminal;
+mod daybreak;
 mod diff_viewer_model;
+mod experimental_features;
 mod jump_anchor;
+mod permission_discovery;
 mod pets;
 mod rewind_model;
-mod daybreak;
-mod experimental_features;
-mod permission_discovery;
 mod worktree_browser;
 pub use custom_terminal::Terminal;
 mod assistant_directives;
@@ -206,8 +206,8 @@ pub(crate) mod public_widgets;
 mod render;
 mod resize_reflow_cap;
 mod resume_picker;
-mod scrollback_verb_group;
 mod screen_reader;
+mod scrollback_verb_group;
 mod selection_list;
 mod service_tier_resolution;
 mod session_archive_commands;
@@ -566,7 +566,9 @@ async fn start_app_server(
                 {
                     unieai_engine::record_uac_unavailable(unieai_engine::uac_unavailable_warning(
                         &config.codex_home,
-                        &std::io::Error::other(format!("could not connect to the uac server ({err})")),
+                        &std::io::Error::other(format!(
+                            "could not connect to the uac server ({err})"
+                        )),
                     ));
                 }
                 *target = AppServerTarget::Embedded;

@@ -177,6 +177,9 @@ impl ChatWidget {
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }
+        if !self.ensure_command_available_on_engine(cmd) {
+            return;
+        }
         if !self.ensure_side_command_allowed_outside_review(cmd) {
             return;
         }
@@ -638,6 +641,9 @@ impl ChatWidget {
             self.transcript.last_status_copy_targets = None;
         }
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+            return;
+        }
+        if !self.ensure_command_available_on_engine(cmd) {
             return;
         }
         if !self.ensure_side_command_allowed_outside_review(cmd) {
@@ -1332,6 +1338,18 @@ impl ChatWidget {
         }
         self.add_error_message(format!(
             "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
+            cmd.command()
+        ));
+        self.bottom_pane.drain_pending_submission_state();
+        false
+    }
+
+    fn ensure_command_available_on_engine(&mut self, cmd: SlashCommand) -> bool {
+        if !crate::unieai_engine::uac_lacks_command(cmd) {
+            return true;
+        }
+        self.add_error_message(format!(
+            "'/{}' is not available with the uac engine yet. Switch to codex with /engine to use it.",
             cmd.command()
         ));
         self.bottom_pane.drain_pending_submission_state();

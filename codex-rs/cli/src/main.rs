@@ -179,7 +179,6 @@ enum Subcommand {
     /// Manage UnieAI plugins.
     Plugin(PluginCli),
 
-
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
@@ -1027,7 +1026,9 @@ fn relaunch_args(cli: &clap::Command, args: Vec<std::ffi::OsString>) -> Vec<std:
         } else {
             let mut chars = raw.chars().skip(1);
             match (chars.next(), chars.next()) {
-                (Some(short), None) => cli.get_arguments().find(|arg| arg.get_short() == Some(short)),
+                (Some(short), None) => cli
+                    .get_arguments()
+                    .find(|arg| arg.get_short() == Some(short)),
                 _ => None,
             }
         };
@@ -2203,10 +2204,8 @@ async fn run_exec_server_command(
         .codex_self_exe
         .clone()
         .ok_or_else(|| anyhow::anyhow!("UnieAI Code executable path is not configured"))?;
-    let runtime_paths = ExecServerRuntimePaths::new(
-        codex_self_exe,
-        arg0_paths.codex_linux_sandbox_exe.clone(),
-    )?;
+    let runtime_paths =
+        ExecServerRuntimePaths::new(codex_self_exe, arg0_paths.codex_linux_sandbox_exe.clone())?;
     if let Some(base_url) = cmd.remote.take() {
         let environment_id = cmd
             .environment_id
@@ -4455,8 +4454,10 @@ mod tests {
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run:".to_string(),
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m".to_string(),
-                "Or run \u{1b}[36mcodex resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.".to_string(),
+                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m"
+                    .to_string(),
+                "Or run \u{1b}[36mcodex resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m."
+                    .to_string(),
             ]
         );
     }
