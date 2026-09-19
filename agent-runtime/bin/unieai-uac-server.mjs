@@ -31,7 +31,14 @@ import { join } from "node:path";
 import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
 import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
 import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
-import { configuredUacMode, prepareDsh, writeDshAccount } from "../src/unieai-dsh/config.mjs";
+import {
+  LOCAL_PROVIDERS,
+  configuredUacMode,
+  fetchLocalModels,
+  localProviderBaseUrl,
+  prepareDsh,
+  writeDshAccount,
+} from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
@@ -115,6 +122,31 @@ function hostFor(mode = "standard") {
 }
 
 const threadMode = () => configuredUacMode({ home: codexHome });
+
+/**
+ * Local model servers threads have asked for (`--oss`, `--local-provider`),
+ * by provider id. Every one stays declared in dsh's settings for the life of
+ * the server: settings are rewritten per thread, and dropping a provider
+ * would cut off a thread still using it.
+ */
+const localProviders = new Map();
+const writeAccount = () => writeDshAccount({ localProviders: [...localProviders.values()] });
+
+/** Declare the local provider `id` with the models it serves now. */
+async function declareLocalProvider(id) {
+  const baseUrl = localProviderBaseUrl(id);
+  let models;
+  try {
+    models = await fetchLocalModels(baseUrl);
+  } catch (error) {
+    throw new Error(`${LOCAL_PROVIDERS[id].displayName} is not reachable at ${baseUrl}: ${error.message}`);
+  }
+  if (models.length === 0) throw new Error(`${LOCAL_PROVIDERS[id].displayName} at ${baseUrl} serves no models; pull one first`);
+  localProviders.set(id, { id, baseUrl, models });
+  writeAccount();
+  log(`[uac] local provider ${id} at ${baseUrl}: ${models.join(", ")}`);
+  return models;
+}
 hostFor(threadMode());
 
 /** The unieai-control plugin listens once dsh has loaded it; wait briefly for it. */
@@ -143,18 +175,31 @@ await launchAppServer({
   defaultModel: dsh.defaultModel,
   threadMode,
   onShutdown: () => Promise.all([...hosts.values()].map((host) => host.close())),
-  buildEngine: ({ cwd, model, sandboxMode: _mode, oneShot, variant, ...callbacks }) => {
+  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, ...callbacks }) => {
     // The TUI re-synced unieai.json with Studio when it launched; carry that
     // into dsh's hot-reloaded settings before this thread picks a model.
     let account = dsh;
     try {
-      account = writeDshAccount();
+      account = writeAccount();
     } catch (error) {
       log("[uac] could not refresh the account for dsh:", error.message);
     }
     const chosen = model && account.models.includes(model) ? model : account.defaultModel;
     // The client's hidden structured turns (thread titles): one tool-less call.
     if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
+    // A local model server (--oss / --local-provider): the thread's model
+    // comes from it, declared in dsh before the first session.
+    if (LOCAL_PROVIDERS[modelProvider]) {
+      return createDshEngine({
+        host: hostFor(variant ?? "standard"),
+        workspace: cwd,
+        model,
+        provider: modelProvider,
+        prepare: () => declareLocalProvider(modelProvider),
+        onLog: (line) => log("[uac]", line),
+        ...callbacks,
+      });
+    }
     return createDshEngine({
       // Threads stored before modes existed have none: standard.
       host: hostFor(variant ?? "standard"),

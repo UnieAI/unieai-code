@@ -239,7 +239,7 @@ test("session/new is retried while dsh is still registering providers", async ()
 });
 
 test("the gateway key goes to dsh's credential store, quoted", () => {
-  assert.equal(renderCredentials({ apiKey: "sk-1:2" }), 'version: 1\n\nrefs:\n  UNIEAI_GATEWAY_API_KEY: "sk-1:2"\n');
+  assert.equal(renderCredentials({ apiKey: "sk-1:2" }), 'version: 1\n\nrefs:\n  UNIEAI_GATEWAY_API_KEY: "sk-1:2"\n  UNIEAI_LOCAL_API_KEY: "local"\n');
 });
 
 /** A host whose ACP side is the fake agent and whose control side is scripted. */
@@ -478,4 +478,22 @@ test("images: inline for a vision model, a path and describe_image for a text-on
 
   const missing = await promptContent("x", [{ path: join(dir, "nope.png") }], { imageInput: true });
   assert.match(missing[0].text, /could not be read/);
+});
+
+test("local providers: settings declare them with a placeholder key, and their model is the one selected", async () => {
+  const { renderSettings, localProviderBaseUrl, fetchLocalModels } = await import("./config.mjs");
+  const yaml = renderSettings({ baseUrl: "https://gw/v1", models: [{ id: "A" }], defaultModel: "A", localProviders: [{ id: "ollama", baseUrl: "http://localhost:11434/v1", models: ["qwen3:8b"] }] });
+  assert.match(yaml, /\n {4}ollama:\n {6}displayName: "Ollama \(local\)"\n {6}apiKeyEnv: UNIEAI_LOCAL_API_KEY\n {6}api: openai-completions\n {6}baseURL: "http:\/\/localhost:11434\/v1"/);
+  assert.match(yaml.split("    ollama:")[1], /apiKeyEnv: UNIEAI_LOCAL_API_KEY/, "a placeholder key: dsh refuses a keyless provider");
+  assert.equal(localProviderBaseUrl("lmstudio", {}), "http://localhost:1234/v1");
+  assert.equal(localProviderBaseUrl("ollama", { CODEX_OSS_PORT: "9999" }), "http://localhost:9999/v1");
+  assert.equal(localProviderBaseUrl("ollama", { CODEX_OSS_BASE_URL: "http://box:1/v1/" }), "http://box:1/v1");
+  const models = await fetchLocalModels("http://x/v1", { fetchImpl: async () => ({ ok: true, json: async () => ({ data: [{ id: "qwen3:8b" }, { id: "llama3" }] }) }) });
+  assert.deepEqual(models, ["qwen3:8b", "llama3"]);
+  const value = (provider, id) => JSON.stringify([provider, id]);
+  const options = [{ id: "model", options: [{ value: value("unieai", "qwen3:8b") }, { value: value("ollama", "qwen3:8b") }] }];
+  assert.equal(findModelOption(options, "qwen3:8b", "ollama"), value("ollama", "qwen3:8b"));
+  assert.equal(findModelOption(options, "qwen3:8b"), value("unieai", "qwen3:8b"));
+  const gatewayOnly = [{ id: "model", options: [{ value: value("unieai", "qwen3:8b") }] }];
+  assert.equal(findModelOption(gatewayOnly, "qwen3:8b", "ollama"), null, "a local thread never falls back to the gateway's same-named model");
 });

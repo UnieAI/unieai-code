@@ -196,14 +196,18 @@ function parseModelValue(value) {
 }
 
 /** The option value that selects `model` on our provider, if dsh offers it. */
-export function findModelOption(configOptions = [], model) {
+export function findModelOption(configOptions = [], model, provider = DSH_PROVIDER_ID) {
   const option = configOptions.find((entry) => entry?.id === "model");
   if (!option || !model) return null;
   const flat = (option.options ?? []).flatMap((entry) => (Array.isArray(entry?.options) ? entry.options : [entry]));
   const matches = flat
     .map((entry) => ({ value: entry?.value, parsed: parseModelValue(entry?.value) }))
     .filter(({ parsed }) => parsed?.[1] === model);
-  return (matches.find(({ parsed }) => parsed[0] === DSH_PROVIDER_ID) ?? matches[0])?.value ?? null;
+  const own = matches.find(({ parsed }) => parsed[0] === provider);
+  // A model from another provider is a fallback only for the gateway's own:
+  // a thread that asked for a local server must never reach the gateway.
+  if (provider !== DSH_PROVIDER_ID) return own?.value ?? null;
+  return (own ?? matches[0])?.value ?? null;
 }
 
 /**
@@ -434,6 +438,10 @@ export function createDshEngine({
   // The client's sandbox and approval for this thread ({ sandbox, approval }
   // in dsh's terms), applied to the dsh session whenever it is opened.
   permissions = () => null,
+  // The dsh provider the model belongs to (a local server for --oss), and
+  // work to finish before the first session (declaring that provider).
+  provider = DSH_PROVIDER_ID,
+  prepare = null,
   // Called with { total, last, modelContextWindow } as the session's token usage grows.
   onUsage = () => {},
 }) {
@@ -524,7 +532,27 @@ export function createDshEngine({
 
   const selectModel = async (acp, configOptions) => {
     if (!model) return;
-    const value = findModelOption(configOptions, model);
+    if (provider !== DSH_PROVIDER_ID) {
+      // dsh reloads settings.yaml on its own schedule: the provider just
+      // declared may not be offered yet. Wait for it; never fall back.
+      // Re-setting the current model is how ACP hands back the current list.
+      let options = configOptions;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const value = findModelOption(options, model, provider);
+        if (value) {
+          await acp.request("session/set_config_option", { sessionId, configId: "model", value });
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const current = options?.find((option) => option?.id === "model")?.currentValue;
+        if (current) {
+          const refreshed = await acp.request("session/set_config_option", { sessionId, configId: "model", value: current }).catch(() => null);
+          options = refreshed?.configOptions ?? options;
+        }
+      }
+      throw new AcpError(`${provider} does not offer the model "${model}"`);
+    }
+    const value = findModelOption(configOptions, model, provider);
     if (value) {
       await acp.request("session/set_config_option", { sessionId, configId: "model", value });
     } else {
@@ -577,6 +605,7 @@ export function createDshEngine({
 
   /** Open `sessionId` on the current dsh process, or start a new session. */
   const ensureSession = async () => {
+    if (prepare) await prepare();
     const acp = await host.agent();
     if (sessionId && sessionAgent === acp) return acp;
     if (sessionId) {

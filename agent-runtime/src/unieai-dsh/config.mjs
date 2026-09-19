@@ -103,7 +103,28 @@ export function gatewayModel(model) {
  * never) and its input modalities (dsh treats an undeclared model as
  * text-only, so read_image would refuse even on a vision model).
  */
-export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs = 300_000 }) {
+/** Local model servers `--oss` / `--local-provider` select, by codex's provider id. */
+export const LOCAL_PROVIDERS = Object.freeze({
+  ollama: { displayName: "Ollama (local)", port: 11434 },
+  lmstudio: { displayName: "LM Studio (local)", port: 1234 },
+});
+
+/** Where a local provider listens: codex's CODEX_OSS_BASE_URL / CODEX_OSS_PORT, else its default port. */
+export function localProviderBaseUrl(id, env = process.env) {
+  if (env.CODEX_OSS_BASE_URL?.trim()) return env.CODEX_OSS_BASE_URL.trim().replace(/\/+$/, "");
+  const port = Number.parseInt(env.CODEX_OSS_PORT ?? "", 10) || LOCAL_PROVIDERS[id]?.port;
+  return `http://localhost:${port}/v1`;
+}
+
+/** The models a local OpenAI-compatible server offers (`GET /models`). */
+export async function fetchLocalModels(baseUrl, { fetchImpl = globalThis.fetch, timeoutMs = 5_000 } = {}) {
+  const response = await fetchImpl(`${baseUrl}/models`, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`${baseUrl}/models answered HTTP ${response.status}`);
+  const body = await response.json();
+  return (body?.data ?? body?.models ?? []).map((entry) => entry?.id ?? entry?.name).filter(Boolean);
+}
+
+export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs = 300_000, localProviders = [] }) {
   const q = yamlQuote;
   const lines = [
     "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
@@ -132,6 +153,23 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
     lines.push(`        - id: ${q(model.id)}`);
     if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
     if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+  }
+  // Local servers need no key; their windows are unknown, so a
+  // conservative default keeps compaction ahead of the server's limit.
+  for (const local of localProviders) {
+    lines.push(
+      `    ${local.id}:`,
+      `      displayName: ${q(LOCAL_PROVIDERS[local.id]?.displayName ?? local.id)}`,
+      `      apiKeyEnv: ${LOCAL_KEY_ENV}`,
+      "      api: openai-completions",
+      `      baseURL: ${q(local.baseUrl)}`,
+      "      defaultContextWindow: 32768",
+      "      compat:",
+      "        supportsDeveloperRole: false",
+      "        maxTokensField: max_tokens",
+      "      models:",
+      ...local.models.map((id) => `        - id: ${q(id)}`),
+    );
   }
   // Codex yields long commands instead of killing them at 60s. With plain
   // bash the next best thing is a foreground budget that fits a build.
@@ -419,8 +457,11 @@ export function pickDefaultModel({ explicit, configured, listed }) {
 }
 
 /** dsh's credential store: refs by env-var name, reloaded on change. */
+/** Local servers take no key, but dsh refuses a provider without one. */
+export const LOCAL_KEY_ENV = "UNIEAI_LOCAL_API_KEY";
+
 export function renderCredentials({ apiKey }) {
-  return `version: 1\n\nrefs:\n  ${GATEWAY_KEY_ENV}: ${JSON.stringify(String(apiKey))}\n`;
+  return `version: 1\n\nrefs:\n  ${GATEWAY_KEY_ENV}: ${JSON.stringify(String(apiKey))}\n  ${LOCAL_KEY_ENV}: "local"\n`;
 }
 
 function writePrivate(path, contents) {
@@ -434,7 +475,7 @@ function writePrivate(path, contents) {
  * dsh hot-reloads both files, so a running dsh follows a later sync; call this
  * again before each new thread.
  */
-export function writeDshAccount({ env = process.env } = {}) {
+export function writeDshAccount({ env = process.env, localProviders = [] } = {}) {
   const credentials = loadCredentials();
   if (!credentials.signedIn || !credentials.gatewayBaseUrl) {
     throw new Error("unieai-agent-core needs a UnieAI sign-in; run `unieai login` first");
@@ -450,7 +491,7 @@ export function writeDshAccount({ env = process.env } = {}) {
   const models = [...new Set([defaultModel, ...listed])];
   const declared = models.map((id) => catalog.find((m) => m.id === id) ?? { id });
   writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: credentials.gatewayApiKey || "" }));
-  writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models: declared, defaultModel }));
+  writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models: declared, defaultModel, localProviders }));
   return { home, defaultModel, models, gatewayBaseUrl: credentials.gatewayBaseUrl, visionModel: pickVisionModel(catalog, defaultModel) };
 }
 

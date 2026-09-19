@@ -261,6 +261,7 @@ export function createHandlers({
     thread.engine = createEngineFor({
       cwd: thread.cwd,
       model: thread.model,
+      modelProvider: thread.modelProvider,
       // What thread/start told the client is in force. Passing it on is what
       // makes that answer true rather than decorative.
       sandboxMode,
