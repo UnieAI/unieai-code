@@ -347,12 +347,14 @@ export function renderPatch({
     lines.push("- id: acp", "  config:", `    provider: ${DSH_PROVIDER_ID}`, `    model: ${q(defaultModel)}`);
   }
   if (persona) {
-    // UNIEAI_PERSONA_RIGOR=0 drops the measured-failure rules, so a benchmark
-    // arm can be scored against the same build without them.
+    // The measured-failure rules ship inert: they are written from benchmark
+    // trajectories but have not been scored yet, and a prompt that reads well
+    // is not evidence that it helps. UNIEAI_PERSONA_RIGOR=1 turns them on,
+    // which is how the A/B arm runs; the default flips once there is a number.
     const text = buildPersona({
       execTools,
       shellOnly: mode === "minimal",
-      rigor: process.env.UNIEAI_PERSONA_RIGOR !== "0",
+      rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
     });
     lines.push(
       "- id: system-prompt",
