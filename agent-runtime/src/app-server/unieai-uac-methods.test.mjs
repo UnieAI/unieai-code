@@ -164,3 +164,30 @@ test("the plan and a question end the message the model was streaming", async ()
   );
   finish();
 });
+
+test("an interrupt ends the turn even when the engine will not stop", async () => {
+  const emitted = [];
+  const handlers = createHandlers({
+    codexHome: "/h",
+    // dsh that ignores the abort: its promise never settles, so nothing but
+    // the interrupt itself can close the turn.
+    createEngineFor: () => ({ send: () => new Promise(() => {}), cancel: () => {} }),
+    interruptGraceMs: 40,
+  });
+  const ctx = { emit: (method, params) => emitted.push([method, params]), request: async () => ({}) };
+  const { thread } = await handlers["thread/start"]({ cwd: process.cwd() }, ctx);
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "go" }] }, ctx);
+  await handlers["turn/interrupt"]({ threadId: thread.id });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  const completed = emitted.findLast(([method]) => method === "turn/completed");
+  assert.equal(completed?.[1].turn.status, "interrupted");
+  if (haveSchemas) {
+    const result = validateAgainstSchema("ServerNotification", { method: completed[0], params: completed[1] }, { repoRoot });
+    assert.equal(result.ok, true, result.problems.join("\n  "));
+  }
+
+  // The whole point: the next message is accepted instead of being refused
+  // with "cannot start a turn while a turn is running" for good.
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "again" }] }, ctx);
+});

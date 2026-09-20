@@ -87,6 +87,13 @@ export function requestedPermissions(params) {
 
 const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
 
+/**
+ * How long an interrupted turn is given to end itself before the server ends
+ * it. Long enough for a cancelled dsh turn to unwind and deliver its trailing
+ * items, short enough that a user who interrupted is not left unable to type.
+ */
+const INTERRUPT_GRACE_MS = 3_000;
+
 const GOAL_STATUS = { active: "active", paused: "paused", blocked: "blocked", complete: "complete" };
 const GOAL_STATUS_TO_ENGINE = { active: "active", paused: "paused", complete: "complete" };
 
@@ -170,6 +177,7 @@ export function createHandlers({
   // The engine variant a new thread runs in (uac: the dsh mode), read when
   // the thread starts; a forked thread keeps its source's.
   threadMode = () => null,
+  interruptGraceMs = INTERRUPT_GRACE_MS,
   // A requested model as this account can actually run it. A config written
   // for another account names models this one does not have, and the client
   // would otherwise show a model no turn runs on.
@@ -355,7 +363,7 @@ export function createHandlers({
   const beginTurn = (thread, ctx, { userText = null, clientId = null } = {}) => {
     const turnId = randomUUID();
     const startedAt = epochNow();
-    thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null };
+    thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null, finish: null };
     thread.turnIds.push(turnId);
     thread.updatedAtEpoch = startedAt;
     persist(thread);
@@ -495,6 +503,9 @@ export function createHandlers({
       // rather than waiting in the client for a delivery that never comes.
       if (thread.queuedInput?.length) setImmediate(() => sendQueuedInput(thread, ctx));
     };
+    // So an interrupt can end the turn even when the engine will not: see
+    // turn/interrupt.
+    thread.activeTurn.finish = finish;
     return { turnId, finish };
   };
 
@@ -946,9 +957,30 @@ export function createHandlers({
       return { data, nextCursor: null, backwardsCursor: null };
     },
 
+    /**
+     * End the running turn. The client treats an interrupt as the end of the
+     * turn the moment it asks, so the server must reach the same state or the
+     * two disagree forever: every later turn/start is refused with "cannot
+     * start a turn while a turn is running" and the session cannot be used
+     * again. This used to abort and wait for the engine's promise to settle,
+     * which it does not do when dsh will not cancel what it is running.
+     *
+     * The abort is still what ends it cleanly, so the engine gets a moment to
+     * unwind and deliver its trailing items; the turn is closed here only if
+     * it is still open after that.
+     */
     async "turn/interrupt"(params) {
       const thread = threads.get(params?.threadId);
-      thread?.activeTurn?.abort.abort();
+      const turn = thread?.activeTurn;
+      if (!turn) return {};
+      turn.abort.abort();
+      const closeAnyway = setTimeout(() => {
+        if (thread.activeTurn === turn) {
+          onTurnError("the engine did not stop; closing the turn", { threadId: thread.id, turnId: turn.id });
+          turn.finish?.({ status: "interrupted" });
+        }
+      }, interruptGraceMs);
+      closeAnyway.unref?.();
       return {};
     },
 
