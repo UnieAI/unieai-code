@@ -347,7 +347,13 @@ export function renderPatch({
     lines.push("- id: acp", "  config:", `    provider: ${DSH_PROVIDER_ID}`, `    model: ${q(defaultModel)}`);
   }
   if (persona) {
-    const text = buildPersona({ execTools, shellOnly: mode === "minimal" });
+    // UNIEAI_PERSONA_RIGOR=0 drops the measured-failure rules, so a benchmark
+    // arm can be scored against the same build without them.
+    const text = buildPersona({
+      execTools,
+      shellOnly: mode === "minimal",
+      rigor: process.env.UNIEAI_PERSONA_RIGOR !== "0",
+    });
     lines.push(
       "- id: system-prompt",
       "  config:",

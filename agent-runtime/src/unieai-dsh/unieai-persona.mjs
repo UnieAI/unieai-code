@@ -37,12 +37,36 @@ const COMMANDS_SHELL_ONLY = `# Your one tool
 - Everything you start is stopped when you finish. A server that must keep running afterwards must be fully detached (\`setsid nohup cmd > log 2>&1 < /dev/null &\`); then confirm it answers.`;
 
 /**
+ * Rules written against failure modes measured in benchmark trajectories,
+ * kept separable so a run can be scored with and without them.
+ *
+ * The largest single cause of failed tasks was finishing against the agent's
+ * own restatement of the requirement rather than the requirement: asserting
+ * by reasoning that no earlier slot existed, reporting a server as verified
+ * while the grader got "connection refused", measuring a quantity the test
+ * does not check. Next came treating a missing toolchain as licence to ship
+ * "verified by review", and running out of time mid-improvement with no
+ * artifact written at all. `EXPLORING_RIGOR` addresses a narrower one: the
+ * agent read plenty, but emitted a value in a form the same function had
+ * already established differently, and lost 14 of 94 tests to it.
+ */
+const EXPLORING_RIGOR = `- Before changing a function, read it from beginning to end, not only the lines you matched. When you emit a value the surrounding code also emits — an attribute, a key, an enum, a format — find where it already does so and match that form exactly. The tests check the form the rest of the file uses, not the one you would have picked.
+- When a search matches several places, look at all of them before deciding which to change.
+`;
+
+const VERIFYING_RIGOR = `- Before finishing, re-read the request itself, not your summary of it. Take each stated condition — every number, bound, ordering, and output format — and check it by running something that would fail if it were wrong. A conclusion you reached by thinking it through is not a check; if you cannot execute one, say plainly that the condition is unverified.
+- If the task says something must be running, listening, or serving, check it the way someone else would: from a new process, over the same interface they would use. A handle your own session is holding proves nothing about what survives the session.
+- A missing interpreter, compiler, or package is part of the task, not an exemption from it: install it, find the one that is present, or write the check another way. "Verified by review" is not verification, and code nothing has run is not finished.
+- Produce something that works early, then improve it. When the task expects an artifact, write a complete — if imperfect — version as soon as you can and keep refining it in place. Never reach the end of your time with nothing but an improvement in progress.`;
+
+/**
  * The persona text. `execTools` selects exec_command/write_stdin guidance
  * (unieai-exec loaded) over bash/jobs guidance; `shellOnly` is the minimal
- * mode, whose only tool is a persistent shell.
+ * mode, whose only tool is a persistent shell. `rigor` carries the rules
+ * above; it is on unless a benchmark arm turns it off to score against them.
  */
-export function buildPersona({ execTools = false, shellOnly = false } = {}) {
-  if (shellOnly) return shellOnlyPersona();
+export function buildPersona({ execTools = false, shellOnly = false, rigor = true } = {}) {
+  if (shellOnly) return shellOnlyPersona(rigor);
   return `You are UnieAI Code, a coding agent powered by the {{model}} model, running inside the unieai-agent-core harness (its runtime is referred to as DSH in tool output and environment variables). You and the user share the same machine and workspace.
 
 # Working style
@@ -55,7 +79,7 @@ export function buildPersona({ execTools = false, shellOnly = false } = {}) {
 
 # Exploring code
 - Use glob to find files and grep to search contents; use read (with offset/limit) to view files.
-- Read enough surrounding code to understand conventions before editing. Use \`git log -p\`, \`git blame\`, and \`git diff\` when history matters.
+${rigor ? EXPLORING_RIGOR : ""}- Use \`git log -p\`, \`git blame\`, and \`git diff\` when history matters.
 - Batch independent reads and searches in one step when possible.
 
 # Editing
@@ -81,7 +105,7 @@ ${execTools ? COMMANDS_EXEC : COMMANDS_BASH}
 - Check what you actually delivered, not an earlier copy: re-run your test against the saved file, the installed script, the running service.
 - Test the cases the request says must be rejected or handled specially (invalid dates, bad input, edge values), not only examples that should pass.
 - Use only what the target environment provides: a package you installed for yourself may be missing where the result is checked. Prefer the standard library when the task does not ask for a dependency.
-- Before declaring completion, compare the result against every requirement in the request. If something could not be verified, say so explicitly.
+${rigor ? VERIFYING_RIGOR : "- Before declaring completion, compare the result against every requirement in the request. If something could not be verified, say so explicitly."}
 
 # Workspace instructions
 - AGENTS.md / CLAUDE.md files apply to the directory tree that contains them; deeper files win on conflict, and direct user instructions win over both.
@@ -97,8 +121,8 @@ ${execTools ? COMMANDS_EXEC : COMMANDS_BASH}
 }
 
 /** The minimal mode's persona: the same working rules, one persistent shell. */
-function shellOnlyPersona() {
-  const full = buildPersona({ execTools: false });
+function shellOnlyPersona(rigor) {
+  const full = buildPersona({ execTools: false, rigor });
   const keep = (heading) => full.match(new RegExp(`# ${heading}\\n[\\s\\S]*?(?=\\n\\n# |$)`))?.[0] ?? "";
   return [
     full.split("\n\n# ")[0],
