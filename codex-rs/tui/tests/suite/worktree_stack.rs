@@ -91,7 +91,7 @@ async fn picker_side_worktree_fork_and_cd_run_on_the_production_stack() -> Resul
     )?;
     terminal.wait_for_startup()?;
     terminal.wait_for_screen("STACK_SAVED_HISTORY")?;
-    terminal.wait_for_screen("Ask Codex to do anything")?;
+    terminal.wait_for_screen("Ask UnieAI Code to do anything")?;
 
     submit(&mut terminal, "/side")?;
     terminal.wait_for_screen("Side from main thread")?;
@@ -103,7 +103,7 @@ async fn picker_side_worktree_fork_and_cd_run_on_the_production_stack() -> Resul
     terminal.wait_for_screen("Resume a previous session")?;
     terminal.ensure_running()?;
     terminal.write_input(b"\x1b")?;
-    terminal.wait_for_screen("Ask Codex to do anything")?;
+    terminal.wait_for_screen("Ask UnieAI Code to do anything")?;
 
     submit(&mut terminal, "/worktree")?;
     terminal.wait_for_screen("Continue current conversation")?;

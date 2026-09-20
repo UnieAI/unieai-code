@@ -205,6 +205,13 @@ impl PtyCodex {
             .arg(repo_root)
             .env("TERM", "xterm-256color")
             .env("OPENAI_API_KEY", "focus-palette-test")
+            // These tests exercise the daemon, focus, reconnect and worktree
+            // paths, which are the same on either engine. uac is the default
+            // and needs a UnieAI sign-in, which a fresh CODEX_HOME does not
+            // have: it spends the startup timeout failing and then prints a
+            // banner saying the session fell back to codex. Ask for codex up
+            // front so the screen under test is the one the test describes.
+            .env("UNIEAI_ENGINE", "codex")
             .env("CODEX_HOME", codex_home.path())
             .stdin(stdin)
             .stdout(stdout)
@@ -232,7 +239,11 @@ impl PtyCodex {
             self.read_output(Duration::from_millis(/*millis*/ 50))?;
             self.answer_startup_queries()?;
 
-            if self.palette_answered && self.screen_contains("OpenAI Codex") {
+            // The product name in the startup banner. Upstream's is "OpenAI
+            // Codex"; this fork renamed it, and the matcher was left behind,
+            // so every test that waits for startup sat here until it timed
+            // out — six of them, all reported as something else.
+            if self.palette_answered && self.screen_contains("UnieAI Code") {
                 return Ok(());
             }
 

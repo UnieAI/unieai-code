@@ -78,6 +78,13 @@ pub(crate) async fn start_temporary_thread(
             "features.request_permissions_tool".to_string(),
             false.into(),
         ),
+        // Ours, and default-on, so it is not in the list upstream keeps here.
+        // Without it a recap or a title asks the model to fill in a JSON
+        // schema while handing it the peer tools: two long tool descriptions
+        // in a request that is supposed to carry none, and a model that may
+        // answer with a tool call the structured path cannot take.
+        ("features.session_mesh".to_string(), false.into()),
+        ("features.session_mesh_tasks".to_string(), false.into()),
         ("features.shell_snapshot".to_string(), false.into()),
         ("features.shell_tool".to_string(), false.into()),
         ("features.standalone_web_search".to_string(), false.into()),
