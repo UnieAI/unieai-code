@@ -317,4 +317,23 @@ jobs:
           done
           publish_one "dist/npm/codex-npm-${VERSION}.tgz" ""
 
+          # npm has reported a publish as succeeding while the registry kept no
+          # such version: 0.0.30-darwin-x64 printed its usual "+ @unieai/code@..."
+          # line and never existed. The root package's optionalDependencies pin
+          # that exact version, so one lost platform means every user on it
+          # installs a `latest` whose binary cannot resolve -- and the run is
+          # green, so nothing says so. Read the registry back and fail if a
+          # version we just published is not there.
+          missing=()
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64 ""; do
+            expected="${VERSION}${platform:+-$platform}"
+            if ! npm view "@unieai/code@${expected}" version --prefer-online >/dev/null 2>&1; then
+              missing+=("$expected")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::published but absent from the registry: ${missing[*]}"
+            exit 1
+          fi
+
           npm view @unieai/code dist-tags
