@@ -20,13 +20,14 @@ fn rabi_url_override_is_normalized() {
 }
 
 #[test]
-fn entitlements_become_models_in_order_without_duplicates() {
+fn entitlements_become_models_in_order_without_duplicates_or_custom_models() {
     let list: EntitledModels = serde_json::from_value(serde_json::json!({
         "models": [
             {"value": "p-qwen", "label": "qwen", "acceptsImages": true, "source": "group"},
             {"value": "p-qwen", "label": "qwen"},
             {"value": "", "label": "nameless"},
-            {"value": "glm", "label": "glm"}
+            {"value": "p-helper", "label": "helper", "modelType": "custom_model"},
+            {"value": "glm", "label": "glm", "modelType": "base_model"}
         ]
     }))
     .expect("parse");

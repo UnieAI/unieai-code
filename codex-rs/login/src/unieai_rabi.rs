@@ -35,6 +35,13 @@ const APPROVE_PATH: &str = "/desktop/authorize";
 const RELAY_PATH: &str = "/api/desktop/v1";
 /// Stands in for token expiry: a desktop key does not expire client-side.
 const NO_EXPIRY: i64 = i64::MAX;
+/// Who is enrolling. Rabi names the minted key after this and retires only
+/// this user's previous keys *of the same name*, so declaring one keeps our
+/// login and the desktop app's from evicting each other. A name unset means
+/// "UnieAI Agent Desktop", which is the desktop app's seat, not ours. The
+/// string is shown to the person on the approval page, so it reads as a
+/// product name rather than a package name.
+const CLIENT_NAME: &str = "UnieAI Code";
 
 pub struct UnieAIRabiPrompt {
     pub user_code: String,
@@ -93,7 +100,16 @@ struct EntitledModel {
     label: String,
     #[serde(default)]
     accepts_images: bool,
+    /// `custom_model` for a UnieAI Studio custom model, `base_model`
+    /// otherwise. A custom model is an agent of its own, with its own tools
+    /// and harness; running one inside this agent stacks two agents on one
+    /// turn, so they are left out of the menu.
+    #[serde(default)]
+    model_type: String,
 }
+
+/// What [`EntitledModel::model_type`] calls a Studio custom model.
+const CUSTOM_MODEL: &str = "custom_model";
 
 #[derive(Debug, Deserialize)]
 struct EntitledModels {
@@ -120,6 +136,7 @@ fn models_from_entitlements(models: Vec<EntitledModel>) -> Vec<UnieAIModel> {
     let mut seen = std::collections::HashSet::new();
     models
         .into_iter()
+        .filter(|model| model.model_type != CUSTOM_MODEL)
         .filter(|model| !model.value.is_empty() && seen.insert(model.value.clone()))
         .map(|model| UnieAIModel {
             name: (!model.label.is_empty() && model.label != model.value).then_some(model.label),
@@ -160,7 +177,7 @@ pub async fn run_rabi_device_login(
     let grant: DeviceStart = post_json(
         &client,
         &format!("{rabi_url}/api/desktop/device/start"),
-        &serde_json::json!({}),
+        &serde_json::json!({ "client_name": CLIENT_NAME }),
         None,
         "Rabi device login start",
     )
@@ -219,7 +236,12 @@ async fn poll_for_key(
         let poll: DevicePoll = post_json(
             client,
             &url,
-            &serde_json::json!({ "device_code": grant.device_code }),
+            // Also here: the grant carries the name from `start`, but a
+            // deployment old enough not to record it falls back to the body.
+            &serde_json::json!({
+                "device_code": grant.device_code,
+                "client_name": CLIENT_NAME,
+            }),
             None,
             "Rabi device login poll",
         )
@@ -245,7 +267,9 @@ async fn poll_for_key(
                 let detail = poll
                     .error
                     .unwrap_or_else(|| format!("unexpected status \"{other}\""));
-                return Err(io::Error::other(format!("Rabi device login failed: {detail}")));
+                return Err(io::Error::other(format!(
+                    "Rabi device login failed: {detail}"
+                )));
             }
         };
         if start.elapsed() + wait >= max_wait {

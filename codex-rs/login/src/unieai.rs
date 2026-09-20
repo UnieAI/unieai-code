@@ -449,9 +449,7 @@ inference access (Studio → Keys), then retry `unieai login`",
     {
         apply_studio_model_sizes(models, &sizes);
     }
-    let available_models = available_models;
-
-    let credentials = UnieAICredentials {
+    let mut credentials = UnieAICredentials {
         account: UnieAIAccountKind::Studio,
         studio_url,
         access_token: tokens.access_token,
@@ -465,6 +463,19 @@ inference access (Studio → Keys), then retry `unieai login`",
         available_model_ids: None,
         available_models,
     };
+    // Studio's provider config says neither what a model accepts nor which
+    // entries are custom models; the gateway's listing says both. The same
+    // pass runs on every account sync, so this only decides what the menu
+    // shows between login and the next startup. Best-effort by design: an
+    // unreachable gateway leaves Studio's list exactly as it came.
+    match fetch_gateway_model_capabilities(&client, &credentials).await {
+        Ok(capabilities) => {
+            if let Some(models) = credentials.available_models.as_mut() {
+                apply_gateway_capabilities(models, &capabilities);
+            }
+        }
+        Err(err) => tracing::debug!(%err, "gateway model capabilities unavailable"),
+    }
     save_unieai_credentials(codex_home, &credentials)?;
     Ok(credentials)
 }
@@ -589,7 +600,18 @@ struct GatewayModelEntry {
     context_window: Option<i64>,
     #[serde(default)]
     modalities: Option<GatewayModelModalities>,
+    /// The gateway's own taxonomy: `custom_model` for a Studio custom model,
+    /// `base_model` for a plain one. Studio's `/api/config` drops this, so the
+    /// gateway listing is the only place the CLI can learn it.
+    #[serde(default)]
+    model_type: String,
 }
+
+/// What [`GatewayModelEntry::model_type`] calls a Studio custom model. Such a
+/// model is an agent in its own right — its own harness, its own tools — so
+/// driving one from inside this agent stacks two agents on one turn. They are
+/// left out of the model menu.
+const CUSTOM_MODEL: &str = "custom_model";
 
 #[derive(Debug, Deserialize)]
 struct GatewayModelList {
@@ -601,7 +623,10 @@ async fn fetch_gateway_model_capabilities(
     client: &codex_http_client::HttpClient,
     credentials: &UnieAICredentials,
 ) -> io::Result<Vec<GatewayModelEntry>> {
-    let url = format!("{}/models", credentials.gateway_base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/models",
+        credentials.gateway_base_url.trim_end_matches('/')
+    );
     get_json::<GatewayModelList>(client, &url, &credentials.gateway_api_key, None)
         .await
         .map(|list| list.data)
@@ -671,7 +696,14 @@ fn apply_studio_model_sizes(models: &mut [UnieAIModel], sizes: &HashMap<String, 
 }
 
 /// Fill in what Studio leaves out: context window and input modalities.
-fn apply_gateway_capabilities(models: &mut [UnieAIModel], capabilities: &[GatewayModelEntry]) {
+fn apply_gateway_capabilities(models: &mut Vec<UnieAIModel>, capabilities: &[GatewayModelEntry]) {
+    // Only what the gateway names as a custom model goes; a model it does not
+    // list at all stays, so a partial listing never empties the menu.
+    models.retain(|model| {
+        !capabilities
+            .iter()
+            .any(|entry| entry.id == model.id && entry.model_type == CUSTOM_MODEL)
+    });
     for model in models.iter_mut() {
         let Some(entry) = capabilities.iter().find(|entry| entry.id == model.id) else {
             continue;
@@ -911,23 +943,42 @@ mod tests {
                 context_window: None,
                 input_modalities: None,
             },
+            UnieAIModel {
+                id: "my-agent".to_string(),
+                name: None,
+                context_window: None,
+                input_modalities: None,
+            },
         ];
         let listing: GatewayModelList = serde_json::from_value(serde_json::json!({
             "data": [
-                {"id": "text-model", "context_window": 128000,
+                {"id": "text-model", "context_window": 128000, "model_type": "base_model",
                  "modalities": {"input": ["text"], "output": ["text"]}},
                 {"id": "vision-model", "context_window": 64000,
                  "modalities": {"input": ["text", "image"]}},
-                {"id": "other", "context_window": null}
+                {"id": "other", "context_window": null},
+                {"id": "my-agent", "model_type": "custom_model"}
             ]
         }))
         .expect("listing");
 
         apply_gateway_capabilities(&mut models, &listing.data);
 
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["text-model", "vision-model", "unlisted"],
+            "the custom model is dropped; one the gateway does not list stays",
+        );
         assert_eq!(models[0].context_window, Some(128_000));
         assert_eq!(models[0].input_modalities, Some(vec!["text".to_string()]));
-        assert_eq!(models[1].context_window, Some(32_000), "Studio's value wins");
+        assert_eq!(
+            models[1].context_window,
+            Some(32_000),
+            "Studio's value wins"
+        );
         assert_eq!(
             models[1].input_modalities,
             Some(vec!["text".to_string(), "image".to_string()])
@@ -951,13 +1002,32 @@ mod tests {
         assert_eq!(sizes.get("unsized"), None);
 
         let mut models = vec![
-            UnieAIModel { id: "flash".to_string(), name: None, context_window: None, input_modalities: None },
-            UnieAIModel { id: "sized".to_string(), name: None, context_window: Some(8_000), input_modalities: None },
-            UnieAIModel { id: "unsized".to_string(), name: None, context_window: None, input_modalities: None },
+            UnieAIModel {
+                id: "flash".to_string(),
+                name: None,
+                context_window: None,
+                input_modalities: None,
+            },
+            UnieAIModel {
+                id: "sized".to_string(),
+                name: None,
+                context_window: Some(8_000),
+                input_modalities: None,
+            },
+            UnieAIModel {
+                id: "unsized".to_string(),
+                name: None,
+                context_window: None,
+                input_modalities: None,
+            },
         ];
         apply_studio_model_sizes(&mut models, &sizes);
         assert_eq!(models[0].context_window, Some(131_072));
-        assert_eq!(models[1].context_window, Some(8_000), "the provider config wins");
+        assert_eq!(
+            models[1].context_window,
+            Some(8_000),
+            "the provider config wins"
+        );
         assert_eq!(models[2].context_window, None);
     }
 
