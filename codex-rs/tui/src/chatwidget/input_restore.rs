@@ -367,6 +367,25 @@ impl ChatWidget {
     /// placeholders in a stable order and rebase text element byte ranges so the restored composer
     /// state stays aligned with the merged attachment list. Returns `None` when there is nothing to
     /// restore.
+    /// Hands back anything still waiting to be steered once the turn is over.
+    ///
+    /// A pending steer is shown under "Messages to be submitted after next
+    /// tool call". When the turn ends without the server acknowledging one,
+    /// there is no next tool call and nothing will ever deliver it, but the
+    /// queue kept it — and the header kept promising — for the rest of the
+    /// session. The TUI cannot tell a lost receipt from a lost message, so it
+    /// puts the text back in the composer and lets the user decide rather
+    /// than resending it or dropping it silently.
+    pub(super) fn restore_undelivered_steers_after_turn(&mut self) {
+        if self.input_queue.pending_steers.is_empty() {
+            return;
+        }
+        if let Some(combined) = self.drain_pending_messages_for_restore() {
+            self.restore_composer_state(combined);
+        }
+        self.refresh_pending_input_preview();
+    }
+
     fn drain_pending_messages_for_restore(&mut self) -> Option<ThreadComposerState> {
         if self.input_queue.pending_steers.is_empty() && !self.has_queued_follow_up_messages() {
             return None;

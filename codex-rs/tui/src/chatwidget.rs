@@ -1404,16 +1404,27 @@ impl ChatWidget {
             return;
         }
 
-        if self
+        // Anywhere in the queue, not only at its head. Steers are delivered in
+        // order, so a receipt for the third one means the first two were
+        // delivered and their receipts were lost or never sent; matching only
+        // the head left every later steer stuck behind them for the rest of
+        // the session, under a header still promising to submit them.
+        let matched = self
             .input_queue
             .pending_steers
-            .front()
-            .is_some_and(|pending| match client_id {
+            .iter()
+            .position(|pending| match client_id {
                 Some(client_id) => pending.client_id == client_id,
                 // Older app servers do not echo submission IDs.
                 None => pending.compare_key == Self::pending_steer_compare_key_from_items(items),
-            })
-        {
+            });
+        if let Some(matched) = matched {
+            let skipped = self.input_queue.pending_steers.drain(..matched).count();
+            if skipped > 0 {
+                tracing::warn!(
+                    "{skipped} steer(s) never acknowledged; dropping with their successor's receipt"
+                );
+            }
             if let Some(pending) = self.input_queue.pending_steers.pop_front() {
                 self.refresh_pending_input_preview();
                 let pending_display =

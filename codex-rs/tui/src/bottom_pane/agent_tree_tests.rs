@@ -279,3 +279,26 @@ fn the_row_shows_time_tokens_and_how_much_context_is_left() {
         "{rendered}"
     );
 }
+
+#[test]
+fn a_finished_plan_leaves_the_panel_at_once_but_an_unfinished_one_stays() {
+    let done = |text: &str| TodoRow {
+        text: text.to_string(),
+        status: TodoStatus::Completed,
+    };
+    let mut tree = AgentTree::default();
+    tree.set_todos(vec![done("read"), done("write")]);
+    assert!(tree.retire_finished_todos());
+    assert!(tree.is_empty(), "the transcript card is the record now");
+    assert!(!tree.retire_finished_todos(), "nothing left to retire");
+
+    tree.set_todos(vec![
+        done("read"),
+        TodoRow {
+            text: "write".to_string(),
+            status: TodoStatus::Pending,
+        },
+    ]);
+    assert!(!tree.retire_finished_todos());
+    assert!(!tree.is_empty(), "what is left is worth keeping on screen");
+}

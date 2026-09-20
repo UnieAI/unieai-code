@@ -102,6 +102,29 @@ impl AgentTree {
         true
     }
 
+    /// Drops a todo list with nothing left to do. Returns whether anything
+    /// changed.
+    ///
+    /// The panel answers "what is planned, and who is working". A list whose
+    /// every item is ticked answers "nothing", so it goes the moment the last
+    /// one is ticked rather than waiting for the turn to end — the transcript
+    /// card keeps the record. Leaving it up printed the same checklist twice
+    /// on screen and kept it there for the rest of the session. An unfinished
+    /// list stays, including between turns: that is exactly when "what is
+    /// left" is worth having.
+    pub(crate) fn retire_finished_todos(&mut self) -> bool {
+        if self.todos.is_empty()
+            || !self
+                .todos
+                .iter()
+                .all(|todo| todo.status == TodoStatus::Completed)
+        {
+            return false;
+        }
+        self.todos.clear();
+        true
+    }
+
     /// Replaces the agent and peer rows, keeping the selection on the same
     /// target where possible so a refresh does not move the cursor under the
     /// user's fingers.

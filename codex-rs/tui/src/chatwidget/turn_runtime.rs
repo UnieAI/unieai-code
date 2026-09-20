@@ -162,6 +162,7 @@ impl ChatWidget {
             self.request_status_line_branch_refresh();
             self.request_status_line_git_summary_refresh();
             self.refresh_thread_usage_after_turn();
+            self.restore_undelivered_steers_after_turn();
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.clear_context_compaction();
@@ -539,6 +540,9 @@ impl ChatWidget {
         // question the user had to re-ask.
         self.bottom_pane
             .set_agent_tree_todos(crate::bottom_pane::todo_rows_from_plan(&update));
+        // ...and taken down again as soon as the last item is ticked; see
+        // AgentTree::retire_finished_todos.
+        self.bottom_pane.retire_finished_agent_tree_todos();
         self.add_to_history(history_cell::new_plan_update(update));
     }
 

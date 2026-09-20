@@ -806,6 +806,13 @@ impl BottomPane {
         }
     }
 
+    /// Drops the resident todo list once every item on it is ticked.
+    pub(crate) fn retire_finished_agent_tree_todos(&mut self) {
+        if self.agent_tree.retire_finished_todos() {
+            self.request_redraw();
+        }
+    }
+
     /// Replaces the resident agent and peer rows.
     pub(crate) fn set_agent_tree_agents(&mut self, agents: Vec<agent_tree::AgentRow>) {
         if self.agent_tree.set_agents(agents) {
