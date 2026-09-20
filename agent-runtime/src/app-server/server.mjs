@@ -439,9 +439,31 @@ export function createHandlers({
       if (thread.engineTurnWaiting) {
         thread.engineTurnWaiting = false;
         startEngineTurn(thread);
+        return;
       }
+      // Messages the running turn could not take go in a turn of their own,
+      // rather than waiting in the client for a delivery that never comes.
+      if (thread.queuedInput?.length) setImmediate(() => sendQueuedInput(thread, ctx));
     };
     return { turnId, finish };
+  };
+
+  /**
+   * Start a turn with the messages a running turn refused (see turn/steer).
+   * Their client ids are kept, so each one stops being pending in the client.
+   */
+  const sendQueuedInput = (thread, ctx) => {
+    const queued = thread.queuedInput ?? [];
+    thread.queuedInput = [];
+    if (!queued.length || thread.activeTurn) return;
+    const text = queued.map((entry) => entry.text).join("\n\n");
+    const images = queued.flatMap((entry) => entry.images ?? []);
+    const turn = beginTurn(thread, ctx);
+    for (const entry of queued) emitUserMessage(thread, entry.text, entry.clientId);
+    thread.engine
+      ?.send(text, { abortSignal: thread.activeTurn.abort.signal, images })
+      .then(() => turn.finish())
+      .catch((error) => turn.finish({ error }));
   };
 
   /** Show a turn the engine started on its own (see onEngineTurn). */
@@ -759,8 +781,14 @@ export function createHandlers({
       // The engine refuses when what is running cannot act on an interjection
       // (a compaction), and says so rather than dropping the text.
       const clientId = params?.clientUserMessageId ?? null;
-      const delivered = Boolean(await thread.engine?.steer?.(text, { clientId, images: imagesOf(params?.input) }));
-      if (!delivered) throw new RpcError(RPC.INVALID_REQUEST, "the running turn did not accept the message");
+      const images = imagesOf(params?.input);
+      const delivered = Boolean(await thread.engine?.steer?.(text, { clientId, images }));
+      if (!delivered) {
+        // Kept, not refused: it goes in its own turn when this one ends
+        // (a compaction, or a turn the engine will not interrupt).
+        thread.queuedInput = [...(thread.queuedInput ?? []), { text, clientId, images }];
+        return { turnId: turn.id };
+      }
       // An engine that reports when the model takes the message (dsh:
       // at its next step) emits the user message then, through
       // steerDelivered; the client keeps it pending until that point, as it

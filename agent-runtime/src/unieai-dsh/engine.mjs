@@ -967,7 +967,10 @@ export function createDshEngine({
 
     /** Mid-turn input, delivered through dsh's own steering queue. */
     async steer(text, { clientId = null, images = [] } = {}) {
-      if (!turnActive || !sessionId) return false;
+      // Any open dsh turn takes a steered message, including one dsh runs on
+      // its own (a goal round, a subagent waking it). Refusing those left the
+      // message pending in the client with nothing to deliver it.
+      if (!sessionId || !(turnActive || dshTurnOpen)) return false;
       // A steered message carries its images too, the way a prompt does.
       const content = await promptContent(text, images, {
         imageInput: Boolean(sessionAgent?.agentCapabilities?.promptCapabilities?.image),

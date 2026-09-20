@@ -414,15 +414,31 @@ test("steering answers with the running turn's id and echoes the message", async
   release();
 });
 
-test("steering something that cannot take it is an error, not success", async () => {
-  // The engine refuses when what is running is a compaction; with nothing
+test("a message the running turn cannot take is sent in a turn of its own when it ends", async () => {
+  // The engine refuses while what is running is a compaction; with nothing
   // running there is no turn to steer at all.
+  const sent = [];
   const { engine, release } = heldEngine({ steer: () => false });
+  engine.send = (text) => {
+    sent.push(text);
+    return sent.length === 1 ? new Promise((resolve) => { engine.releaseFirst = resolve; }) : Promise.resolve();
+  };
   const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
   await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "hello" }), /no turn is running/);
-  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: () => {} });
-  await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "hello" }), /did not accept/);
+  const emitted = [];
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: (method, params) => emitted.push([method, params]) });
+  await h["turn/steer"]({ threadId: thread.id, input: "while it works", clientUserMessageId: "c1" });
+  await h["turn/steer"]({ threadId: thread.id, input: "and this", clientUserMessageId: "c2" });
+  assert.deepEqual(sent, ["go"], "nothing is sent while the turn runs");
+  engine.releaseFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent, ["go", "while it works\n\nand this"]);
+  const echoed = emitted
+    .filter(([method, params]) => method === "item/completed" && params.item.type === "userMessage")
+    .map(([, params]) => [params.item.content?.[0]?.text ?? params.item.text, params.item.clientId]);
+  assert.deepEqual(echoed.slice(-2), [["while it works", "c1"], ["and this", "c2"]]);
   release();
 });
 
