@@ -639,3 +639,13 @@ test("a steered message carries its image the way a prompt does: for a model tha
     { type: "text", text: `what is this?\n\n[Image #1 is the file ${png}. You cannot see images directly; look at it with describe_image.]` },
   ]);
 });
+
+test("dsh's \"Internal error\" carries the detail that says what went wrong", async () => {
+  const { AcpError } = await import("./acp-client.mjs");
+  const failed = new AcpError("Internal error", {
+    code: -32603,
+    data: { details: 'no adapter registered for provider "unieai"' },
+  });
+  assert.equal(failed.message, 'Internal error: no adapter registered for provider "unieai"');
+  assert.equal(new AcpError("boom", { data: {} }).message, "boom");
+});

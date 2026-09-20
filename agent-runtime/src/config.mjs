@@ -24,11 +24,24 @@ export function loadCredentials() {
       gatewayBaseUrl: parsed.gateway_base_url,
       gatewayApiKey: parsed.gateway_api_key,
       studioUrl: parsed.studio_url,
+      // Which account this is, for a client to notice it changed (see
+      // accountId): never the key itself.
+      accountId: accountId(parsed),
       models
     };
   } catch {
-    return { signedIn: false, gatewayBaseUrl: "", gatewayApiKey: "", studioUrl: "", models: [] };
+    return { signedIn: false, gatewayBaseUrl: "", gatewayApiKey: "", studioUrl: "", accountId: "", models: [] };
   }
+}
+
+/**
+ * Who a credentials file signs in as: the product, the gateway it uses and
+ * the user. A long-running server started for one account serves models and
+ * threads that belong to it, so a client on another account must replace it.
+ */
+export function accountId(parsed) {
+  if (!parsed) return "";
+  return [parsed.account ?? "studio", parsed.gateway_base_url ?? "", parsed.email ?? ""].join("|");
 }
 
 /** Configure agent-core's upstream env for this process. */

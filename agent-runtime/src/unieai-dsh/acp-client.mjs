@@ -17,11 +17,21 @@ export const ACP_PROTOCOL_VERSION = 1;
 
 export class AcpError extends Error {
   constructor(message, { code, data } = {}) {
-    super(message);
+    // dsh answers an internal failure with "Internal error" and puts what
+    // actually went wrong in `data.details`. Dropping it left the user with
+    // a message that says nothing at all.
+    super(detailed(message, data));
     this.name = "AcpError";
     this.code = code;
     this.data = data;
   }
+}
+
+/** `message`, with the detail dsh attached when it adds anything. */
+function detailed(message, data) {
+  const details = typeof data?.details === "string" ? data.details.trim() : "";
+  if (!details || String(message).includes(details)) return String(message);
+  return `${message}: ${details}`;
 }
 
 /**

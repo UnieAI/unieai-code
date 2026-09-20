@@ -13,7 +13,7 @@ import { startAppServer } from "./server.mjs";
 import { createForwarder } from "./forward.mjs";
 import { createItemBridge } from "./items.mjs";
 import { createApprovalBridge } from "./approval.mjs";
-import { sandboxBin } from "../config.mjs";
+import { loadCredentials, sandboxBin } from "../config.mjs";
 
 export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
 
@@ -23,7 +23,11 @@ export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
  * thread. `threadStore` (see unieai-thread-store.mjs) makes threads persistent.
  * `onShutdown` runs before the process exits.
  */
-export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, threadMode, onShutdown = async () => {} }) {
+/** How long the server waits for another client before stopping. */
+const IDLE_EXIT_MS = Number(process.env.UNIEAI_UAC_IDLE_EXIT_MS) || 15_000;
+
+export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onShutdown = async () => {} }) {
+  let idleTimer = null;
   const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
   const socketPath =
     process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "app-server-control", "app-server-control.sock");
@@ -54,8 +58,24 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     threadStore,
     defaultModel,
     threadMode,
+    resolveModel,
+    // The server is this client's: when the client goes, so does it, unless
+    // another connects first (an engine switch or an update relaunches the
+    // client within seconds). Left running, it would serve the next client
+    // with another account's models and an older release's behaviour.
+    onIdle: () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (server?.connections?.() === 0) {
+          log(`no client for ${IDLE_EXIT_MS}ms; stopping`);
+          shutdown();
+        }
+      }, IDLE_EXIT_MS);
+      idleTimer.unref?.();
+    },
     forward: (method, params) => forwarder.forward(method, params),
     onError: (error) => log("[app-server]", error.message),
+    onTurnError: (message, { threadId }) => log(`[turn] ${threadId} failed: ${message}`),
     onTrace: (line) => log("[trace]", line),
     createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onSubagent, onChildActivity, askUser, onCompaction }) =>
       buildEngine({
@@ -113,6 +133,9 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   const stamp = {
     pid: process.pid,
     cliVersion: process.env.UNIEAI_CLI_VERSION ?? null,
+    // Which account it serves: its models, threads and gateway are that
+    // account's, so a client signed in as someone else needs its own.
+    accountId: loadCredentials().accountId || null,
     engineVersion: version,
     socket: socketPath,
     startedAt: new Date().toISOString(),

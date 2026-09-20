@@ -54,6 +54,27 @@ test("/model and /permissions reach the engine and stay with the thread", async 
   assert.equal(configured.length, 1);
 });
 
+test("a settings update says what is now in force, so the client stops waiting on it", async () => {
+  const { handlers, ctx, thread, emitted } = await setup();
+  await handlers["thread/settings/update"]({ threadId: thread.id, permissions: "my-profile", approvalPolicy: "never" }, ctx);
+  const [method, params] = emitted.findLast(([m]) => m === "thread/settings/updated");
+  assert.equal(params.threadId, thread.id);
+  assert.deepEqual(
+    [params.threadSettings.activePermissionProfile, params.threadSettings.approvalPolicy],
+    [{ id: "my-profile", extends: null }, "never"],
+  );
+  if (haveSchemas) {
+    const result = validateAgainstSchema("ServerNotification", { method, params }, { repoRoot });
+    assert.equal(result.ok, true, `${method}\n  ${result.problems.join("\n  ")}`);
+  }
+
+  // Nothing moved, but the client is still owed an answer: without one its
+  // pending change never clears and it refuses to switch task or fork.
+  emitted.length = 0;
+  await handlers["thread/settings/update"]({ threadId: thread.id, permissions: "my-profile" }, ctx);
+  assert.equal(emitted.filter(([m]) => m === "thread/settings/updated").length, 1);
+});
+
 test("`!command` runs in the thread's directory, shows as a user shell card, and reaches the model once", async () => {
   const { handlers, ctx, thread, sent, emitted } = await setup();
   assert.deepEqual(await handlers["thread/shellCommand"]({ threadId: thread.id, command: "echo shell-$((20+22))" }, ctx), {});
@@ -113,4 +134,33 @@ test("a compaction dsh decides on itself is shown like one the user asked for", 
   live.compacting = false;
   engineOptions.onCompaction({ phase: "start", requested: true });
   assert.deepEqual(emitted.filter(([, params]) => params.item?.type === "contextCompaction"), []);
+});
+
+test("the plan and a question end the message the model was streaming", async () => {
+  const emitted = [];
+  let engineOptions = null;
+  let finish = null;
+  const handlers = createHandlers({
+    codexHome: "/h",
+    // The turn is still running: that is when the client holds the message.
+    createEngineFor: (options) => {
+      engineOptions = options;
+      return { send: () => new Promise((resolve) => (finish = resolve)) };
+    },
+  });
+  const ctx = { emit: (method, params) => emitted.push([method, params]), request: async () => ({}) };
+  const { thread } = await handlers["thread/start"]({ cwd: process.cwd() }, ctx);
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "plan it" }] }, ctx);
+  const engine = engineOptions;
+  engine.emit("item/agentMessage/delta", { delta: "I'll set up the list" });
+  engine.emit("turn/plan/updated", { plan: [{ step: "read", status: "pending" }] });
+  const order = emitted
+    .map(([method, params]) => (params?.item?.type === "agentMessage" ? `${method}:agentMessage` : method))
+    .filter((method) => method.endsWith("agentMessage") || method === "turn/plan/updated");
+  assert.deepEqual(
+    order.slice(-2),
+    ["item/completed:agentMessage", "turn/plan/updated"],
+    "the message is closed before the plan, so a client holding it does not wait forever",
+  );
+  finish();
 });

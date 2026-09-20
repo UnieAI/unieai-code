@@ -163,10 +163,17 @@ export function createHandlers({
   // workspace-write, so the header promised a restriction nothing enforced.
   sandboxMode = "workspace-write",
   now = () => new Date().toISOString(),
+  // Called with what made a turn fail, so the reason is in the server's log
+  // and not only in the one line the client shows.
+  onTurnError = () => {},
   threadStore = null,
   // The engine variant a new thread runs in (uac: the dsh mode), read when
   // the thread starts; a forked thread keeps its source's.
   threadMode = () => null,
+  // A requested model as this account can actually run it. A config written
+  // for another account names models this one does not have, and the client
+  // would otherwise show a model no turn runs on.
+  resolveModel = (model) => model,
 }) {
   // Thread state lives here, not in the Rust process: its ThreadStateManager
   // keeps threads in an in-process HashMap, so a thread created there is not
@@ -250,6 +257,49 @@ export function createHandlers({
     return child ? subagents.threadFields(child) : null;
   };
 
+  /** What the thread runs under, as the protocol's SandboxPolicy. */
+  const sandboxShape = (t) =>
+    t.readOnly || (t.permissions?.sandbox ?? (sandboxMode === "readOnly" ? "read-only" : null)) === "read-only"
+      ? { type: "readOnly", networkAccess: false }
+      : t.permissions?.sandbox === "danger-full-access" || sandboxMode === "dangerFullAccess"
+        ? { type: PROTOCOL_SANDBOX["danger-full-access"] }
+        : { type: "workspaceWrite", networkAccess: true };
+
+  /** The named profile in force: the client's own when it asked for one. */
+  const permissionProfileShape = (t) => ({
+    id: t.permissionProfile ?? (sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write"),
+    extends: null,
+  });
+
+  /**
+   * The thread as the protocol's ThreadSettings, for `thread/settings/updated`.
+   *
+   * The TUI holds a pending permission change until a notification confirms
+   * the profile it asked for is the one in force, and blocks switching task,
+   * forking and `/cd` while it waits ("Wait for permissions to update before
+   * ..."). We answered `thread/settings/update` and sent nothing, so the wait
+   * never ended: one `/permissions` left the rest of the session fenced off
+   * until it was restarted.
+   */
+  const threadSettings = (t) => ({
+    disabledPluginIds: [],
+    cwd: t.cwd,
+    approvalPolicy: t.permissions?.approval === "never" ? "never" : "on-request",
+    approvalsReviewer: "user",
+    sandboxPolicy: sandboxShape(t),
+    activePermissionProfile: permissionProfileShape(t),
+    model: t.model || defaultModel || "",
+    modelProvider: t.modelProvider || defaultProvider || "",
+    serviceTier: null,
+    effort: t.effort ?? null,
+    summary: null,
+    // dsh has no plan/default split of its own; a thread is always the one
+    // the client started, and its model is the thread's.
+    collaborationMode: { mode: "default", settings: { model: t.model || defaultModel || "" } },
+    multiAgentMode: "explicitRequestOnly",
+    personality: null,
+  });
+
   /** The session-settings half of thread/start, /resume and /fork responses. */
   const sessionResponse = (t, params, turns = []) => ({
     thread: threadShape(t, turns),
@@ -263,15 +313,8 @@ export function createHandlers({
     approvalPolicy: params?.approvalPolicy || "on-request",
     approvalsReviewer: params?.approvalsReviewer || "user",
     // What the thread runs under: its own -s when it has one.
-    sandbox: t.readOnly || (t.permissions?.sandbox ?? (sandboxMode === "readOnly" ? "read-only" : null)) === "read-only"
-      ? { type: "readOnly", networkAccess: false }
-      : t.permissions?.sandbox === "danger-full-access" || sandboxMode === "dangerFullAccess"
-        ? { type: PROTOCOL_SANDBOX["danger-full-access"] }
-        : { type: "workspaceWrite", networkAccess: true },
-    activePermissionProfile: {
-      id: t.permissionProfile ?? (sandboxMode === "readOnly" || t.readOnly ? ":read-only" : ":workspace-write"),
-      extends: null,
-    },
+    sandbox: sandboxShape(t),
+    activePermissionProfile: permissionProfileShape(t),
     // dsh decides how much the model thinks; no effort is chosen here, and
     // "none" would read as thinking turned off.
     reasoningEffort: null,
@@ -392,6 +435,9 @@ export function createHandlers({
         if (method === "item/completed" && openCards.delete(item?.id) && openCards.size === 0) runAfterCards();
         return sent;
       },
+      // What the model said so far is a finished message: anything that is
+      // not a card (the plan, a question) still ends the text before it.
+      closeText,
       /** Run `place` now, or once the cards open in this turn have completed. */
       whenNoOpenCards: (place) => {
         if (openCards.size === 0) place();
@@ -418,7 +464,9 @@ export function createHandlers({
         // The client files an error by thread and turn and needs to know
         // whether to expect a retry; without those it cannot place the error
         // at all, so an engine failure was invisible.
-        ctx?.emit?.("error", { error: { message: String(error?.message || error) }, willRetry: false, threadId: thread.id, turnId });
+        const message = String(error?.message || error);
+        onTurnError(message, { threadId: thread.id, turnId });
+        ctx?.emit?.("error", { error: { message }, willRetry: false, threadId: thread.id, turnId });
       }
       thread.activeTurn = null;
       thread.pendingAnswer = null;
@@ -533,6 +581,7 @@ export function createHandlers({
       onSteerDelivered: ({ clientId, text }) => emitUserMessage(thread, text, clientId),
       // The model's questions, through the client's request_user_input screen.
       askUser: async ({ questions }) => {
+        thread.pendingAnswer?.closeText?.();
         const emitItem = thread.pendingAnswer?.emitItem;
         for (const detail of questionDetails(questions)) {
           const item = agentMessageItem(newItemId(), detail);
@@ -586,6 +635,10 @@ export function createHandlers({
       request: (...args) => thread.connection.request(...args),
       emit: (method, params) => {
         const pending = thread.pendingAnswer;
+        // The plan checklist shows no card, but it still marks the end of
+        // what the model was saying: a client holding the message open (and
+        // queueing what follows behind it) would wait forever.
+        if (method === "turn/plan/updated") pending?.closeText?.();
         // Text deltas are routed through the turn's answer item so they carry
         // its id; everything else just gains the thread/turn stamps.
         if (method === "item/agentMessage/delta" && pending?.emitAnswerDelta) {
@@ -607,12 +660,17 @@ export function createHandlers({
    */
   const applySettings = async (thread, params) => {
     const changed = (value, current) => (typeof value === "string" && value && value !== current ? value : null);
-    const model = changed(params?.model, thread.model);
+    const model = changed(resolveModel(params?.model), thread.model);
     const effort = changed(params?.effort, thread.effort);
     const wanted = Object.fromEntries(Object.entries(requestedPermissions(params)).filter(([, value]) => value));
     const permissions = { ...thread.permissions, ...wanted };
     const permissionsChanged = JSON.stringify(permissions) !== JSON.stringify(thread.permissions ?? {});
-    if (!model && !effort && !permissionsChanged) return;
+    // The named profile the client asked for, as thread/start records it: it
+    // is what the client matches against to see its change took effect.
+    const profile = typeof params?.permissions === "string" ? params.permissions : null;
+    const profileChanged = profile !== null && profile !== thread.permissionProfile;
+    if (profileChanged) thread.permissionProfile = profile;
+    if (!model && !effort && !permissionsChanged && !profileChanged) return;
     if (model) thread.model = model;
     if (effort) thread.effort = effort;
     if (permissionsChanged) thread.permissions = permissions;
@@ -690,7 +748,7 @@ export function createHandlers({
     async "thread/start"(params, ctx) {
       const thread = newThread({
         cwd: params?.cwd || process.cwd(),
-        model: params?.model,
+        model: resolveModel(params?.model),
         modelProvider: params?.modelProvider,
         ephemeral: params?.ephemeral ?? false,
         mode: threadMode(),
@@ -724,9 +782,16 @@ export function createHandlers({
     },
 
     /** /model, /permissions: kept on the thread and applied from the next step. */
-    async "thread/settings/update"(params) {
+    async "thread/settings/update"(params, ctx) {
       const thread = getThread(params?.threadId);
       await applySettings(thread, params);
+      // Always, even when nothing moved: the client is waiting to be told
+      // what is in force, and a request that changed nothing still answers
+      // that question. See threadSettings.
+      (ctx ?? thread.connection)?.emit?.("thread/settings/updated", {
+        threadId: thread.id,
+        threadSettings: threadSettings(thread),
+      });
       return {};
     },
 
@@ -1119,8 +1184,8 @@ export function textOf(input) {
  * — useful in tests, wrong in production, where the platform surface has to
  * reach the Rust app-server.
  */
-export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, forward = null, onError = () => {}, onTrace = null }) {
-  const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel, threadMode });
+export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onTurnError, forward = null, onError = () => {}, onTrace = null, onIdle = null }) {
+  const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel, threadMode, resolveModel, onTurnError });
   // Ours are unknown to the Rust side: a thread id it would look up is dropped.
   const forwardPlatform = forward
     ? (method, params, ...context) => {
@@ -1212,6 +1277,9 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
       conn.onClose(() => {
         live.delete(conn);
         trace(`connection ${connId} closed`);
+        // The client this server was started for is gone: whoever owns the
+        // process decides whether it stays (see onIdle).
+        if (live.size === 0) onIdle?.();
         for (const { resolve, timer } of pending.values()) {
           if (timer) clearTimeout(timer);
           resolve({ decision: "cancel" }); // the client is gone; cancel, not "maybe"
@@ -1223,6 +1291,8 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
 
   await transport.listen();
   return {
+    /** How many clients are connected right now. */
+    connections: () => live.size,
     ...transport,
     handlers,
     socketPath,

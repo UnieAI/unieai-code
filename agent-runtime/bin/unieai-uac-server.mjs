@@ -177,6 +177,20 @@ await launchAppServer({
   defaultModel: dsh.defaultModel,
   threadMode,
   onShutdown: () => Promise.all([...hosts.values()].map((host) => host.close())),
+  // What this account can actually run: a model it does not offer (a config
+  // written for another account — Studio's ids differ from Rabi's) becomes
+  // its default, so the client shows the model the turns run on.
+  resolveModel: (model) => {
+    if (!model) return model;
+    try {
+      const account = writeAccount();
+      if (account.models.includes(model)) return model;
+      log(`[uac] this account does not offer "${model}"; using ${account.defaultModel}`);
+      return account.defaultModel;
+    } catch {
+      return model;
+    }
+  },
   buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, ...callbacks }) => {
     // The user's `[mcp_servers]` and Studio's (knowledge bases, SQL, skills),
     // read when each session opens so a config edit or new sign-in counts.
@@ -194,6 +208,8 @@ await launchAppServer({
     } catch (error) {
       log("[uac] could not refresh the account for dsh:", error.message);
     }
+    // Already resolved by `resolveModel` for threads the client started;
+    // a stored thread's model is checked again here.
     const chosen = model && account.models.includes(model) ? model : account.defaultModel;
     // The client's hidden structured turns (thread titles): one tool-less call.
     if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
@@ -215,7 +231,7 @@ await launchAppServer({
       // Threads stored before modes existed have none: standard.
       host: hostFor(variant ?? "standard"),
       workspace: cwd,
-      model: model && account.models.includes(model) ? model : account.defaultModel,
+      model: chosen,
       onLog: (line) => log("[uac]", line),
       mcpServers,
       ...callbacks,
