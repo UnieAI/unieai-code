@@ -1,4 +1,4 @@
-//! The resident panel above the composer: what is planned, and who is working.
+//! The resident panel under the composer: what is planned, and who is working.
 //!
 //! Both halves already existed but only as things that scrolled away — the todo
 //! list as a one-shot `update_plan` transcript card, sub-agent activity as

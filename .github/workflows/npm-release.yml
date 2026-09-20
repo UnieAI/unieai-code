@@ -324,12 +324,26 @@ jobs:
           # installs a `latest` whose binary cannot resolve -- and the run is
           # green, so nothing says so. Read the registry back and fail if a
           # version we just published is not there.
-          missing=()
-          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64 ""; do
-            expected="${VERSION}${platform:+-$platform}"
-            if ! npm view "@unieai/code@${expected}" version --prefer-online >/dev/null 2>&1; then
-              missing+=("$expected")
-            fi
+          # The registry is eventually consistent: a version published seconds
+          # ago is routinely not yet visible to a read, and the first cut of
+          # this check called all seven missing while six of them turned up
+          # over the following minutes. Retry with a widening gap, and only
+          # call a version lost when it has not appeared in about five.
+          missing=("$VERSION")
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            missing+=("${VERSION}-${platform}")
+          done
+          for wait in 10 20 30 60 60 90; do
+            sleep "$wait"
+            remaining=()
+            for expected in "${missing[@]}"; do
+              if ! npm view "@unieai/code@${expected}" version --prefer-online >/dev/null 2>&1; then
+                remaining+=("$expected")
+              fi
+            done
+            missing=("${remaining[@]}")
+            [ ${#missing[@]} -eq 0 ] && break
+            echo "not visible yet: ${missing[*]}"
           done
           if [ ${#missing[@]} -ne 0 ]; then
             echo "::error::published but absent from the registry: ${missing[*]}"

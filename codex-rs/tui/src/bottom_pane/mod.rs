@@ -255,7 +255,7 @@ pub(crate) struct BottomPane {
     /// input state is retained when the view is closed.
     composer: ChatComposer,
 
-    /// Resident panel above the composer: the todo list and who is working.
+    /// Resident panel under the composer: the todo list and who is working.
     agent_tree: agent_tree::AgentTree,
 
     /// Stack of views displayed instead of the composer (e.g. popups/modals).
@@ -2133,11 +2133,6 @@ impl BottomPane {
             RenderableItem::Borrowed(view)
         } else {
             let mut flex = FlexRenderable::new();
-            // Above the status line so it reads as context for what follows,
-            // and so a status update does not push it around.
-            if !self.agent_tree.is_empty() {
-                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.agent_tree));
-            }
             if let Some(banner) = self
                 .inline_banner
                 .as_ref()
@@ -2231,6 +2226,14 @@ impl BottomPane {
                 }))
             };
             flex2.push(/*flex*/ 0, composer);
+            // Below the composer, not above it. Everything above the composer
+            // moves as the turn produces status lines, previews and questions,
+            // so a panel up there drifts down the screen while the user is
+            // reading it. Anchored under the composer it stays where the user
+            // last looked, which is what a resident panel is for.
+            if !self.agent_tree.is_empty() {
+                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.agent_tree));
+            }
             RenderableItem::Owned(Box::new(flex2))
         }
     }

@@ -2,8 +2,6 @@
 source: tui/src/app/tests/backend_banner_fallback_tests.rs
 expression: normalize_snapshot_paths(rendered)
 ---
-  ◯ main
-
   Selected model usage exhausted
   Add credits to use this model again.
 › 1. View usage
@@ -13,3 +11,4 @@ expression: normalize_snapshot_paths(rendered)
 › Ask UnieAI Code to do anything
 
   gpt-5.6-terra medium · /tmp/project
+  ◯ main

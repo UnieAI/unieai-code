@@ -3,7 +3,6 @@ source: tui/src/app/tests/fresh_sparkle_tests.rs
 expression: "snapshots.join(\"\\n\\n\")"
 ---
 default no-op:
-
 › Ask UnieAI Code to do anything
 
 
