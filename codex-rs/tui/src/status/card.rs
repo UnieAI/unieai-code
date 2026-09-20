@@ -46,6 +46,21 @@ use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
 use super::remote_connection::RemoteConnectionStatus;
+
+/// The engine this session runs on, with the uac mode when it is uac.
+fn engine_summary(config: &Config) -> String {
+    if crate::unieai_engine::session_is_uac() {
+        format!(
+            "{} · {}",
+            crate::unieai_engine::EngineKind::Uac.display_name(),
+            crate::unieai_engine::configured_uac_mode(&config.codex_home).display_name(),
+        )
+    } else {
+        crate::unieai_engine::EngineKind::Codex
+            .display_name()
+            .to_string()
+    }
+}
 use super::thread_usage::StatusThreadUsage;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
@@ -134,6 +149,9 @@ struct StatusHistoryCell {
     agents_summary: Arc<RwLock<String>>,
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
+    /// Which engine runs the turns, and in which mode: the one thing that
+    /// says whether this session is codex or unieai-agent-core.
+    engine: String,
     remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
     account: Option<StatusAccountDisplay>,
@@ -390,6 +408,7 @@ impl StatusHistoryCell {
             permissions,
             collaboration_mode: collaboration_mode.map(ToString::to_string),
             model_provider,
+            engine: engine_summary(config),
             remote_connection: remote_connection.cloned(),
             show_chatgpt_usage_link,
             account,
@@ -849,6 +868,7 @@ impl StatusHistoryCell {
 
         let directory_value = format_directory_display(&self.directory, Some(value_width));
 
+        lines.push(formatter.line("Engine", vec![Span::from(self.engine.clone())]));
         lines.push(formatter.line("Model", model_spans));
         if let Some(model_provider) = self.model_provider.as_ref() {
             lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));

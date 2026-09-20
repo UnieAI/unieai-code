@@ -179,14 +179,17 @@ fn a_server_started_by_another_release_does_not_count_as_ours() {
     let ours = UacServerStamp {
         pid: Some(42),
         cli_version: Some(crate::version::CODEX_CLI_VERSION.to_string()),
+        account_id: None,
     };
     let older = UacServerStamp {
         pid: Some(42),
         cli_version: Some("0.0.1".to_string()),
+        account_id: None,
     };
     let unknown = UacServerStamp {
         pid: Some(42),
         cli_version: None,
+        account_id: None,
     };
     assert!(stamp_matches_this_release(Some(&ours)));
     assert!(!stamp_matches_this_release(Some(&older)));

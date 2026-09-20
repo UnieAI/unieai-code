@@ -13,6 +13,7 @@ expression: sanitized
 │  Remote:           unix:///tmp/codex-home/app-server-control/app-server-    │
 │                    control.sock (v0.133.0)                                  │
 │                                                                             │
+│  Engine:           codex                                                    │
 │  Model:            gpt-5.1-codex-max (reasoning medium, summaries auto)     │
 │  Directory: [[workspace]]                                                   │
 │  Permissions:      Custom (workspace with network access, Ask for approval) │

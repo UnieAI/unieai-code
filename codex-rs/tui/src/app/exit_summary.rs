@@ -13,6 +13,10 @@ pub struct ResumableThread {
     pub thread_name: Option<String>,
 }
 
+/// What this CLI is called on the command line. Upstream's hints say
+/// `codex`; ours must name the binary the user actually runs.
+pub(crate) const CLI_COMMAND: &str = "unieai";
+
 /// Reconnection and stop guidance for a task owned by a persistent app server.
 #[derive(Debug, Clone)]
 pub struct DisconnectInfo {
@@ -33,7 +37,7 @@ impl App {
         let disconnect_info = thread_id.and_then(|_| {
             let command = match &self.app_server_target {
                 AppServerTarget::Embedded => return None,
-                AppServerTarget::LocalDaemon { .. } => vec!["codex".to_string()],
+                AppServerTarget::LocalDaemon { .. } => vec![CLI_COMMAND.to_string()],
                 AppServerTarget::Remote { endpoint } => {
                     let address = match endpoint {
                         RemoteAppServerEndpoint::WebSocket { websocket_url, .. } => {
@@ -50,7 +54,7 @@ impl App {
                             format!("unix://{}", socket_path.display())
                         }
                     };
-                    vec!["codex".to_string(), "--remote".to_string(), address]
+                    vec![CLI_COMMAND.to_string(), "--remote".to_string(), address]
                 }
             };
             let stop_hint = self
@@ -141,12 +145,12 @@ impl AppExitInfo {
             lines.push("To continue this session, run:".to_string());
             lines.push(format!(
                 "  {}",
-                color_command(format!("codex resume {}", thread.thread_id)),
+                color_command(format!("{CLI_COMMAND} resume {}", thread.thread_id)),
             ));
             if let Some(thread_name) = thread.thread_name.filter(|name| !name.is_empty()) {
                 lines.push(format!(
                     "Or run {} and select {}.",
-                    color_command("codex resume".to_string()),
+                    color_command(format!("{CLI_COMMAND} resume")),
                     color_command(thread_name),
                 ));
             }

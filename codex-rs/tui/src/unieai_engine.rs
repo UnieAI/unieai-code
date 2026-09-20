@@ -408,6 +408,32 @@ struct UacServerStamp {
     pid: Option<i32>,
     #[serde(default)]
     cli_version: Option<String>,
+    /// Which account the server signed in as (product|gateway|email).
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+/// The same identity from this session's credentials file, so a server
+/// started for another account is not reused: its models, threads and
+/// gateway are that account's.
+fn account_id(codex_home: &Path) -> Option<String> {
+    let path = codex_home.join("unieai.json");
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+    };
+    let account = match value.get("account").and_then(|value| value.as_str()) {
+        Some(account) => account,
+        None => "studio",
+    };
+    Some(format!(
+        "{account}|{}|{}",
+        field("gateway_base_url"),
+        field("email")
+    ))
 }
 
 fn server_stamp(socket: &Path) -> Option<UacServerStamp> {
@@ -424,6 +450,19 @@ fn stamp_matches_this_release(stamp: Option<&UacServerStamp>) -> bool {
     stamp
         .and_then(|stamp| stamp.cli_version.as_deref())
         .is_some_and(|version| version == crate::version::CODEX_CLI_VERSION)
+}
+
+/// Whether the server holding the socket serves the account this session is
+/// signed in as.
+fn stamp_matches_this_account(stamp: Option<&UacServerStamp>, codex_home: &Path) -> bool {
+    match (
+        stamp.and_then(|stamp| stamp.account_id.as_deref()),
+        account_id(codex_home),
+    ) {
+        (Some(served), Some(ours)) => served == ours,
+        // Nothing to compare: the release check decides.
+        _ => true,
+    }
 }
 
 /// Ask the server that holds `socket` to exit, and wait for the socket to go.
@@ -472,11 +511,14 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
     let socket_abs = AbsolutePathBuf::from_absolute_path_checked(&socket)?;
     if socket_is_live(&socket).await {
         let stamp = server_stamp(&socket);
-        if stamp_matches_this_release(stamp.as_ref()) {
+        if stamp_matches_this_release(stamp.as_ref())
+            && stamp_matches_this_account(stamp.as_ref(), codex_home)
+        {
             return Ok(socket_abs);
         }
-        // An older (or unknown) server holds the socket: replace it, or this
-        // release's engine changes never reach the user.
+        // A server from another release, or signed in as another account,
+        // holds the socket: replace it, or this session runs on its models
+        // and its behaviour.
         let pid = stamp.as_ref().and_then(|stamp| stamp.pid);
         if !stop_uac_server(&socket, pid).await {
             return Err(std::io::Error::other(format!(

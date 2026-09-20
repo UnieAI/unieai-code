@@ -839,7 +839,7 @@ impl AuthModeWidget {
                         idx,
                         option,
                         "Sign in with UnieAI Rabi",
-                        "Use your Rabi account (agent.unieai.com); runs on unieai-agent-core",
+                        "Use your Rabi account (agent.unieai.com)",
                     ));
                 }
                 SignInOption::ChatGpt => {
@@ -968,12 +968,7 @@ impl AuthModeWidget {
             Line::from(format!("  Inference gateway: {}", state.gateway_base_url)).dim(),
         ];
         if state.uac_only {
-            lines.push(
-                Line::from(
-                    "  This account runs on unieai-agent-core (uac); UnieAI Code restarts on it.",
-                )
-                .dim(),
-            );
+            lines.push(Line::from("  UnieAI Code restarts to use this account.").dim());
         }
         if state.uac_only && !state.has_models {
             lines.push("".into());
@@ -1674,7 +1669,12 @@ impl WidgetRef for AuthModeWidget {
 }
 
 pub(super) fn maybe_open_auth_url_in_browser(request_handle: &AppServerRequestHandle, url: &str) {
-    if !matches!(request_handle, AppServerRequestHandle::InProcess(_)) {
+    // An in-process server's login lands on a loopback callback served right
+    // here, so its URL is always ours to open. Anything else is judged by the
+    // URL alone.
+    let ours = matches!(request_handle, AppServerRequestHandle::InProcess(_))
+        || sign_in_page_opens_here(url);
+    if !ours {
         return;
     }
 
@@ -1683,9 +1683,40 @@ pub(super) fn maybe_open_auth_url_in_browser(request_handle: &AppServerRequestHa
     }
 }
 
+/// Whether this terminal's browser is the right one to open a sign-in `url`
+/// served by an app server that is not in this process.
+///
+/// A separate app server (uac's, or a daemon) serves its own loopback
+/// callback, so a loopback URL may not be ours — but a sign-in page on a
+/// public host is the user's to open wherever they are sitting, which is here.
+/// Without this, uac sessions stopped opening the browser at all when uac
+/// became the default.
+fn sign_in_page_opens_here(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| {
+        !matches!(
+            url.host_str(),
+            None | Some("localhost") | Some("127.0.0.1") | Some("[::1]") | Some("::1")
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_public_sign_in_page_opens_here_even_when_the_server_is_not_in_process() {
+        assert!(sign_in_page_opens_here(
+            "https://agent.unieai.com/device?code=ABCD"
+        ));
+        // A loopback callback belongs to whoever serves it, which is not us.
+        assert!(!sign_in_page_opens_here(
+            "http://localhost:1455/auth/callback"
+        ));
+        assert!(!sign_in_page_opens_here(
+            "http://127.0.0.1:1455/auth/callback"
+        ));
+    }
     use crate::legacy_core::config::ConfigBuilder;
     use codex_app_server_client::AppServerRequestHandle;
     use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
