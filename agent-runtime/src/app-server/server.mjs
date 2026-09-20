@@ -870,19 +870,31 @@ export function createHandlers({
       return { turn: turnShape(thread.activeTurn) };
     },
 
-    async "turn/steer"(params) {
+    async "turn/steer"(params, ctx) {
       const thread = getThread(params?.threadId);
       const text = textOf(params?.input);
       if (!text.trim()) throw new RpcError(RPC.INVALID_PARAMS, "steer needs some input");
+      const clientId = params?.clientUserMessageId ?? null;
+      const images = imagesOf(params?.input);
       const turn = thread.activeTurn;
-      if (!turn) throw new RpcError(RPC.INVALID_REQUEST, "no turn is running to steer");
+      // The turn ended between the client deciding to steer and this call --
+      // a race it cannot avoid. Refusing meant the message was lost and, for
+      // a client that treats an unrecognised steer error as fatal, the
+      // session with it. Send it as a turn of its own instead: that is where
+      // it was headed anyway once the running turn finished.
+      if (!turn) {
+        // Steering can be the first thing a resumed thread is asked to do, so
+        // the engine may not exist yet; turn/start would have made it here.
+        ensureEngine(thread, ctx);
+        thread.queuedInput = [...(thread.queuedInput ?? []), { text, clientId, images }];
+        sendQueuedInput(thread, ctx ?? thread.connection);
+        return { turnId: thread.activeTurn?.id ?? thread.turnIds.at(-1) ?? "" };
+      }
       if (params?.expectedTurnId && params.expectedTurnId !== turn.id) {
         throw new RpcError(RPC.INVALID_REQUEST, `turn ${params.expectedTurnId} is no longer running`);
       }
       // The engine refuses when what is running cannot act on an interjection
       // (a compaction), and says so rather than dropping the text.
-      const clientId = params?.clientUserMessageId ?? null;
-      const images = imagesOf(params?.input);
       const delivered = Boolean(await thread.engine?.steer?.(text, { clientId, images }));
       if (!delivered) {
         // Kept, not refused: it goes in its own turn when this one ends

@@ -814,7 +814,20 @@ impl App {
                                         }
                                         return Err(error.into());
                                     }
-                                    None => return Err(error.into()),
+                                    // A steer that the server refused for a
+                                    // reason this client does not recognise.
+                                    // Failing the session over it costs the
+                                    // user everything they were working on to
+                                    // save one message -- and the reasons are
+                                    // matched by their exact wording, so a
+                                    // server that phrases one differently
+                                    // lands here rather than in its own arm.
+                                    // Say what happened and keep going.
+                                    None => {
+                                        self.chat_widget
+                                            .add_error_message(steer_failed_message(&error));
+                                        return Ok(true);
+                                    }
                                 }
                             }
                         }

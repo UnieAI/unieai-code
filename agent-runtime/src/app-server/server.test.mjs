@@ -415,8 +415,9 @@ test("steering answers with the running turn's id and echoes the message", async
 });
 
 test("a message the running turn cannot take is sent in a turn of its own when it ends", async () => {
-  // The engine refuses while what is running is a compaction; with nothing
-  // running there is no turn to steer at all.
+  // The engine refuses while what is running is a compaction. With nothing
+  // running the message is not refused either: it goes straight into a turn
+  // of its own, which is where a refused one ends up anyway.
   const sent = [];
   const { engine, release } = heldEngine({ steer: () => false });
   engine.send = (text) => {
@@ -425,8 +426,14 @@ test("a message the running turn cannot take is sent in a turn of its own when i
   };
   const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
-  await assert.rejects(() => h["turn/steer"]({ threadId: thread.id, input: "hello" }), /no turn is running/);
   const emitted = [];
+  await h["turn/steer"]({ threadId: thread.id, input: "hello" }, { emit: (method, params) => emitted.push([method, params]) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent, ["hello"], "steering with nothing running starts the turn itself");
+  engine.releaseFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  sent.length = 0;
+  emitted.length = 0;
   await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: (method, params) => emitted.push([method, params]) });
   await h["turn/steer"]({ threadId: thread.id, input: "while it works", clientUserMessageId: "c1" });
   await h["turn/steer"]({ threadId: thread.id, input: "and this", clientUserMessageId: "c2" });

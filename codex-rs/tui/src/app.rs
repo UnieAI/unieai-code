@@ -809,6 +809,16 @@ fn active_turn_steer_race(error: &TypedRequestError) -> Option<ActiveTurnSteerRa
     Some(ActiveTurnSteerRace::ExpectedTurnMismatch { actual_turn_id })
 }
 
+/// What to show when a steer failed for a reason with no recovery of its own.
+/// The message stays in the composer, so the user can send it again.
+fn steer_failed_message(error: &TypedRequestError) -> String {
+    let detail = match error {
+        TypedRequestError::Server { source, .. } => source.message.clone(),
+        other => other.to_string(),
+    };
+    format!("That message did not reach the running turn ({detail}). It is still in the composer.")
+}
+
 fn session_start_error(
     action: &str,
     target_session: &SessionTarget,
