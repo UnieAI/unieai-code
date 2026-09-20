@@ -44,7 +44,13 @@ fn with_border_internal(
 
     let mut out = Vec::with_capacity(lines.len() + 2);
     let border_inner_width = content_width + 2;
-    out.push(vec![Span::styled(format!("╭{}╮", "─".repeat(border_inner_width)), border_style)].into());
+    out.push(
+        vec![Span::styled(
+            format!("╭{}╮", "─".repeat(border_inner_width)),
+            border_style,
+        )]
+        .into(),
+    );
 
     for line in lines.into_iter() {
         let used_width = line_width(&line);
@@ -59,7 +65,13 @@ fn with_border_internal(
         out.push(Line::from(spans));
     }
 
-    out.push(vec![Span::styled(format!("╰{}╯", "─".repeat(border_inner_width)), border_style)].into());
+    out.push(
+        vec![Span::styled(
+            format!("╰{}╯", "─".repeat(border_inner_width)),
+            border_style,
+        )]
+        .into(),
+    );
 
     out
 }

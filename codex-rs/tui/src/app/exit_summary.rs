@@ -28,9 +28,7 @@ impl App {
             ExitReason::UserRequested
             | ExitReason::EngineSwitched
             | ExitReason::TurnInterrupted
-            | ExitReason::Fatal(_) => {
-                self.chat_widget.thread_id().or(self.primary_thread_id)
-            }
+            | ExitReason::Fatal(_) => self.chat_widget.thread_id().or(self.primary_thread_id),
         };
         let disconnect_info = thread_id.and_then(|_| {
             let command = match &self.app_server_target {

@@ -1373,6 +1373,13 @@ impl ChatWidget {
             self.on_committed_user_message(&projected, client_id, from_replay, turn_id);
             return;
         }
+        // A peer's message is delivered by submitting a turn, so it would read
+        // as the user's own prompt, framing XML and all. The message already
+        // has its own card from the peer inbox (see peers.rs), so the prompt
+        // is not drawn again.
+        if client_id.is_some_and(crate::unieai_mesh::is_peer_delivery_client_id) {
+            return;
+        }
         let display = Self::user_message_display_from_inputs(items);
         if from_replay {
             if self.review.is_review_mode {

@@ -322,10 +322,14 @@ impl App {
             crate::unieai_engine::target_engine(&config.codex_home, &app_server_target)
                 == crate::unieai_engine::EngineKind::Uac;
         if uac_engine {
+            // Only when the mesh can actually run: the state database holds
+            // it, and a tool that always answers "the session mesh is not
+            // available" costs the model a turn to find that out.
             app_server.set_peer_mesh_tools(
                 config
                     .features
-                    .enabled(codex_features::Feature::SessionMesh),
+                    .enabled(codex_features::Feature::SessionMesh)
+                    && state_db.is_some(),
             );
         }
         if !uac_engine

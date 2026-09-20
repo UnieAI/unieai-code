@@ -1949,7 +1949,8 @@ mod tests {
 
     #[test]
     fn table_holdback_state_closes_confirmed_table_at_non_table_line() {
-        let source = "| Key | Description |\n| --- | --- |\n| a | b |\nProse right after the table.\n";
+        let source =
+            "| Key | Description |\n| --- | --- |\n| a | b |\nProse right after the table.\n";
         assert!(
             matches!(table_holdback_state(source), TableHoldbackState::None),
             "a non-pipe line ends the table region",

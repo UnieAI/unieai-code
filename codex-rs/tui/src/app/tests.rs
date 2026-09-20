@@ -7,8 +7,6 @@ mod math_interruption_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
-#[path = "tests/unieai_agent_tree_idle_tests.rs"]
-mod unieai_agent_tree_idle_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]
@@ -48,6 +46,8 @@ mod pagination_completion_tests;
 mod patch_approval_tests;
 #[path = "tests/permission_selection_tests.rs"]
 mod permission_selection_tests;
+#[path = "tests/unieai_agent_tree_idle_tests.rs"]
+mod unieai_agent_tree_idle_tests;
 
 #[path = "tests/permission_shortcuts_tests.rs"]
 mod permission_shortcuts_tests;

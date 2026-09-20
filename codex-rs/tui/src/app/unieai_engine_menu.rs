@@ -67,7 +67,9 @@ impl App {
             is_current: running == EngineKind::Codex,
             is_disabled: codex_unavailable.is_some(),
             disabled_reason: codex_unavailable,
-            actions: vec![Box::new(|tx| tx.send(AppEvent::SwitchEngine(EngineKind::Codex)))],
+            actions: vec![Box::new(|tx| {
+                tx.send(AppEvent::SwitchEngine(EngineKind::Codex))
+            })],
             dismiss_on_select: true,
             ..Default::default()
         }];

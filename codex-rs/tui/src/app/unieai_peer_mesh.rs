@@ -57,7 +57,8 @@ impl App {
 
     /// Points every mesh surface at `thread_id`, the new primary thread.
     pub(super) fn sync_peer_mesh(&mut self, thread_id: ThreadId) {
-        if self.mesh_available().is_err() {
+        if let Err(reason) = self.mesh_available() {
+            tracing::info!("session mesh off for this session: {reason:?}");
             return;
         }
         self.spawn_peer_bus_poller(thread_id);
@@ -84,6 +85,7 @@ impl App {
             return;
         }
         let Some(state_db) = self.state_db.clone() else {
+            tracing::info!("no state database: this session cannot join the mesh");
             return;
         };
         self.peer_mesh.uac_joining = Some(thread_id);
@@ -117,7 +119,7 @@ impl App {
                     tokio::spawn(async move { member.node.leave().await });
                 }
             }
-            Err(err) => tracing::warn!("uac thread could not join the session mesh: {err}"),
+            Err(err) => tracing::warn!("uac thread could not join the session mesh: {err:?}"),
         }
     }
 

@@ -60,8 +60,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 mod action_required_title;
-mod agent_tree;
 mod actionable_banner;
+mod agent_tree;
 mod app_link_view;
 mod apply_patch_header;
 mod approval_overlay;

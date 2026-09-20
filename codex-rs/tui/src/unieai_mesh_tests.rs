@@ -89,7 +89,12 @@ fn uac_threads_get_the_same_peer_tools_as_the_codex_engine() {
         panic!("expected one codex_tui namespace, got {specs:?}");
     };
     assert_eq!(namespace.name, crate::dynamic_tools::NAMESPACE);
-    for peer_tool in ["list_peers", "send_peer_message", "publish_task", "list_tasks"] {
+    for peer_tool in [
+        "list_peers",
+        "send_peer_message",
+        "publish_task",
+        "list_tasks",
+    ] {
         assert!(
             namespace
                 .tools

@@ -370,6 +370,23 @@ async fn init_state_db_for_app_server_target(
                 format!("{err:#}"),
             ))
         }),
+        // uac runs against our own server on this machine, so its threads need
+        // the local state database the same way an embedded session does — the
+        // session mesh is stored there. Opening without creating left a
+        // uac-only home without one forever, and every peer tool answered
+        // "the session mesh is not available in this session".
+        AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            ..
+        } if crate::unieai_engine::is_uac_socket(&config.codex_home, socket_path.as_path()) => {
+            match state_db::try_init(config).await {
+                Ok(handle) => Ok(Some(handle)),
+                Err(err) => {
+                    tracing::warn!("uac session has no state database ({err:#}); peers are off");
+                    Ok(None)
+                }
+            }
+        }
         AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
             Ok(state_db::get_state_db(config).await)
         }

@@ -309,7 +309,7 @@ export function createHandlers({
    * through. Returns `finish({ error, status })`, which closes it. Used for
    * the client's own turns and for turns the engine starts itself.
    */
-  const beginTurn = (thread, ctx, { userText = null } = {}) => {
+  const beginTurn = (thread, ctx, { userText = null, clientId = null } = {}) => {
     const turnId = randomUUID();
     const startedAt = epochNow();
     thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null };
@@ -327,8 +327,10 @@ export function createHandlers({
     const emitItem = (method, params) => ctx?.emit?.(method, { threadId: thread.id, turnId, ...params });
     if (userText !== null) {
       const userItemId = newItemId();
-      emitItem("item/started", { item: userMessageItem(userItemId, userText), startedAtMs: Date.now() });
-      emitItem("item/completed", { item: userMessageItem(userItemId, userText), completedAtMs: Date.now() });
+      // The client id says where the text came from: the user typing, or a
+      // peer session's message delivered as a turn.
+      emitItem("item/started", { item: userMessageItem(userItemId, userText, clientId), startedAtMs: Date.now() });
+      emitItem("item/completed", { item: userMessageItem(userItemId, userText, clientId), completedAtMs: Date.now() });
     }
 
     // The model's text comes in segments between tool calls. Each segment
@@ -779,7 +781,7 @@ export function createHandlers({
       ensureEngine(thread, ctx);
       // Every turn/start carries the client's current model and permissions.
       await applySettings(thread, params);
-      const turn = beginTurn(thread, ctx, { userText: text });
+      const turn = beginTurn(thread, ctx, { userText: text, clientId: params?.clientUserMessageId ?? null });
       // The user's `!` commands since the last turn go to the model with it.
       const notes = thread.shellNotes ?? [];
       thread.shellNotes = [];
