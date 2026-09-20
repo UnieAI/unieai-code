@@ -547,6 +547,29 @@ export function createHandlers({
         });
         return { answers: dshAnswers(questions, response) };
       },
+      // dsh compacts on its own when the context fills: the client shows
+      // that the way it shows a compaction it asked for.
+      onCompaction: ({ phase, requested }) => {
+        // /compact shows its own turn, whether dsh records the command or
+        // the bridge asked for it.
+        if (requested || thread.compacting) return;
+        const emit = (method, params) => {
+          const emitItem = thread.pendingAnswer?.emitItem;
+          if (emitItem) return emitItem(method, params);
+          const turnId = thread.turnIds?.at(-1);
+          if (turnId) thread.connection?.emit?.(method, { threadId: thread.id, turnId, ...params });
+        };
+        if (phase === "start") {
+          // Started as well as finished: compaction takes a while, and the
+          // client says what it is doing from the started item.
+          thread.compactionItem = { type: "contextCompaction", id: newItemId() };
+          emit("item/started", { item: thread.compactionItem, startedAtMs: Date.now() });
+          return;
+        }
+        const item = thread.compactionItem ?? { type: "contextCompaction", id: newItemId() };
+        thread.compactionItem = null;
+        emit("item/completed", { item, completedAtMs: Date.now() });
+      },
       onSubagent: (note) => subagents.onSubagent(thread, note),
       onChildActivity: (note) => subagents.onChildActivity(thread, note),
       // Turns dsh runs without a prompt from the client (a goal round, a
@@ -816,6 +839,7 @@ export function createHandlers({
       ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
       ctx?.emit?.("turn/started", { ...stamp, turn: turnShape(thread.activeTurn) });
       ctx?.emit?.("item/started", { ...stamp, item: { type: "contextCompaction", id: itemId }, startedAtMs: Date.now() });
+      thread.compacting = true;
       Promise.resolve()
         .then(() => engine.compact())
         .then(
@@ -823,6 +847,7 @@ export function createHandlers({
           (failure) => ({ status: "failed", error: { message: String(failure?.message || failure) } }),
         )
         .then(({ status, error }) => {
+          thread.compacting = false;
           thread.activeTurn = null;
           ctx?.emit?.("item/completed", { ...stamp, item: { type: "contextCompaction", id: itemId }, completedAtMs: Date.now() });
           if (error) ctx?.emit?.("error", { error, willRetry: false, ...stamp });

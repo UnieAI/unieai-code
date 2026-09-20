@@ -15,6 +15,7 @@ fn agent(tail: &str, label: &str) -> AgentRow {
         is_active: false,
         elapsed: None,
         tokens: None,
+        context_left_percent: None,
     }
 }
 
@@ -136,6 +137,7 @@ fn rows_show_activity_elapsed_and_tokens() {
         activity: Some("Locating DebugCommand struct".to_string()),
         elapsed: Some("5m 49s".to_string()),
         tokens: Some(95_400),
+        context_left_percent: None,
         ..agent("5a6b0c0d0e0f", "Plan")
     }]);
 
@@ -216,6 +218,7 @@ fn the_panel_renders_the_specified_layout() {
             activity: Some("Locating DebugCommand struct in cli/src/main.rs".to_string()),
             elapsed: Some("5m 49s".to_string()),
             tokens: Some(95_400),
+            context_left_percent: None,
             is_running: false,
             ..agent("5a6b9a8b7c6d", "Plan")
         },
@@ -223,6 +226,7 @@ fn the_panel_renders_the_specified_layout() {
             activity: Some("Listing core/tests/suite and exec/src/cli.rs".to_string()),
             elapsed: Some("4m 36s".to_string()),
             tokens: Some(82_800),
+            context_left_percent: None,
             is_running: false,
             ..agent("5a6b4455667f", "Plan")
         },
@@ -243,5 +247,35 @@ fn the_panel_renders_the_specified_layout() {
     assert!(
         lines[2].contains("4m 36s") && lines[2].contains("↓ 82.8k tokens"),
         "{lines:?}"
+    );
+}
+
+#[test]
+fn the_row_shows_time_tokens_and_how_much_context_is_left() {
+    let mut tree = AgentTree::default();
+    tree.set_agents(vec![AgentRow {
+        target: TreeTarget::Thread(ThreadId::new()),
+        label: "main".to_string(),
+        activity: None,
+        is_running: true,
+        is_active: true,
+        elapsed: Some("1m02s".to_string()),
+        tokens: Some(35_400),
+        context_left_percent: Some(87),
+    }]);
+    let rendered = tree
+        .lines(/*width*/ 120)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("1m02s · ↓ 35.4k tokens · 87% context left"),
+        "{rendered}"
     );
 }

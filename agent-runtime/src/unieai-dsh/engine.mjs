@@ -293,6 +293,9 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       channel.onNotification?.("steerDelivered", (note) => {
         sessions.get(note?.sessionId)?.onSteerDelivered?.(note);
       });
+      channel.onNotification?.("compaction", (note) => {
+        sessions.get(note?.sessionId)?.onCompaction?.(note);
+      });
       // A subagent belongs to the thread whose session started it, or whose
       // subagent did (a grandchild): its notes go to that root session.
       const routeChild = (note) => {
@@ -537,6 +540,9 @@ export function createDshEngine({
   // `childActivity` note when one's session gains something to show.
   onSubagent = () => {},
   onChildActivity = () => {},
+  // Called with { phase: "start" | "end", requested } when dsh compacts the
+  // context, including the compactions it decides on itself.
+  onCompaction = () => {},
   // () => Promise<ACP mcpServers[]>: the servers each session opens with
   // (see unieai-mcp-servers.mjs). One that cannot start is left out.
   mcpServers = null,
@@ -820,6 +826,12 @@ export function createDshEngine({
     }
   };
 
+  /** dsh compacted: the context shrank, so the meter is read again. */
+  const handleCompaction = (note) => {
+    if (note?.phase === "end") reportUsage();
+    onCompaction(note);
+  };
+
   const onAskUser = async ({ questions }) => {
     if (!askUser) throw new Error("this client cannot ask the user");
     return askUser({ questions });
@@ -860,7 +872,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await withMcpServers((servers) => acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: servers }));
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -873,7 +885,7 @@ export function createDshEngine({
     const created = await withMcpServers((servers) => newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: servers }));
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();

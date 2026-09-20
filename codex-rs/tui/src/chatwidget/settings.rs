@@ -372,6 +372,16 @@ impl ChatWidget {
         self.thread_id.is_some()
     }
 
+    /// Percent of the context window left, as the footer would show it.
+    pub(crate) fn context_left_percent(&self) -> Option<i64> {
+        let info = self.token_info.as_ref()?;
+        let window = info.model_context_window?;
+        Some(
+            info.last_token_usage
+                .percent_of_context_window_remaining(window),
+        )
+    }
+
     /// Plan mode is codex's: uac does not apply collaboration modes, so it
     /// offers none rather than show a mode the model is not in.
     pub(super) fn collaboration_modes_enabled(&self) -> bool {

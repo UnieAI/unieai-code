@@ -65,6 +65,9 @@ pub(crate) struct AgentRow {
     /// Rendered elapsed time, for example `5m49s`.
     pub(crate) elapsed: Option<String>,
     pub(crate) tokens: Option<u64>,
+    /// Percent of the context window left, for the thread being shown: the
+    /// composer's own footer is hidden whenever a status line is configured.
+    pub(crate) context_left_percent: Option<i64>,
 }
 
 /// Which half of the bottom pane owns the arrow keys.
@@ -203,13 +206,16 @@ impl AgentTree {
                 spans.push(activity.clone().dim());
             }
 
-            let metadata = match (agent.elapsed.as_ref(), agent.tokens) {
-                (Some(elapsed), Some(tokens)) => {
-                    Some(format!("{elapsed} · {}", format_tokens(tokens)))
-                }
-                (Some(elapsed), None) => Some(elapsed.clone()),
-                (None, Some(tokens)) => Some(format_tokens(tokens)),
-                (None, None) => None,
+            let parts = [
+                agent.elapsed.clone(),
+                agent.tokens.map(format_tokens),
+                agent
+                    .context_left_percent
+                    .map(|percent| format!("{}% context left", percent.clamp(0, 100))),
+            ];
+            let metadata = {
+                let shown: Vec<String> = parts.into_iter().flatten().collect();
+                (!shown.is_empty()).then(|| shown.join(" · "))
             };
             if let Some(metadata) = metadata {
                 let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();

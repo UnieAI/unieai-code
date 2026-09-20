@@ -191,7 +191,9 @@ pub(super) fn activity_summary(item: &ThreadItem) -> Option<String> {
         ThreadItem::ImageGeneration(_) => return Some("Generated an image".to_string()),
         ThreadItem::EnteredReviewMode { .. } => return Some("Entered review mode".to_string()),
         ThreadItem::ExitedReviewMode { .. } => return Some("Exited review mode".to_string()),
-        ThreadItem::ContextCompaction { .. } => return Some("Compacted context".to_string()),
+        // Said while the work runs (these summaries come from started items),
+        // and compaction is slow enough for a user to wonder what is going on.
+        ThreadItem::ContextCompaction { .. } => return Some("Compacting context".to_string()),
         ThreadItem::UserMessage { .. }
         | ThreadItem::HookPrompt { .. }
         | ThreadItem::FunctionCallOutput { .. }

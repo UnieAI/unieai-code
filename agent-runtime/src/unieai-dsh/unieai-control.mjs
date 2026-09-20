@@ -249,6 +249,19 @@ export function apply(ctx, config = {}) {
     goal === undefined || goal === null
       ? null
       : { id: goal.id, revision: goal.revision, objective: goal.objective, phase: goal.phase, roundsStarted: goal.roundsStarted ?? 0, maxGoalRounds: goal.maxGoalRounds ?? null };
+  // Compaction, so the client can show it: dsh compacts on its own when the
+  // context fills, which otherwise happened invisibly.
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || (event?.type !== "compaction/start" && event?.type !== "compaction/end")) return;
+    bridge.notify?.("compaction", {
+      sessionId: session.header.id,
+      phase: event.type === "compaction/start" ? "start" : "end",
+      compactionId: event.data?.compactionId ?? null,
+      // A compaction the user asked for carries the command that started it.
+      requested: Boolean(event.data?.sourceCommandId),
+    });
+  });
+
   // Turn boundaries, so the bridge can show turns dsh starts on its own
   // (a goal round, a background subagent's result waking its parent).
   ctx.on("session/event", (session, event) => {

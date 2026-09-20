@@ -19,16 +19,21 @@ async function setup() {
   const configured = [];
   const sent = [];
   const emitted = [];
+  let engineOptions = null;
   const handlers = createHandlers({
     codexHome: "/h",
-    createEngineFor: () => ({
-      configure: async (settings) => configured.push(settings),
-      send: async (text) => sent.push(text),
-    }),
+    createEngineFor: (options) => {
+      engineOptions = options;
+      return {
+        configure: async (settings) => configured.push(settings),
+        send: async (text) => sent.push(text),
+      };
+    },
   });
   const ctx = { emit: (method, params) => emitted.push([method, params]), request: async () => ({}) };
   const { thread } = await handlers["thread/start"]({ cwd: process.cwd(), model: "first" }, ctx);
-  return { handlers, ctx, thread, configured, sent, emitted, live: handlers._threads.get(thread.id) };
+  const live = handlers._threads.get(thread.id);
+  return { handlers, ctx, thread, configured, sent, emitted, live, engineOptions: () => engineOptions };
 }
 
 test("/model and /permissions reach the engine and stay with the thread", async () => {
@@ -81,4 +86,31 @@ test("no background terminals to list or clean, so /cd is not blocked", async ()
   const { handlers, thread } = await setup();
   assert.deepEqual(await handlers["thread/backgroundTerminals/list"]({ threadId: thread.id }), { data: [], nextCursor: null });
   assert.deepEqual(await handlers["thread/backgroundTerminals/clean"]({ threadId: thread.id }), {});
+});
+
+test("a compaction dsh decides on itself is shown like one the user asked for", async () => {
+  const { handlers, ctx, thread, emitted, live, engineOptions: engineOptionsOf } = await setup();
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "work" }] }, ctx);
+  const engineOptions = engineOptionsOf();
+  engineOptions.onCompaction({ phase: "start", requested: false });
+  engineOptions.onCompaction({ phase: "end", requested: false });
+  const compaction = emitted
+    .filter(([, params]) => params.item?.type === "contextCompaction")
+    .map(([method, params]) => [method, params.item.id]);
+  assert.equal(compaction.length, 2, `expected a start and an end, saw ${JSON.stringify(compaction)}`);
+  assert.deepEqual(
+    compaction.map(([method]) => method),
+    ["item/started", "item/completed"],
+  );
+  assert.equal(compaction[0][1], compaction[1][1], "the same item, so the client can close its timer");
+
+  // /compact already shows a turn of its own: dsh's events for it add nothing.
+  emitted.length = 0;
+  thread.compacting = true;
+  live.compacting = true;
+  engineOptions.onCompaction({ phase: "start", requested: false });
+  engineOptions.onCompaction({ phase: "end", requested: false });
+  live.compacting = false;
+  engineOptions.onCompaction({ phase: "start", requested: true });
+  assert.deepEqual(emitted.filter(([, params]) => params.item?.type === "contextCompaction"), []);
 });

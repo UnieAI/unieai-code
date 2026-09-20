@@ -122,6 +122,11 @@ impl App {
                         .is_running
                         .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
                     tokens: self.agent_tokens.get(&thread_id).copied(),
+                    // Only the thread on screen: the percentage is read from
+                    // its own token usage.
+                    context_left_percent: (self.active_thread_id == Some(thread_id))
+                        .then(|| self.chat_widget.context_left_percent())
+                        .flatten(),
                 }
             })
             .collect();
