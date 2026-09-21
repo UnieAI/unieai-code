@@ -521,11 +521,23 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         // and its behaviour.
         let pid = stamp.as_ref().and_then(|stamp| stamp.pid);
         if !stop_uac_server(&socket, pid).await {
-            return Err(std::io::Error::other(format!(
-                "a uac server from another version of UnieAI Code is running on {}; \
-                 stop it and start UnieAI Code again",
-                socket.display()
-            )));
+            // Nothing to signal, or it would not go. A server from a release
+            // before stamping existed has no pid to read — which is every
+            // upgrade from one, and refusing there dropped the user onto the
+            // codex engine with a message telling them to go and find a
+            // process themselves. Take the path instead: the new server binds
+            // a fresh socket over it, so every client from now on reaches
+            // this release. The old one keeps the socket it already has and
+            // gets no new connections; since 0.0.30 it exits on its own once
+            // no client is left.
+            match std::fs::remove_file(&socket) {
+                Ok(()) => tracing::warn!(
+                    socket = %socket.display(),
+                    "replaced an unstoppable uac server by taking over its socket"
+                ),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
         }
     }
     let script = locate_uac_script().ok_or_else(|| {

@@ -3,7 +3,7 @@
 // to notice a child has finished costs the user the wait in full.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULTS, childTurnState, createChildRegistry, waitForChildren } from "./unieai-wait-agents.mjs";
+import { DEFAULTS, childTurnState, createChildRegistry, userSpokeSince, waitForChildren } from "./unieai-wait-agents.mjs";
 
 /** A child agent whose session log says its turn ended. */
 const finishedAgent = (text = "done") => ({
@@ -67,4 +67,42 @@ test("a cancelled wait says what cancelled it, whatever shape the reason has", a
 test("the wait is short enough that a typed message is not left sitting for minutes", () => {
   assert.ok(DEFAULTS.defaultTimeoutMs <= 60_000, `default hold is ${DEFAULTS.defaultTimeoutMs}ms`);
   assert.ok(DEFAULTS.maxTimeoutMs <= 180_000, `a caller can ask to hold for ${DEFAULTS.maxTimeoutMs}ms`);
+});
+
+test("a message from the user ends the wait, because the wait is what stops it being read", async () => {
+  const registry = createChildRegistry();
+  registry.started("parent", { id: "child" });
+  let spoke = false;
+  setTimeout(() => (spoke = true), 20);
+
+  const value = await waitForChildren(
+    registry,
+    "parent",
+    { agent_ids: ["child"], timeout_ms: 5_000 },
+    { pollMs: 5, interrupted: () => spoke },
+  );
+  assert.equal(value.timed_out, false, "stopping for the user is not a timeout");
+  assert.match(value.note ?? "", /user sent a message/);
+  assert.deepEqual(
+    value.children.map((child) => [child.agent_id, child.status]),
+    [["child", "running"]],
+    "the child is still going, and says so",
+  );
+});
+
+test("only the user ends the wait early; a child's own result does not", () => {
+  const spliced = (kind, seq) => ({
+    seq,
+    type: "agent/inbox/spliced",
+    data: { inserted: [{ source: { kind } }] },
+  });
+  const agentWith = (...events) => ({ session: { snapshotEvents: () => events } });
+
+  assert.equal(userSpokeSince(agentWith(spliced("user", 5)), 1), true);
+  // A finished child reports into the same inbox. Returning on that would end
+  // an `all` wait on the first child to answer.
+  assert.equal(userSpokeSince(agentWith(spliced("agent", 5)), 1), false);
+  // Anything from before the wait started was already read.
+  assert.equal(userSpokeSince(agentWith(spliced("user", 1)), 1), false);
+  assert.equal(userSpokeSince(undefined, 0), false);
 });

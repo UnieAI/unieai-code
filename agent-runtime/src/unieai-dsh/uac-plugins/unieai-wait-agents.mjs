@@ -71,6 +71,27 @@ export function childTurnState(agent, boundary = 0) {
 
 const STOP_REASONS = { completed: "completed", "max-tokens": "max-tokens", aborted: "aborted", interrupted: "aborted", error: "error", blocked: "refusal" };
 
+/**
+ * Whether the user has said something to `agent` since `boundary`.
+ *
+ * A steer is spliced into the agent's inbox and read at its next step — and
+ * the wait is what is stopping the next step from happening, so the message
+ * the user is waiting to have read cannot be read until the wait gives up.
+ * Ending the wait is the whole delivery. Only what the user sent counts: a
+ * child's result is spliced into the same inbox, and returning on that would
+ * end the wait the moment any child reported, which is what `all` exists to
+ * prevent.
+ */
+export function userSpokeSince(agent, boundary) {
+  if (typeof agent?.session?.snapshotEvents !== "function") return false;
+  return agent.session.snapshotEvents().some(
+    (event) =>
+      (event?.seq ?? 0) > boundary &&
+      event?.type === "agent/inbox/spliced" &&
+      (event.data?.inserted ?? []).some((message) => message?.source?.kind === "user"),
+  );
+}
+
 /** An abort reason of any shape as something with a readable message. */
 function asError(reason) {
   if (reason instanceof Error) return reason;
@@ -145,7 +166,7 @@ export function createChildRegistry() {
  * `refresh(parent)` brings the registry up to date from the children
  * themselves; it runs before each check and every `pollMs`.
  */
-export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, signal, refresh = () => {}, pollMs = 500 } = {}) {
+export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, signal, refresh = () => {}, pollMs = 500, interrupted = () => false } = {}) {
   refresh(parent);
   const startedAt = Date.now();
   const timeoutMs = Math.min(
@@ -173,7 +194,7 @@ export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, 
   const timeout = setTimeout(() => timer.abort(), timeoutMs);
   const stop = AbortSignal.any([timer.signal, ...(signal ? [signal] : [])]);
   try {
-    while (!satisfied() && !stop.aborted) {
+    while (!satisfied() && !stop.aborted && !interrupted()) {
       const tick = new AbortController();
       const poll = setTimeout(() => tick.abort(), pollMs);
       await registry.nextChange(parent, AbortSignal.any([stop, tick.signal]));
@@ -195,8 +216,10 @@ export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, 
     status: child.running ? "running" : "finished",
     ...(child.running ? {} : { stop_reason: child.stopReason ?? "unknown", output: clip(child.output) }),
   }));
+  const stoppedForUser = !satisfied() && interrupted();
   return {
-    timed_out: !satisfied(),
+    timed_out: !satisfied() && !stoppedForUser,
+    ...(stoppedForUser ? { note: "Stopped early: the user sent a message. Read it before waiting again." } : {}),
     waited_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
     children,
     // Children that finished earlier are listed so nothing is lost between calls.
@@ -312,7 +335,10 @@ export function apply(ctx, config = {}) {
       },
       async execute(args, exec) {
         if (!exec.agent) throw new Error("wait_agents needs a calling agent");
-        return waitForChildren(registry, exec.agent.id, args, { cfg, signal: exec.signal, refresh });
+        // What the user typed while this runs cannot be read until it ends.
+        const boundary = ctx.agents?.get(exec.agent.id)?.session?.seq ?? 0;
+        const interrupted = () => userSpokeSince(ctx.agents?.get(exec.agent.id), boundary);
+        return waitForChildren(registry, exec.agent.id, args, { cfg, signal: exec.signal, refresh, interrupted });
       },
     }),
   );

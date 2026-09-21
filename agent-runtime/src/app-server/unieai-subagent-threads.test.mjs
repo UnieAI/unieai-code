@@ -108,6 +108,9 @@ test("a subagent is a row in its parent and a live thread of its own", { skip },
     "item/completed:agentMessage",
     "turn/completed",
     "thread/status/changed",
+    // It has finished, so it stops being one of "who is working": without
+    // this the client keeps its row for the rest of the session.
+    "thread/closed",
   ]);
 
   // Opening it from the agent picker reads the same turns.

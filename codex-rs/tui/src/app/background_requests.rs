@@ -79,6 +79,14 @@ impl App {
             .agent_navigation
             .ordered_threads()
             .into_iter()
+            // A closed thread is neither planned nor working, so it is not
+            // what this panel answers. Closed entries are kept in the
+            // navigation cache for the agents overview to list and for a
+            // resume to find; leaving them here grew the panel by one row
+            // per subagent the session ever spawned and never shrank it.
+            .filter(|(thread_id, entry)| {
+                !entry.is_closed || Some(*thread_id) == self.primary_thread_id
+            })
             .map(|(thread_id, entry)| {
                 // Recorded here as well as on upsert: a thread can reach the
                 // panel through paths that never call the picker upsert, and a

@@ -234,6 +234,12 @@ export function createSubagentThreads({ turnShape, threadShape, refreshMs = 300 
         refresh(child).then(() => {
           setRunning(child, false);
           showActivity(child, ACTIVITY_KIND[note.stopReason] ?? "completed");
+          // A child that has finished is not one of "who is working", and
+          // without this the client has no way to learn it ever stopped: it
+          // stayed in the resident panel for the rest of the session, one row
+          // per subagent ever spawned. Its turns remain readable — the thread
+          // is still here, and the agents overview still lists it.
+          emitOf(child)?.("thread/closed", { threadId: child.id });
         });
       }
     },
