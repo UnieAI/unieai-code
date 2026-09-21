@@ -33,7 +33,18 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 export const name = "unieai-wait-agents";
 export const inject = ["tools", "agents"];
 
-export const DEFAULTS = Object.freeze({ defaultTimeoutMs: 300_000, maxTimeoutMs: 1_800_000, maxOutputChars: 4_000 });
+/**
+ * A wait holds the whole session: the parent cannot take a step, so anything
+ * the user types sits in the client under "submitted after next tool call"
+ * until it ends. Ten minutes of that is indistinguishable from a hang, and
+ * two waits in one measured session did exactly that. Keep the hold short --
+ * the tool reports what is still running, and calling it again is one cheap
+ * step, which is all the polling this plugin replaced ever cost.
+ */
+export const DEFAULTS = Object.freeze({ defaultTimeoutMs: 60_000, maxTimeoutMs: 180_000, maxOutputChars: 4_000 });
+
+/** How long `subagent/end` gets to arrive after a child's agent disappears. */
+const GONE_GRACE_MS = 3_000;
 
 /**
  * The state of a resident child from its own session log, after `boundary`:
@@ -59,6 +70,14 @@ export function childTurnState(agent, boundary = 0) {
 }
 
 const STOP_REASONS = { completed: "completed", "max-tokens": "max-tokens", aborted: "aborted", interrupted: "aborted", error: "error", blocked: "refusal" };
+
+/** An abort reason of any shape as something with a readable message. */
+function asError(reason) {
+  if (reason instanceof Error) return reason;
+  if (reason === undefined || reason === null) return new Error("the wait was cancelled");
+  const described = typeof reason === "string" ? reason : (reason.message ?? reason.name ?? JSON.stringify(reason));
+  return new Error(`the wait was cancelled: ${described}`);
+}
 
 const textOf = (blocks) =>
   (Array.isArray(blocks) ? blocks : [])
@@ -164,7 +183,10 @@ export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, 
   } finally {
     clearTimeout(timeout);
   }
-  if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+  // Whatever aborted us may carry a reason that is not an Error; throwing it
+  // as-is reached the model as "Error: [object Object]", twice in one
+  // measured session, telling it nothing about what to do next.
+  if (signal?.aborted) throw asError(signal.reason);
 
   for (const child of snapshot()) if (!child.running) child.reported = true;
   const clip = (text) => (text.length > cfg.maxOutputChars ? `${text.slice(0, cfg.maxOutputChars)}… [truncated]` : text);
@@ -207,10 +229,33 @@ export function apply(ctx, config = {}) {
     const boundary = ctx.agents?.get(info.id)?.session?.seq ?? 0;
     registry.started(parent, { ...info, boundary });
   });
+  // When a child's agent was last seen missing, so a disposal that never
+  // produces `subagent/end` still settles it. See refresh.
+  const missingSince = new Map();
   const refresh = (parent) => {
     for (const child of registry.children(parent)) {
-      if (!child.running) continue;
-      const state = childTurnState(ctx.agents?.get(child.id), child.boundary);
+      if (!child.running) {
+        missingSince.delete(child.id);
+        continue;
+      }
+      const agent = ctx.agents?.get(child.id);
+      if (!agent) {
+        // The child is gone. `subagent/end` normally follows its disposal and
+        // carries the real answer, so give that a moment to arrive -- but only
+        // a moment: when it does not come (an error path, a dropped event), a
+        // disposed agent can never be inspected again, so waiting on it can
+        // only run out the clock. That is how a child that had finished was
+        // still being reported "still running" after ten minutes.
+        const since = missingSince.get(child.id) ?? Date.now();
+        missingSince.set(child.id, since);
+        if (Date.now() - since >= GONE_GRACE_MS) {
+          registry.ended(parent, { id: child.id, stopReason: "completed" });
+          missingSince.delete(child.id);
+        }
+        continue;
+      }
+      missingSince.delete(child.id);
+      const state = childTurnState(agent, child.boundary);
       if (state) registry.ended(parent, { id: child.id, ...state });
     }
   };
