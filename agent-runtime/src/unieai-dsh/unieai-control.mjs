@@ -370,6 +370,14 @@ export function apply(ctx, config = {}) {
     return { answers };
   });
 
+  // Prefixed to every message steered into a running turn. Short on purpose:
+  // it rides on every interjection, and it only has to name the decision and
+  // the two ways it can go.
+  const STEER_GUIDANCE =
+    "[Sent while you were working. Before you act on it, decide whether it conflicts with the change " +
+    "you have in flight. If it conflicts, or makes that work pointless, say so and switch. If it does " +
+    "not, add it to your todo list and finish the step you are on before you start it.]";
+
   // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].
   // dsh queues a steer for the next step and logs it as a user message when
   // that step takes it; the client is told then, so it can keep showing the
@@ -380,7 +388,10 @@ export function apply(ctx, config = {}) {
     const waiting = steersWaiting.get(session.header.id);
     if (!waiting?.length) return;
     const text = textOf(event.data?.content);
-    const index = waiting.findIndex((entry) => entry.text === text);
+    // What was delivered is the guidance block followed by what the user
+    // wrote, so the user's text is the tail of it. Matching on equality here
+    // left every steer pending in the client forever.
+    const index = waiting.findIndex((entry) => text === entry.text || text.endsWith(entry.text));
     if (index < 0) return;
     const [delivered] = waiting.splice(index, 1);
     delivered.peer.notify?.("steerDelivered", { sessionId: session.header.id, clientId: delivered.clientId, text });
@@ -522,7 +533,14 @@ export function apply(ctx, config = {}) {
       // `content` carries the message's images; `text` is what the client
       // showed, and what the delivered message is matched by.
       const blocks = Array.isArray(content) && content.length ? content : [{ type: "text", text }];
-      agent.steer(createUserMessage({ content: blocks, source: { kind: "user" } }));
+      // The persona says what to do with a message that arrives mid-work, but
+      // it says it thousands of characters earlier, at the top of the turn.
+      // Measured: the model read the steer and went straight at it, leaving
+      // the step it was on unfinished and never adding the new requirement to
+      // its list. The instruction belongs where the decision is made.
+      agent.steer(
+        createUserMessage({ content: [{ type: "text", text: STEER_GUIDANCE }, ...blocks], source: { kind: "user" } }),
+      );
       return { delivered: true };
     },
 
