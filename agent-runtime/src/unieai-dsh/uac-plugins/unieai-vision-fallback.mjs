@@ -19,11 +19,13 @@
  */
 import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
-import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { resolveCredential } from "./unieai-loop-common.mjs";
 
 export const name = "unieai-vision-fallback";
-export const inject = ["tools", "credentials"];
+// Not "credentials": dsh's headless profile has no credential store (keys come
+// from the launch environment), and an injected service is always required.
+export const inject = ["tools"];
 
 export const DEFAULTS = Object.freeze({
   gatewayKeyRef: "UNIEAI_GATEWAY_API_KEY",
@@ -128,7 +130,7 @@ export function apply(ctx, rawConfig = {}, { fetchImpl = globalThis.fetch } = {}
       async execute(args, exec) {
         const cwd = exec.agent?.session?.header?.cwd ?? process.cwd();
         const path = isAbsolute(args.path) ? args.path : resolve(cwd, args.path);
-        const key = (await ctx.credentials.resolve(credentialRef(config.gatewayKeyRef)))?.value;
+        const key = await resolveCredential(ctx, config.gatewayKeyRef);
         if (!key) throw new Error("no gateway key is configured for the vision model");
         const dataUrl = await imageDataUrl(path, { maxBytes: config.maxImageBytes });
         const description = await describeImage({ ...config, key, dataUrl, question: args.question, fetchImpl });

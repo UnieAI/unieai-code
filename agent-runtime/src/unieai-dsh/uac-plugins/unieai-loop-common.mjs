@@ -1,19 +1,32 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-loop-common.mjs — small helpers shared by the unieai-loop-* and
- * unieai-context-* dsh plugins. Not a plugin itself.
+ * unieai-loop-common.mjs — small helpers shared by the unieai-* dsh plugins.
+ * Not a plugin itself.
  */
 import { createHash } from "node:crypto";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
 /**
- * A model-visible note from a plugin. The `plugin` source keeps it from being
+ * A secret by reference: dsh's credential store when the profile has one,
+ * else the environment variable of that name (dsh's headless profile).
+ */
+export async function resolveCredential(ctx, ref) {
+  // A real context throws on reading a service it did not inject; ask reflect.
+  const store = ctx.reflect ? ctx.reflect.get("credentials") : ctx.credentials;
+  if (store) return (await store.resolve(credentialRef(ref)))?.value ?? null;
+  return process.env[ref] || null;
+}
+
+/**
+ * A model-visible note from a plugin. The source kind is the plugin's own name
+ * (dsh 0.2 refuses the retired generic `plugin` kind), which keeps it from being
  * rendered as a human prompt; `notice` gives UIs a one-line summary.
  */
 export function pluginNotice(plugin, text, summary) {
   return createUserMessage({
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin, form: "notice", summary: String(summary).slice(0, 120) },
+    source: { kind: plugin, form: "notice", summary: String(summary).slice(0, 120) },
   });
 }
 

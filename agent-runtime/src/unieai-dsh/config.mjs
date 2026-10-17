@@ -356,12 +356,14 @@ export function renderPatch({
       shellOnly: mode === "minimal",
       rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
     });
+    // No working directory here: dsh 0.2 states it in the runtime context
+    // (user side, so the system prompt stays cacheable) and no longer
+    // registers a {{cwd}} prompt variable.
     lines.push(
       "- id: system-prompt",
       "  config:",
       "    includeHarnessIdentity: false",
       "    includeRuntimeContext: true",
-      "    personaSuffix: \"Your working directory is {{cwd}}.\"",
       "    personaPrefix: |",
       indent(text, 6),
     );

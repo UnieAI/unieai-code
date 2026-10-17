@@ -20,11 +20,13 @@
  *
  * Disable dsh's search in the same patch (`tool-web` `search: false`).
  */
-import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { resolveCredential } from "./unieai-loop-common.mjs";
 
 export const name = "unieai-web-search";
-export const inject = ["tools", "credentials"];
+// Not "credentials": dsh's headless profile has no credential store (keys come
+// from the launch environment), and an injected service is always required.
+export const inject = ["tools"];
 
 export const DEFAULTS = Object.freeze({
   gatewayKeyRef: "UNIEAI_GATEWAY_API_KEY",
@@ -162,7 +164,7 @@ export function renderResults(value, maxSnippetChars = DEFAULTS.maxSnippetChars)
 
 export async function apply(ctx, rawConfig = {}, { fetchImpl = globalThis.fetch } = {}) {
   const config = { ...DEFAULTS, ...rawConfig };
-  const resolveKey = async (ref) => (await ctx.credentials.resolve(credentialRef(ref)))?.value ?? null;
+  const resolveKey = (ref) => resolveCredential(ctx, ref);
   const backends = createBackends({ config, resolveKey, fetchImpl });
   if (!(await anyBackend(backends))) {
     ctx.logger.info(`${name}: no search backend (no gateway URL/key and no provider key); web_search not offered`);
