@@ -351,3 +351,69 @@ jobs:
           fi
 
           npm view @unieai/code dist-tags
+
+  # Offline install bundles (scripts/unieai_offline_bundle.py): per platform,
+  # the installed npm package with the uac engine's dependencies and Node.js,
+  # attached to the GitHub Release for this version. Built on one Linux
+  # runner: npm installs another platform's native packages with --os/--cpu.
+  offline:
+    needs: stage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarballs-${{ needs.stage.outputs.version }}
+          path: dist/npm
+
+      - name: Build offline bundles
+        shell: bash
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/unieai_offline_bundle.py --version "$VERSION" --npm-dir dist/npm --out dist/offline
+          rm -rf dist/offline/.cache
+          ls -lh dist/offline
+
+      - name: Smoke test (linux-x64 bundle installs and runs with no network)
+        shell: bash
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          tar -xzf "dist/offline/unieai-code-${VERSION}-linux-x64.tar.gz" -C "$smoke"
+          docker run --rm --network none -v "$smoke:/b:ro" ubuntu:24.04 sh -c "
+            cp -r /b/unieai-code-${VERSION}-linux-x64 /tmp/x && HOME=/root sh /tmp/x/install.sh &&
+            /root/.local/bin/unieai --version &&
+            /root/.local/share/unieai-code/${VERSION}/node/bin/node \
+              /root/.local/share/unieai-code/${VERSION}/package/node_modules/@deepseek-ai/dsh/lib/bin.js --version"
+
+      - name: Attach to the GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="npm-v${VERSION}"
+          assets=(dist/offline/*.tar.gz dist/offline/*.zip dist/offline/*SHA256SUMS.txt)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" \
+              --title "UnieAI Code ${VERSION}" \
+              --notes "npm: \`npm install -g @unieai/code@${VERSION}\`. Offline: download the bundle for your platform and run \`sh install.sh\` (Windows: \`install.ps1\`); it carries Node.js and every dependency."
+          fi
