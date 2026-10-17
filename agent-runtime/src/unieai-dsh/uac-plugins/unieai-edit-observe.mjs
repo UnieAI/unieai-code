@@ -18,6 +18,10 @@
  *    path appears in the command (`cat f`, `sed -n 1,80p f`, `sed -i … f`,
  *    `python f`), at its version after the command ran.
  *
+ * Shell tools: dsh's `bash` / `bash_persistent` ({command}) and unieai-exec's
+ * `exec_command` ({cmd}); a command still running when the call returns is
+ * not an observation (it may still be writing).
+ *
  * Config: { requireReadBeforeOverwrite?: false, bashTools?: ["bash", …],
  *           maxBashPaths?: 16, prompt?: true }
  */
@@ -147,7 +151,10 @@ export function apply(ctx, config = {}) {
     stat: (target) => ctx.fs.stat(target),
     requireReadBeforeOverwrite: config.requireReadBeforeOverwrite === true,
   });
-  const bashTools = new Set(config.bashTools ?? ["bash", "bash_persistent"]);
+  // exec_command was missing here: with unieai-exec as the shell, nothing a
+  // command printed or rewrote counted as seen, and the next edit of that
+  // file failed as "changed since it was read" -- 7 times in one 9-task run.
+  const bashTools = new Set(config.bashTools ?? ["bash", "bash_persistent", "exec_command"]);
   const maxBashPaths = config.maxBashPaths ?? 16;
 
   ctx.effect(() => () => gate.clear(), "unieai-edit-observe observed-state teardown");
@@ -161,8 +168,8 @@ export function apply(ctx, config = {}) {
   // is final and does not alter it.
   ctx.on("tools/result", async (exec, result) => {
     if (!bashTools.has(exec.name) || result.isError || !exec.agent) return;
-    if (result.value?.kind === "background") return;
-    const paths = pathsInCommand(exec.arguments?.command, maxBashPaths);
+    if (result.value?.kind === "background" || result.value?.session_id !== undefined) return;
+    const paths = pathsInCommand(exec.arguments?.command ?? exec.arguments?.cmd, maxBashPaths);
     if (!paths.length) return;
     const policy = policyFor(ctx, exec);
     const workdir = exec.arguments?.workdir;

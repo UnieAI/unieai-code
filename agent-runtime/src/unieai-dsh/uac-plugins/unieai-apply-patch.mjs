@@ -48,18 +48,27 @@ function usesCrlf(text) {
 
 const withEol = (text, crlf) => (crlf ? text.replace(/\n/g, "\r\n") : text);
 
-/** The observation policy's guard for an update/delete, checked up front. */
-async function editIntent(ctx, exec, target, info, policy, { allowUnobserved = false } = {}) {
+/**
+ * The observation policy's guard for an update/delete, checked up front.
+ *
+ * A stale view does not block an update: its context lines are matched
+ * against the content on disk now, which is codex's whole check, and the
+ * commit is a compare-and-swap on that content's version. Refusing it sent
+ * the model to re-read a file it had just changed with a shell command and
+ * send the same patch again (9 of 12 apply_patch failures in one run). A
+ * delete, which carries no content, still needs a current view.
+ */
+async function editIntent(ctx, exec, target, info, policy, { deleting = false } = {}) {
   let intent;
   try {
     intent = await ctx.waterfall("fs/edit-intent", target, exec, () => undefined);
   } catch (error) {
     // Deleting needs no knowledge of the content; only a stale view blocks it.
-    if (allowUnobserved && error?.code === "FS_NOT_OBSERVED") return undefined;
+    if (deleting && error?.code === "FS_NOT_OBSERVED") return undefined;
     throw toolError(`apply_patch verification failed: ${fsErrorMessage(error, target.displayPath, policy)}`);
   }
-  if (intent && intent.version !== info.version) {
-    throw toolError(`apply_patch verification failed: cannot modify "${target.displayPath}": file changed since it was read — re-read the file, then retry`);
+  if (deleting && intent && intent.version !== info.version) {
+    throw toolError(`apply_patch verification failed: cannot delete "${target.displayPath}": file changed since it was read — re-read the file, then retry`);
   }
   return intent;
 }
@@ -85,14 +94,26 @@ async function writeIntent(ctx, exec, target, info, policy) {
 async function verify(ctx, exec, hunks, policy) {
   const planned = [];
   const touched = new Map();
-  const claim = (target) => {
+  const claim = (target, op = true) => {
     const prior = touched.get(target.targetKey);
     if (prior !== undefined) throw toolError(`apply_patch verification failed: multiple operations target ${target.displayPath}`);
-    touched.set(target.targetKey, true);
+    touched.set(target.targetKey, op);
   };
   for (const hunk of hunks) {
     if (!hunk.path) throw toolError("apply_patch verification failed: a hunk has an empty path");
     const target = await resolveTarget(ctx, exec, hunk.path, policy);
+    // Codex applies a second `*** Update File` of the same file on top of the
+    // first; models write patches that way. Fold it into the planned update.
+    const prior = touched.get(target.targetKey);
+    if (hunk.kind === "update" && !hunk.movePath && prior?.kind === "update" && !prior.dest) {
+      try {
+        prior.after = applyChunks(prior.after, hunk.chunks, target.displayPath);
+      } catch (error) {
+        if (error instanceof PatchApplyError) throw toolError(`apply_patch verification failed: ${error.message}`);
+        throw error;
+      }
+      continue;
+    }
     claim(target);
     const info = await ctx.fs.stat(target, exec.signal);
     if (hunk.kind === "add") {
@@ -108,7 +129,7 @@ async function verify(ctx, exec, hunks, policy) {
     }
     if (info.type !== "file") throw toolError(`apply_patch verification failed: ${target.displayPath} is not a regular file`);
     const raw = await ctx.fs.readText(target, exec.signal);
-    await editIntent(ctx, exec, target, info, policy, { allowUnobserved: hunk.kind === "delete" });
+    await editIntent(ctx, exec, target, info, policy, { deleting: hunk.kind === "delete" });
     if (hunk.kind === "delete") {
       planned.push({ kind: "delete", hunk, target, info, beforeRaw: raw });
       continue;
@@ -131,7 +152,9 @@ async function verify(ctx, exec, hunks, policy) {
       if (dest.targetKey === target.targetKey) dest = null;
     }
     const destIntent = dest ? await writeIntent(ctx, exec, dest, destInfo, policy) : undefined;
-    planned.push({ kind: "update", hunk, target, info, beforeRaw: raw, before, after, crlf: usesCrlf(raw), dest, destInfo, destIntent });
+    const op = { kind: "update", hunk, target, info, beforeRaw: raw, before, after, crlf: usesCrlf(raw), dest, destInfo, destIntent };
+    touched.set(target.targetKey, op);
+    planned.push(op);
   }
   return planned;
 }

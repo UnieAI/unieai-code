@@ -11,6 +11,12 @@
  * the model sees gains the closest lines with their numbers. FS_AMBIGUOUS_EDIT
  * gains the line numbers of each occurrence.
  *
+ * FS_STALE_VERSION ("file changed since it was read", typically after a shell
+ * command rewrote the file) is applied anyway when old_string still occurs
+ * verbatim exactly once (or replace_all is set): the text the model means to
+ * replace is provably what is on disk, and the write is a compare-and-swap on
+ * the version just read. Otherwise the error stands.
+ *
  * Hook: `tools/execute` (a failed result's value cannot be replaced in
  * `tools/post-execute`). The value returned is the `edit` tool's own output
  * shape, so dsh renders and presents it as a normal edit; a note naming the
@@ -37,7 +43,7 @@ export function apply(ctx, config = {}) {
     const result = await next();
     if (!tools.has(exec.name) || !result?.isError) return result;
     const code = result.error?.info?.code;
-    if (code !== "FS_EDIT_NOT_FOUND" && code !== "FS_AMBIGUOUS_EDIT") return result;
+    if (code !== "FS_EDIT_NOT_FOUND" && code !== "FS_AMBIGUOUS_EDIT" && code !== "FS_STALE_VERSION") return result;
     try {
       return await rescue(ctx, exec, result, code, notes);
     } catch (error) {
@@ -59,6 +65,20 @@ async function rescue(ctx, exec, result, code, notes) {
   const info = await ctx.fs.stat(target, exec.signal);
   if (!info || info.type !== "file") return result;
   const content = (await ctx.fs.readText(target, exec.signal)).replace(/\r\n/g, "\n");
+
+  if (code === "FS_STALE_VERSION") {
+    const at = literalLineNumbers(content, oldString);
+    if (!oldString || at.length === 0 || (at.length > 1 && !replaceAll) || oldString === newString) return result;
+    let outcome;
+    try {
+      outcome = await ctx.fs.editText(target, { oldString, newString, replaceAll }, { version: info.version }, exec.signal, policy);
+    } catch (error) {
+      return errorResult(result, fsErrorMessage(error, target.displayPath, policy));
+    }
+    ctx.emit("fs/observed", target, { kind: "present", version: outcome.version }, exec);
+    notes.set(exec, "\n(The file had changed since you last read it; old_string still matched it exactly, so the edit was applied to the current content.)");
+    return { isError: false, value: { path: target.displayPath, before: outcome.before, after: outcome.after } };
+  }
 
   if (code === "FS_AMBIGUOUS_EDIT") {
     const at = literalLineNumbers(content, oldString);
