@@ -204,6 +204,9 @@ enum Subcommand {
     /// Debugging tools.
     Debug(DebugCommand),
 
+    /// Reach UnieAI Code sessions on this machine from another agent (`peers mcp`).
+    Peers(codex_cli::unieai_peers::PeersCommand),
+
     /// Execpolicy tooling.
     #[clap(hide = true)]
     Execpolicy(ExecpolicyCommand),
@@ -2002,6 +2005,14 @@ async fn cli_main(
                 anyhow::bail!("`unieai sandbox` is not supported on this operating system");
             }
         }
+        Some(Subcommand::Peers(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "peers",
+            )?;
+            codex_cli::unieai_peers::run_peers_command(cmd, root_config_overrides).await?;
+        }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
             DebugSubcommand::Models(cmd) => {
                 reject_remote_mode_for_subcommand(
@@ -2846,6 +2857,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Cloud(_)) => Some("cloud"),
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
+        Some(Subcommand::Peers(_)) => Some("peers"),
         Some(Subcommand::Execpolicy(_)) => Some("execpolicy"),
         Some(Subcommand::Apply(_)) => Some("apply"),
         Some(Subcommand::ResponsesApiProxy(_)) => Some("responses-api-proxy"),
