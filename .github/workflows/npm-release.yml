@@ -82,12 +82,17 @@ jobs:
         shell: bash
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          sudo swapoff -a || true
-          sudo fallocate -l 16G /mnt/unieai-swap || sudo fallocate -l 16G /unieai-swap
-          swapfile=$(ls /mnt/unieai-swap /unieai-swap 2>/dev/null | head -1)
-          sudo chmod 600 "$swapfile" && sudo mkswap "$swapfile" && sudo swapon "$swapfile"
+          swapfile=/unieai-swap
+          if [[ -d /mnt ]] && sudo fallocate -l 16G /mnt/unieai-swap 2>/dev/null; then
+            swapfile=/mnt/unieai-swap
+          else
+            sudo fallocate -l 16G "$swapfile"
+          fi
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
           free -h
-          df -h / /mnt
+          df -h /
 
       - name: Resolve npm version
         id: version
