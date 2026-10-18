@@ -25,7 +25,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod apps_test_server;
+#[cfg(unix)]
+pub mod code_mode_host;
 pub mod context_snapshot;
+pub mod exec_server;
 pub mod hooks;
 pub mod process;
 pub mod responses;
@@ -35,7 +38,6 @@ pub mod test_codex;
 pub mod test_codex_exec;
 mod test_environment;
 pub mod tracing;
-pub mod zsh_fork;
 
 pub(crate) use test_environment::TestEnvironment;
 pub use test_environment::TestTargetOs;
@@ -208,9 +210,20 @@ pub async fn load_default_config_for_test_with_cloud_config_bundle(
     codex_home: &TempDir,
     cloud_config_bundle: CloudConfigBundleLoader,
 ) -> Config {
+    // A CLI-layer override, unlike a harness override, reaches the configs
+    // that spawned sub-agents rebuild from the layer stack.
+    let cli_overrides = if config_selects_provider(codex_home.path()) {
+        Vec::new()
+    } else {
+        vec![(
+            "model_provider".to_string(),
+            toml::Value::String("openai".to_string()),
+        )]
+    };
     let mut config = ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(cli_overrides)
         .harness_overrides(default_test_overrides())
         .cloud_config_bundle(cloud_config_bundle)
         .build()
@@ -248,6 +261,18 @@ fn default_test_overrides() -> ConfigOverrides {
 #[cfg(not(target_os = "linux"))]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides::default()
+}
+
+/// Whether `codex_home`'s config.toml selects a model provider itself.
+///
+/// The fork's default provider is `unieai`, whose model catalog only a Studio
+/// sign-in provides; these suites run against the bundled openai catalog
+/// unless a test picks a provider of its own.
+fn config_selects_provider(codex_home: &Path) -> bool {
+    std::fs::read_to_string(codex_home.join("config.toml"))
+        .unwrap_or_default()
+        .lines()
+        .any(|line| line.trim_start().starts_with("model_provider"))
 }
 
 #[cfg(target_os = "linux")]
@@ -320,7 +345,12 @@ pub async fn submit_thread_settings(
     use tokio::time::Duration;
     use tokio::time::timeout;
 
-    let submission_id = codex.submit(Op::ThreadSettings { thread_settings }).await?;
+    let submission_id = codex
+        .submit(Op::ThreadSettings {
+            thread_settings,
+            reply: None,
+        })
+        .await?;
     loop {
         let ev = timeout(Duration::from_secs(10), codex.next_event())
             .await

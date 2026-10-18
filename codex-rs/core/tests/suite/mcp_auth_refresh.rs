@@ -81,7 +81,7 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
     *bearer_token_env_var = None;
     let mcp_servers = HashMap::from([(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
-        EffectiveMcpServer::configured(hosted_plugin_runtime_config),
+        EffectiveMcpServer::from_host_config(hosted_plugin_runtime_config),
     )]);
     let mut config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
@@ -109,7 +109,6 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         client_mcp_extensions: ClientMcpExtensions::default(),
         auth: Some(expected_auth.clone()),
         auth_manager: Some(Arc::clone(&auth_manager)),
-        allow_user_interaction: true,
         elicitation_reviewer: None,
         elicitation_lifecycle: None,
     })
@@ -144,7 +143,7 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
             /*wait_for_server*/ true,
         )
         .await?;
-    assert_eq!(tool_result.is_error, Some(false));
+    assert_eq!(tool_result.result.is_error, Some(false));
 
     let requests = server
         .received_requests()

@@ -65,6 +65,8 @@ pub fn agent_message_as_user_message(item: &ResponseItem) -> Option<ResponseItem
 
     // No id: the original id names an item type this provider never saw.
     Some(ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],

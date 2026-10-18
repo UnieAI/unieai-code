@@ -13,6 +13,8 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Presets,
+    Daybreak,
     Ide,
     Permissions,
     Keymap,
@@ -37,6 +39,7 @@ pub enum SlashCommand {
     App,
     Init,
     Compact,
+    Config,
     Recap,
     Plan,
     Voice,
@@ -47,12 +50,14 @@ pub enum SlashCommand {
     Copy,
     Export,
     Raw,
+    Tui,
     Diff,
     Mention,
     Status,
     Daemon,
     /// Choose the agent engine for new sessions: `/engine [codex|uac]`.
     Engine,
+    Warnings,
     Cd,
     #[strum(to_string = "pwd", serialize = "cwd")]
     Pwd,
@@ -93,6 +98,7 @@ impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
+            SlashCommand::Config => "configure Codex preferences",
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for UnieAI Code",
@@ -111,13 +117,15 @@ impl SlashCommand {
             SlashCommand::Copy => "copy last response as markdown",
             SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
+            SlashCommand::Tui => "choose the TUI mode for the next launch",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how UnieAI Code performs specific tasks",
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
-            SlashCommand::Daemon => "Manage the local background server.",
+            SlashCommand::Daemon => "Manage the local background server",
             SlashCommand::Engine => "switch the agent engine (codex or unieai-agent-core)",
+            SlashCommand::Warnings => "view retained warnings and diagnostic details",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Cd => "change the current working directory",
             SlashCommand::Pwd => "show the current working directory",
@@ -132,6 +140,8 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Presets => "run or save reusable prompts and slash commands",
+            SlashCommand::Daybreak => "turn Daybreak on or off",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -153,7 +163,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
             SlashCommand::Memories => "configure memory use and generation",
-            SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
+            SlashCommand::Mcp => "list MCP tools; use /mcp verbose or /mcp login <name>",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of UnieAI Code",
@@ -173,6 +183,10 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Model
+                | SlashCommand::Permissions
+                | SlashCommand::Title
+                | SlashCommand::Statusline
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
@@ -209,9 +223,37 @@ impl SlashCommand {
                 | SlashCommand::Mention
                 | SlashCommand::Status
                 | SlashCommand::Daemon
+                | SlashCommand::Warnings
                 | SlashCommand::Pwd
                 | SlashCommand::Usage
                 | SlashCommand::Ide
+        )
+    }
+
+    /// Whether dispatch needs thread state to validate this command before consuming its draft.
+    /// The composer must defer busy-state rejection and draft clearing for these commands.
+    pub(crate) fn requires_dispatch_validation(self) -> bool {
+        matches!(self, SlashCommand::Review)
+    }
+
+    /// Commands that do not require a writable current thread. The server must still be connected.
+    pub(crate) fn available_when_thread_unavailable(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::New
+                | SlashCommand::Clear
+                | SlashCommand::Resume
+                | SlashCommand::Agents
+                | SlashCommand::MultiAgents
+                | SlashCommand::Quit
+                | SlashCommand::Exit
+                | SlashCommand::Status
+                | SlashCommand::Warnings
+                | SlashCommand::DebugConfig
+                | SlashCommand::Pwd
+                | SlashCommand::Rollout
+                | SlashCommand::Copy
+                | SlashCommand::Raw
         )
     }
 
@@ -219,7 +261,6 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         match self {
             SlashCommand::New
-            | SlashCommand::Archive
             | SlashCommand::Delete
             | SlashCommand::Fork
             | SlashCommand::Worktree
@@ -228,6 +269,7 @@ impl SlashCommand {
             | SlashCommand::Recap
             | SlashCommand::Export
             | SlashCommand::Keymap
+            | SlashCommand::Tui
             | SlashCommand::Vim
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
@@ -242,8 +284,11 @@ impl SlashCommand {
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
+            | SlashCommand::Archive
             | SlashCommand::Resume
             | SlashCommand::Model
+            | SlashCommand::Presets
+            | SlashCommand::Daybreak
             | SlashCommand::Permissions
             | SlashCommand::Copy
             | SlashCommand::Raw
@@ -253,6 +298,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Daemon
+            | SlashCommand::Warnings
             | SlashCommand::Pwd
             | SlashCommand::Usage
             | SlashCommand::DebugConfig
@@ -279,7 +325,7 @@ impl SlashCommand {
             // Both stay available mid-turn: the point of the mesh is to reach a
             // session that is already working.
             SlashCommand::Peers | SlashCommand::Peer => true,
-            SlashCommand::Theme | SlashCommand::Pets => false,
+            SlashCommand::Config | SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }
 

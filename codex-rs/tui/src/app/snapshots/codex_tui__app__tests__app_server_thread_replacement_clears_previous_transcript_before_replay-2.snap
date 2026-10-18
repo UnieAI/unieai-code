@@ -2,12 +2,9 @@
 source: tui/src/app/tests.rs
 expression: rendered
 ---
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0) │
-│                                              │
-│ model:     gpt-test   /model to change       │
-│ directory: <thread cwd>                │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0)
+     <thread cwd>
 
 
 › Next thread prompt

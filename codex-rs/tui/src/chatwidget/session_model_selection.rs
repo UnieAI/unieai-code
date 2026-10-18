@@ -1,4 +1,4 @@
-//! Session-only model picker actions leave durable defaults untouched. Astra picker actions retain
+//! Session-only model selections leave durable defaults untouched. Explicit Astra selections retain
 //! their originating task and are checked against its effective model when the app applies them.
 
 use super::*;
@@ -15,6 +15,7 @@ pub(crate) enum AstraModelPickerAction {
     },
     SelectSessionModel {
         effort: Option<ReasoningEffortConfig>,
+        service_tier: Option<String>,
     },
 }
 
@@ -36,7 +37,14 @@ impl AstraModelPickerAction {
             Self::ApplyAdvancedReasoning { effort } => {
                 AppEvent::ApplyAdvancedReasoning { model, effort }
             }
-            Self::SelectSessionModel { effort } => AppEvent::SelectSessionModel { model, effort },
+            Self::SelectSessionModel {
+                effort,
+                service_tier,
+            } => AppEvent::SelectSessionModel {
+                model,
+                effort,
+                service_tier,
+            },
         }
     }
 }
@@ -56,15 +64,15 @@ impl ChatWidget {
         let mut hints = Vec::new();
         if let Some(accept) = keymap.primary_hint(ListAction::Accept) {
             let label = if effort == Some(ReasoningEffortConfig::Ultra) {
-                " to apply · "
+                " apply · "
             } else {
-                " to set as default · "
+                " default · "
             };
-            hints.extend([accept.into(), label.into()]);
+            hints.extend([accept.into(), label.dim()]);
         }
-        hints.extend([key.into(), " for this session".into()]);
+        hints.extend([key.into(), " session".dim()]);
         if let Some(cancel) = keymap.primary_hint(ListAction::Cancel) {
-            hints.extend([" · ".into(), cancel.into(), " to go back".into()]);
+            hints.extend([" · ".dim(), cancel.into(), " back".dim()]);
         }
         let warning = effort
             .as_ref()
@@ -77,6 +85,7 @@ impl ChatWidget {
                 tx.send(
                     AstraModelPickerAction::SelectSessionModel {
                         effort: effort.clone(),
+                        service_tier: None,
                     }
                     .into_picker_event(sparkle_thread, model.clone()),
                 );

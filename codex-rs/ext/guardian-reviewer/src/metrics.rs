@@ -46,6 +46,7 @@ pub(crate) fn emit_guardian_review_metrics(
     };
     let mut counter_tag_refs = tag_refs.clone();
     counter_tag_refs.extend(mcp_tags.iter().map(|(key, value)| (*key, value.as_str())));
+    counter_tag_refs.push(("context_changed", bool_tag(result.context_changed)));
     session_telemetry.counter(
         GUARDIAN_REVIEW_COUNT_METRIC,
         /*inc*/ 1,
@@ -106,6 +107,13 @@ fn guardian_review_metric_tags(
     reviewed_action: &GuardianReviewedAction,
 ) -> Vec<(&'static str, String)> {
     vec![
+        (
+            "context_mode",
+            result
+                .guardian_context_mode
+                .unwrap_or("unknown")
+                .to_string(),
+        ),
         ("decision", decision_tag(result.decision).to_string()),
         (
             "terminal_status",
@@ -179,6 +187,7 @@ fn failure_reason_tag(reason: Option<GuardianReviewFailureReason>) -> &'static s
     match reason {
         Some(GuardianReviewFailureReason::Timeout) => "timeout",
         Some(GuardianReviewFailureReason::Cancelled) => "cancelled",
+        Some(GuardianReviewFailureReason::StaleAuthorization) => "stale_authorization",
         Some(GuardianReviewFailureReason::PromptBuildError) => "prompt_build_error",
         Some(GuardianReviewFailureReason::SessionError) => "session_error",
         Some(GuardianReviewFailureReason::ParseError) => "parse_error",
@@ -435,6 +444,7 @@ mod tests {
         let (attrs, value) = counter_point(&snapshot, GUARDIAN_REVIEW_COUNT_METRIC);
 
         let expected_base_tags = BTreeMap::from([
+            ("context_mode".to_string(), "unknown".to_string()),
             ("action".to_string(), expected_action.to_string()),
             (
                 "approval_request_source".to_string(),
@@ -454,6 +464,7 @@ mod tests {
         ]);
         let mut expected_counter_tags = expected_base_tags.clone();
         expected_counter_tags.extend(expected_mcp_tags);
+        expected_counter_tags.insert("context_changed".to_string(), "false".to_string());
         assert_eq!((attrs, value), (expected_counter_tags, 1));
 
         assert_eq!(

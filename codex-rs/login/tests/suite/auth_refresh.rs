@@ -32,6 +32,7 @@ use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::body_partial_json;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -119,6 +120,7 @@ async fn refresh_token_honors_respect_system_proxy() -> Result<()> {
                 "client_id": "staging-client",
                 "grant_type": "refresh_token",
                 "refresh_token": INITIAL_REFRESH_TOKEN,
+                "refresh_reason": "forced",
             })
         );
         return Ok(());
@@ -224,6 +226,7 @@ async fn refresh_token_succeeds_updates_storage() -> Result<()> {
             "client_id": "staging-client",
             "grant_type": "refresh_token",
             "refresh_token": INITIAL_REFRESH_TOKEN,
+            "refresh_reason": "forced",
         })
     );
 
@@ -333,6 +336,9 @@ async fn auth_refreshes_when_access_token_is_near_expiry() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
+        .and(body_partial_json(
+            json!({"refresh_reason": "proactive_expiry"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "new-access-token",
             "refresh_token": "new-refresh-token"
@@ -384,6 +390,54 @@ async fn auth_refreshes_when_access_token_is_near_expiry() -> Result<()> {
         "last_refresh should advance"
     );
 
+    server.verify().await;
+    Ok(())
+}
+
+#[serial_test::serial(auth_env)]
+#[tokio::test]
+async fn auth_reports_scheduled_refresh_when_access_token_expiry_is_unavailable() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_partial_json(json!({"refresh_reason": "scheduled"})))
+        .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token"
+        })))
+        .expect(/*r*/ 1)
+        .mount(&server)
+        .await;
+
+    let ctx = RefreshTokenTestContext::new(&server).await?;
+    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+    ctx.write_auth(&AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(initial_tokens.clone()),
+        last_refresh: Some(Utc::now() - Duration::days(9)),
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+        bedrock_access_keys: None,
+    })
+    .await?;
+
+    let refreshed = ctx
+        .auth_manager
+        .auth()
+        .await
+        .context("auth should refresh")?;
+    assert_eq!(
+        refreshed.get_token_data()?,
+        TokenData {
+            access_token: "new-access-token".to_string(),
+            refresh_token: "new-refresh-token".to_string(),
+            ..initial_tokens
+        }
+    );
     server.verify().await;
     Ok(())
 }
@@ -1021,7 +1075,8 @@ async fn refresh_token_does_not_retry_after_standard_invalid_grant_failure() -> 
 
     let ctx = RefreshTokenTestContext::new(&server).await?;
     let initial_last_refresh = Utc::now() - Duration::days(1);
-    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+    // Redacting a credential that overlaps the error code must not change recovery policy.
+    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, "invalid");
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
@@ -1228,56 +1283,60 @@ async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<
 
 #[serial_test::serial(auth_env)]
 #[tokio::test]
-async fn refresh_token_returns_transient_error_on_server_failure() -> Result<()> {
+async fn refresh_token_preserves_credentials_on_server_or_decode_failure() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/oauth/token"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
-            "error": "temporary-failure"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+    for (status, body) in [
+        (500, json!({"error": "temporary-failure"})),
+        (200, json!(INITIAL_REFRESH_TOKEN)),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-    let ctx = RefreshTokenTestContext::new(&server).await?;
-    let initial_last_refresh = Utc::now() - Duration::days(1);
-    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
-    let initial_auth = AuthDotJson {
-        auth_mode: Some(AuthMode::Chatgpt),
-        openai_api_key: None,
-        tokens: Some(initial_tokens.clone()),
-        last_refresh: Some(initial_last_refresh),
-        agent_identity: None,
-        personal_access_token: None,
-        bedrock_api_key: None,
-        bedrock_access_keys: None,
-    };
-    ctx.write_auth(&initial_auth).await?;
+        let ctx = RefreshTokenTestContext::new(&server).await?;
+        let initial_last_refresh = Utc::now() - Duration::days(1);
+        let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+        let initial_auth = AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: None,
+            tokens: Some(initial_tokens.clone()),
+            last_refresh: Some(initial_last_refresh),
+            agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
+            bedrock_access_keys: None,
+        };
+        ctx.write_auth(&initial_auth).await?;
 
-    let err = ctx
-        .auth_manager
-        .refresh_token_from_authority()
-        .await
-        .err()
-        .context("refresh should fail")?;
-    assert!(matches!(err, RefreshTokenError::Transient(_)));
-    assert_eq!(err.failed_reason(), None);
+        let err = ctx
+            .auth_manager
+            .refresh_token_from_authority()
+            .await
+            .err()
+            .context("refresh should fail")?;
+        assert!(matches!(err, RefreshTokenError::Transient(_)));
+        assert_eq!(err.failed_reason(), None);
+        assert!(!format!("{err} {err:?}").contains(INITIAL_REFRESH_TOKEN));
 
-    let stored = ctx.load_auth()?;
-    assert_eq!(stored, initial_auth);
-    let cached_auth = ctx
-        .auth_manager
-        .auth()
-        .await
-        .context("auth should remain cached")?;
-    let cached = cached_auth
-        .get_token_data()
-        .context("token data should remain cached")?;
-    assert_eq!(cached, initial_tokens);
+        let stored = ctx.load_auth()?;
+        assert_eq!(stored, initial_auth);
+        let cached_auth = ctx
+            .auth_manager
+            .auth()
+            .await
+            .context("auth should remain cached")?;
+        let cached = cached_auth
+            .get_token_data()
+            .context("token data should remain cached")?;
+        assert_eq!(cached, initial_tokens);
 
-    server.verify().await;
+        server.verify().await;
+    }
     Ok(())
 }
 
@@ -1289,6 +1348,9 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
+        .and(body_partial_json(
+            json!({"refresh_reason": "unauthorized_recovery"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "recovered-access-token",
             "refresh_token": "recovered-refresh-token"

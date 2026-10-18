@@ -2,6 +2,7 @@
 
 use super::*;
 use codex_app_server_protocol::ImageReference;
+use codex_utils_path_uri::LegacyAppPathString;
 
 impl ChatWidget {
     /// A turn carrying a peer session's framed message, built with this
@@ -32,7 +33,6 @@ impl ChatWidget {
             self.service_tier_update_for_core(),
             /*final_output_json_schema*/ None,
             collaboration_mode,
-            /*personality*/ None,
         )
     }
 
@@ -170,6 +170,7 @@ impl ChatWidget {
         if self.has_misalignment_policy_violation() {
             return (false, None);
         }
+        self.empty_state_animation.borrow_mut().dismiss();
         if self.input_queue.rate_limit_recovery_pending || self.pending_image_submission.is_some() {
             let model_prompt = source == UserMessageSource::Prompt
                 && (shell_escape_policy == ShellEscapePolicy::Disallow
@@ -314,13 +315,16 @@ impl ChatWidget {
                 .retain(|binding| crate::task_mentions::valid_thread_path(&binding.path).is_none());
         }
 
-        let mentions = collect_tool_mentions(&text, &HashMap::new());
+        let reply_text = crate::async_question_reply::display_text(&text);
+        let mentions =
+            collect_tool_mentions(reply_text.as_deref().unwrap_or(&text), &HashMap::new());
         let bound_names: HashSet<String> = mention_bindings
             .iter()
+            .filter(|binding| binding.sigil == '$')
             .map(|binding| binding.mention.clone())
             .collect();
         let mut skill_names_lower: HashSet<String> = HashSet::new();
-        let mut selected_skill_paths: HashSet<AbsolutePathBuf> = HashSet::new();
+        let mut selected_skill_paths = HashSet::new();
         let mut selected_plugin_ids: HashSet<String> = HashSet::new();
 
         if let Some(skills) = self.bottom_pane.skills() {
@@ -329,32 +333,40 @@ impl ChatWidget {
                 .map(|skill| skill.name.to_ascii_lowercase())
                 .collect();
 
+            // TODO(anp): Preserve executor path identity through both structured skill input paths
+            // below and selection. UserInput::Skill still relies on host-native path interpretation.
             for binding in &mention_bindings {
                 let path = binding
                     .path
                     .strip_prefix("skill://")
                     .unwrap_or(binding.path.as_str());
-                let path = Path::new(path);
-                if let Some(skill) = skills.iter().find(|skill| skill.path.as_path() == path)
-                    && selected_skill_paths.insert(skill.path.clone())
+                let Some(path) = LegacyAppPathString::from_string(path).to_inferred_path_uri()
+                else {
+                    continue;
+                };
+                if let Some(skill) = skills
+                    .iter()
+                    .find(|skill| skill.path.to_inferred_path_uri().as_ref() == Some(&path))
+                    && selected_skill_paths.insert(path)
                 {
                     items.push(UserInput::Skill {
                         name: skill.name.clone(),
-                        path: skill.path.to_path_buf(),
+                        path: PathBuf::from(skill.path.as_str()),
                     });
                 }
             }
 
             let skill_mentions = find_skill_mentions_with_tool_mentions(&mentions, skills);
             for skill in skill_mentions {
-                if bound_names.contains(skill.name.as_str())
-                    || !selected_skill_paths.insert(skill.path.clone())
-                {
+                let Some(path) = skill.path.to_inferred_path_uri() else {
+                    continue;
+                };
+                if bound_names.contains(skill.name.as_str()) || !selected_skill_paths.insert(path) {
                     continue;
                 }
                 items.push(UserInput::Skill {
                     name: skill.name.clone(),
-                    path: skill.path.to_path_buf(),
+                    path: PathBuf::from(skill.path.as_str()),
                 });
             }
         }
@@ -453,6 +465,7 @@ impl ChatWidget {
         let submitted_image_display = (render_in_history && !local_images.is_empty())
             .then(|| Self::user_message_display_from_inputs(&items));
         let client_user_message_id = uuid::Uuid::new_v4().to_string();
+        crate::startup_recovery::bind_submission(&text, &client_user_message_id);
         let pending_steer = (!render_in_history).then(|| PendingSteer {
             client_id: client_user_message_id.clone(),
             user_message: UserMessage {
@@ -480,7 +493,6 @@ impl ChatWidget {
             service_tier,
             /*final_output_json_schema*/ None,
             collaboration_mode,
-            /*personality*/ None,
         );
         let submitted_message = UserMessage {
             text,
@@ -517,6 +529,7 @@ impl ChatWidget {
         self.note_realtime_typed_input(&submitted_message.text);
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
+            self.input_queue.pending_user_message_client_id = Some(client_user_message_id.clone());
         }
 
         // Persist the submitted text to cross-session message history. Mentions are encoded into
@@ -545,6 +558,11 @@ impl ChatWidget {
             }
         };
         if let Some((text, elements)) = history {
+            let reply_text = crate::async_question_reply::display_text(text);
+            let (text, elements) = match &reply_text {
+                Some(text) => (text.as_str(), &[][..]),
+                None => (text.as_str(), elements),
+            };
             self.append_message_history_entry(encode_history_mentions_at_elements(
                 text,
                 &encoded_mentions,

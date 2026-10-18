@@ -1,5 +1,7 @@
 //! Test-only helpers shared across the TUI crate.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::LazyLock;
 
 use codex_models_manager::bundled_models_response;
@@ -52,4 +54,39 @@ where
         .unwrap_or_else(|err| {
             panic!("app-server wire value should map to legacy helper type: {err}")
         })
+}
+
+/// Construct a large test future outside its caller's poll frame before boxing it.
+/// `Box::pin(large_future())` can still reserve the future's full size on that stack.
+#[inline(never)]
+pub(crate) fn box_future<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<F>> {
+    Box::pin(create())
+}
+
+// Keep boxed call sites shaped like ordinary calls, without closure indentation.
+macro_rules! boxed_future {
+    ($future:expr) => {
+        $crate::test_support::box_future(|| $future)
+    };
+}
+pub(crate) use boxed_future;
+
+/// Pins a test `CODEX_HOME` to the openai provider, unless its config.toml
+/// already names a provider.
+///
+/// The fork's default provider is `unieai`, whose model catalog only a Studio
+/// sign-in provides, so a fresh home has no model and session start refuses
+/// to run. Suites that exercise upstream behavior use the bundled catalog.
+pub(crate) fn pin_openai_provider(codex_home: &std::path::Path) {
+    let path = codex_home.join("config.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| line.trim_start().starts_with("model_provider"))
+    {
+        return;
+    }
+    // Top-level keys must precede any table header, so prepend.
+    std::fs::write(path, format!("model_provider = \"openai\"\n{existing}"))
+        .expect("write test config.toml");
 }

@@ -2,10 +2,15 @@
 //!
 //! Owns the main app run loop from app-server bootstrap through terminal shutdown. Startup input
 //! remains isolated from protected interactive requests until the initialized composer owns it.
+//! Queued resume history replaces the provisional loading frame only when it is ready to render.
+//! Explicit local launch permissions remain runtime overrides across new sessions and reconnects.
 
 use super::reconnect::ReconnectState;
+use super::startup_bootstrap::bootstrap_server_owned_start;
+use super::startup_bootstrap::uses_server_owned_fresh_bootstrap;
 use super::*;
 use crate::session_start::SessionStartAction;
+use crate::session_start::SessionStartConfig;
 use crate::session_start::SessionStartOutcome;
 use crate::session_start::cancel_session_start;
 use crate::session_start::complete_session_start;
@@ -15,6 +20,7 @@ fn spawn_startup_thread_start(
     app_server: &AppServerSession,
     local_settings: crate::local_settings::LocalSettings,
     config: Config,
+    launch_choices: crate::app_server_session::StartupLaunchChoices,
     app_event_tx: AppEventSender,
     worktree: Option<crate::ManagedTuiWorktree>,
 ) {
@@ -30,6 +36,7 @@ fn spawn_startup_thread_start(
             thread_params_mode,
             remote_cwd_override,
             thread_tool_transport,
+            launch_choices,
         )
         .await
         .and_then(|started| {
@@ -42,15 +49,23 @@ fn spawn_startup_thread_start(
     });
 }
 
+#[derive(Default)]
+pub(super) struct FreshStartupDefaults {
+    pub(super) server_defaults_read: bool,
+    pub(super) prompt_windows_sandbox: bool,
+}
+
 pub(super) async fn prepare_fresh_startup_config(
     config: &mut Config,
     app_server: &AppServerSession,
+    app_server_target: &AppServerTarget,
     cli_kv_overrides: &[(String, TomlValue)],
     harness_overrides: &ConfigOverrides,
-) -> Result<bool> {
-    let defaults_cwd = match app_server.thread_params_mode() {
-        crate::app_server_session::ThreadParamsMode::Embedded => config.cwd.as_path(),
-        crate::app_server_session::ThreadParamsMode::Remote => {
+    environments: &EnvironmentManager,
+) -> Result<FreshStartupDefaults> {
+    let defaults_cwd = match app_server_target {
+        AppServerTarget::Embedded | AppServerTarget::LocalDaemon { .. } => config.cwd.as_path(),
+        AppServerTarget::Remote { .. } => {
             app_server.remote_cwd_override().unwrap_or(Path::new("."))
         }
     };
@@ -59,12 +74,20 @@ pub(super) async fn prepare_fresh_startup_config(
         defaults_cwd,
     )
     .await?;
+    let mut prompt_windows_sandbox = false;
     if let Some(defaults) = defaults.as_ref() {
         super::new_session::overlay_new_session_defaults(
             config,
-            defaults,
+            &defaults.config,
             cli_kv_overrides,
             harness_overrides,
+        );
+        prompt_windows_sandbox = crate::projectless::apply_defaults(
+            config,
+            harness_overrides,
+            app_server,
+            environments,
+            defaults,
         );
     }
     apply_managed_new_thread_defaults(
@@ -73,7 +96,10 @@ pub(super) async fn prepare_fresh_startup_config(
         cli_kv_overrides,
         harness_overrides,
     );
-    Ok(defaults.is_some())
+    Ok(FreshStartupDefaults {
+        server_defaults_read: defaults.is_some(),
+        prompt_windows_sandbox,
+    })
 }
 
 pub(super) fn startup_model(
@@ -83,8 +109,8 @@ pub(super) fn startup_model(
 ) -> String {
     config.model.clone().unwrap_or_else(|| {
         if server_defaults_read {
-            // Bootstrap was seeded with local config, which may differ from a cleared server
-            // model. Use the server's model catalog when config/read returned model: null.
+            // Legacy bootstrap paths may be seeded with local config, which can differ from a
+            // cleared server model. Use the server catalog when config/read returned model: null.
             bootstrap
                 .available_models
                 .iter()
@@ -99,6 +125,74 @@ pub(super) fn startup_model(
 }
 
 impl App {
+    /// Keep explicit local launch choices available for new sessions and reconnect recovery.
+    pub(super) fn remember_launch_permissions(&mut self) {
+        if self.app_server_target.thread_params_mode()
+            == crate::app_server_session::ThreadParamsMode::Remote
+        {
+            return;
+        }
+        let selected = crate::resume_permissions::ResumePermissions::from_overrides(
+            &self.config,
+            &self.harness_overrides,
+        );
+        if selected.approval_policy {
+            self.runtime_approval_policy_override = Some(RuntimeApprovalPolicyOverride::Explicit(
+                self.config.permissions.approval_policy.value().into(),
+            ));
+        }
+        if selected.approvals_reviewer {
+            self.runtime_approvals_reviewer_override = Some(self.config.approvals_reviewer);
+        }
+        if selected.profile {
+            let profile = RuntimePermissionProfileOverride::from_config(&self.config);
+            // The server owns constrained profiles that legacy turn parameters cannot express.
+            self.runtime_permission_profile_override =
+                (profile.active_permission_profile.is_some()
+                    || crate::app_server_session::turn_permissions_overrides(
+                        TurnPermissionsOverride::LegacySandbox(
+                            self.config.permissions.effective_permission_profile(),
+                        ),
+                        self.config.cwd.as_path(),
+                    )
+                    .is_ok())
+                .then_some(profile);
+        }
+    }
+
+    /// Keep the provisional loading frame until queued history reaches the owned transcript.
+    /// Visible startup decisions and the agent overview must still render immediately.
+    pub(super) fn render_startup_frame(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_event_rx: &mpsc::UnboundedReceiver<AppEvent>,
+    ) -> Result<()> {
+        if tui.is_owned_screen() && !app_event_rx.is_empty() && !self.chat_widget.has_active_view()
+        {
+            return Ok(());
+        }
+        self.chat_widget.pre_draw_tick();
+        self.render_chat_widget_frame(tui, tui.terminal.last_known_screen_size)?;
+        if self.chat_widget.has_active_modal() && self.startup_protected_input_boundary {
+            self.discard_startup_modal_input(tui)?;
+        }
+        Ok(())
+    }
+
+    /// Keep a visible modal closed to input if the terminal has not settled yet. The next input
+    /// event retries the drain instead of acting on the modal; server events can continue meanwhile.
+    pub(super) fn discard_startup_modal_input(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        match tui.discard_pending_input_before_interactive_screen() {
+            Ok(()) => self.startup_pending_protected_request = false,
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+                self.startup_pending_protected_request = true;
+                tracing::warn!(%err, "keeping startup modal input quarantined");
+            }
+            Err(err) => return Err(err.into()),
+        }
+        Ok(())
+    }
+
     /// Recognizes queued requests before they become visible protected screens.
     pub(super) fn has_queued_startup_protected_request(&self) -> bool {
         self.startup_protected_input_boundary
@@ -155,6 +249,7 @@ impl App {
         startup_bootstrap: Option<AppServerBootstrap>,
         startup_hooks_browser: Option<HooksListEntry>,
         daemon_startup_warning: Option<String>,
+        managed_daemon: bool,
         mut startup_draft: StartupDraftPump,
         managed_worktree: Option<crate::ManagedTuiWorktree>,
         daemon_cli_executable: Option<AbsolutePathBuf>,
@@ -171,18 +266,15 @@ impl App {
             Err(error.into())
         }
 
-        fn render_startup_frame(app: &mut App, tui: &mut tui::Tui) -> Result<()> {
-            app.chat_widget.pre_draw_tick();
-            app.render_chat_widget_frame(tui, tui.terminal.last_known_screen_size)?;
-            if app.chat_widget.has_active_view() && app.startup_protected_input_boundary {
-                tui.discard_pending_input_before_interactive_screen()?;
-                app.startup_pending_protected_request = false;
-            }
-            Ok(())
-        }
-
-        let mut local_settings = crate::local_settings::LocalSettings::from(&config);
+        // Adopt actual launch ownership before constructing session-local preferences.
+        tui.prepare_owned_screen(config.tui_fullscreen_transcript)?;
+        let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
         let startup_started_at = Instant::now();
+        if let SessionSelection::Resume(target) | SessionSelection::Fork(target) =
+            &session_selection
+        {
+            target.ensure_backend(app_server.backend_id())?;
+        }
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         if let Some(message) = project_config_warning(&config) {
@@ -203,22 +295,28 @@ impl App {
 
         let harness_overrides =
             normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
-        let bootstrap = match startup_bootstrap {
-            Some(bootstrap) => bootstrap,
-            None => match startup_draft
-                .run_until(tui, app_server.bootstrap(&config))
-                .await
-            {
-                Ok(bootstrap) => bootstrap?,
-                Err(err) => return shutdown_on_startup_error(app_server, err).await,
-            },
-        };
-        tracing::debug!(
-            has_platform_family = app_server.app_server_platform_family().is_some(),
-            has_platform_os = app_server.app_server_platform_os().is_some(),
-            "connected app-server platform"
+        app_server.model_provider_override = harness_overrides.model_provider.clone();
+        let fresh_start = matches!(
+            &session_selection,
+            SessionSelection::StartFresh | SessionSelection::Exit
         );
-        let bootstrap_ms = bootstrap.duration.as_millis();
+        let server_owned_fresh_bootstrap = uses_server_owned_fresh_bootstrap(
+            &app_server_target,
+            &session_selection,
+            &loader_overrides,
+        );
+        let mut bootstrap = startup_bootstrap;
+        if bootstrap.is_none() && !server_owned_fresh_bootstrap {
+            bootstrap = Some(
+                match startup_draft
+                    .run_until(tui, app_server.bootstrap(&config))
+                    .await
+                {
+                    Ok(bootstrap) => bootstrap?,
+                    Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                },
+            );
+        }
         if matches!(&session_selection, SessionSelection::Fork(_)) {
             // The app server resolves omitted overrides from the fork destination's config.
             if harness_overrides.model.is_none()
@@ -233,30 +331,62 @@ impl App {
                 config.model_reasoning_effort = None;
             }
         }
-        let server_defaults_read = if matches!(
-            &session_selection,
-            SessionSelection::StartFresh | SessionSelection::Exit
-        ) {
+        let startup_defaults = if fresh_start {
             match startup_draft
                 .run_until(
                     tui,
                     prepare_fresh_startup_config(
                         &mut config,
                         &app_server,
+                        &app_server_target,
+                        &cli_kv_overrides,
+                        &harness_overrides,
+                        &environment_manager,
+                    ),
+                )
+                .await
+            {
+                Ok(Ok(defaults)) => defaults,
+                Ok(Err(err)) => return shutdown_on_startup_error(app_server, err).await,
+                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+            }
+        } else {
+            FreshStartupDefaults::default()
+        };
+        let mut launch_choices = crate::app_server_session::StartupLaunchChoices::from_launch(
+            &cli_kv_overrides,
+            &harness_overrides,
+            &loader_overrides,
+        );
+        let bootstrap = match bootstrap {
+            Some(bootstrap) => bootstrap,
+            None => match startup_draft
+                .run_until(
+                    tui,
+                    bootstrap_server_owned_start(
+                        &mut app_server,
+                        &mut config,
+                        &mut launch_choices,
+                        startup_defaults.server_defaults_read,
                         &cli_kv_overrides,
                         &harness_overrides,
                     ),
                 )
                 .await
             {
-                Ok(Ok(defaults_read)) => defaults_read,
-                Ok(Err(err)) => return shutdown_on_startup_error(app_server, err).await,
+                Ok(bootstrap) => bootstrap?,
                 Err(err) => return shutdown_on_startup_error(app_server, err).await,
-            }
-        } else {
-            false
+            },
         };
-        if matches!(&session_selection, SessionSelection::AgentsOverview) {
+        tracing::debug!(
+            has_platform_family = app_server.app_server_platform_family().is_some(),
+            has_platform_os = app_server.app_server_platform_os().is_some(),
+            "connected app-server platform"
+        );
+        let bootstrap_ms = bootstrap.duration.as_millis();
+        if !server_owned_fresh_bootstrap
+            && matches!(&session_selection, SessionSelection::AgentsOverview)
+        {
             apply_managed_new_thread_defaults(
                 &mut config,
                 app_server.managed_new_thread_defaults(),
@@ -264,12 +394,16 @@ impl App {
                 &harness_overrides,
             );
         }
-        let mut model = startup_model(&config, &bootstrap, server_defaults_read);
+        let mut model = startup_model(&config, &bootstrap, startup_defaults.server_defaults_read);
         let available_models = bootstrap.available_models;
-        let remote_connection = crate::status::remote_connection::remote_connection_status_value(
-            &app_server_target,
-            app_server.server_version(),
-        );
+        let mut remote_connection =
+            crate::status::remote_connection::remote_connection_status_value(
+                &app_server_target,
+                app_server.server_version(),
+            );
+        if let Some(connection) = &mut remote_connection {
+            connection.is_managed_daemon = connection.is_local_daemon && managed_daemon;
+        }
         let initial_server_version_notice =
             if !matches!(app_server_target, AppServerTarget::Embedded) {
                 crate::status::remote_connection::pending_server_version_notice(
@@ -294,6 +428,7 @@ impl App {
                     tui,
                     &mut config,
                     &local_settings,
+                    &mut launch_choices,
                     model.as_str(),
                     &app_event_tx,
                     &available_models,
@@ -313,6 +448,16 @@ impl App {
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
         }
+        let mut source_overrides = harness_overrides.clone();
+        source_overrides.cwd = None;
+        app_server.worktree_source_config_builder = Some(Box::new(
+            crate::legacy_core::config::ConfigBuilder::default()
+                .codex_home(config.codex_home.to_path_buf())
+                .cli_overrides(cli_kv_overrides.clone())
+                .harness_overrides(source_overrides)
+                .loader_overrides(loader_overrides.clone())
+                .cloud_config_bundle(cloud_config_bundle.clone()),
+        ));
         let dynamic_tool_status_updates = tokio::sync::broadcast::channel(/*capacity*/ 64).0;
         // The uac engine takes client tools as `dynamicTools` (its bridge
         // forwards them to deepseek-harness); it does not load the TUI's MCP
@@ -333,7 +478,10 @@ impl App {
             );
         }
         if !uac_engine
-            && matches!(&app_server_target, AppServerTarget::LocalDaemon { .. })
+            && matches!(
+                &app_server_target,
+                AppServerTarget::LocalDaemon { .. } | AppServerTarget::Embedded
+            )
             && !crate::uses_remote_workspace_or_environment(
                 &app_server_target,
                 environment_manager.as_ref(),
@@ -413,6 +561,7 @@ impl App {
                         &app_server,
                         local_settings.clone(),
                         config.clone(),
+                        launch_choices,
                         app_event_tx.clone(),
                         managed_worktree.clone(),
                     );
@@ -496,11 +645,15 @@ impl App {
                 let resumed = match startup_draft
                     .run_until(
                         tui,
-                        app_server.resume_thread(
+                        app_server.resume_thread_with_permission_overrides(
                             &local_settings,
                             config.clone(),
                             target_session.thread_id,
                             model_settings,
+                            crate::resume_permissions::ResumePermissions::from_overrides(
+                                &config,
+                                &harness_overrides,
+                            ),
                         ),
                     )
                     .await
@@ -535,10 +688,19 @@ impl App {
                         Err(err) => return shutdown_on_startup_error(app_server, err).await,
                     }
                 } else {
-                    let action = SessionStartAction::Resume(model_settings);
+                    let action = SessionStartAction::Resume(
+                        model_settings,
+                        crate::resume_permissions::ResumePermissions::from_overrides(
+                            &config,
+                            &harness_overrides,
+                        ),
+                    );
                     let resumed = complete_session_start(
                         &mut app_server,
-                        &config,
+                        SessionStartConfig {
+                            config: &config,
+                            local_settings: &local_settings,
+                        },
                         &app_server_target,
                         &target_session,
                         action,
@@ -634,7 +796,10 @@ impl App {
                 let action = SessionStartAction::Fork(permission_mode);
                 let forked = complete_session_start(
                     &mut app_server,
-                    &config,
+                    SessionStartConfig {
+                        config: &config,
+                        local_settings: &local_settings,
+                    },
                     &app_server_target,
                     &target_session,
                     action,
@@ -701,6 +866,12 @@ impl App {
             start_in_agents_overview = true;
         }
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
+        if pending_startup_thread_start && !start_in_agents_overview {
+            chat_widget
+                .empty_state_animation
+                .borrow_mut()
+                .continue_from(&mut startup_draft.blossom.borrow_mut());
+        }
         chat_widget.remote_connection = remote_connection;
         chat_widget.snapshot_local_images = app_server_target.uses_remote_workspace();
         chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
@@ -741,10 +912,15 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
+        let agents_overview =
+            agents_overview::AgentsOverviewState::new(local_settings.tui.agents_overview_grouping);
         let mut app = Self {
             feature_write_lock: Arc::default(),
+            config_notification_test_generation: 0,
+            config_notification_test_pending: None,
             model_catalog,
             session_telemetry: session_telemetry.clone(),
+            terminal_size_tags: tui.terminal_size_tags.clone(),
             app_event_tx,
             chat_widget,
             workspace_command_runner: Some(workspace_command_runner),
@@ -765,13 +941,18 @@ See the Codex keymap documentation for supported actions and examples."
             loader_overrides,
             cloud_config_bundle,
             runtime_approval_policy_override: None,
+            runtime_approvals_reviewer_override: None,
             runtime_permission_profile_override: None,
             pending_server_profiles: HashMap::new(),
             file_search,
             enhanced_keys_supported,
             keymap: runtime_keymap,
             key_chord_matcher: KeyChordMatcher::default(),
+            routed_key_activation: None,
             transcript_cells: Vec::new(),
+            native_history: Default::default(),
+            turn_tips: Default::default(),
+            transcript_view: Default::default(),
             last_rendered_history_tail: None,
             last_thread_usage_status_cell: None,
             pending_thread_usage_history_refresh: false,
@@ -793,6 +974,8 @@ See the Codex keymap documentation for supported actions and examples."
             feedback_audience,
             environment_manager,
             app_server_target,
+            pending_right_click_paste: None,
+            right_click_paste_environment: super::right_click_paste::PasteEnvironment::detect(),
             reconnect: ReconnectState {
                 seen_version_notice: initial_server_version_notice
                     .as_ref()
@@ -801,20 +984,24 @@ See the Codex keymap documentation for supported actions and examples."
             },
             daemon_cli_executable,
             pending_update_action: None,
+            daemon_restart: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState {
-                prompt_after_trust: should_prompt_windows_sandbox_nux_at_startup,
+                prompt_after_trust: should_prompt_windows_sandbox_nux_at_startup
+                    || startup_defaults.prompt_windows_sandbox,
                 ..Default::default()
             },
             thread_event_channels: HashMap::new(),
             pending_realtime_speech_replay: HashMap::new(),
             pending_realtime_transcript_replay: HashMap::new(),
             realtime_replay_order: VecDeque::new(),
+            background_voice: None,
+            background_voice_error: None,
             temporary_structured_requests: HashMap::new(),
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
-            agents_overview: Default::default(),
+            agents_overview,
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
             active_thread_id: None,
@@ -843,12 +1030,28 @@ See the Codex keymap documentation for supported actions and examples."
             pending_managed_worktree_attach: None,
             startup_protected_input_boundary: true,
             startup_pending_protected_request: false,
+            account_email_request_id: None,
             rate_limit_hard_stop_generation: 0,
             rate_limit_refresh_state: Default::default(),
+            pending_mcp_login_start: None,
+            active_mcp_login_ids: HashMap::new(),
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
             recap: recap::RecapState::default(),
+            #[cfg(test)]
+            _test_codex_home: None,
         };
+        if tui.is_owned_screen()
+            && app.right_click_paste_environment.wsl
+            && app.right_click_paste_environment.allows(
+                app.local_settings.tui.right_click_paste,
+                app.local_settings.transcript_mode,
+            )
+        {
+            // Prewarm WSL interop off the UI thread, without accessing clipboard contents.
+            let _ = tui.clipboard.warm_text_reader(tui.frame_requester());
+        }
+        app.remember_launch_permissions();
         if !tui.is_terminal_focused() {
             app.recap.note_focus_lost(Instant::now());
         }
@@ -857,7 +1060,7 @@ See the Codex keymap documentation for supported actions and examples."
         if initial_server_version_notice.is_none() {
             app.update_server_version_overview_notice(
                 CODEX_CLI_VERSION,
-                /*older_server*/ None,
+                /*server_version*/ None,
             );
         }
         if start_in_agents_overview {
@@ -942,12 +1145,15 @@ See the Codex keymap documentation for supported actions and examples."
         {
             return shutdown_on_startup_error(app_server, err).await;
         }
-        // Input for the cancelled resume/fork must not appear in a later selected session.
-        let mut pending_startup_draft =
-            (!startup_session_cancelled).then(|| startup_draft.into_draft());
+        // Keep cancelled resume/fork text editable, but never carry confirmation to another session.
+        let mut pending_startup_submission =
+            startup_draft.take_submission_intent() && !startup_session_cancelled;
+        let mut pending_startup_draft = Some(startup_draft.into_draft());
         if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
-            app.chat_widget
-                .restore_startup_draft_when_ready(&mut pending_startup_draft);
+            app.chat_widget.restore_startup_input_when_ready(
+                &mut pending_startup_draft,
+                &mut pending_startup_submission,
+            );
         }
 
         #[cfg(windows)]
@@ -960,7 +1166,7 @@ See the Codex keymap documentation for supported actions and examples."
 
         let event_stream_started_at = Instant::now();
         tui.schedule_screen_size_recheck(Duration::ZERO);
-        if let Err(err) = render_startup_frame(&mut app, tui) {
+        if let Err(err) = app.render_startup_frame(tui, &app_event_rx) {
             return shutdown_on_startup_error(app_server, err).await;
         }
         let tui_events = tui.event_stream();
@@ -978,10 +1184,11 @@ See the Codex keymap documentation for supported actions and examples."
         // already has data and available reset credits can be surfaced, without
         // delaying the initial frame render.
         if requires_openai_auth && has_chatgpt_account {
-            crate::daybreak::prefetch_notice(
+            crate::security_setup::prefetch(
                 &app.config,
                 &app_server,
-                app.chat_widget.cyber_policy_notice.clone(),
+                app.app_event_tx.clone(),
+                app.chat_widget.security_setup_request_id,
             );
             let reset_hint_request_id = app.chat_widget.start_rate_limit_reset_startup_check();
             app.refresh_rate_limits(
@@ -992,6 +1199,9 @@ See the Codex keymap documentation for supported actions and examples."
             );
         }
 
+        let mut last_screen_size = tui.terminal.last_known_screen_size;
+        let mut settled_size_tags = crate::terminal_size_telemetry::tags(last_screen_size);
+        let mut pending_resize: Option<(ratatui::layout::Size, Instant)> = None;
         let mut listen_for_app_server_events = true;
         let mut reconnect = None;
         let mut waiting_for_initial_session_configured = wait_for_initial_session_configured;
@@ -1022,6 +1232,16 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                // Reconnect can dismiss an overlay from the server-event path.
+                if app.overlay.is_none() {
+                    if !tui.is_owned_screen() && tui.is_alt_screen_active() {
+                        app.close_transcript_overlay(tui);
+                    } else if let Err(err) =
+                        tui.set_overlay_input(crate::tui::OverlayInput::Default)
+                    {
+                        break Err(err.into());
+                    }
+                }
                 if app.pending_open_resume_picker {
                     app.pending_open_resume_picker = false;
                     match Box::pin(app.open_resume_picker(tui, &mut app_server)).await {
@@ -1061,6 +1281,7 @@ See the Codex keymap documentation for supported actions and examples."
                 }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     reconnect = Some(Box::pin(reconnect::reconnect(
+                        app_server.backend_id(),
                         app.app_server_target.clone(),
                         app.config.clone(),
                         app.local_settings.clone(),
@@ -1085,26 +1306,51 @@ See the Codex keymap documentation for supported actions and examples."
                             && has_pending_app_events
                         || (!waiting_for_initial_session_configured
                             && app.has_queued_startup_protected_request());
+                // The screen cache is physical geometry, not the inline viewport. This also
+                // notices the final size after returning from a standalone nested screen.
+                let size = tui.terminal.last_known_screen_size;
+                if !crate::terminal_size_telemetry::enabled(&app.config)
+                    || app.terminal_size_tags.is_empty()
+                {
+                    pending_resize = None;
+                    settled_size_tags = crate::terminal_size_telemetry::tags(size);
+                } else if size != last_screen_size {
+                    pending_resize =
+                        Some((size, Instant::now() + Duration::from_secs(/*secs*/ 15)));
+                }
+                last_screen_size = size;
                 let rate_limit_poll_deadline = app
                     .chat_widget
                     .rate_limit_refresh_interval()
                     .and_then(|interval| app.rate_limit_refresh_state.poll_deadline(interval));
                 let control = select! {
+                    result = async {
+                        match app.daemon_restart.as_mut() {
+                            Some(task) => task.await,
+                            None => std::future::pending().await,
+                        }
+                    }, if app.daemon_restart.is_some() => {
+                        app.daemon_restart = None;
+                        if let Err(err) = result.unwrap_or_else(|err| Err(err.into())) {
+                            app.chat_widget.add_error_message(format!("Could not restart the background server: {err:#}"));
+                        }
+                        AppRunControl::Continue
+                    }
                     Some(event) = app_event_rx.recv() => {
                         let is_initial_session_header = matches!(
                             &event,
                             AppEvent::InsertHistoryCell(cell)
                                 if cell.as_any().is::<history_cell::SessionInfoCell>()
                         );
-                        let had_active_view = app.chat_widget.has_active_view();
+                        let had_active_modal = app.chat_widget.has_active_modal();
                         match Box::pin(app.handle_event(tui, &mut app_server, event)).await {
                             Ok(AppRunControl::Continue) => {
                                 if is_initial_session_header {
                                     waiting_for_initial_session_header = false;
                                 }
-                                if !had_active_view
-                                    && app.chat_widget.has_active_view()
-                                    && let Err(err) = render_startup_frame(&mut app, tui)
+                                if !had_active_modal
+                                    && app.chat_widget.has_active_modal()
+                                    && let Err(err) = app.render_startup_frame(tui, &app_event_rx)
                                 {
                                     break Err(err);
                                 }
@@ -1183,7 +1429,9 @@ See the Codex keymap documentation for supported actions and examples."
                         reconnect = None;
                         match result {
                             Ok(connected) => {
-                                app.finish_reconnect(tui, &mut app_server, &mut app_event_rx, connected, CODEX_CLI_VERSION).await?;
+                                if let Err(err) = app.finish_reconnect(tui, &mut app_server, &mut app_event_rx, connected, CODEX_CLI_VERSION).await {
+                                    break Err(err);
+                                }
                                 listen_for_app_server_events = true;
                                 waiting_for_initial_session_configured = false;
                             }
@@ -1194,6 +1442,28 @@ See the Codex keymap documentation for supported actions and examples."
                                 if let Ok(mut state) = app.agents_overview.view_state.lock() {
                                     state.connection_notice = Some("Reconnect failed — agent list is stale; relaunch to retry");
                                 }
+                            }
+                        }
+                        AppRunControl::Continue
+                    }
+                    () = async {
+                        match pending_resize {
+                            Some((_, deadline)) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if let Some((expected, _)) = pending_resize.take()
+                            && crate::terminal_size_telemetry::enabled(&app.config)
+                        {
+                            let actual = crate::terminal_size_telemetry::read_size();
+                            if actual != expected {
+                                pending_resize = Some((actual, Instant::now() + Duration::from_secs(/*secs*/ 15)));
+                            } else {
+                                let tags = crate::terminal_size_telemetry::tags(actual);
+                                if tags != settled_size_tags {
+                                    crate::terminal_size_telemetry::record(&app.terminal_size_tags, &app.config, "resize", actual);
+                                }
+                                settled_size_tags = tags;
                             }
                         }
                         AppRunControl::Continue
@@ -1240,22 +1510,28 @@ See the Codex keymap documentation for supported actions and examples."
                     app.primary_thread_id,
                 ) {
                     waiting_for_initial_session_configured = false;
-                    let had_active_view = app.chat_widget.has_active_view();
+                    let had_active_modal = app.chat_widget.has_active_modal();
                     if let Err(err) = app.drain_active_thread_events(tui).await {
                         break Err(err);
                     }
-                    if !had_active_view
-                        && app.chat_widget.has_active_view()
-                        && let Err(err) = render_startup_frame(&mut app, tui)
+                    if !had_active_modal
+                        && app.chat_widget.has_active_modal()
+                        && let Err(err) = app.render_startup_frame(tui, &app_event_rx)
                     {
                         break Err(err);
                     }
                 }
                 match control {
                     AppRunControl::Continue => {
+                        if app.reconnect.offline {
+                            pending_startup_submission = false;
+                            app.chat_widget.cancel_startup_submission();
+                        }
                         if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
-                            app.chat_widget
-                                .restore_startup_draft_when_ready(&mut pending_startup_draft);
+                            app.chat_widget.restore_startup_input_when_ready(
+                                &mut pending_startup_draft,
+                                &mut pending_startup_submission,
+                            );
                         }
                         #[cfg(windows)]
                         if terminal_color_probe_pending
@@ -1274,6 +1550,12 @@ See the Codex keymap documentation for supported actions and examples."
         }
         let clear_pet_result = tui.clear_ambient_pet_image();
         let clear_result = tui.terminal.clear();
+        if let Some(task) = app.daemon_restart.take()
+            && let Err(err) = task.await.unwrap_or_else(|err| Err(err.into()))
+        {
+            tracing::warn!(error = %err, "failed to finish background server restart during exit");
+        }
+        // Keep the alternate screen active until the outer guard restores both keyboard stacks.
         let exit_reason = match exit_reason_result {
             Ok(exit_reason) => {
                 clear_pet_result?;

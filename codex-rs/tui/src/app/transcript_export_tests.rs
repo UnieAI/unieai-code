@@ -48,6 +48,9 @@ fn markdown_transcript_preserves_messages_and_formats_activity() {
         Arc::new(PlainHistoryCell::new(vec![
             "■ Export failed: missing parent".into(),
         ])),
+        Arc::new(PlainHistoryCell::new(vec![
+            "• Copy unconfirmed; /export saves chat".into(),
+        ])),
         user("", vec!["image.png".into()]),
         user("[Image #1] describe this", vec!["image.png".into()]),
     ];
@@ -80,6 +83,7 @@ fn transcript_export_excludes_hidden_review_prompts_and_nested_duplicates() {
     let duplicate_two = user("duplicate-two", "duplicate review prompt");
     let turn = |id: &str, items: Vec<ThreadItem>, status| Turn {
         id: id.to_string(),
+        root_turn_id: None,
         items,
         items_view: TurnItemsView::Full,
         status,
@@ -201,6 +205,10 @@ fn transcript_file_resolves_relative_paths_and_refuses_to_overwrite() {
 #[test]
 fn persisted_web_and_image_activity_preserves_full_details() {
     let items = [
+        serde_json::json!({
+            "type": "reasoning", "id": "reasoning",
+            "summary": ["Inspect **the saved result**."], "content": ["Raw details stay hidden."]
+        }),
         serde_json::json!({
             "type": "webSearch", "id": "open", "query": "",
             "action": {"type": "openPage", "url": "https://example.com/long/path?query=full#details"}

@@ -656,6 +656,7 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
         Some(json!({
             "_codex_apps": {
                 "call_id": "calendar-call-1",
+                "root_turn_id": mock.requests()[0].body_json()["client_metadata"]["turn_id"],
                 "resource_uri": CALENDAR_CREATE_EVENT_RESOURCE_URI,
                 "contains_mcp_source": true,
                 "connector_id": "calendar",
@@ -678,6 +679,7 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
         apps_tool_call.pointer("/params/_meta/_codex_apps"),
         Some(&json!({
             "call_id": "calendar-call-1",
+            "root_turn_id": first_request_body["client_metadata"]["turn_id"],
             "resource_uri": CALENDAR_CREATE_EVENT_RESOURCE_URI,
             "contains_mcp_source": true,
             "connector_id": "calendar",
@@ -833,55 +835,102 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v1_multi_agent_tools_are_offered_directly_even_with_tool_search() -> Result<()> {
+async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
+    let call_id = "tool-search-spawn-agent";
     let mock = mount_sse_sequence(
         &server,
-        vec![sse(vec![
-            ev_response_created("resp-1"),
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-1"),
-        ])],
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_tool_search_call(
+                    call_id,
+                    &json!({
+                        "query": "spawn agent",
+                        "limit": 1,
+                    }),
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
     )
     .await;
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn_with_approval_and_permission_profile(
-        "Delegate part of this to a sub-agent",
+        "Find the spawn agent tool",
         AskForApproval::Never,
         PermissionProfile::Disabled,
     )
     .await?;
 
     let requests = mock.requests();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
 
-    // These used to be deferred behind tool_search for a search-capable model.
-    // A model that did not think to search then reported having no way to spawn
-    // a sub-agent and quietly did the work inline instead -- no error, just an
-    // unused capability -- so they are advertised up front now.
-    let body = requests[0].body_json();
-    let tools = tool_names(&body);
+    let first_request_body = requests[0].body_json();
+    let first_request_tools = tool_names(&first_request_body);
     assert!(
-        tools.iter().any(|name| name == "multi_agent_v1"),
-        "v1 multi-agent namespace should be in the first request: {tools:?}"
+        first_request_tools
+            .iter()
+            .any(|name| name == TOOL_SEARCH_TOOL_NAME),
+        "first request should advertise tool_search: {first_request_tools:?}"
+    );
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        assert!(
+            !first_request_tools.iter().any(|name| name == tool_name),
+            "v1 multi-agent tools should be hidden before search: {first_request_tools:?}"
+        );
+    }
+    assert!(
+        !first_request_body
+            .to_string()
+            .contains("### When to delegate vs. do the subtask yourself"),
+        "deferred v1 multi-agent guidance should stay out of initial developer context"
     );
 
-    let spawn_agent = namespace_child_tool(&body, "multi_agent_v1", "spawn_agent")
-        .expect("multi_agent_v1 should carry spawn_agent");
-    assert_ne!(
+    let tools = tool_search_output_tools(&requests[1], call_id);
+    assert!(
+        !tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("function")
+                && tool.get("name").and_then(Value::as_str) == Some("spawn_agent")
+        }),
+        "spawn_agent should be returned as a namespace child, not a flat function: {tools:?}"
+    );
+    assert!(
+        tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("namespace")
+                && tool.get("name").and_then(Value::as_str) == Some("multi_agent_v1")
+        }),
+        "expected tool_search to return multi_agent_v1 namespace: {tools:?}"
+    );
+    let output = tool_search_output_item(&requests[1], call_id);
+    let spawn_agent = namespace_child_tool(&output, "multi_agent_v1", "spawn_agent")
+        .expect("tool_search should return multi_agent_v1.spawn_agent");
+    assert_eq!(
         spawn_agent.get("defer_loading").and_then(Value::as_bool),
-        Some(true),
-        "spawn_agent must not be marked for deferred loading"
+        Some(true)
     );
-
     let description = spawn_agent
         .get("description")
         .and_then(Value::as_str)
         .expect("spawn_agent description should be present");
+    assert!(description.contains(
+        "Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work."
+    ));
     assert!(description.contains("### Designing delegated subtasks"));
     assert!(description.contains("### When to delegate vs. do the subtask yourself"));
 
@@ -1279,6 +1328,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1289,6 +1339,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },
@@ -1412,6 +1463,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1422,6 +1474,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },
@@ -1561,6 +1614,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1571,6 +1625,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },

@@ -45,7 +45,6 @@ pub(super) async fn spawn_command_under_sandbox(
             network_environment_id: None,
             sandbox_permissions: SandboxPermissions::UseDefault,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_private_desktop: false,
             justification: None,
             arg0: None,
         },
@@ -54,8 +53,10 @@ pub(super) async fn spawn_command_under_sandbox(
         &[PathUri::from_abs_path(sandbox_cwd)],
         &codex_linux_sandbox_exe,
         /*codex_self_exe*/ &None,
+        codex_protocol::sandbox::SandboxType::None,
         /*use_legacy_landlock*/ false,
     )
+    .await
     .map_err(|err| io::Error::other(err.to_string()))?;
 
     let (program, args) = exec_request
@@ -100,7 +101,7 @@ pub(super) async fn spawn_command_under_sandbox(
 /// under the production Landlock path and skip when enforcement is unavailable
 /// (for example on kernels or container profiles where Landlock is not
 /// enforced).
-async fn linux_sandbox_test_env() -> Option<HashMap<String, String>> {
+pub(super) async fn linux_sandbox_test_env() -> Option<HashMap<String, String>> {
     let command_cwd = AbsolutePathBuf::current_dir().ok()?;
     let sandbox_cwd = command_cwd.clone();
     let permission_profile = PermissionProfile::read_only();

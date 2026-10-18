@@ -27,6 +27,11 @@ fn debug_models_bundled_prints_json() -> Result<()> {
 #[test]
 fn debug_models_default_prints_json_without_auth() -> Result<()> {
     let codex_home = TempDir::new()?;
+    // UnieAI's default provider lists models only after a Studio sign-in.
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model_provider = \"openai\"\n",
+    )?;
     let mut cmd = codex_command(codex_home.path())?;
     let output = cmd.args(["debug", "models"]).output()?;
 

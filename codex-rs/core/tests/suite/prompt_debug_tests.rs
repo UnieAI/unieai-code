@@ -21,6 +21,11 @@ async fn build_prompt_input_includes_context_and_user_message() -> Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     std::fs::write(codex_home.path().join("AGENTS.md"), TEST_INSTRUCTIONS)?;
+    // UnieAI's default provider has models only after a Studio sign-in.
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model_provider = \"openai\"\n",
+    )?;
     let config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(ConfigOverrides {
@@ -46,6 +51,8 @@ async fn build_prompt_input_includes_context_and_user_message() -> Result<()> {
     .await?;
 
     let expected_user_message = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -68,7 +75,8 @@ async fn build_prompt_input_includes_context_and_user_message() -> Result<()> {
         };
 
         content.iter().any(|content_item| {
-            let (ContentItem::InputText { text } | ContentItem::OutputText { text }) = content_item
+            let (ContentItem::InputText { text } | ContentItem::OutputText { text, .. }) =
+                content_item
             else {
                 return false;
             };

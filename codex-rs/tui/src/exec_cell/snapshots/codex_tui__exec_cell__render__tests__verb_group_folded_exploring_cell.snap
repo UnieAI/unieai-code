@@ -5,4 +5,4 @@ expression: rendered
 • Read 2 files, Searched 1 pattern, Listed 1 dir · 1 failed
   └ Read model.rs, render.rs
     Search verb_group
-    List src
+    List src (exit 1)

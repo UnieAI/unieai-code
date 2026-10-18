@@ -6,6 +6,22 @@ use std::num::NonZeroU64;
 use tempfile::tempdir;
 
 #[test]
+fn runtime_internal_metadata_opt_in_is_not_serialized_or_configurable() {
+    let trusted = ModelProviderInfo {
+        include_internal_metadata: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        toml::to_string(&trusted).unwrap(),
+        toml::to_string(&ModelProviderInfo::default()).unwrap(),
+    );
+    assert_eq!(
+        toml::from_str::<ModelProviderInfo>("include_internal_metadata = true").unwrap(),
+        ModelProviderInfo::default(),
+    );
+}
+
+#[test]
 fn test_api_provider_applies_current_managed_residency() {
     let info = ModelProviderInfo {
         http_headers: Some(maplit::hashmap! {
@@ -60,12 +76,15 @@ name = "Ollama"
 base_url = "http://localhost:11434/v1"
         "#;
     let expected_provider = ModelProviderInfo {
+        namespace_tools: None,
         name: "Ollama".into(),
         base_url: Some("http://localhost:11434/v1".into()),
+        model_catalog_url: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
@@ -74,11 +93,12 @@ base_url = "http://localhost:11434/v1"
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
-        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        capabilities: None,
+        include_internal_metadata: false,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -94,12 +114,15 @@ env_key = "AZURE_OPENAI_API_KEY"
 query_params = { api-version = "2025-04-01-preview" }
         "#;
     let expected_provider = ModelProviderInfo {
+        namespace_tools: None,
         name: "Azure".into(),
         base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
+        model_catalog_url: None,
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: Some(maplit::hashmap! {
@@ -110,11 +133,12 @@ query_params = { api-version = "2025-04-01-preview" }
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
-        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        capabilities: None,
+        include_internal_metadata: false,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -132,12 +156,15 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 supports_standalone_web_search = true
         "#;
     let expected_provider = ModelProviderInfo {
+        namespace_tools: None,
         name: "Example".into(),
         base_url: Some("https://example.com".into()),
+        model_catalog_url: None,
         env_key: Some("API_KEY".into()),
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
@@ -150,11 +177,12 @@ supports_standalone_web_search = true
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
-        namespace_tools: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: true,
+        capabilities: None,
+        include_internal_metadata: false,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -206,55 +234,6 @@ fn test_header_auth_uses_chatgpt_codex_base_url() {
 }
 
 #[test]
-fn test_supports_remote_compaction_for_azure_name() {
-    let provider = ModelProviderInfo {
-        name: "Azure".into(),
-        base_url: Some("https://example.com/openai".into()),
-        env_key: Some("AZURE_OPENAI_API_KEY".into()),
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        auth: None,
-        aws: None,
-        wire_api: WireApi::Responses,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        namespace_tools: None,
-        websocket_connect_timeout_ms: None,
-        requires_openai_auth: false,
-        supports_websockets: false,
-    };
-
-    assert!(provider.supports_remote_compaction());
-}
-
-#[test]
-fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
-    let provider = ModelProviderInfo {
-        name: "Example".into(),
-        base_url: Some("https://example.com/v1".into()),
-        env_key: Some("API_KEY".into()),
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        auth: None,
-        aws: None,
-        wire_api: WireApi::Responses,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        namespace_tools: None,
-        websocket_connect_timeout_ms: None,
-        requires_openai_auth: false,
-        supports_websockets: false,
-    };
-
-    assert!(!provider.supports_remote_compaction());
 fn codex_backend_routes_require_codex_base_url() {
     for (base_url, expected) in [
         (None, true),
@@ -364,12 +343,15 @@ fn test_create_amazon_bedrock_provider() {
     assert_eq!(
         ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
         ModelProviderInfo {
+            namespace_tools: None,
             name: "Amazon Bedrock".to_string(),
             base_url: None,
+            model_catalog_url: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
+            gateway_oauth: None,
             aws: Some(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
@@ -386,11 +368,12 @@ fn test_create_amazon_bedrock_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
-            namespace_tools: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
             supports_standalone_web_search: false,
+            capabilities: None,
+            include_internal_metadata: false,
         }
     );
 }
@@ -399,7 +382,6 @@ fn test_create_amazon_bedrock_provider() {
 fn test_create_amazon_bedrock_runtime_provider() {
     let mut expected = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
     expected.name = "Amazon Bedrock Runtime".to_string();
-    expected.http_headers = None;
 
     assert_eq!(
         ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
@@ -432,7 +414,10 @@ fn test_create_amazon_bedrock_runtime_provider_with_aws_configuration() {
                 credential_export: None,
                 auth_refresh: None,
             }),
-            None,
+            Some(maplit::hashmap! {
+                AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>
+                    AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.into(),
+            }),
             false,
         )
     );
@@ -452,18 +437,25 @@ fn provider_auth_for_test() -> ModelProviderAuthInfo {
 }
 
 #[test]
-fn test_amazon_bedrock_provider_adds_mantle_client_agent_header() {
-    let api_provider = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None)
-        .to_api_provider(/*auth_mode*/ None)
-        .expect("Amazon Bedrock provider should build API provider");
+fn test_amazon_bedrock_providers_add_mantle_client_agent_header() {
+    for provider in [
+        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+        ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
+    ] {
+        let api_provider = provider
+            .to_api_provider(/*auth_mode*/ None)
+            .expect("Amazon Bedrock provider should build API provider");
 
-    assert_eq!(
-        api_provider
-            .headers
-            .get(AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some(AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE)
-    );
+        assert_eq!(
+            api_provider
+                .headers
+                .get(AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE),
+            "provider: {}",
+            provider.name
+        );
+    }
 }
 
 #[test]
@@ -526,29 +518,6 @@ fn test_merge_configured_model_providers_adds_custom_provider() {
 }
 
 #[test]
-fn test_merge_configured_model_providers_unieai_override_replaces_built_in() {
-    let custom_unieai = ModelProviderInfo {
-        name: "UnieAI".to_string(),
-        base_url: Some("https://api.demo.unieai.com/v1".to_string()),
-        env_key: Some("UNIEAI_API_KEY".to_string()),
-        wire_api: WireApi::Responses,
-        namespace_tools: None,
-        ..ModelProviderInfo::default()
-    };
-    let configured_model_providers =
-        std::collections::HashMap::from([(UNIEAI_PROVIDER_ID.to_string(), custom_unieai.clone())]);
-
-    let merged = merge_configured_model_providers(
-        built_in_model_providers(/*openai_base_url*/ None),
-        configured_model_providers,
-    )
-    .expect("merge should succeed");
-
-    assert_eq!(merged.get(UNIEAI_PROVIDER_ID), Some(&custom_unieai));
-}
-
-#[test]
-fn test_merge_configured_model_providers_applies_amazon_bedrock_profile_override() {
 fn test_merge_configured_model_providers_applies_amazon_bedrock_aws_override() {
     let credential_export = AwsCredentialExportConfig {
         command: "aws-vault".to_string(),
@@ -712,7 +681,6 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
                 auth_refresh: None,
             }),
             wire_api: WireApi::Responses,
-            namespace_tools: None,
             ..ModelProviderInfo::default()
         },
     )]);
@@ -886,6 +854,59 @@ refresh_interval_ms = 0
     let auth = provider.auth.expect("auth config should deserialize");
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
+}
+
+#[test]
+fn model_catalog_url_deserializes_without_changing_inference_routing() {
+    let provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Gateway"
+base_url = "https://gateway.example/v1"
+model_catalog_url = "https://gateway.example/codex/catalog?token=catalog-secret"
+"#,
+    )
+    .unwrap();
+    assert!(!format!("{provider:?}").contains("catalog-secret"));
+    assert_eq!(
+        provider,
+        ModelProviderInfo {
+            name: "Gateway".to_string(),
+            base_url: Some("https://gateway.example/v1".to_string()),
+            model_catalog_url: Some(
+                "https://gateway.example/codex/catalog?token=catalog-secret".into()
+            ),
+            ..ModelProviderInfo::default()
+        }
+    );
+    assert_eq!(
+        provider
+            .to_api_provider(Some(AuthMode::ApiKey))
+            .unwrap()
+            .base_url,
+        "https://gateway.example/v1"
+    );
+}
+
+#[test]
+fn test_merge_configured_model_providers_unieai_override_replaces_built_in() {
+    let custom_unieai = ModelProviderInfo {
+        name: "UnieAI".to_string(),
+        base_url: Some("https://api.demo.unieai.com/v1".to_string()),
+        env_key: Some("UNIEAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        namespace_tools: None,
+        ..ModelProviderInfo::default()
+    };
+    let configured_model_providers =
+        std::collections::HashMap::from([(UNIEAI_PROVIDER_ID.to_string(), custom_unieai.clone())]);
+
+    let merged = merge_configured_model_providers(
+        built_in_model_providers(/*openai_base_url*/ None),
+        configured_model_providers,
+    )
+    .expect("merge should succeed");
+
+    assert_eq!(merged.get(UNIEAI_PROVIDER_ID), Some(&custom_unieai));
 }
 
 #[test]

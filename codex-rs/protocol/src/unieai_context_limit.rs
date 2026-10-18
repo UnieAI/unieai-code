@@ -37,7 +37,6 @@ fn first_integer(text: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,7 +51,9 @@ mod tests {
             Some(131_072)
         );
         assert_eq!(
-            parse_context_limit("This model's maximum context length is 128,000 tokens, however ..."),
+            parse_context_limit(
+                "This model's maximum context length is 128,000 tokens, however ..."
+            ),
             Some(128_000)
         );
         assert_eq!(parse_context_limit("rate limit reached"), None);

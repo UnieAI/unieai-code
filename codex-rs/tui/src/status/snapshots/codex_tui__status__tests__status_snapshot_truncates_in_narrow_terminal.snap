@@ -4,16 +4,16 @@ expression: sanitized
 ---
 /status
 
-╭────────────────────────────────────────────────────────────────────╮
-│  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0)                      │
-│                                                                    │
-│  Engine:           codex                                           │
-│  Model:            gpt-5.1-codex-max (reasoning high, summaries de │
-│  Directory: [[workspace]]                                          │
-│  Permissions:      Custom (workspace with network access, Ask for  │
-│  Agents.md:        <none>                                          │
-│                                                                    │
-│  Token usage:      1.9K total  (1K input + 900 output)             │
-│  Context window:   100% left (2.25K used / 272K)                   │
-│  5h limit:         [██████░░░░░░░░░░░░░░] 28% left (resets 03:14)  │
-╰────────────────────────────────────────────────────────────────────╯
+  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-ac0.4.0)
+
+  Engine:          codex
+  Model:           gpt-5.1-codex-max (reasoning high, summaries
+                   detailed)
+  Directory:       [[workspace]]
+  Permissions:     Custom (workspace with network access, Ask for
+                   approval)
+  Agents.md:       <none>
+
+  Token usage:     1.9K total  (1K input + 900 output)
+  Context window:  100% left (2.25K used / 272K)
+  5h limit:        [██████░░░░░░░░░░░░░░] 28% left (resets 03:14)

@@ -2,9 +2,6 @@
 source: tui/src/app/tests.rs
 expression: rendered
 ---
-╭─────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>)                 │
-│                                             │
-│ model:     gpt-test high   /model to change │
-│ directory: /tmp/project                     │
-╰─────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     /tmp/project

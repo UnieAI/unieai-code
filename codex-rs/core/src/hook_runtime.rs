@@ -53,6 +53,7 @@ use codex_protocol::protocol::WarningEvent;
 use codex_rollout::state_db;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Map;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -60,6 +61,7 @@ use tracing::instrument;
 
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
+use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::event_mapping::parse_turn_item;
 use crate::guardian::GuardianReviewContext;
 use crate::session::TurnInput;
@@ -73,7 +75,7 @@ use crate::turn_metadata::ExecutionMetadata;
 
 pub(crate) struct HookRuntimeOutcome {
     pub should_stop: bool,
-    pub additional_contexts: Vec<String>,
+    pub additional_contexts: Vec<codex_hooks::HookContext>,
 }
 
 pub(crate) enum PreToolUseHookResult {
@@ -195,8 +197,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
-        #[allow(deprecated)]
-        cwd: turn_context.cwd.clone(),
+        cwd: tool_hook_cwd(&step_context.environments, turn_context),
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
@@ -243,6 +244,14 @@ pub(crate) async fn run_pre_tool_use_hooks(
     }
 }
 
+#[allow(deprecated)]
+fn tool_hook_cwd(environments: &TurnEnvironmentSnapshot, turn: &TurnContext) -> AbsolutePathBuf {
+    // Hooks run on the host, so a remote workspace cannot replace the local fallback.
+    environments
+        .local_environment_cwd()
+        .unwrap_or_else(|| turn.cwd.clone())
+}
+
 // PermissionRequest hooks share the same preview/start/completed event flow as
 // other hook types, but they return an optional decision instead of mutating
 // tool input or post-run state.
@@ -257,8 +266,7 @@ pub(crate) async fn run_permission_request_hooks(
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
-        #[allow(deprecated)]
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: tool_hook_cwd(review_context.environments(), turn_context).to_path_buf(),
         transcript_path: sess.hook_transcript_path().await,
         model: review_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(review_context.approval_policy),
@@ -300,8 +308,7 @@ pub(crate) async fn run_post_tool_use_hooks(
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
-        #[allow(deprecated)]
-        cwd: turn_context.cwd.clone(),
+        cwd: tool_hook_cwd(&step_context.environments, turn_context),
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
@@ -325,9 +332,9 @@ fn executor_hook_sources_for_step(step_context: &StepContext) -> Vec<ExecutorPlu
         .executor_capability_discovery
         .as_deref()
         .map(|snapshot| {
-            let app_tool_policy =
-                AppToolPolicyEvaluator::new(&step_context.mcp.config().config_layer_stack);
-            executor_plugin_hook_sources(snapshot, |server, tool| {
+            let config = step_context.mcp.config();
+            let app_tool_policy = AppToolPolicyEvaluator::new(&config.config_layer_stack);
+            executor_plugin_hook_sources(snapshot, &config.plugins, |server, tool| {
                 step_context
                     .mcp
                     .tool_info(server, tool)
@@ -711,21 +718,21 @@ pub(crate) async fn record_pending_input(
     turn_context: &Arc<TurnContext>,
     model_info: &ModelInfo,
     pending_input: TurnInput,
-    additional_contexts: Vec<String>,
+    additional_contexts: Vec<codex_hooks::HookContext>,
     persist_context: PersistContext,
 ) {
     match pending_input {
         TurnInput::UserInput {
             content,
             client_id,
-            acceptance_order,
+            metadata,
         } => {
             sess.record_user_prompt_and_emit_turn_item(
                 turn_context.as_ref(),
                 model_info,
                 content.as_slice(),
                 client_id,
-                acceptance_order,
+                metadata,
                 persist_context,
             )
             .await;
@@ -759,6 +766,7 @@ pub(crate) async fn record_pending_input(
         TurnInput::InterAgentCommunication(communication) => {
             sess.record_inter_agent_communication(turn_context, model_info, communication)
                 .await;
+            sess.ensure_rollout_materialized(persist_context).await;
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
@@ -782,7 +790,10 @@ pub(crate) async fn drain_async_hook_results(
             .entries
             .iter()
             .filter(|entry| entry.kind == HookOutputEntryKind::Context)
-            .map(|entry| entry.text.clone())
+            .map(|entry| codex_hooks::HookContext {
+                text: entry.text.clone(),
+                metadata: codex_protocol::models::ContentItemMetadata::command_hook(),
+            })
             .collect::<Vec<_>>();
 
         if before_user_prompt {
@@ -841,7 +852,7 @@ impl HookRuntimeOutcome {
 pub(crate) async fn record_additional_contexts(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    additional_contexts: Vec<String>,
+    additional_contexts: Vec<codex_hooks::HookContext>,
 ) {
     let developer_messages = additional_context_messages(additional_contexts);
     if developer_messages.is_empty() {
@@ -856,7 +867,9 @@ pub(crate) async fn record_additional_contexts(
     .await;
 }
 
-fn additional_context_messages(additional_contexts: Vec<String>) -> Vec<ResponseItem> {
+fn additional_context_messages(
+    additional_contexts: Vec<codex_hooks::HookContext>,
+) -> Vec<ResponseItem> {
     additional_contexts
         .into_iter()
         .map(HookAdditionalContext::new)
@@ -962,6 +975,7 @@ fn hook_run_analytics_payload(
                 .clone()
                 .unwrap_or_else(|| turn_context.sub_id.clone()),
             turn_context.originator.clone(),
+            /*turn_metadata*/ None,
         ),
         HookRunFact {
             event_name: completed.run.event_name,
@@ -1095,8 +1109,8 @@ mod tests {
     #[test]
     fn additional_context_messages_stay_separate_and_ordered() {
         let messages = additional_context_messages(vec![
-            "first tide note".to_string(),
-            "second tide note".to_string(),
+            codex_hooks::HookContext::harness("first tide note".to_string()),
+            codex_hooks::HookContext::harness("second tide note".to_string()),
         ]);
 
         assert_eq!(messages.len(), 2);

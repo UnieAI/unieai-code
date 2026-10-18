@@ -4,17 +4,27 @@ expression: sanitized
 ---
 /status
 
-╭────────────────────────────────────────╮
-│  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-a │
-│                                        │
-│  Engine:               codex           │
-│  Model:                ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞ  │
-│  Directory: [[workspace]]              │
-│  Permissions:          Custom (workspa │
-│  Agents.md:            <none>          │
-│  Account:              ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ@ex │
-│  Thread name:          ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞ  │
-│  Collaboration mode:   ｶﾞﾊﾟ collaborat │
-│                                        │
-│  Limits:               data not availa │
-╰────────────────────────────────────────╯
+  >_ UnieAI Code (v0.0.22-dev-uc0.5.0-
+  ac0.4.0)
+
+  Engine:              codex
+  Model:               ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞ
+                       ﾊﾟ-model (reasoning
+                       none, summaries
+                       auto)
+  Directory:           [[workspace]]
+  Permissions:         Custom (workspace
+                       with network
+                       access, Ask for
+                       approval)
+  Agents.md:           <none>
+  Account:             ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ
+                       @example.com (ｶﾞﾊﾟ
+                       plan)
+  Thread name:         ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ
+                       thread
+  Collaboration mode:  ｶﾞﾊﾟ collaboration
+                       mode
+
+  Limits:              data not available
+                       yet
