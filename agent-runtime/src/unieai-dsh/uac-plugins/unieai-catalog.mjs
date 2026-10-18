@@ -78,6 +78,7 @@ export const PLUGINS = Object.freeze([
     summary: "retry tool calls cut off by the output token cap",
   },
   { id: "unieai-loop-completion", file: "unieai-loop-completion.mjs", profiles: ["cli", "studio"], summary: "no turn ends on an empty or announce-only answer; completion contract" },
+  { id: "unieai-todo-guard", file: "unieai-todo-guard.mjs", profiles: ["cli", "studio"], summary: "no turn ends with its todo list unreviewed; stale-list reminder" },
   { id: "unieai-loop-toolerrors", file: "unieai-loop-toolerrors.mjs", profiles: ["cli", "studio"], summary: "actionable unknown-tool / bad-argument errors" },
   { id: "unieai-toolcall-repair", file: "unieai-toolcall-repair.mjs", profiles: ["cli", "studio"], summary: "repair mis-cased or prefixed tool names" },
   { id: "unieai-context-overflow", file: "unieai-context-overflow.mjs", profiles: ["cli", "studio"], summary: "recover from context overflow and failed summaries" },
