@@ -24,6 +24,7 @@ use tracing::debug;
 use tracing::warn;
 
 use crate::client::read_line_capped;
+use crate::config::MAX_TURN_START_DEFERRAL;
 use crate::config::MeshConfig;
 use crate::config::PROTOCOL_VERSION_MAX;
 use crate::config::PROTOCOL_VERSION_MIN;
@@ -353,22 +354,6 @@ pub(crate) async fn process_message(
         .await;
     }
 
-    if kind == MessageKind::Message && message.hop >= context.config.max_hops {
-        // Two sessions replying to each other would otherwise burn tokens in
-        // both terminals with nobody watching.
-        return reject(
-            context,
-            message_id,
-            ErrorCode::HopLimit,
-            format!(
-                "message has been relayed {} times without a user taking part, limit is {}; \
-ask your user before continuing this exchange",
-                message.hop, context.config.max_hops
-            ),
-        )
-        .await;
-    }
-
     // Permission laundering: a session must not get a less-restricted one to
     // do what it could not. Such a message waits for the recipient's user.
     // Notices carry no request, and an approved message has already been seen.
@@ -404,27 +389,39 @@ when they approve or deny it; do not resend it or try to route around this.",
         }
     }
 
-    // Rate limiting downgrades rather than drops: the message still arrives,
-    // it just does not get to start a turn.
+    // Every limit below downgrades rather than drops: the message still
+    // arrives, it just does not get to start a turn. Refusing it would lose
+    // the content — typically the answer the other session is waiting for —
+    // while a queued message still reaches this session's user and model.
     let mut trigger_turn = message.trigger_turn && kind == MessageKind::Message && !force_queue;
     let mut downgrade_reason = None;
-    if trigger_turn && !context.config.trigger_turn_min_interval.is_zero() {
-        let since_ms =
-            now_ms().saturating_sub(context.config.trigger_turn_min_interval.as_millis() as i64);
-        match context
-            .store
-            .count_recent_triggers(message.from_thread_id, context.local_thread_id, since_ms)
-            .await
-        {
-            Ok(count) if count > 0 => {
-                trigger_turn = false;
-                downgrade_reason = Some(format!(
-                    "downgraded to queue-only: at most one turn start per {:?} from this peer",
-                    context.config.trigger_turn_min_interval
-                ));
-            }
-            Ok(_) => {}
-            Err(err) => return error_body(ErrorCode::Internal, err.to_string()),
+    if trigger_turn && message.hop >= context.config.max_hops {
+        // Two sessions replying to each other would otherwise burn tokens in
+        // both terminals with nobody watching.
+        trigger_turn = false;
+        downgrade_reason = Some(format!(
+            "delivered without starting a turn: this exchange has been relayed {} times without \
+a user taking part (limit {}). The recipient's user decides whether it continues; ask your user \
+before continuing this exchange",
+            message.hop, context.config.max_hops
+        ));
+    }
+    if trigger_turn {
+        // Pacing delays rather than downgrades: a quick follow-up between two
+        // sessions is the normal case, and queueing it would leave an idle
+        // recipient sitting on it until its user happens to type.
+        let delay = context.chain.turn_start_delay(
+            message.from_thread_id,
+            context.config.trigger_turn_min_interval,
+        );
+        if delay > MAX_TURN_START_DEFERRAL {
+            trigger_turn = false;
+            downgrade_reason = Some(format!(
+                "downgraded to queue-only: at most one turn start per {:?} from this peer",
+                context.config.trigger_turn_min_interval
+            ));
+        } else if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
     }
     if trigger_turn && !context.chain.may_start_turn(message.from_thread_id) {

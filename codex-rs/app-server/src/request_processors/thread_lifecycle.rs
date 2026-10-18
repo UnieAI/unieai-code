@@ -274,6 +274,12 @@ pub(super) async fn ensure_listener_task_running(
         ..
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
+    // Session-mesh presence follows whether any client is showing the thread:
+    // a thread kept loaded after its client moved on (`/new`, a thread
+    // switch) must not stay reachable as a peer, or a message to it starts a
+    // turn no user sees.
+    let mut mesh_presence_rx = unloading_state.has_subscribers_rx.clone();
+    let mut mesh_presence_open = true;
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -281,6 +287,18 @@ pub(super) async fn ensure_listener_task_running(
                 _ = &mut cancel_rx => {
                     // Listener was superseded or the thread is being torn down.
                     break;
+                }
+                changed = mesh_presence_rx.changed(), if mesh_presence_open => {
+                    if changed.is_err() {
+                        mesh_presence_open = false;
+                        continue;
+                    }
+                    let has_subscribers = *mesh_presence_rx.borrow_and_update();
+                    if has_subscribers {
+                        conversation.rejoin_session_mesh().await;
+                    } else {
+                        conversation.withdraw_from_session_mesh().await;
+                    }
                 }
                 listener_command = listener_command_rx.recv() => {
                     let Some(listener_command) = listener_command else {

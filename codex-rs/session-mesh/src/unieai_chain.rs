@@ -15,15 +15,21 @@
 //!
 //! Both reset when this session's user submits input: from then on the
 //! conversation has a human in it again.
+//!
+//! Separately, turn starts from one peer are *paced*: a peer's next turn
+//! start waits until a minimum gap has passed since its last one. Pacing is
+//! not a budget, so user input does not reset it.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::time::Duration;
+use std::time::Instant;
 
 use codex_protocol::ThreadId;
 
 /// Default cap on consecutive turns one peer may start without user input.
-pub const DEFAULT_MAX_AUTO_TURNS_PER_PEER: u32 = 3;
+pub const DEFAULT_MAX_AUTO_TURNS_PER_PEER: u32 = 5;
 
 #[derive(Debug, Default)]
 struct ChainState {
@@ -31,6 +37,8 @@ struct ChainState {
     inbound_hop: Option<u32>,
     /// Turns each peer has started here since the user last spoke.
     auto_turns: HashMap<ThreadId, u32>,
+    /// When each peer last started a turn here.
+    last_turn_started: HashMap<ThreadId, Instant>,
 }
 
 /// Per-session relay bookkeeping. Cheap to share; all methods take `&self`.
@@ -86,7 +94,20 @@ impl PeerChain {
 
     /// Records that `from` started a turn here.
     pub fn note_turn_started(&self, from: ThreadId) {
-        *self.state().auto_turns.entry(from).or_default() += 1;
+        let mut state = self.state();
+        *state.auto_turns.entry(from).or_default() += 1;
+        state.last_turn_started.insert(from, Instant::now());
+    }
+
+    /// How long a turn start from `from` has to wait so that turn starts from
+    /// one peer are at least `min_interval` apart. Zero when it may go now.
+    pub fn turn_start_delay(&self, from: ThreadId, min_interval: Duration) -> Duration {
+        self.state()
+            .last_turn_started
+            .get(&from)
+            .map_or(Duration::ZERO, |started| {
+                min_interval.saturating_sub(started.elapsed())
+            })
     }
 
     pub fn max_auto_turns_per_peer(&self) -> u32 {

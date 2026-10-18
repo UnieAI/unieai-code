@@ -3802,14 +3802,14 @@
           "type": "boolean"
         },
         "max_hops": {
-          "description": "How many times a message may be relayed before it is refused. Stops two sessions from answering each other forever.",
+          "description": "How many times a message may be relayed without a user taking part before it can no longer start a turn (it is still delivered, queued). Stops two sessions from answering each other forever.",
           "format": "uint32",
           "maximum": 16.0,
           "minimum": 1.0,
           "type": "integer"
         },
         "trigger_turn_min_interval_ms": {
-          "description": "Minimum gap between turn-starting deliveries from one peer, in milliseconds. Messages arriving faster are queued instead of dropped.",
+          "description": "Minimum gap between turn-starting deliveries from one peer, in milliseconds. A message arriving sooner waits out the gap (up to 10 seconds) and then starts its turn; beyond that it is queued. Never dropped.",
           "format": "uint64",
           "maximum": 3600000.0,
           "minimum": 0.0,

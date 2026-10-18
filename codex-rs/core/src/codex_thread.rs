@@ -244,6 +244,23 @@ impl CodexThread {
         &self.session.services.thread_extension_data
     }
 
+    /// Lists this thread in the machine-local session mesh again (a no-op
+    /// when it is listed, closed to peers, or not a root thread).
+    ///
+    /// The app server calls this when a client starts showing the thread,
+    /// and [`Self::withdraw_from_session_mesh`] when the last one stops: a
+    /// thread nobody is watching must not be reachable as a peer, or a
+    /// message to it starts a turn no user sees.
+    pub async fn rejoin_session_mesh(&self) {
+        crate::session::mesh::join_session_mesh(&self.session).await;
+    }
+
+    /// Takes this thread out of the session mesh while it keeps running. See
+    /// [`Self::rejoin_session_mesh`].
+    pub async fn withdraw_from_session_mesh(&self) {
+        crate::session::mesh::withdraw_from_session_mesh(&self.session).await;
+    }
+
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
     }

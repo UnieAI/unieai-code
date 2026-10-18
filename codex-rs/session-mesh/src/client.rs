@@ -25,6 +25,7 @@ pub struct PeerConnection {
     version: u32,
     max_frame_bytes: usize,
     request_timeout: std::time::Duration,
+    doorbell_timeout: std::time::Duration,
     /// Reported in errors so a bug report reads "peer was 0.48, I am 0.51"
     /// rather than "it didn't work".
     pub peer_cli_version: String,
@@ -52,6 +53,7 @@ impl PeerConnection {
             version: PROTOCOL_VERSION_MAX,
             max_frame_bytes: config.max_frame_bytes,
             request_timeout: config.request_timeout,
+            doorbell_timeout: config.doorbell_timeout,
             peer_cli_version: String::new(),
         };
 
@@ -105,7 +107,7 @@ impl PeerConnection {
         );
         self.write_frame(&frame).await?;
 
-        match self.read_frame(self.request_timeout).await?.body {
+        match self.read_frame(self.doorbell_timeout).await?.body {
             Body::Ack(ack) => Ok(ack),
             Body::Error(error) => Err(MeshError::Wire(format!(
                 "peer refused delivery: {} ({:?}, peer cli {})",

@@ -323,12 +323,15 @@ pub struct SessionMeshConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_peer_turn_start: Option<bool>,
     /// Minimum gap between turn-starting deliveries from one peer, in
-    /// milliseconds. Messages arriving faster are queued instead of dropped.
+    /// milliseconds. A message arriving sooner waits out the gap (up to 10
+    /// seconds) and then starts its turn; beyond that it is queued. Never
+    /// dropped.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0, max = 3600000))]
     pub trigger_turn_min_interval_ms: Option<u64>,
-    /// How many times a message may be relayed before it is refused. Stops two
-    /// sessions from answering each other forever.
+    /// How many times a message may be relayed without a user taking part
+    /// before it can no longer start a turn (it is still delivered, queued).
+    /// Stops two sessions from answering each other forever.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 16))]
     pub max_hops: Option<u32>,

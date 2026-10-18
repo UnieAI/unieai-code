@@ -128,29 +128,6 @@ impl MeshStore for FakeStore {
         })
     }
 
-    fn count_recent_triggers(
-        &self,
-        from_thread_id: ThreadId,
-        to_thread_id: ThreadId,
-        since_ms: i64,
-    ) -> StoreFuture<'_, i64> {
-        Box::pin(async move {
-            Ok(self
-                .messages
-                .lock()
-                .expect("messages lock")
-                .values()
-                .filter(|message| {
-                    message.from_thread_id == from_thread_id
-                        && message.to_thread_id == to_thread_id
-                        && message.trigger_turn
-                        && message.delivery.as_deref() == Some("started_turn")
-                        && message.delivered_at_ms.unwrap_or_default() >= since_ms
-                })
-                .count() as i64)
-        })
-    }
-
     fn transition_message<'a>(
         &'a self,
         message_id: &'a str,
@@ -549,8 +526,51 @@ async fn the_body_is_stored_before_the_doorbell_rings() {
 }
 
 #[tokio::test]
-async fn a_second_turn_start_in_the_window_is_downgraded_not_dropped() {
-    let harness = Harness::new();
+async fn a_quick_follow_up_waits_out_the_gap_and_still_starts_a_turn() {
+    let mut harness = Harness::new();
+    harness.config.trigger_turn_min_interval = std::time::Duration::from_millis(300);
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b_inbound = Arc::new(FakeInbound::new("idle"));
+    let _b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+
+    a.send_message(&peers[0], "first", true, 0, None)
+        .await
+        .expect("first delivery should succeed");
+    let started = std::time::Instant::now();
+    let second = a
+        .send_message(&peers[0], "second", true, 1, None)
+        .await
+        .expect("second delivery should succeed");
+
+    // A quick answer-and-follow-up is the normal shape of a conversation.
+    // Queueing the follow-up would leave an idle recipient sitting on it
+    // until its user happened to type, so it waits out the gap instead.
+    assert_eq!(
+        second,
+        Ack {
+            accepted: true,
+            delivery: Delivery::StartedTurn,
+            reject_reason: None,
+        }
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+    assert_eq!(
+        b_inbound
+            .received()
+            .iter()
+            .map(|message| message.trigger_turn)
+            .collect::<Vec<_>>(),
+        vec![true, true]
+    );
+}
+
+#[tokio::test]
+async fn a_turn_start_too_far_inside_the_gap_is_downgraded_not_dropped() {
+    let mut harness = Harness::new();
+    harness.config.trigger_turn_min_interval = std::time::Duration::from_secs(3600);
     let a = harness
         .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
         .await;
@@ -584,7 +604,7 @@ async fn a_second_turn_start_in_the_window_is_downgraded_not_dropped() {
 }
 
 #[tokio::test]
-async fn a_message_that_has_been_relayed_too_often_is_refused() {
+async fn a_message_relayed_too_often_arrives_without_starting_a_turn() {
     let harness = Harness::new();
     let a = harness
         .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
@@ -594,14 +614,33 @@ async fn a_message_that_has_been_relayed_too_often_is_refused() {
     let peers = a.list_peers().await.expect("listing should succeed");
 
     // Two sessions replying to each other would otherwise burn tokens in both
-    // terminals with nobody watching.
-    let err = a
-        .send_message(&peers[0], "round and round", true, 3, None)
+    // terminals with nobody watching, so the turn is not started. The body
+    // still arrives: it is usually the answer the recipient asked for, and
+    // refusing it left the recipient waiting for a reply that never came.
+    let ack = a
+        .send_message(
+            &peers[0],
+            "the answer you asked for",
+            true,
+            harness.config.max_hops,
+            None,
+        )
         .await
-        .expect_err("the hop limit must refuse this");
+        .expect("the message must still be delivered");
 
-    assert!(err.to_string().contains("relayed"), "{err}");
-    assert!(b_inbound.received().is_empty());
+    assert!(ack.accepted);
+    assert_eq!(ack.delivery, Delivery::Queued);
+    assert!(
+        ack.reject_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("relayed")),
+        "the sender must be told why: {:?}",
+        ack.reject_reason
+    );
+    let received = b_inbound.received();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].content, "the answer you asked for");
+    assert!(!received[0].trigger_turn);
 }
 
 #[tokio::test]

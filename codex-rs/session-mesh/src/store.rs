@@ -39,13 +39,6 @@ pub trait MeshStore: Send + Sync {
         delivered_at_ms: i64,
         delivery: &'a str,
     ) -> StoreFuture<'a, bool>;
-    fn count_recent_triggers(
-        &self,
-        from_thread_id: ThreadId,
-        to_thread_id: ThreadId,
-        since_ms: i64,
-    ) -> StoreFuture<'_, i64>;
-
     /// Moves an undelivered message from `expected` to `next` delivery state
     /// atomically; `false` when it was not in `expected`. This is the
     /// compare-and-set that makes delivery idempotent.
@@ -186,20 +179,6 @@ impl MeshStore for StateRuntimeStore {
         Box::pin(async move {
             self.runtime
                 .mark_session_mesh_message_delivered(message_id, delivered_at_ms, delivery)
-                .await
-                .map_err(store_error)
-        })
-    }
-
-    fn count_recent_triggers(
-        &self,
-        from_thread_id: ThreadId,
-        to_thread_id: ThreadId,
-        since_ms: i64,
-    ) -> StoreFuture<'_, i64> {
-        Box::pin(async move {
-            self.runtime
-                .count_recent_session_mesh_triggers(from_thread_id, to_thread_id, since_ms)
                 .await
                 .map_err(store_error)
         })

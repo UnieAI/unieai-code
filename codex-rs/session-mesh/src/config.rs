@@ -23,11 +23,14 @@ pub struct MeshConfig {
     pub max_frame_bytes: usize,
     /// Largest message body accepted.
     pub max_content_bytes: usize,
-    /// Rejected once a message has been relayed this many times, which stops
+    /// Once a message has been relayed this many times without a user taking
+    /// part, it is still delivered but can no longer start a turn, which stops
     /// two sessions from ping-ponging turns at each other.
     pub max_hops: u32,
     /// Minimum gap between turn-starting deliveries from the same peer.
-    /// Messages arriving faster are downgraded to queue-only, never dropped.
+    /// A message arriving sooner waits out the rest of the gap and then starts
+    /// its turn; only a wait longer than [`MAX_TURN_START_DEFERRAL`] makes it
+    /// queue-only instead. Never dropped.
     pub trigger_turn_min_interval: Duration,
     /// How long a launcher waits for a child to register before giving up.
     ///
@@ -37,6 +40,13 @@ pub struct MeshConfig {
     pub connect_timeout: Duration,
     pub handshake_timeout: Duration,
     pub request_timeout: Duration,
+    /// How long a sender waits for the recipient to act on a doorbell.
+    ///
+    /// Longer than `request_timeout` because acting on it can mean starting a
+    /// turn (and, for the uac engine, a round trip through the TUI), and a
+    /// sender that gives up early reports a failure for a message that was in
+    /// fact delivered.
+    pub doorbell_timeout: Duration,
     /// Concurrent inbound connections served before new ones are refused.
     pub max_inbound_connections: usize,
     /// Turns one peer may start here in a row before its user takes part
@@ -53,12 +63,13 @@ impl MeshConfig {
             codex_home: codex_home.into(),
             max_frame_bytes: 256 * 1024,
             max_content_bytes: 64 * 1024,
-            max_hops: 3,
-            trigger_turn_min_interval: Duration::from_secs(10),
+            max_hops: 10,
+            trigger_turn_min_interval: Duration::from_secs(3),
             spawn_rendezvous_timeout: Duration::from_secs(45),
             connect_timeout: Duration::from_secs(2),
             handshake_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(5),
+            doorbell_timeout: Duration::from_secs(30),
             max_inbound_connections: 8,
             max_auto_turns_per_peer: crate::unieai_chain::DEFAULT_MAX_AUTO_TURNS_PER_PEER,
             message_retention: Duration::from_secs(7 * 24 * 60 * 60),
@@ -110,6 +121,11 @@ impl MeshConfig {
         self.socket_dir().join(format!("{thread_id}.sock.lock"))
     }
 }
+
+/// Longest a turn start is held back to respect
+/// [`MeshConfig::trigger_turn_min_interval`]; it must leave the sender's
+/// [`MeshConfig::doorbell_timeout`] room for the delivery itself.
+pub const MAX_TURN_START_DEFERRAL: Duration = Duration::from_secs(10);
 
 /// Conservative bound on a Unix socket path, the smaller of the Linux (108)
 /// and macOS (104) `sun_path` buffers.

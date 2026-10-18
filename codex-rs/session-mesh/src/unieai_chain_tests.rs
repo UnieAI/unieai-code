@@ -45,3 +45,23 @@ fn a_peer_may_start_only_a_few_turns_in_a_row() {
     // The budget is per peer.
     assert!(chain.may_start_turn(other));
 }
+
+#[test]
+fn turn_starts_from_one_peer_are_paced_and_user_input_does_not_reset_the_pace() {
+    let chain = PeerChain::default();
+    let gap = std::time::Duration::from_secs(60);
+    assert_eq!(
+        chain.turn_start_delay(peer(), gap),
+        std::time::Duration::ZERO
+    );
+
+    chain.note_turn_started(peer());
+    chain.note_user_input();
+
+    let delay = chain.turn_start_delay(peer(), gap);
+    assert!(delay > std::time::Duration::from_secs(59), "{delay:?}");
+    assert_eq!(
+        chain.turn_start_delay(peer(), std::time::Duration::ZERO),
+        std::time::Duration::ZERO
+    );
+}

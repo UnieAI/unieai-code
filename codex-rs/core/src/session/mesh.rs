@@ -214,6 +214,9 @@ pub(crate) async fn join_session_mesh(session: &Arc<Session>) {
     {
         return;
     }
+    if session.services.session_mesh.lock().await.is_some() {
+        return;
+    }
 
     let (session_source, cwd, codex_home) = {
         let state = session.state.lock().await;
@@ -289,6 +292,17 @@ pub(crate) async fn join_session_mesh(session: &Arc<Session>) {
             });
         }
         Err(err) => warn!("failed to join the session mesh: {err}"),
+    }
+}
+
+/// Withdraws this session from the mesh while it keeps running, because no
+/// client is showing it any more. Unlike [`leave_session_mesh`] this is not
+/// the end of the session, so a launcher is not told it finished. Messages
+/// sent to it meanwhile stay stored and are picked up when it rejoins.
+pub(crate) async fn withdraw_from_session_mesh(session: &Arc<Session>) {
+    let node = session.services.session_mesh.lock().await.take();
+    if let Some(node) = node {
+        node.leave().await;
     }
 }
 
