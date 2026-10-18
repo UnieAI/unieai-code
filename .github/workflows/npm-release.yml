@@ -63,7 +63,7 @@ jobs:
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 240
     defaults:
       run:
         working-directory: codex-rs
@@ -72,6 +72,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Since the 2026-10-17 upstream merge the musl builds outgrow the
+      # hosted Linux runners: in npm-v0.0.35 both were killed (exit 143)
+      # 16-18 minutes into `cargo build`. Give them swap and the disk that
+      # preinstalled toolchains hold.
+      - name: Make room on the Linux runner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /mnt/unieai-swap || sudo fallocate -l 16G /unieai-swap
+          swapfile=$(ls /mnt/unieai-swap /unieai-swap 2>/dev/null | head -1)
+          sudo chmod 600 "$swapfile" && sudo mkswap "$swapfile" && sudo swapon "$swapfile"
+          free -h
+          df -h / /mnt
 
       - name: Resolve npm version
         id: version
@@ -136,6 +152,11 @@ jobs:
         run: |
           if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
             export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            # Leave a trace of memory and disk if the runner dies again.
+            (while sleep 60; do echo "::group::resources $(date -u +%T)"; free -m; df -h / | tail -1; echo "::endgroup::"; done) &
+            export CARGO_BUILD_JOBS=$(( $(nproc) > 2 ? $(nproc) - 1 : $(nproc) ))
           fi
           cargo build --release --target ${{ matrix.target }} --bin codex
 
