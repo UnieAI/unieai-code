@@ -363,7 +363,15 @@ pub(crate) async fn process_message(
             message.sender_approval.as_deref(),
         );
         let recipient_mode = context.inbound.permission_mode().await;
-        if must_hold(sender_mode.as_ref(), recipient_mode.as_ref()) {
+        // The answer to a question this session asked is not a request made
+        // through it, so it is not held (see `unieai_conversations`).
+        let answers_own_question = crate::unieai_conversations::is_reply_to_started(
+            context.local_thread_id,
+            message.from_thread_id,
+            message.hop,
+            context.config.max_hops,
+        );
+        if !answers_own_question && must_hold(sender_mode.as_ref(), recipient_mode.as_ref()) {
             if let Err(err) = context
                 .store
                 .transition_message(

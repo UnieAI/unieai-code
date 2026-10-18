@@ -41,6 +41,7 @@ mod server;
 mod spawn;
 mod store;
 pub mod unieai_chain;
+mod unieai_conversations;
 pub mod unieai_framing;
 pub mod unieai_permissions;
 pub mod unieai_task_tools;

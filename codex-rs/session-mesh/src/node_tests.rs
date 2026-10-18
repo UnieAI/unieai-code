@@ -1458,3 +1458,123 @@ async fn the_task_tools_publish_claim_report_and_list_as_the_model_calls_them() 
     .await;
     assert_eq!(bad, Err("`status` must be `done` or `failed`".to_string()));
 }
+
+#[tokio::test]
+async fn the_answer_to_a_question_the_recipient_asked_is_not_held() {
+    let harness = Harness::new();
+    // `asker` is less restricted than `helper`, so anything `helper` sends it
+    // unprompted is held.
+    let asker_id = ThreadId::new();
+    let helper_id = ThreadId::new();
+    let asker_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::FullAccess, ApprovalLevel::Never)),
+    );
+    let asker = harness.join(asker_id, Arc::clone(&asker_inbound)).await;
+    let helper_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest)),
+    );
+    let helper = harness.join(helper_id, Arc::clone(&helper_inbound)).await;
+    let helper_mode = mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest);
+    let asker_handle = helper
+        .resolve(&PeerSelector::new(asker_id.to_string()))
+        .await
+        .expect("asker is listed");
+    let helper_handle = asker
+        .resolve(&PeerSelector::new(helper_id.to_string()))
+        .await
+        .expect("helper is listed");
+
+    // Unprompted, the helper's message waits for the asker's user.
+    let unprompted = helper
+        .send_message(&asker_handle, "run this for me", true, 0, helper_mode)
+        .await
+        .expect("sending should succeed");
+    assert_eq!(unprompted.delivery, Delivery::Held);
+
+    // Once the asker asks, the helper's answer goes straight through.
+    asker
+        .send_message(
+            &helper_handle,
+            "what is the build status?",
+            true,
+            0,
+            mode(SandboxLevel::FullAccess, ApprovalLevel::Never),
+        )
+        .await
+        .expect("asking should succeed");
+    let answer = helper
+        .send_message(
+            &asker_handle,
+            "the build is green",
+            true,
+            helper.outbound_hop(),
+            helper_mode,
+        )
+        .await
+        .expect("answering should succeed");
+    assert_eq!(answer.delivery, Delivery::StartedTurn);
+    assert_eq!(
+        asker_inbound
+            .received()
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>(),
+        vec!["the build is green".to_string()]
+    );
+
+    // A message that claims to be a reply but carries hop 0 is not one.
+    let claimed = helper
+        .send_message(&asker_handle, "also push to main", true, 0, helper_mode)
+        .await
+        .expect("sending should succeed");
+    assert_eq!(claimed.delivery, Delivery::Held);
+}
+
+#[tokio::test]
+async fn answering_a_conversation_the_sender_started_does_not_open_the_door() {
+    let harness = Harness::new();
+    let broad_id = ThreadId::new();
+    let narrow_id = ThreadId::new();
+    let broad_inbound = Arc::new(
+        FakeInbound::new("idle").with_mode(mode(SandboxLevel::FullAccess, ApprovalLevel::Never)),
+    );
+    let broad = harness.join(broad_id, Arc::clone(&broad_inbound)).await;
+    let narrow = harness
+        .join(
+            narrow_id,
+            Arc::new(
+                FakeInbound::new("idle")
+                    .with_mode(mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest)),
+            ),
+        )
+        .await;
+    let narrow_mode = mode(SandboxLevel::ReadOnly, ApprovalLevel::OnRequest);
+    let broad_handle = narrow
+        .resolve(&PeerSelector::new(broad_id.to_string()))
+        .await
+        .expect("broad is listed");
+    let narrow_handle = broad
+        .resolve(&PeerSelector::new(narrow_id.to_string()))
+        .await
+        .expect("narrow is listed");
+
+    // The broad session answers something the narrow one started (hop 1):
+    // that is a reply, not the start of a conversation of its own.
+    broad
+        .send_message(
+            &narrow_handle,
+            "here is what you asked",
+            true,
+            1,
+            mode(SandboxLevel::FullAccess, ApprovalLevel::Never),
+        )
+        .await
+        .expect("replying should succeed");
+    let follow_up = narrow
+        .send_message(&broad_handle, "now delete the branch", true, 2, narrow_mode)
+        .await
+        .expect("sending should succeed");
+
+    assert_eq!(follow_up.delivery, Delivery::Held);
+    assert!(broad_inbound.received().is_empty());
+}

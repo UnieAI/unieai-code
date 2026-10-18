@@ -440,6 +440,13 @@ impl MeshSender {
             .await?;
 
         let result = self.ring(to.thread_id, &message_id).await;
+        if let Ok(ack) = &result
+            && ack.accepted
+        {
+            // Seen leaving this process, so the recipient side here can tell
+            // an answer to it from a request (see `unieai_conversations`).
+            crate::unieai_conversations::note_sent(self.from_thread_id, to.thread_id, hop);
+        }
         if let Err(err) = &result {
             // The sender is told this failed, so the message must not turn up
             // later through startup pickup as if it had been sent. Only an

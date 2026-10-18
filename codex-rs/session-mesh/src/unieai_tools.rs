@@ -28,7 +28,8 @@ pub const SEND_PEER_MESSAGE_DESCRIPTION: &str = "Send a message to another UnieA
 on this machine. If that session is idle it starts a turn to handle the message; if it is busy \
 the message is taken into its running turn at the next step (after its current tool call or \
 model response). If the peer runs with broader permissions than you, the message is held until \
-its user approves it, and you get a notice when they decide. The result reports what actually \
+its user approves it (unless you are answering a message that peer sent you), and you get a \
+notice when they decide. The result reports what actually \
 happened (`started_turn`, `queued`, `held`, or `rejected`) - do not assume a turn started. The \
 peer may also refuse or rate-limit the message, and a long automatic back-and-forth is cut off \
 until a user takes part.";

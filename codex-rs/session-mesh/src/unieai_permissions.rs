@@ -26,6 +26,10 @@
 //! that the sender could not do itself — permission laundering — so the
 //! message is held until the recipient's user approves it.
 //!
+//! One exception: the answer to a conversation the recipient itself started
+//! with that sender is not held (see `crate::unieai_conversations` for how
+//! that is established and bounded).
+//!
 //! An unknown mode is treated pessimistically for the side it could harm: an
 //! unknown sender counts as maximally restricted, an unknown recipient as
 //! minimally restricted. Both default towards holding.
