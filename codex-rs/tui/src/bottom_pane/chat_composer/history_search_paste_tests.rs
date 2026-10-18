@@ -1,7 +1,9 @@
 //! Pasted text edits the active history query while preserving the original draft.
 
 use super::super::super::chat_composer_history::HistoryEntry;
+use super::super::super::chat_composer_history::HistorySearchResult;
 use super::super::ChatComposer;
+use super::super::ComposerRenderOptions;
 use super::super::InputResult;
 use super::super::LARGE_PASTE_CHAR_THRESHOLD;
 use crate::app_event_sender::AppEventSender;
@@ -48,7 +50,20 @@ fn history_search_paste_appends_query_and_accepts_match() {
     assert_eq!(composer.draft.textarea.text(), "git log");
 
     composer.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let paste_target = composer.clipboard_paste_target(Some(KeyCode::Insert));
+    // A background history lookup changes the preview, not the query being edited.
+    composer.apply_history_search_result(HistorySearchResult::Found(HistoryEntry::new(
+        "git diff".into(),
+    )));
+    assert_eq!(
+        composer.clipboard_paste_target(Some(KeyCode::Insert)),
+        paste_target
+    );
     assert!(composer.handle_paste("status".to_string()));
+    assert_ne!(
+        composer.clipboard_paste_target(Some(KeyCode::Insert)),
+        paste_target
+    );
     assert_eq!(
         composer.history_search.as_ref().unwrap().query,
         "git status"
@@ -71,7 +86,10 @@ fn history_search_large_paste_clamps_cursor() {
     composer.handle_paste("x".repeat(usize::from(u16::MAX) + 1));
 
     let terminal = render_composer(&composer, /*width*/ 80);
-    let cursor = composer.history_search_cursor_pos(terminal.size().unwrap().into());
+    let cursor = composer.cursor_pos_with_options(
+        terminal.size().unwrap().into(),
+        ComposerRenderOptions::default(),
+    );
     assert_eq!(cursor, Some((79, 4)));
     insta::assert_snapshot!(
         "history_search_large_paste_cursor",
@@ -100,6 +118,22 @@ fn history_search_empty_paste_preserves_selected_match() {
 }
 
 #[test]
+fn history_search_highlights_absorbed_prompt_prefix_match() {
+    let mut composer = composer_with_history();
+    composer
+        .history
+        .record_local_submission(HistoryEntry::new("/review changes".to_string()));
+    composer.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    composer.handle_paste("/review".to_string());
+
+    assert_eq!(composer.current_text(), "/review changes");
+    assert_eq!(composer.history_search_highlight_ranges(), vec![0..6]);
+
+    let terminal = render_composer(&composer, /*width*/ 70);
+    insta::assert_snapshot!("history_search_absorbed_slash", terminal.backend());
+}
+
+#[test]
 fn history_search_paste_shows_separators_and_matches_original_query() {
     let mut composer = composer_with_history();
     for entry in ["foobarbaz", "foo↵bar⇥baz"] {
@@ -115,7 +149,10 @@ fn history_search_paste_shows_separators_and_matches_original_query() {
     assert_eq!(composer.draft.textarea.text(), "draft");
 
     let terminal = render_composer(&composer, /*width*/ 70);
-    let cursor = composer.history_search_cursor_pos(terminal.size().unwrap().into());
+    let cursor = composer.cursor_pos_with_options(
+        terminal.size().unwrap().into(),
+        ComposerRenderOptions::default(),
+    );
     assert_eq!(cursor, Some((31, 4)));
     insta::assert_snapshot!(
         "history_search_pasted_separators",
@@ -187,7 +224,7 @@ fn history_search_paste_uses_full_sanitized_text() {
         composer.handle_paste(pasted);
 
         assert_eq!(composer.history_search.as_ref().unwrap().query, query);
-        assert_eq!(composer.draft.textarea.text(), query);
+        assert_eq!(composer.current_text(), query);
         assert!(composer.attachments.local_image_paths().is_empty());
         assert!(composer.draft.pending_pastes.is_empty());
         assert!(composer.current_text_elements().is_empty());

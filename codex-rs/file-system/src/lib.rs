@@ -1,5 +1,7 @@
+mod environment_accessor;
 mod exec_permission_profile_serde;
 mod find_up;
+mod nfs;
 
 use bytes::Bytes;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -16,12 +18,19 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::sandbox::SandboxOverride;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
+pub use environment_accessor::EnvironmentAccess;
+pub use environment_accessor::EnvironmentAccessExt;
+pub use environment_accessor::EnvironmentAccessKey;
+pub use environment_accessor::FileSystemEnvironmentAccessor;
 pub use find_up::FindUpErrorPolicy;
 pub use find_up::find_nearest_ancestor_with_markers;
 pub use find_up::find_nearest_native_ancestor_with_markers;
 use futures::Stream;
+use futures::stream::BoxStream;
+pub use nfs::is_nfs;
 use serde::Deserialize;
 use serde::Serialize;
 use std::future::Future;
@@ -34,6 +43,8 @@ use std::task::Poll;
 
 /// Maximum chunk size returned by [`ExecutorFileSystem::read_file_stream`].
 pub const FILE_READ_CHUNK_SIZE: usize = 1024 * 1024;
+/// Maximum decoded chunk size accepted by a streamed filesystem write.
+pub const FILE_WRITE_CHUNK_SIZE: usize = 1024 * 1024;
 /// Maximum accepted directory depth for a filesystem walk.
 pub const MAX_WALK_DEPTH: usize = 64;
 /// Maximum accepted directory count, including the walk root.
@@ -344,6 +355,9 @@ pub struct FileSystemSandboxContext {
     /// Serializes paths as executor file URIs instead of the profile's default native paths.
     #[serde(with = "exec_permission_profile_serde")]
     pub permissions: PermissionProfile,
+    /// Controller-selected override for observations, never an authorization to widen permissions.
+    #[serde(default, skip_serializing_if = "SandboxOverride::is_no_override")]
+    pub sandbox_override: SandboxOverride,
     /// Working directory on the selected executor used to interpret sandbox permissions.
     /// Required even for absolute permissions; a process may use a different working directory.
     pub cwd: PathUri,
@@ -357,8 +371,6 @@ pub struct FileSystemSandboxContext {
     pub temporary_directories: Option<Vec<PathUri>>,
     #[serde(rename = "windowsSandboxLevel")]
     pub windows_sandbox_selection: WindowsSandboxSelection,
-    #[serde(default)]
-    pub windows_sandbox_private_desktop: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_sandbox_proxy_settings_mode: Option<WindowsSandboxProxySettingsMode>,
     #[serde(default)]
@@ -389,12 +401,12 @@ impl FileSystemSandboxContext {
     pub fn from_permission_profile(permissions: PermissionProfile, cwd: PathUri) -> Self {
         Self {
             permissions,
+            sandbox_override: SandboxOverride::NoOverride,
             workspace_roots: vec![cwd.clone()],
             cwd,
             user_home_dir: None,
             temporary_directories: None,
             windows_sandbox_selection: WindowsSandboxSelection::Disabled,
-            windows_sandbox_private_desktop: false,
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: false,
         }
@@ -459,6 +471,8 @@ impl FileSystemSandboxContext {
 #[serde(rename_all = "camelCase")]
 pub struct WireFileSystemSandboxContext {
     permissions: ExecPermissionProfile,
+    #[serde(default, skip_serializing_if = "SandboxOverride::is_no_override")]
+    sandbox_override: SandboxOverride,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cwd: Option<PathUri>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -471,8 +485,6 @@ pub struct WireFileSystemSandboxContext {
     temporary_directories: Option<Vec<PathUri>>,
     #[serde(rename = "windowsSandboxLevel")]
     windows_sandbox_selection: WindowsSandboxSelection,
-    #[serde(default)]
-    windows_sandbox_private_desktop: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     windows_sandbox_proxy_settings_mode: Option<WindowsSandboxProxySettingsMode>,
     #[serde(default)]
@@ -493,12 +505,12 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
     fn from(sandbox: FileSystemSandboxContext) -> Self {
         let FileSystemSandboxContext {
             permissions,
+            sandbox_override,
             cwd,
             workspace_roots,
             user_home_dir,
             temporary_directories,
             windows_sandbox_selection,
-            windows_sandbox_private_desktop,
             windows_sandbox_proxy_settings_mode,
             use_legacy_landlock,
         } = sandbox;
@@ -530,6 +542,7 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
         };
         Self {
             permissions,
+            sandbox_override,
             cwd: legacy_needs_cwd.then(|| cwd.clone()),
             workspace_roots: if legacy_needs_cwd {
                 workspace_roots.clone()
@@ -543,7 +556,6 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
             user_home_dir,
             temporary_directories,
             windows_sandbox_selection,
-            windows_sandbox_private_desktop,
             windows_sandbox_proxy_settings_mode,
             use_legacy_landlock,
         }
@@ -582,6 +594,7 @@ impl WireFileSystemSandboxContext {
     pub fn into_context(self, cwd: PathUri) -> FileSystemSandboxContext {
         FileSystemSandboxContext {
             permissions: self.permissions.into(),
+            sandbox_override: self.sandbox_override,
             cwd,
             workspace_roots: match self.policy_context {
                 Some(policy_context) => policy_context.workspace_roots,
@@ -590,7 +603,6 @@ impl WireFileSystemSandboxContext {
             user_home_dir: self.user_home_dir,
             temporary_directories: self.temporary_directories,
             windows_sandbox_selection: self.windows_sandbox_selection,
-            windows_sandbox_private_desktop: self.windows_sandbox_private_desktop,
             windows_sandbox_proxy_settings_mode: self.windows_sandbox_proxy_settings_mode,
             use_legacy_landlock: self.use_legacy_landlock,
         }
@@ -648,6 +660,36 @@ pub trait ExecutorFileSystem: Send + Sync {
         path: &'a PathUri,
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream>;
+
+    /// Replaces a regular file from a stream of bounded chunks.
+    ///
+    /// Accepts any sendable byte stream, boxed to keep this trait object-safe.
+    /// Input chunks must be nonempty and no larger than [`FILE_WRITE_CHUNK_SIZE`].
+    /// Returns the number of bytes written after closing the target. Parents must already exist.
+    /// Failure or cancellation may leave a truncated or partial target.
+    ///
+    /// Cancellation is best effort: dropping the future stops consuming input and issuing new
+    /// blocks, but an in-flight open or write may still truncate or modify the target. Dropping
+    /// does not wait for that I/O or remote handle cleanup, so a subsequent replacement may overlap
+    /// with the abandoned operation.
+    ///
+    /// Local and streaming-capable remote filesystems write one chunk at a time. For compatibility,
+    /// a remote filesystem may buffer the entire input and send one write to an older executor.
+    /// The default implementation returns `Unsupported` without consuming the input.
+    fn write_file_stream<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: BoxStream<'a, FileSystemResult<Bytes>>,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, u64> {
+        Box::pin(async move {
+            let _ = (path, contents, sandbox);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "filesystem does not support streaming writes",
+            ))
+        })
+    }
 
     /// Reads a file and decodes it as UTF-8 text.
     fn read_file_text<'a>(

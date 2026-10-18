@@ -3,7 +3,7 @@ source: tui/src/bottom_pane/command_palette_view.rs
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {
-    area: Rect { x: 0, y: 0, width: 72, height: 12 },
+    area: Rect { x: 0, y: 0, width: 72, height: 11 },
     content: [
         "▌ Command Palette                                                       ",
         "▌ › mo                                                                  ",
@@ -11,12 +11,11 @@ Buffer {
         "  /memories     configure memory use and generation                     ",
         "  /raw          toggle raw scrollback mode for copy-friendly terminal   ",
         "                selection                                               ",
+        "  /tui          choose the TUI mode for the next launch                 ",
         "  /mention      mention a file                                          ",
-        "  /daemon       Manage the local background server.                     ",
+        "  /daemon       Manage the local background server                      ",
         "  /peer         message another session on this machine                 ",
         "  /hooks        view and manage lifecycle hooks                         ",
-        "  /init         create an AGENTS.md file with instructions for UnieAI   ",
-        "                Code                                                    ",
     ],
     styles: [
         x: 0, y: 0, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
@@ -25,7 +24,7 @@ Buffer {
         x: 0, y: 1, fg: Cyan, bg: Reset, underline: Reset, modifier: NONE,
         x: 2, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 4, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 2, y: 2, fg: Cyan, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 2, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 61, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 51, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
@@ -34,16 +33,14 @@ Buffer {
         x: 16, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 25, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 30, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 55, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 51, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 30, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 55, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 50, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 47, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 55, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 16, y: 10, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 69, y: 10, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 16, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 20, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 47, y: 10, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

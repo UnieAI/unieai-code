@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::AgentPath;
+use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
@@ -598,5 +599,31 @@ fn ordinary_agent_paths_are_still_reservable() {
             .reserve_agent_path(&agent_path("/root/worker"))
             .is_err(),
         "reserving the same path twice must still fail"
+    );
+}
+
+#[test]
+fn spawn_failure_context_distinguishes_registry_rejections() {
+    let registry = Arc::new(AgentRegistry::default());
+    let mut reservation = registry.reserve_spawn_slot(Some(1)).expect("first slot");
+    let capacity_error = match registry.reserve_spawn_slot(Some(1)) {
+        Ok(_) => panic!("registry limit should be enforced"),
+        Err(err) => err,
+    };
+    let path = agent_path("/root/worker");
+    reservation.reserve_agent_path(&path).expect("first path");
+    let duplicate_error = reservation
+        .reserve_agent_path(&path)
+        .expect_err("duplicate path");
+    let nickname_error = reservation
+        .reserve_agent_nickname_with_preference(&[], /*preferred*/ None)
+        .expect_err("empty nickname pool");
+    assert_eq!(
+        [capacity_error, duplicate_error, nickname_error].map(|err| err.agent_context()),
+        [
+            Some(AgentErrorContext::RegistryCapacity),
+            Some(AgentErrorContext::DuplicatePath),
+            Some(AgentErrorContext::NicknameUnavailable),
+        ],
     );
 }

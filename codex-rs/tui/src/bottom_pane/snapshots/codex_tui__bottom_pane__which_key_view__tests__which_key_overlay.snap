@@ -12,7 +12,7 @@ Buffer {
         "              Esc  Interrupt task / edit previous message       ",
         "           Ctrl+C  Interrupt; press twice to quit               ",
         "           Ctrl+D  Quit (when composer is empty)                ",
-        "           Alt+Up  Edit most recently queued message            ",
+        "       Shift+Left  Edit most recently queued message            ",
         "           Ctrl+O  Copy last response                           ",
         "←/→ page  ·  Esc close  ·  typing closes and inserts the key    ",
     ],

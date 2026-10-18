@@ -42,7 +42,7 @@ impl ChatWidget {
 }
 
 #[derive(Debug)]
-pub(super) enum Notification {
+pub(crate) enum Notification {
     AgentTurnComplete {
         response: String,
     },
@@ -57,6 +57,9 @@ pub(super) enum Notification {
         server_name: String,
     },
     PlanModePrompt {
+        title: String,
+    },
+    AsyncQuestion {
         title: String,
     },
     /// Another session on this machine sent this one a message.
@@ -96,6 +99,9 @@ impl Notification {
             Notification::PlanModePrompt { title } => {
                 format!("Plan mode prompt: {title}")
             }
+            Notification::AsyncQuestion { title } => {
+                format!("Question: {title}")
+            }
             Notification::PeerMessage { from, preview } => {
                 format!(
                     "Message from {from}: {}",
@@ -112,6 +118,7 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",
             Notification::PlanModePrompt { .. } => "plan-mode-prompt",
+            Notification::AsyncQuestion { .. } => "async-question",
             Notification::PeerMessage { .. } => "peer-message",
         }
     }
@@ -122,7 +129,8 @@ impl Notification {
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. }
-            | Notification::PlanModePrompt { .. } => 1,
+            | Notification::PlanModePrompt { .. }
+            | Notification::AsyncQuestion { .. } => 1,
             // Ranked with approvals, not with turn completions: a peer message
             // can start a turn in this session, so it is something the user
             // needs to know about rather than a summary of work already done.

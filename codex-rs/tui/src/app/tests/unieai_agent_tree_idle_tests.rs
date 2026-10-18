@@ -5,7 +5,7 @@ use codex_app_server_protocol::ThreadStatusChangedNotification;
 use pretty_assertions::assert_eq;
 
 async fn app_with_running_agent(thread_id: ThreadId) -> Result<Box<App>> {
-    let mut app = Box::new(Box::pin(make_test_app()).await);
+    let mut app = Box::pin(make_test_app()).await;
     app.primary_thread_id = Some(thread_id);
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 8));

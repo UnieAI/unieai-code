@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/exec_flow.rs
-expression: contents
+expression: normalize_snapshot_paths(contents)
 ---
 
 
@@ -9,7 +9,8 @@ expression: contents
   Description: The model wants to apply changes
   Destination: /tmp/project/README.md
 
-› 1. Yes, proceed (y)
+
+› 1. Yes, proceed (y)                                                           
   2. Yes, and don't ask again for these files (a)
   3. No, and tell UnieAI Code what to do differently (esc)
 

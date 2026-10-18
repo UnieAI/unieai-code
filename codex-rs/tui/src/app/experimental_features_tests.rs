@@ -19,6 +19,7 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
         ignore_project_config: true,
         ..LoaderOverrides::without_managed_config_for_tests()
     };
+    crate::test_support::pin_openai_provider(home.path());
     let config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
         .loader_overrides(loader.clone())
@@ -35,9 +36,11 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
         /*log_db*/ None,
         /*state_db*/ None,
         Arc::new(EnvironmentManager::default_for_tests()),
+        Default::default(),
     ))
     .await?;
     let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
         AppServerClient::InProcess(client),
         crate::app_server_session::ThreadParamsMode::Remote,
     );
@@ -80,14 +83,14 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
     );
     assert_eq!(
         std::fs::read_to_string(home.path().join("config.toml"))?,
-        "# unselected\n"
+        "model_provider = \"openai\"\n# unselected\n"
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let notice_text = |app: &App| {
         app.transcript_cells
             .last()
             .unwrap()
-            .display_lines(/*width*/ 120)
+            .transcript_lines(/*width*/ 120)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
@@ -116,7 +119,7 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
     );
     assert_eq!(
         std::fs::read_to_string(home.path().join("config.toml"))?,
-        "# unselected\n"
+        "model_provider = \"openai\"\n# unselected\n"
     );
     std::fs::write(&managed, "[features]\nmulti_agent = false\n")?;
     app.enable_feature_for_new_threads(&mut tui, &server, Feature::Collab)

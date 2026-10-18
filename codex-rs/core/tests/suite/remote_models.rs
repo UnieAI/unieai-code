@@ -42,7 +42,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_sandbox;
 use core_test_support::test_codex::TestCodex;
-use core_test_support::test_codex::local_selections;
+use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -85,7 +85,6 @@ async fn disabled_update_plan_preserves_custom_catalog_instructions() -> Result<
         .as_mut()
         .expect("model prompt templates");
     messages.instructions_template = Some(INSTRUCTIONS.to_string());
-    messages.instructions_variables = None;
     let test = test_codex()
         .with_model("gpt-5.5")
         .with_config(move |config| {
@@ -96,7 +95,7 @@ async fn disabled_update_plan_preserves_custom_catalog_instructions() -> Result<
         .await?;
     test.submit_turn("hello").await?;
     let request = response.single_request().body_json();
-    assert_eq!(request["instructions"], INSTRUCTIONS);
+    assert_eq!(response.single_request().instructions_text(), INSTRUCTIONS);
     assert!(!request["tools"].to_string().contains("update_plan"));
     Ok(())
 }
@@ -584,6 +583,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
+        supports_reasoning_effort_updates: false,
         guardian: None,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,
@@ -692,7 +692,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(cwd_path)),
+                environments: Some(local_requests(cwd_path)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -858,6 +858,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
+        supports_reasoning_effort_updates: false,
         guardian: None,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,
@@ -931,6 +932,11 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
             .features
             .enable(Feature::ApiKeyModelDiscovery)
             .expect("enable API-key model discovery");
+        config.model_provider.model_catalog_url = config
+            .model_provider
+            .base_url
+            .as_ref()
+            .map(|base_url| format!("{base_url}/models").into());
         config.update_plan_enabled = true;
         config.model = Some("gpt-5.2".to_string());
     });
@@ -939,6 +945,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
         cwd,
         config,
         thread_manager,
+        home: _home,
         ..
     } = builder.build(&server).await?;
 
@@ -955,7 +962,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(cwd_path.clone())),
+                environments: Some(local_requests(cwd_path.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -985,7 +992,7 @@ async fn remote_models_apply_legacy_instructions(auth: CodexAuth) -> Result<()> 
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(cwd_path)),
+                environments: Some(local_requests(cwd_path)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -1440,6 +1447,7 @@ fn test_remote_model_with_policy(
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
+        supports_reasoning_effort_updates: false,
         guardian: None,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,
@@ -1474,4 +1482,110 @@ fn test_remote_model_with_policy(
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
     }
+}
+
+#[test_case(None; "without explicit model")]
+#[test_case(Some("gateway-conversation"); "with explicit model")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_model_catalog_requires_explicit_model(configured_model: Option<&str>) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/codex/models"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(ModelsResponse::default()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let catalog_url = format!("{}/codex/models", server.uri());
+    let model = configured_model.map(str::to_string);
+    let result = test_codex()
+        .with_auth(CodexAuth::from_api_key("gateway-api-key"))
+        .with_config(move |config| {
+            config.model = model;
+            config.model_provider.model_catalog_url = Some(catalog_url.into());
+            config
+                .features
+                .enable(Feature::ApiKeyModelDiscovery)
+                .expect("enable API-key discovery");
+        })
+        .build_with_auto_env(&server)
+        .await;
+    if let Some(model) = configured_model {
+        let test = result?;
+        test.submit_turn("hello").await?;
+        assert_eq!(response.single_request().body_json()["model"], model);
+    } else {
+        let error = result.err().expect("startup requires a model");
+        assert_eq!(
+            error.to_string(),
+            "No models are available. Set `model` explicitly or check your model catalog configuration."
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_catalog_url_supplies_conversation_model_and_instructions() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    let instructions = "Use the gateway's reviewed conversation instructions.";
+    let mut model = codex_models_manager::model_info::model_info_from_slug("gateway-conversation");
+    model.visibility = ModelVisibility::List;
+    model.supported_in_api = true;
+    model.support_verbosity = false;
+    model.used_fallback_model_metadata = false;
+    model
+        .model_messages
+        .as_mut()
+        .expect("fallback instructions")
+        .instructions_template = Some(instructions.to_string());
+    let catalog = ModelsResponse {
+        models: vec![model],
+    };
+    Mock::given(method("GET"))
+        .and(path("/codex/models"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(&catalog))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let catalog_url = format!("{}/codex/models", server.uri());
+    let test = test_codex()
+        .with_auth(CodexAuth::from_api_key("gateway-api-key"))
+        .with_model("gateway-conversation")
+        .with_config(move |config| {
+            config.model_provider.name = "Gateway".to_string();
+            config.model_provider.model_catalog_url = Some(catalog_url.into());
+            config
+                .features
+                .enable(Feature::ApiKeyModelDiscovery)
+                .expect("enable API-key discovery");
+            config.model_verbosity = Some(codex_protocol::config_types::Verbosity::High);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let received = test
+        .thread_manager
+        .get_models_manager()
+        .raw_model_catalog(
+            RefreshStrategy::OnlineIfUncached,
+            codex_core::test_support::default_http_client_factory(),
+        )
+        .await;
+    assert_eq!(received.models, catalog.models);
+    test.submit_turn("hello").await?;
+    let request = response.single_request().body_json();
+    assert_eq!(request["model"], "gateway-conversation");
+    assert_eq!(response.single_request().instructions_text(), instructions);
+    assert_eq!(request["text"].get("verbosity"), None);
+    Ok(())
 }

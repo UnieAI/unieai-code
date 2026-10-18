@@ -3,15 +3,16 @@ source: tui/src/markdown_render_tests.rs
 expression: "plain_lines(&text).join(\"\\n\")"
 ---
  Unit          Suggestion engine and unit coverage
- Files         codex-rs/core/src/next_prompt_suggestion.rs:1, codex-rs/core/src/next_prompt_suggestion_tests.rs:1
+ Files         next_prompt_suggestion.rs (codex-rs/core/src/next_prompt_suggestion.rs:1),
+               next_prompt_suggestion_tests.rs (codex-rs/core/src/next_prompt_suggestion_tests.rs:1)
  Adds          704
  Removes       0
  What It Adds  Sampling workflow, stable-history checks, tool-flow suppression, fast reasoning profile, filtering rules,
                cancellation and timeout.
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Unit          Model instruction fragment and contextual isolation
- Files         codex-rs/core/src/context/next_prompt_suggestion.rs:1, codex-rs/core/src/context/
-               contextual_user_message_tests.rs:1
+ Files         next_prompt_suggestion.rs (codex-rs/core/src/context/next_prompt_suggestion.rs:1),
+               contextual_user_message_tests.rs (codex-rs/core/src/context/contextual_user_message_tests.rs:1)
  Adds          54
  Removes       0
  What It Adds  Synthetic suggestion prompt and an isolation test for ordinary user text.

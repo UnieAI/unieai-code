@@ -19,6 +19,8 @@ use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_history_notes_extension::install;
+use codex_http_client::DestinationPolicy;
+use codex_http_client::NetworkPolicyController;
 use codex_login::AuthHeaders;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -73,6 +75,12 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
         use_history_notes_extension: true,
         ..TokenBudgetConfig::default()
     });
+    let controller = NetworkPolicyController::default();
+    config.application_network_policy = controller.policy();
+    assert!(controller.publish(
+        controller.policy().revision(),
+        DestinationPolicy::Unrestricted
+    ));
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -157,10 +165,11 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
         .await;
     assert_eq!(
         hints,
-        vec![PromptFragment::new(
+        vec![PromptFragment::tool(
             PromptSlot::ContextWindow,
             THREAD_HINT,
             ContentItemKind("notes.thread_hint".to_string()),
+            "notes".to_string(),
         )]
     );
 
@@ -342,6 +351,27 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
         );
     }
 
+    server.reset().await;
+    assert!(controller.publish(
+        controller.policy().revision(),
+        DestinationPolicy::Restricted {
+            allowed_hosts: Default::default(),
+        },
+    ));
+    assert!(
+        registry.context_contributors()[0]
+            .contribute_thread_context(&session_store, &thread_store)
+            .await
+            .is_empty()
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty()
+    );
+
     let mut disabled_config = config.clone();
     disabled_config.token_budget = None;
     for contributor in registry.config_contributors() {
@@ -432,6 +462,8 @@ fn tool_call(tool_name: ToolName, arguments: serde_json::Value) -> ToolCall<'sta
         source: ToolCallSource::Direct,
         conversation_history: ConversationHistory::default(),
         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
+        attachment_store: codex_core::passthrough_image_store(),
+        ephemeral: false,
         environments: Vec::new(),
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),

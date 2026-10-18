@@ -4,24 +4,18 @@ expression: "snapshots.join(\"\\n---\\n\")"
 ---
 resume lookup fallback:
 before:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
   Resuming session…
 
 › draft while loading
 
 
 after:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
 
 
 › draft while loading
@@ -30,24 +24,18 @@ after:
 ---
 fork lookup fallback:
 before:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
   Forking session…
 
 › draft while loading
 
 
 after:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
 
 
 › draft while loading
@@ -58,12 +46,9 @@ resume picker cancellation:
 before:
 hidden while picker owns input
 after:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
 
 
 › Ask UnieAI Code to do anything
@@ -74,12 +59,9 @@ fork picker cancellation:
 before:
 hidden while picker owns input
 after:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
 
 
 › Ask UnieAI Code to do anything

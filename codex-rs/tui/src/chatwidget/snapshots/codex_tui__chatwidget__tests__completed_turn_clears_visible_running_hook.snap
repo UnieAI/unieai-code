@@ -9,10 +9,10 @@ before completion:
 "                                                                                "
 "› Ask UnieAI Code to do anything                                                "
 "                                                                                "
-"  gpt-5.6-sol default · /tmp/project                                            "
+"  GPT-5.6-Sol default · /tmp/project                                            "
 after completion:
 "                                                                                "
 "                                                                                "
 "› Ask UnieAI Code to do anything                                                "
 "                                                                                "
-"  gpt-5.6-sol default · /tmp/project                                            "
+"  GPT-5.6-Sol default · /tmp/project                                            "

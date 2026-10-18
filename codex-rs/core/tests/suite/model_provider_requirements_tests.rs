@@ -181,7 +181,8 @@ X-Managed = "required"
             let rebuilt = Config::rebuild_with_session_layers(
                 &overridden.config_layer_stack,
                 overridden.cwd.to_path_buf(),
-                &overridden,
+                &overridden.config_layer_stack,
+                overridden.codex_home.clone(),
             )
             .await?;
             assert_eq!(rebuilt.model_provider, test.config.model_provider);

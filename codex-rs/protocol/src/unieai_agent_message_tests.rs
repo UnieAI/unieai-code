@@ -63,6 +63,8 @@ fn a_sub_agent_message_is_labelled_with_its_author() {
 fn other_items_are_left_alone() {
     let mut items = vec![
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {

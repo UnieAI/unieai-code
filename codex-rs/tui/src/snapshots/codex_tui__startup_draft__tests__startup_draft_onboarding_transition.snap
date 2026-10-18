@@ -5,12 +5,9 @@ expression: frames
 before onboarding: hidden (0x0 viewport)
 ---
 after onboarding:
-╭──────────────────────────────────────────────╮
-│ >_ UnieAI Code (v<VERSION>) │
-│                                              │
-│ model:     loading   /model to change        │
-│ directory: loading                           │
-╰──────────────────────────────────────────────╯
+
+  >_ UnieAI Code (v<VERSION>)
+     loading
 
 
 › Ask UnieAI Code to do anything

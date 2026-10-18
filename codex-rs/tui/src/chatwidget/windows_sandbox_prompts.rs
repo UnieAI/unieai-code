@@ -1,6 +1,8 @@
 //! Windows sandbox prompts and warning surfaces for `ChatWidget`.
 
 use super::*;
+#[cfg(any(target_os = "windows", test))]
+use crate::render::renderable::ColumnRenderable;
 
 impl ChatWidget {
     #[cfg(any(target_os = "windows", test))]
@@ -31,7 +33,7 @@ impl ChatWidget {
             !allow_unelevated || self.elevated_windows_sandbox_setup_required();
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(
-            Paragraph::new(if allow_unelevated {
+            crate::terminal_hyperlinks::HyperlinkText::new(if allow_unelevated {
                 vec![
                     line!["Set up the UnieAI Code agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>"],
                 ]
@@ -40,8 +42,7 @@ impl ChatWidget {
                     line!["Your organization requires the default UnieAI Code agent sandbox to continue. Set it up to protect your files and control network access."],
                     line!["Learn more <https://developers.openai.com/codex/windows>"],
                 ]
-            })
-            .wrap(Wrap { trim: false }),
+            }),
         ));
 
         let accept_otel = self.session_telemetry.clone();
@@ -124,7 +125,7 @@ impl ChatWidget {
                     });
                 }) as _
             }),
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 
@@ -168,7 +169,7 @@ impl ChatWidget {
         ]);
 
         let mut header = ColumnRenderable::new();
-        header.push(*Box::new(Paragraph::new(lines).wrap(Wrap { trim: false })));
+        header.push(crate::terminal_hyperlinks::HyperlinkText::new(lines));
 
         let elevated_preset = preset.clone();
         let legacy_preset = preset;
@@ -258,7 +259,7 @@ impl ChatWidget {
                     });
                 }) as _
             }),
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 
@@ -270,23 +271,24 @@ impl ChatWidget {
     ) {
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, show_now: bool) {
-        let windows_sandbox_level = self.windows_sandbox_config.level();
-        let setup_is_required = windows_sandbox_level == WindowsSandboxLevel::Disabled
+        let setup_is_required = !self.windows_sandbox_config.is_enabled()
             || self.elevated_windows_sandbox_setup_required();
         if show_now
             && setup_is_required
-            && let Some(preset) = builtin_approval_presets()
+            && let Some(mut preset) = builtin_approval_presets()
                 .into_iter()
                 .find(|preset| preset.id == "auto")
         {
+            if self.config.active_project.trust_level.is_none()
+                && self.config.config_layer_stack.is_projectless()
+            {
+                preset.approval = self.config.permissions.approval_policy.value();
+            }
             self.open_windows_sandbox_enable_prompt(preset, /*profile_selection*/ None);
         }
     }
-
-    #[cfg(all(not(target_os = "windows"), test))]
-    pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, _show_now: bool) {}
 
     #[cfg(any(target_os = "windows", test))]
     pub(crate) fn show_windows_sandbox_setup_status(&mut self) {

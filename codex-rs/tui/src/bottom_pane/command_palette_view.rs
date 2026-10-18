@@ -154,6 +154,7 @@ impl CommandPaletteView {
                 wrap_indent: None,
                 is_disabled: false,
                 disabled_reason: None,
+                selection_style: None,
             })
             .collect()
     }

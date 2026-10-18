@@ -124,7 +124,6 @@ fn session_configured_produces_thread_started_event() {
         active_permission_profile: None,
         cwd: test_path_buf("/tmp/project").abs(),
         reasoning_effort: None,
-        initial_messages: None,
         network_proxy: None,
         rollout_path: None,
     };
@@ -146,6 +145,7 @@ fn turn_started_emits_turn_started_event() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::InProgress,
@@ -170,6 +170,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
     let command_item = ThreadItem::CommandExecution {
         model_context: None,
+        sandbox_type: None,
         id: "cmd-1".to_string(),
         command: "ls".to_string(),
         cwd: test_path_buf("/tmp/project").abs().into(),
@@ -213,6 +214,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
         ItemCompletedNotification {
             item: ThreadItem::CommandExecution {
                 model_context: None,
+                sandbox_type: None,
                 id: "cmd-1".to_string(),
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs().into(),
@@ -399,12 +401,69 @@ fn web_search_completion_preserves_query_and_action() {
                             query: Some("rust async await".to_string()),
                             queries: None,
                         },
+                        results: None,
                     }),
                 },
             })],
             status: CodexStatus::Running,
         }
     );
+}
+
+#[test]
+fn web_search_page_actions_and_results_survive_json_output() {
+    let url = "https://example.com/docs";
+    for (action, expected_action) in [
+        (
+            ApiWebSearchAction::OpenPage {
+                url: Some(url.to_string()),
+            },
+            json!({"type": "open_page", "url": url}),
+        ),
+        (
+            ApiWebSearchAction::FindInPage {
+                url: Some(url.to_string()),
+                pattern: Some("configuration".to_string()),
+            },
+            json!({"type": "find_in_page", "url": url, "pattern": "configuration"}),
+        ),
+    ] {
+        for results in [
+            None,
+            Some(vec![]),
+            Some(vec![json!({"url": url, "content": "configuration"})]),
+            Some(vec![json!({"url": url, "error": {"status": 404}})]),
+        ] {
+            let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+            let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    item: ThreadItem::WebSearch(ApiWebSearchItem {
+                        id: "search-1".to_string(),
+                        query: url.to_string(),
+                        action: Some(action.clone()),
+                        results: results.clone(),
+                    }),
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 0,
+                },
+            ));
+
+            let mut expected_item = json!({
+                "id": "search-1",
+                "type": "web_search",
+                "query": url,
+                "action": expected_action,
+            });
+            if let Some(results) = results {
+                expected_item["results"] = json!(results);
+            }
+            assert_eq!(
+                serde_json::to_value(collected.events).expect("serialize web search events"),
+                json!([{"type": "item.completed", "item": expected_item}]),
+            );
+        }
+    }
 }
 
 #[test]
@@ -451,6 +510,7 @@ fn web_search_start_and_completion_reuse_item_id() {
                         id: "search-1".to_string(),
                         query: String::new(),
                         action: WebSearchAction::Other,
+                        results: None,
                     }),
                 },
             })],
@@ -470,6 +530,7 @@ fn web_search_start_and_completion_reuse_item_id() {
                             query: Some("rust async await".to_string()),
                             queries: None,
                         },
+                        results: None,
                     }),
                 },
             })],
@@ -1137,6 +1198,7 @@ fn plan_update_emits_started_then_updated_then_completed() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
@@ -1197,6 +1259,7 @@ fn plan_update_after_completion_starts_new_todo_list_with_new_id() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
@@ -1282,6 +1345,7 @@ fn token_usage_update_is_emitted_on_turn_completion() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
@@ -1318,6 +1382,7 @@ fn turn_completion_recovers_final_message_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
@@ -1356,6 +1421,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::CommandExecution {
                 model_context: None,
+                sandbox_type: None,
                 id: "cmd-1".to_string(),
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs().into(),
@@ -1396,9 +1462,11 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::CommandExecution {
                     model_context: None,
+                    sandbox_type: None,
                     id: "cmd-1".to_string(),
                     command: "ls".to_string(),
                     cwd: test_path_buf("/tmp/project").abs().into(),
@@ -1469,6 +1537,7 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
@@ -1523,6 +1592,7 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
@@ -1574,6 +1644,7 @@ fn failed_turn_clears_stale_final_message() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Failed,
@@ -1603,6 +1674,7 @@ fn turn_completion_falls_back_to_final_plan_text() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::Plan {
                     id: "plan-1".to_string(),
@@ -1659,6 +1731,7 @@ fn turn_failure_prefers_structured_error_message() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Failed,

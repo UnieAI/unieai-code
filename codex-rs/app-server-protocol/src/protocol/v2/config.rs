@@ -456,7 +456,6 @@ pub struct ConfigRequirements {
     pub check_for_update_on_startup: Option<bool>,
     pub allow_login_shell: Option<bool>,
     pub feedback: Option<FeedbackRequirements>,
-    pub windows_sandbox_private_desktop: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -515,12 +514,37 @@ pub struct ComputerUseRequirements {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct BrowserUseRequirements {
+    pub extension: Option<BrowserUseExtensionRequirements>,
     pub allow_webmcp: Option<bool>,
     pub allow_history_access: Option<bool>,
     pub disable_auto_review: Option<bool>,
     pub allow_global_persistent_approval: Option<bool>,
     pub default_origin_policy: Option<BrowserUseOriginPolicy>,
     pub origins: Option<BTreeMap<String, BrowserUseOriginPolicy>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct BrowserUseExtensionRequirements {
+    pub request_headers: Option<Vec<RequestHeader>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RequestHeader {
+    pub name: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for RequestHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestHeader")
+            .field("name", &self.name)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -736,6 +760,10 @@ pub enum ResidencyRequirement {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirementsReadResponse {
+    /// Whether Fast and Ultra Fast requirements are enforced independently.
+    /// Older servers omit this field and use Fast mode as a shared speed gate.
+    #[serde(default)]
+    pub supports_independent_speed_modes: Option<bool>,
     /// Null if no requirements are configured (e.g. no requirements.toml/MDM entries).
     #[experimental(nested)]
     pub requirements: Option<ConfigRequirements>,
@@ -1142,3 +1170,7 @@ pub struct ConfigWarningNotification {
     #[ts(optional)]
     pub range: Option<TextRange>,
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

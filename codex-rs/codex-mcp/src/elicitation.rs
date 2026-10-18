@@ -4,8 +4,7 @@
 //! from the user. It decides whether the request can be automatically accepted,
 //! must be declined by policy, or should be surfaced as a UnieAI protocol event
 //! and later resolved through the stored responder.
-//! Non-root agents may use automatic decisions, but explicit user-input requests
-//! are rejected before review and no pending user prompt is registered.
+//! Explicit MCP elicitation requests can be surfaced by root and non-root agents.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,16 +20,15 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_channel::Sender;
+use codex_protocol::approvals::ElicitationAbandonedEvent;
 use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
-use codex_protocol::mcp_approval_meta::APPROVAL_KIND_BROWSER_AUTH;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_TOOL_SUGGESTION;
 use codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY;
-use codex_protocol::mcp_approval_meta::REQUIRES_USER_INPUT_KEY;
 use codex_protocol::mcp_approval_meta::STRICT_AUTO_REVIEW_KEY;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
@@ -48,12 +46,6 @@ use tokio::sync::oneshot;
 static NEXT_ELICITATION_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 const STRICT_AUTO_REVIEW_DECLINE_MESSAGE: &str = "Automated review of this operation failed. Do not proceed without asking the user for explicit approval.";
-/// Recovery guidance for a request that a non-root agent cannot present to the user.
-pub const MCP_ELICITATION_HANDOFF_MESSAGE: &str = concat!(
-    "MCP server elicitations can only be requested by the root thread. ",
-    "Ask the parent agent to handle this request. ",
-    "Do not retry the blocked action until the parent confirms the blocker is resolved."
-);
 
 #[path = "user_verification_elicitation.rs"]
 mod user_verification_elicitation;
@@ -108,29 +100,148 @@ struct ActiveElicitation {
 /// the same server request ID without colliding.
 #[derive(Clone, Default)]
 pub(crate) struct ElicitationRequestRouter {
-    requests: Arc<StdMutex<ResponderMap>>,
+    requests: Arc<StdMutex<PendingResponders>>,
+    terminal_actions_finished: Arc<tokio::sync::Notify>,
     auto_deny: Arc<AtomicBool>,
     full_access_form_input_enabled: Arc<AtomicBool>,
 }
 
-struct PendingElicitationRequest {
+// Removes and abandons a published request when its native waiter is dropped.
+struct ElicitationRequestGuard {
     router: ElicitationRequestRouter,
     key: (String, RequestId),
 }
 
-impl Drop for PendingElicitationRequest {
+#[derive(Default, PartialEq)]
+enum RouterPhase {
+    #[default]
+    Open,
+    Closing,
+    Closed,
+}
+
+#[derive(Default)]
+struct PendingResponders {
+    pending: ResponderMap,
+    phase: RouterPhase,
+    terminal_actions: usize,
+}
+
+// Owns response delivery and the original source for abandonment notifications.
+struct ElicitationResponder {
+    response: oneshot::Sender<ElicitationResponse>,
+    abandonment_events: Option<Sender<Event>>,
+}
+
+// Removal elects a winner, but shutdown must also wait for its outside-lock delivery.
+struct ElicitationDeliveryGuard(ElicitationRequestRouter);
+
+impl Drop for ElicitationDeliveryGuard {
     fn drop(&mut self) {
-        let responder = self
-            .router
+        let mut state = self
+            .0
             .requests
             .lock()
-            .ok()
-            .and_then(|mut requests| requests.remove(&self.key));
-        drop(responder);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.terminal_actions -= 1;
+        if state.phase == RouterPhase::Closing && state.terminal_actions == 0 {
+            state.phase = RouterPhase::Closed;
+        }
+        drop(state);
+        self.0.terminal_actions_finished.notify_waiters();
+    }
+}
+
+impl Drop for ElicitationRequestGuard {
+    fn drop(&mut self) {
+        if let Ok(Some((responder, _terminal_action))) = self.router.take_responder(&self.key) {
+            emit_abandonment(&self.key, responder.abandonment_events.as_ref());
+            drop(responder);
+        }
+    }
+}
+
+fn emit_abandonment(key: &(String, RequestId), events: Option<&Sender<Event>>) {
+    if let Some(events) = events {
+        let event = Event {
+            id: "mcp_elicitation_abandoned".to_string(),
+            msg: EventMsg::ElicitationAbandoned(ElicitationAbandonedEvent {
+                server_name: key.0.clone(),
+                id: match &key.1 {
+                    RequestId::String(id) => ProtocolRequestId::String(id.to_string()),
+                    RequestId::Number(id) => ProtocolRequestId::Integer(*id),
+                },
+            }),
+        };
+        match events.try_send(event) {
+            Ok(()) | Err(async_channel::TrySendError::Closed(_)) => {}
+            Err(async_channel::TrySendError::Full(_)) => {
+                unreachable!("validated unbounded elicitation event channel became full")
+            }
+        }
     }
 }
 
 impl ElicitationRequestRouter {
+    fn take_responder(
+        &self,
+        key: &(String, RequestId),
+    ) -> Result<Option<(ElicitationResponder, ElicitationDeliveryGuard)>> {
+        let mut state = self
+            .requests
+            .lock()
+            .map_err(|_| anyhow!("elicitation request router unavailable"))?;
+        Ok(state.pending.remove(key).map(|responder| {
+            state.terminal_actions += 1;
+            (responder, ElicitationDeliveryGuard(self.clone()))
+        }))
+    }
+
+    /// Fence unbounded source publication and terminal deliveries before reporting shutdown.
+    /// Bounded sources retain their existing request-only behavior and backpressure.
+    pub(crate) async fn close(&self) {
+        {
+            let (pending, _terminal_action) = {
+                let mut state = self
+                    .requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.phase == RouterPhase::Closed {
+                    return;
+                }
+                if state.phase == RouterPhase::Open {
+                    state.phase = RouterPhase::Closing;
+                }
+                let pending = state
+                    .pending
+                    .extract_if(|_, responder| responder.abandonment_events.is_some())
+                    .collect::<ResponderMap>();
+                state.terminal_actions += 1;
+                (pending, ElicitationDeliveryGuard(self.clone()))
+            };
+            // This synchronous batch completes before the first cancellation point.
+            for (key, responder) in pending {
+                emit_abandonment(&key, responder.abandonment_events.as_ref());
+                drop(responder);
+            }
+        }
+        loop {
+            let notified = self.terminal_actions_finished.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .phase
+                == RouterPhase::Closed
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     pub(crate) fn auto_deny(&self) -> bool {
         self.auto_deny.load(Ordering::Relaxed)
     }
@@ -154,15 +265,15 @@ impl ElicitationRequestRouter {
         id: RequestId,
         response: ElicitationResponse,
     ) -> Result<()> {
-        let responder = self
-            .requests
-            .lock()
-            .map_err(|_| anyhow!("elicitation request router unavailable"))?
-            .remove(&(server_name, id))
+        let key = (server_name, id);
+        let (responder, _terminal_action) = self
+            .take_responder(&key)?
             .ok_or_else(|| anyhow!("elicitation request not found"))?;
-        responder
-            .send(response)
-            .map_err(|_| anyhow!("elicitation response receiver closed"))
+        if responder.response.send(response).is_err() {
+            emit_abandonment(&key, responder.abandonment_events.as_ref());
+            return Err(anyhow!("elicitation response receiver closed"));
+        }
+        Ok(())
     }
 
     async fn request_user_interaction(
@@ -172,10 +283,6 @@ impl ElicitationRequestRouter {
         server_name: String,
         request: ElicitationRequest,
     ) -> Result<ElicitationResponse> {
-        anyhow::ensure!(
-            authority.allow_user_interaction,
-            MCP_ELICITATION_HANDOFF_MESSAGE
-        );
         let Some(events) = events else {
             return Ok(ElicitationResponse {
                 action: ElicitationAction::Decline,
@@ -183,6 +290,10 @@ impl ElicitationRequestRouter {
                 meta: None,
             });
         };
+        // Core uses an unbounded source channel, which can atomically publish a request
+        // and synchronously enqueue abandonment from Drop. Preserve bounded callers'
+        // existing request-only behavior because they require asynchronous backpressure.
+        let abandonment_events = events.capacity().is_none().then(|| events.clone());
         let (delivery_context, response_context) =
             if matches!(&request, ElicitationRequest::UserVerification { .. }) {
                 (
@@ -208,26 +319,61 @@ impl ElicitationRequestRouter {
             .lifecycle
             .as_ref()
             .map(ElicitationLifecycle::start);
-        self.requests
-            .lock()
-            .map_err(|_| anyhow!("elicitation request router unavailable"))?
-            .insert(request_key.clone(), tx);
-        let _pending_request = PendingElicitationRequest {
+        let event = Event {
+            id: "mcp_elicitation_request".to_string(),
+            msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
+                turn_id: None,
+                server_name,
+                id: ProtocolRequestId::String(public_request_id),
+                request,
+            }),
+        };
+        let legacy_event = if abandonment_events.is_some() {
+            let mut state = self
+                .requests
+                .lock()
+                .map_err(|_| anyhow!("elicitation request router unavailable"))?;
+            anyhow::ensure!(
+                state.phase == RouterPhase::Open,
+                "elicitation request router closed"
+            );
+            let mut responder =
+                state
+                    .pending
+                    .entry(request_key.clone())
+                    .insert_entry(ElicitationResponder {
+                        response: tx,
+                        abandonment_events: None,
+                    });
+            // Resolve and close cannot observe a published request without its responder.
+            // The validated unbounded send cannot wait or yield while admission is locked.
+            if let Err(error) = events.try_send(event) {
+                responder.remove();
+                return Err(error).context(delivery_context);
+            }
+            responder.get_mut().abandonment_events = abandonment_events;
+            None
+        } else {
+            self.requests
+                .lock()
+                .map_err(|_| anyhow!("elicitation request router unavailable"))?
+                .pending
+                .insert(
+                    request_key.clone(),
+                    ElicitationResponder {
+                        response: tx,
+                        abandonment_events: None,
+                    },
+                );
+            Some(event)
+        };
+        let _pending_request = ElicitationRequestGuard {
             router: self.clone(),
             key: request_key,
         };
-        events
-            .send(Event {
-                id: "mcp_elicitation_request".to_string(),
-                msg: EventMsg::ElicitationRequest(ElicitationRequestEvent {
-                    turn_id: None,
-                    server_name,
-                    id: ProtocolRequestId::String(public_request_id),
-                    request,
-                }),
-            })
-            .await
-            .context(delivery_context)?;
+        if let Some(event) = legacy_event {
+            events.send(event).await.context(delivery_context)?;
+        }
         rx.await.context(response_context)
     }
 }
@@ -235,7 +381,6 @@ impl ElicitationRequestRouter {
 #[derive(Clone)]
 pub(crate) struct ElicitationAuthority {
     pub(crate) config: Arc<McpConfig>,
-    pub(crate) allow_user_interaction: bool,
     reviewer: Option<ElicitationReviewerHandle>,
     lifecycle: Option<ElicitationLifecycle>,
 }
@@ -249,7 +394,6 @@ pub(crate) struct ElicitationRequestManager {
 impl ElicitationRequestManager {
     pub(crate) fn new(
         config: Arc<McpConfig>,
-        allow_user_interaction: bool,
         reviewer: Option<ElicitationReviewerHandle>,
         lifecycle: Option<ElicitationLifecycle>,
         router: ElicitationRequestRouter,
@@ -258,7 +402,6 @@ impl ElicitationRequestManager {
             router,
             authority: Arc::new(StdMutex::new(Some(ElicitationAuthority {
                 config,
-                allow_user_interaction,
                 reviewer,
                 lifecycle,
             }))),
@@ -268,7 +411,6 @@ impl ElicitationRequestManager {
     pub(crate) fn update(
         &self,
         config: Arc<McpConfig>,
-        allow_user_interaction: bool,
         reviewer: Option<ElicitationReviewerHandle>,
         lifecycle: Option<ElicitationLifecycle>,
     ) -> bool {
@@ -277,7 +419,6 @@ impl ElicitationRequestManager {
         };
         *authority = Some(ElicitationAuthority {
             config,
-            allow_user_interaction,
             reviewer,
             lifecycle,
         });
@@ -308,37 +449,8 @@ impl ElicitationRequestManager {
                     .lock()
                     .ok()
                     .and_then(|authority| authority.clone());
-                let user_interaction_disabled = authority
-                    .as_ref()
-                    .is_some_and(|authority| !authority.allow_user_interaction);
-                if user_interaction_disabled {
-                    // Browser sign-in can use an empty schema. Explicit user-input
-                    // markers must take precedence over automatic approval or review.
-                    let requires_user_input = elicitation.meta().is_some_and(|meta| {
-                        meta.get(REQUIRES_USER_INPUT_KEY) == Some(&Value::Bool(true))
-                            || meta.get(APPROVAL_KIND_KEY).and_then(Value::as_str)
-                                == Some(APPROVAL_KIND_BROWSER_AUTH)
-                    }) || match &elicitation {
-                        Elicitation::Mcp(
-                            rmcp::model::ElicitRequestParams::FormElicitationParams {
-                                requested_schema,
-                                ..
-                            },
-                        ) => !requested_schema.properties.is_empty(),
-                        Elicitation::OpenAiForm {
-                            requested_schema, ..
-                        }
-                        | Elicitation::OpenAiElicitationForm {
-                            requested_schema, ..
-                        } => requested_schema
-                            .get("properties")
-                            .and_then(Value::as_object)
-                            .is_some_and(|properties| !properties.is_empty()),
-                        Elicitation::Mcp(_) | Elicitation::UserVerification { .. } => true,
-                    };
-                    anyhow::ensure!(!requires_user_input, MCP_ELICITATION_HANDOFF_MESSAGE);
-                }
                 if let Elicitation::UserVerification {
+                    meta,
                     title,
                     description,
                     challenge,
@@ -348,7 +460,10 @@ impl ElicitationRequestManager {
                         return Ok(ElicitationResponse {
                             action: ElicitationAction::Cancel,
                             content: None,
-                            meta: None,
+                            meta: Some(
+                                codex_rmcp_client::UserVerificationReason::ApprovalUnavailable
+                                    .into_meta(),
+                            ),
                         });
                     }
                     return user_verification_elicitation::route(
@@ -357,6 +472,7 @@ impl ElicitationRequestManager {
                         authority,
                         server_name,
                         ElicitationRequest::UserVerification {
+                            meta,
                             title,
                             description,
                             challenge,
@@ -600,11 +716,13 @@ pub(crate) fn elicitation_is_rejected_by_policy(approval_policy: AskForApproval)
         AskForApproval::Never => true,
         AskForApproval::OnRequest => false,
         AskForApproval::UnlessTrusted => false,
-        AskForApproval::Granular(granular_config) => !granular_config.may_prompt_for_mcp_elicitations(),
+        AskForApproval::Granular(granular_config) => {
+            !granular_config.may_prompt_for_mcp_elicitations()
+        }
     }
 }
 
-type ResponderMap = HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>;
+type ResponderMap = HashMap<(String, RequestId), ElicitationResponder>;
 
 fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
     match elicitation {
