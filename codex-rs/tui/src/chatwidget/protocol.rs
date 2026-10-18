@@ -436,17 +436,6 @@ impl ChatWidget {
                     completion,
                     replay_kind.is_some(),
                 );
-                // "After a big task" trigger: only prompt for substantial live
-                // turns, never during replay of a resumed thread.
-                const PROACTIVE_FEEDBACK_MIN_TURN_MS: i64 = 20_000;
-                if replay_kind.is_none()
-                    && notification
-                        .turn
-                        .duration_ms
-                        .is_some_and(|ms| ms >= PROACTIVE_FEEDBACK_MIN_TURN_MS)
-                {
-                    self.maybe_prompt_proactive_feedback();
-                }
             }
             TurnStatus::Interrupted => {
                 self.last_non_retry_error = None;
@@ -459,10 +448,6 @@ impl ChatWidget {
                     TurnAbortReason::Interrupted
                 };
                 self.on_interrupted_turn(reason);
-                // "After error/interrupt/usage-limit" trigger.
-                if replay_kind.is_none() {
-                    self.maybe_prompt_proactive_feedback();
-                }
             }
             TurnStatus::Failed => {
                 if let Some(error) = notification.turn.error {
@@ -487,11 +472,6 @@ impl ChatWidget {
                     self.finalize_turn();
                     self.request_redraw();
                     self.maybe_send_next_queued_input();
-                }
-                // "After error" trigger. The guards in the prompt itself avoid
-                // clobbering the error cell that was just rendered.
-                if replay_kind.is_none() {
-                    self.maybe_prompt_proactive_feedback();
                 }
             }
             TurnStatus::InProgress => {}
