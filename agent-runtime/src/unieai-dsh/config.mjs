@@ -428,11 +428,11 @@ export function renderPatch({
       `        model: ${q(defaultModel)}`,
     );
   }
-  // No ask_user_question tool: models used it to end turns with a
-  // multiple-choice "what next?" popup, which users found intrusive. A
-  // question is asked in the answer text instead (the persona says when);
-  // exit_plan_mode's plan review still reaches the client through
-  // unieai-control.
+  // dsh-base (the ACP profile) leaves out the ask tool; the control plugin
+  // answers it through the client, so it is only offered with one.
+  if (controlSocket) {
+    inserts.push("    - id: tool-ask-user", "      name: '@deepseek-ai/dsh-tool-ask-user'");
+  }
   // The date, appended as a user-role snapshot so the system prefix stays put.
   inserts.push(
     "    - id: time-context",
