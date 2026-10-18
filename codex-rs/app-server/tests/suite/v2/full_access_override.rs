@@ -14,7 +14,7 @@ use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
-use app_test_support::create_shell_command_sse_response;
+use app_test_support::create_exec_command_sse_response;
 use app_test_support::to_response;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
@@ -42,12 +42,7 @@ async fn full_access_override_disables_approval_for_next_turn() -> Result<()> {
     // The turn AFTER the override runs a shell command; under the original
     // on-request + workspace-write session it would require approval.
     let responses = vec![
-        create_shell_command_sse_response(
-            vec!["echo".to_string(), "hi".to_string()],
-            /*workdir*/ None,
-            /*timeout_ms*/ Some(5_000),
-            "call1",
-        )?,
+        create_exec_command_sse_response("call1")?,
         create_final_assistant_message_sse_response("done")?,
     ];
     let server = create_mock_responses_server_sequence(responses).await;

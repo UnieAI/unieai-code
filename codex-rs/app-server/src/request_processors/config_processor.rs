@@ -1286,6 +1286,7 @@ client_id = "mcp-client"
             allow_login_shell: Some(false),
             feedback: Some(FeedbackConfigToml {
                 enabled: Some(false),
+                ..Default::default()
             }),
             ..ConfigRequirementsToml::default()
         });
