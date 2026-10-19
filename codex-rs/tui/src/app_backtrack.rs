@@ -142,6 +142,7 @@ impl App {
                 thread_id: selection.thread_id,
                 selected_cell: Arc::clone(&self.transcript_cells[index]),
                 prompt: selection.prompt,
+                restore_files: None,
             });
     }
 

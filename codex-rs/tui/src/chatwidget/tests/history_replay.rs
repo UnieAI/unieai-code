@@ -1037,7 +1037,7 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
 async fn prompt_edit_thread_history_line_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.emit_prompt_edit_thread_event();
+    chat.emit_prompt_edit_thread_event(/*restored_files*/ false);
 
     let history_cell = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 2), async {
         loop {

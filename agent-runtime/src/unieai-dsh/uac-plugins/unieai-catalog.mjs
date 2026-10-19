@@ -69,6 +69,13 @@ export const PLUGINS = Object.freeze([
     profiles: ["cli", "studio"],
     summary: "this machine's credentials (npm, git, registry, UnieAI keys, credential env vars) never reach the model",
   },
+  {
+    id: "unieai-rewind",
+    file: "unieai-rewind.mjs",
+    // Studio has no file or shell tools and no rewind; nothing to snapshot there.
+    profiles: ["cli"],
+    summary: "shadow-git checkpoints per turn, so rewinding to a message can restore the files too",
+  },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
     id: "unieai-loop-truncation",

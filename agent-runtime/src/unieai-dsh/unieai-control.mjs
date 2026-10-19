@@ -185,6 +185,23 @@ async function withObservation(ctx, sessionId, read) {
   }
 }
 
+/** The unieai-rewind plugin's service, when that plugin is loaded. */
+function rewindService(ctx) {
+  // A real context throws on reading a service it did not inject; ask reflect.
+  return ctx.reflect?.get?.("unieaiRewind") ?? null;
+}
+
+/**
+ * What unieai-rewind needs to undo every user turn from `keepTurns` on: the
+ * session's workspace, its events, and where the first undone turn starts.
+ * Null when there is no such turn.
+ */
+export function rewindRequest(observed, keepTurns) {
+  const turn = historyFromEvents(observed.events)[keepTurns];
+  if (!turn) return null;
+  return { cwd: observed.header?.cwd, events: observed.events, fromSeq: turn.startSeq };
+}
+
 /** One dsh usage record as the app-server protocol's TokenUsageBreakdown. */
 export function usageBreakdown(usage = {}) {
   const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0) || 0;
@@ -561,6 +578,29 @@ export function apply(ctx, config = {}) {
 
     async history({ sessionId }) {
       return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events) }));
+    },
+
+    /**
+     * The files that undoing every user turn from `keepTurns` on would put
+     * back (the unieai-rewind plugin's checkpoints): `{available, files}`.
+     */
+    async rewindPreview({ sessionId, keepTurns }) {
+      const rewind = rewindService(ctx);
+      if (!rewind) return { available: false, reason: "file checkpoints are off", files: [] };
+      return withObservation(ctx, sessionId, (observed) => {
+        const request = rewindRequest(observed, keepTurns);
+        return request ? rewind.preview(request) : { available: true, files: [] };
+      });
+    },
+
+    /** Put those files back: `{files, failed, undo}`. */
+    async rewindRestore({ sessionId, keepTurns }) {
+      const rewind = rewindService(ctx);
+      if (!rewind) throw new Error("file checkpoints are off");
+      return withObservation(ctx, sessionId, (observed) => {
+        const request = rewindRequest(observed, keepTurns);
+        return request ? rewind.restore(request) : { files: [], failed: [], undo: null };
+      });
     },
 
     /**

@@ -774,6 +774,7 @@ impl App {
                 thread_id,
                 selected_cell,
                 mut prompt,
+                restore_files,
             } => {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
@@ -867,7 +868,20 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
-                let reverted = match app_server.revert_thread(thread_id, before_turn_id, &retained_turns).await {
+                // Ask first when the server can put back files the removed turns changed. A server
+                // without file checkpoints answers the preview with an error: conversation only.
+                let restore_files = match restore_files {
+                    Some(choice) => choice,
+                    None => match app_server.revert_preview(thread_id, before_turn_id.clone()).await {
+                        Ok(preview) if preview.available && !preview.files.is_empty() => {
+                            self.chat_widget.show_rewind_files_menu(thread_id, selected_cell, prompt, &preview.files);
+                            tui.frame_requester().schedule_frame();
+                            return Ok(AppRunControl::Continue);
+                        }
+                        Ok(_) | Err(_) => false,
+                    },
+                };
+                let reverted = match app_server.revert_thread(thread_id, before_turn_id, &retained_turns, restore_files).await {
                     Ok(reverted) => reverted,
                     Err(err) => {
                     // Validation and unsupported-method errors leave history unchanged. Other
@@ -938,10 +952,10 @@ impl App {
                 // The existing reset barrier keeps terminal input blocked until then.
                 self.pending_thread_switch_resets += 1;
                 self.app_event_tx.send(AppEvent::FinishPromptRevert {
-                    thread_id, nth_user_message,
+                    thread_id, nth_user_message, restored_files: restore_files,
                 });
             }
-            AppEvent::FinishPromptRevert { thread_id, nth_user_message } => {
+            AppEvent::FinishPromptRevert { thread_id, nth_user_message, restored_files } => {
                 self.pending_thread_switch_resets -= 1;
                 if self.chat_widget.thread_id() == Some(thread_id) {
                     if let Some(index) = crate::app_backtrack::nth_user_position(&self.transcript_cells, nth_user_message) {
@@ -956,7 +970,7 @@ impl App {
                     self.pending_thread_usage_history_refresh = false;
                     self.backtrack_render_pending = !tui.is_owned_screen();
                     self.chat_widget.set_queue_autosend_suppressed(/*suppressed*/ false);
-                    self.chat_widget.emit_prompt_edit_thread_event();
+                    self.chat_widget.emit_prompt_edit_thread_event(restored_files);
                     tui.frame_requester().schedule_frame();
                 }
             }

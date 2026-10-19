@@ -5309,10 +5309,31 @@
       "type": "object"
     },
     "ThreadRevertParams": {
-      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
+      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes unless `restoreFiles` is set and the server supports it (see `thread/revert/preview`).",
       "properties": {
         "beforeTurnId": {
           "description": "Turn excluded from the replacement history, together with every later turn.",
+          "type": "string"
+        },
+        "restoreFiles": {
+          "description": "Also put back the workspace files the removed turns changed. Only servers that answer `thread/revert/preview` honour it; if a file cannot be restored, nothing is reverted.",
+          "type": "boolean"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "beforeTurnId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadRevertPreviewParams": {
+      "description": "Ask which workspace files `thread/revert` with `restoreFiles` would put back.",
+      "properties": {
+        "beforeTurnId": {
+          "description": "Turn that would be excluded, together with every later turn.",
           "type": "string"
         },
         "threadId": {
@@ -6777,6 +6798,30 @@
         "params"
       ],
       "title": "Thread/revertRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/revert/preview"
+          ],
+          "title": "Thread/revert/previewRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRevertPreviewParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/revert/previewRequest",
       "type": "object"
     },
     {

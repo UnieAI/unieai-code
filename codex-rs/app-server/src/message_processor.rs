@@ -1460,6 +1460,10 @@ impl MessageProcessor {
             ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
                 "thread/prediction/request is not implemented yet",
             )),
+            // File checkpoints belong to the uac engine's server; this one keeps none.
+            ClientRequest::ThreadRevertPreview { .. } => Err(method_not_found(
+                "thread/revert/preview is not supported by this engine",
+            )),
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
                     .thread_compact_start(&request_id, params)

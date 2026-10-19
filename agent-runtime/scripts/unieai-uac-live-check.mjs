@@ -15,7 +15,8 @@
  * It copies `~/.unieai/unieai.json` into a throwaway CODEX_HOME (the user's
  * own home and daemon socket are never touched), then checks: a turn that
  * runs a tool and edits a file, a steer into a running turn, /compact, the
- * turn history, and fork. Exits non-zero when any step fails.
+ * turn history, rewinding a turn with its files, and fork. Exits non-zero
+ * when any step fails.
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -264,6 +265,27 @@ try {
     const turns = listed.data ?? listed.turns ?? [];
     if (turns.length < 3) throw new Error(`only ${turns.length} turn(s) listed`);
     return `${turns.length} turns`;
+  });
+
+  await step("rewinding a turn restores the files its shell commands changed", async () => {
+    const before = readFileSync(join(work, "hello.txt"), "utf8");
+    const done = client.waitFor(completedTurn(threadId));
+    const { turn } = await client.request("turn/start", {
+      threadId,
+      input: userInput("Using exec_command only (no edit tools), run exactly: `printf 'rewritten' > hello.txt && mkdir -p made && printf x > made/new.txt` and then reply `done`."),
+    });
+    const completed = await done;
+    if (completed.params.turn?.status !== "completed") throw new Error(`turn ${completed.params.turn?.status}`);
+    if (readFileSync(join(work, "hello.txt"), "utf8") === before) throw new Error("the turn did not change hello.txt");
+    const preview = await client.request("thread/revert/preview", { threadId, beforeTurnId: turn.id });
+    const listed = preview.files.map((file) => `${file.change} ${file.path}`).sort().join(", ");
+    if (listed !== "delete made/new.txt, modify hello.txt") throw new Error(`preview: ${JSON.stringify(preview)}`);
+    await client.request("thread/revert", { threadId, beforeTurnId: turn.id, restoreFiles: true });
+    if (readFileSync(join(work, "hello.txt"), "utf8") !== before) throw new Error("hello.txt was not restored");
+    if (existsSync(join(work, "made"))) throw new Error("made/ was not removed");
+    const turns = (await client.request("thread/turns/list", { threadId })).data ?? [];
+    if (turns.some((listedTurn) => listedTurn.id === turn.id)) throw new Error("the turn is still in the history");
+    return `restored: ${listed}`;
   });
 
   await step("thread/fork", async () => {

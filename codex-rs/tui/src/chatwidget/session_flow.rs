@@ -369,12 +369,13 @@ impl ChatWidget {
         self.refresh_status_surfaces();
     }
 
-    pub(crate) fn emit_prompt_edit_thread_event(&mut self) {
-        let line: Line<'static> = vec![
-            "• ".dim(),
-            "Conversation reverted to this point. File changes are unchanged.".into(),
-        ]
-        .into();
+    pub(crate) fn emit_prompt_edit_thread_event(&mut self, restored_files: bool) {
+        let what = if restored_files {
+            "Conversation and files reverted to this point."
+        } else {
+            "Conversation reverted to this point. File changes are unchanged."
+        };
+        let line: Line<'static> = vec!["• ".dim(), what.into()].into();
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             PlainHistoryCell::new(vec![line]),
         )));

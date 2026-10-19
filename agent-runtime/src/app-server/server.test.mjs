@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHandlers, textOf, userAgent, startAppServer } from "./server.mjs";
 import { createDispatcher } from "./rpc.mjs";
+import { validateAgainstSchema } from "./schema-check.mjs";
 
 const fakeEngine = () => {
   const calls = [];
@@ -376,7 +377,7 @@ test("thread-scoped methods are answered here, never forwarded", async () => {
   });
   for (const method of [
     "turn/steer", "thread/compact/start", "thread/items/list",
-    "thread/turns/list", "thread/resume", "thread/fork", "thread/revert", "review/start",
+    "thread/turns/list", "thread/resume", "thread/fork", "thread/revert", "thread/revert/preview", "review/start",
   ]) {
     await dispatch({ method, id: 1, params: { threadId: "nope" } });
   }
@@ -387,7 +388,7 @@ test("an unimplemented thread method says so rather than answering wrongly", asy
   const h = createHandlers({ createEngineFor: () => ({ send: async () => {} }), codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
   await assert.rejects(() => h["thread/resume"]({ threadId: "x" }), /not supported/);
-  for (const method of ["thread/fork", "thread/revert", "review/start"]) {
+  for (const method of ["thread/fork", "thread/revert", "thread/revert/preview", "review/start"]) {
     await assert.rejects(() => h[method]({ threadId: thread.id, beforeTurnId: "t" }), /not supported/, method);
   }
 });
@@ -614,4 +615,41 @@ test("a turn the engine starts on its own becomes a client turn, after any open 
   assert.equal(text[1].delta, "working on the goal", "its output is filed under that turn");
   const done = emitted.filter(([m]) => m === "turn/completed").map(([, p]) => p.turn.id);
   assert.deepEqual(done.slice(-1), [second]);
+});
+
+test("revert previews and restores files through the engine; a failed restore rewinds nothing", async () => {
+  const reverts = [];
+  let fail = false;
+  const engine = {
+    send: async () => {},
+    revertPreview: async ({ keepTurns }) => ({ available: true, files: [{ path: `kept-${keepTurns}.txt`, change: "modify", extra: 1 }] }),
+    revert: async (options) => {
+      if (fail) throw Object.assign(new Error("could not restore a.txt (EACCES); the conversation was not rewound"), { code: "REWIND_FILES_FAILED" });
+      reverts.push(options);
+      return { restored: null };
+    },
+  };
+  const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
+  const ctx = { emit: () => {} };
+  const { thread } = await h["thread/start"]({});
+  const { turn: first } = await h["turn/start"]({ threadId: thread.id, input: "one" }, ctx);
+  await new Promise((r) => setTimeout(r, 10));
+  const { turn: { id: second } } = await h["turn/start"]({ threadId: thread.id, input: "two" }, ctx);
+  await new Promise((r) => setTimeout(r, 10));
+
+  const preview = await h["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: second }, ctx);
+  assert.deepEqual(preview, { available: true, unavailableReason: null, files: [{ path: "kept-1.txt", change: "modify" }] });
+  const repoRoot = join(import.meta.dirname, "..", "..", "..");
+  const checked = validateAgainstSchema("v2/ThreadRevertPreviewResponse", preview, { repoRoot });
+  assert.equal(checked.ok, true, checked.problems?.join("\n"));
+  await assert.rejects(() => h["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: "gone" }, ctx), /unknown turn/);
+
+  fail = true;
+  await assert.rejects(() => h["thread/revert"]({ threadId: thread.id, beforeTurnId: second, restoreFiles: true }, ctx), (error) => error.rpcCode === -32600 && /a\.txt/.test(error.message));
+  assert.deepEqual(reverts, [], "history is kept");
+
+  fail = false;
+  await h["thread/revert"]({ threadId: thread.id, beforeTurnId: second, restoreFiles: true }, ctx);
+  await h["thread/revert"]({ threadId: thread.id, beforeTurnId: first.id }, ctx);
+  assert.deepEqual(reverts, [{ keepTurns: 1, restoreFiles: true }, { keepTurns: 0, restoreFiles: false }]);
 });

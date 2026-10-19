@@ -8090,6 +8090,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
             thread_id,
             selected_cell,
             prompt,
+            restore_files: None,
         } if thread_id == expected.thread_id
             && Arc::ptr_eq(&selected_cell, &app.transcript_cells[nth_user_position(&app.transcript_cells, expected.nth_user_message).unwrap()])
             && prompt == expected.prompt
@@ -8895,6 +8896,7 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
                         [nth_user_position(&app.transcript_cells, /*nth*/ 1).unwrap()],
                 ),
                 prompt: remote_prompt,
+                restore_files: None,
             },
         ))
         .await?;
@@ -8914,6 +8916,7 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
             &app.transcript_cells[nth_user_position(&app.transcript_cells, /*nth*/ 1).unwrap()],
         ),
         prompt: prompt.clone(),
+        restore_files: None,
     };
     // A queued page shifts both identical prompts before confirmation is dispatched.
     let cursor = app_server
@@ -9039,6 +9042,7 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
                 &app.transcript_cells[nth_user_position(&app.transcript_cells, /*nth*/ 0).unwrap()],
             ),
             prompt: "retained prompt".into(),
+            restore_files: None,
         },
     ))
     .await?;

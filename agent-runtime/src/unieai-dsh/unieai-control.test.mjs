@@ -2,7 +2,7 @@
 // History and fork boundaries from dsh session events.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forkCut, historyFromEvents } from "./unieai-control.mjs";
+import { forkCut, historyFromEvents, rewindRequest } from "./unieai-control.mjs";
 
 let seq = 0;
 const ev = (type, data) => ({ type, seq: seq++, time: 1_700_000_000_000 + seq * 1000, data });
@@ -121,4 +121,17 @@ test("a steered message is reported to the client when the model takes it, not w
   assert.deepEqual(lines.filter((m) => m.method), [{ jsonrpc: "2.0", method: "steerDelivered", params: { sessionId: "s1", clientId: "c-42", text: "also this" } }]);
   client.destroy();
   handlers.dispose();
+});
+
+test("a rewind starts at the first undone user turn, so a goal round before it is kept", () => {
+  const events = session();
+  const observed = { header: { cwd: "/w" }, events };
+  // Undoing "second" (user turn 1) starts at dsh turn 3, after turn 1's goal round.
+  const request = rewindRequest(observed, 1);
+  assert.equal(request.cwd, "/w");
+  assert.equal(request.events, events);
+  assert.equal(events[request.fromSeq].type, "turn/start");
+  assert.equal(events[request.fromSeq].data.turn, 3);
+  assert.equal(events[rewindRequest(observed, 0).fromSeq].data.turn, 1);
+  assert.equal(rewindRequest(observed, 3), null, "no such turn");
 });

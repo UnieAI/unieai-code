@@ -18,6 +18,8 @@ use codex_app_server_protocol::ThreadItemsListCursor;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadRevertParams;
+use codex_app_server_protocol::ThreadRevertPreviewParams;
+use codex_app_server_protocol::ThreadRevertPreviewResponse;
 use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
@@ -136,11 +138,32 @@ pub(crate) struct ThreadHistoryPagination {
 }
 
 impl AppServerSession {
+    /// The files `revert_thread` with `restore_files` would put back. Servers without file
+    /// checkpoints answer with an error, which callers treat as "conversation only".
+    pub(crate) async fn revert_preview(
+        &mut self,
+        thread_id: ThreadId,
+        before_turn_id: String,
+    ) -> std::result::Result<ThreadRevertPreviewResponse, codex_app_server_client::TypedRequestError>
+    {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadRevertPreview {
+                request_id,
+                params: ThreadRevertPreviewParams {
+                    thread_id: thread_id.to_string(),
+                    before_turn_id,
+                },
+            })
+            .await
+    }
+
     pub(crate) async fn revert_thread(
         &mut self,
         thread_id: ThreadId,
         before_turn_id: String,
         retained_turns: &[Turn],
+        restore_files: bool,
     ) -> std::result::Result<ThreadRevertResponse, codex_app_server_client::TypedRequestError> {
         let request_id = self.next_request_id();
         let response: ThreadRevertResponse = self
@@ -150,6 +173,7 @@ impl AppServerSession {
                 params: ThreadRevertParams {
                     thread_id: thread_id.to_string(),
                     before_turn_id,
+                    restore_files,
                 },
             })
             .await?;

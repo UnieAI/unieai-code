@@ -5,10 +5,16 @@
 /**
  * Replace a paginated thread's durable history with the prefix before one turn.
  *
- * This only changes persisted conversation history. It does not revert local file changes.
+ * This only changes persisted conversation history. It does not revert local file changes
+ * unless `restoreFiles` is set and the server supports it (see `thread/revert/preview`).
  */
 export type ThreadRevertParams = { threadId: string,
 /**
  * Turn excluded from the replacement history, together with every later turn.
  */
-beforeTurnId: string, };
+beforeTurnId: string,
+/**
+ * Also put back the workspace files the removed turns changed. Only servers that answer
+ * `thread/revert/preview` honour it; if a file cannot be restored, nothing is reverted.
+ */
+restoreFiles?: boolean, };

@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadRevertFileChange": {
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/ThreadRevertFileChangeKind"
+        },
+        "path": {
+          "description": "Path relative to the thread's working directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ThreadRevertFileChangeKind": {
+      "description": "What restoring does to one file.",
+      "oneOf": [
+        {
+          "description": "Its earlier content is written back.",
+          "enum": [
+            "modify"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "It was created by a removed turn and is deleted.",
+          "enum": [
+            "delete"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "It was deleted by a removed turn and is created again.",
+          "enum": [
+            "create"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "available": {
+      "description": "Whether the removed turns were checkpointed; when false, `files` is empty.",
+      "type": "boolean"
+    },
+    "files": {
+      "description": "Files whose current content differs from before the first removed turn, limited to files the removed turns changed.",
+      "items": {
+        "$ref": "#/definitions/ThreadRevertFileChange"
+      },
+      "type": "array"
+    },
+    "unavailableReason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "available",
+    "files"
+  ],
+  "title": "ThreadRevertPreviewResponse",
+  "type": "object"
+}
