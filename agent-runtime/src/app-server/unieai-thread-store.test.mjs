@@ -202,3 +202,20 @@ test("ephemeral threads are never written to the index", { skip }, async () => {
   await runTurn(h, ctx, thread.id, "scratch");
   assert.equal((await make()["thread/list"]({})).data.length, 0);
 });
+
+test("two servers sharing threads.json keep each other's threads", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "uac-threads-")), "threads.json");
+  const draining = createThreadStore(path);
+  const current = createThreadStore(path);
+  draining.save({ id: "old-1", cwd: "/a" });
+  current.save({ id: "new-1", cwd: "/b" });
+  draining.save({ id: "old-1", cwd: "/a2" });
+  current.delete("new-1");
+  current.save({ id: "new-2", cwd: "/c" });
+
+  const onDisk = createThreadStore(path);
+  assert.deepEqual(
+    onDisk.list().map((thread) => [thread.id, thread.cwd]).sort(),
+    [["new-2", "/c"], ["old-1", "/a2"]],
+  );
+});

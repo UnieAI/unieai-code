@@ -39,22 +39,33 @@ const FIELDS = [
 export function createThreadStore(path) {
   let cache = null;
 
-  const load = () => {
-    if (cache) return cache;
+  const read = () => {
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8"));
-      cache = new Map(Object.entries(parsed?.threads ?? {}));
+      return new Map(Object.entries(parsed?.threads ?? {}));
     } catch {
-      cache = new Map();
+      return new Map();
     }
+  };
+
+  const load = () => {
+    cache ??= read();
     return cache;
   };
 
-  const flush = () => {
+  // Two servers can share the file: one of another release still serving its
+  // clients while the new one serves the rest (unieai-launch's drain). Writing
+  // this process's whole cache would drop the threads the other one added, so
+  // each write lays this change over what is on disk now.
+  const flush = (id, entry) => {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const threads = read();
+    if (entry) threads.set(id, entry);
+    else threads.delete(id);
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ version: 1, threads: Object.fromEntries(load()) }, null, 2), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ version: 1, threads: Object.fromEntries(threads) }, null, 2), { mode: 0o600 });
     renameSync(tmp, path);
+    for (const [key, value] of threads) if (!cache.has(key)) cache.set(key, value);
   };
 
   return {
@@ -69,10 +80,10 @@ export function createThreadStore(path) {
         if (thread[field] !== undefined) entry[field] = thread[field];
       }
       load().set(thread.id, entry);
-      flush();
+      flush(thread.id, entry);
     },
     delete(id) {
-      if (load().delete(id)) flush();
+      if (load().delete(id)) flush(id, null);
     },
     list() {
       return [...load().values()];

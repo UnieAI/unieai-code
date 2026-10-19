@@ -26,8 +26,9 @@
  */
 import { createRequire } from "node:module";
 import { connect } from "node:net";
+import { readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
 import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
 import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
@@ -70,9 +71,32 @@ if (nodeMajor < 22) {
 const sandboxMode = process.env.UNIEAI_SANDBOX || "workspace-write";
 const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
 const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac", "app-server.sock");
-// Next to the app-server socket, whose path the TUI already kept short.
-// Next to the app-server socket, whose path the TUI already kept short.
-const controlSocketFor = (mode) => appSocket.replace(/(\.sock)?$/, mode === "standard" ? ".dsh.sock" : `.${mode}.dsh.sock`);
+// Next to the app-server socket, whose path the TUI already kept short. The
+// pid keeps it this process's: a server of another release can start while
+// this one still serves its clients (see unieai-launch's drain), and a shared
+// path would hand this server's dsh control channel to the new one's dsh.
+const controlSocketFor = (mode) =>
+  appSocket.replace(/(\.sock)?$/, mode === "standard" ? `.${process.pid}.dsh.sock` : `.${process.pid}.${mode}.dsh.sock`);
+removeStaleControlSockets(dirname(appSocket));
+
+/** Control sockets of uac servers that are no longer running. */
+function removeStaleControlSockets(dir) {
+  let names = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const pid = Number(/^app-server\.(\d+)\..*dsh\.sock$/.exec(name)?.[1]);
+    if (!pid || pid === process.pid) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") rmSync(join(dir, name), { force: true });
+    }
+  }
+}
 // Fail at startup, where the TUI reports it, rather than on the first turn.
 const dsh = prepareDsh({ sandboxMode, controlSocket: controlSocketFor("standard") });
 log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel})`);
@@ -176,7 +200,10 @@ await launchAppServer({
   threadStore: createThreadStore(join(codexHome, "uac", "threads.json")),
   defaultModel: dsh.defaultModel,
   threadMode,
-  onShutdown: () => Promise.all([...hosts.values()].map((host) => host.close())),
+  onShutdown: async () => {
+    await Promise.all([...hosts.values()].map((host) => host.close()));
+    for (const mode of hosts.keys()) rmSync(controlSocketFor(mode), { force: true });
+  },
   // What this account can actually run: a model it does not offer (a config
   // written for another account — Studio's ids differ from Rabi's) becomes
   // its default, so the client shows the model the turns run on.

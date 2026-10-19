@@ -148,6 +148,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   log(`${name} app-server ${version} listening on ${socketPath}`);
 
   let stopping = false;
+  let draining = false;
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
@@ -155,11 +156,29 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     forwarder.close();
     await onShutdown().catch((error) => log("[shutdown]", error.message));
     await server.close();
-    rmSync(socketPath, { force: true });
-    rmSync(stampPath, { force: true });
+    // After a hand-over these paths are the new server's.
+    if (!draining) {
+      rmSync(socketPath, { force: true });
+      rmSync(stampPath, { force: true });
+    }
     process.exit(0);
   };
+  // SIGTERM is how a client of another release asks for the socket (see the
+  // TUI's ensure_uac_server). Stopping then killed the turns other clients
+  // were running ("ACP connection closed"), so a server that still has
+  // clients only hands the socket over: it stops listening and removes the
+  // socket and stamp, so the new release binds its own, keeps serving the
+  // clients it has, and stops once the last of them leaves (onIdle).
+  const drain = () => {
+    if (stopping || draining) return;
+    if (server.connections() === 0) return shutdown();
+    draining = true;
+    log(`handing the socket over; serving ${server.connections()} client(s) until they leave`);
+    rmSync(socketPath, { force: true });
+    rmSync(stampPath, { force: true });
+    server.close().catch(() => {});
+  };
   process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGTERM", drain);
   return { server, socketPath, shutdown };
 }
