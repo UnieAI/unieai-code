@@ -218,6 +218,8 @@ await launchAppServer({
   threadStore: createThreadStore(join(codexHome, "uac", "threads.json")),
   defaultModel: dsh.defaultModel,
   threadMode,
+  // Handing the socket to another release's server hands it the lock too.
+  onHandOver: claimed.release,
   onShutdown: async () => {
     await Promise.all([...hosts.values()].map((host) => host.close()));
     for (const mode of hosts.keys()) rmSync(controlSocketFor(mode), { force: true });

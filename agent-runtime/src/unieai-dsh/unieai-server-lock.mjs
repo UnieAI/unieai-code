@@ -17,6 +17,12 @@
  * waits until that server answers on the socket and exits, which is what the
  * TUI that launched it is waiting for. A lock whose holder is gone is taken
  * over.
+ *
+ * A server that hands its socket to another release (unieai-launch's drain)
+ * releases the lock at the hand-over, not at its exit: it keeps serving the
+ * clients it has, and the new release's server must be able to take the lock
+ * and the socket meanwhile. Each server's dsh control socket carries its pid,
+ * so the two run side by side without sharing one.
  */
 import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { connect } from "node:net";
@@ -61,7 +67,12 @@ export function tryClaimLock(lockPath, { pid = process.pid, isAlive = processIsA
       } finally {
         closeSync(fd);
       }
+      let released = false;
       return () => {
+        // Once: a server that handed its socket over released the lock then,
+        // and its exit must not look at the path the successor now holds.
+        if (released) return;
+        released = true;
         // Only our own lock: a successor may already have taken a stale one.
         try {
           if (Number.parseInt(readFileSync(lockPath, "utf8"), 10) === pid) rmSync(lockPath, { force: true });

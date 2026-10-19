@@ -21,12 +21,14 @@ export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
  * `buildEngine({ cwd, model, sandboxMode, resumeState, onState, onText,
  * onReasoning, onToolEvent, requestApproval })` returns an engine for one
  * thread. `threadStore` (see unieai-thread-store.mjs) makes threads persistent.
- * `onShutdown` runs before the process exits.
+ * `onShutdown` runs before the process exits. `onHandOver` runs when a
+ * SIGTERM hands the socket to another server while clients remain (see
+ * createStopControls).
  */
 /** How long the server waits for another client before stopping. */
 const IDLE_EXIT_MS = Number(process.env.UNIEAI_UAC_IDLE_EXIT_MS) || 15_000;
 
-export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onShutdown = async () => {} }) {
+export async function launchAppServer({ name, version, buildEngine, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onShutdown = async () => {}, onHandOver = () => {} }) {
   let idleTimer = null;
   const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
   const socketPath =
@@ -148,13 +150,53 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   }
   log(`${name} app-server ${version} listening on ${socketPath}`);
 
+  const { shutdown, drain } = createStopControls({
+    server,
+    socketPath,
+    stampPath,
+    onShutdown,
+    onHandOver,
+    beforeShutdown: () => forwarder.close(),
+  });
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", drain);
+  return { server, socketPath, shutdown };
+}
+
+/**
+ * How a server stops (`shutdown`, SIGINT and the idle exit) and how it hands
+ * its socket to a server of another release (`drain`, SIGTERM).
+ *
+ * SIGTERM is how a client of another release asks for the socket (see the
+ * TUI's ensure_uac_server). Stopping then killed the turns other clients were
+ * running ("ACP connection closed"), so a server that still has clients only
+ * hands the socket over: it removes the socket and stamp, stops listening,
+ * gives up whatever else marks it as the socket's server (`onHandOver`: the
+ * uac server's `<socket>.lock`), keeps serving the clients it has, and stops
+ * once the last of them leaves. From the hand-over on, the socket, stamp and
+ * lock paths are the new server's, so the final exit touches none of them.
+ *
+ * Order matters in the hand-over: closing a listening unix socket unlinks
+ * whatever is at its path, so the server is closed before the lock is
+ * released; a successor can only bind once it holds the lock, and by then
+ * this server can no longer remove its socket.
+ */
+export function createStopControls({
+  server,
+  socketPath,
+  stampPath,
+  onShutdown = async () => {},
+  onHandOver = () => {},
+  beforeShutdown = () => {},
+  exit = (code) => process.exit(code),
+}) {
   let stopping = false;
   let draining = false;
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
     log("shutting down");
-    forwarder.close();
+    beforeShutdown();
     await onShutdown().catch((error) => log("[shutdown]", error.message));
     await server.close();
     // After a hand-over these paths are the new server's.
@@ -162,14 +204,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
       rmSync(socketPath, { force: true });
       rmSync(stampPath, { force: true });
     }
-    process.exit(0);
+    exit(0);
   };
-  // SIGTERM is how a client of another release asks for the socket (see the
-  // TUI's ensure_uac_server). Stopping then killed the turns other clients
-  // were running ("ACP connection closed"), so a server that still has
-  // clients only hands the socket over: it stops listening and removes the
-  // socket and stamp, so the new release binds its own, keeps serving the
-  // clients it has, and stops once the last of them leaves (onIdle).
   const drain = () => {
     if (stopping || draining) return;
     if (server.connections() === 0) return shutdown();
@@ -178,8 +214,11 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     rmSync(socketPath, { force: true });
     rmSync(stampPath, { force: true });
     server.close().catch(() => {});
+    try {
+      onHandOver();
+    } catch (error) {
+      log("[hand-over]", error.message);
+    }
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", drain);
-  return { server, socketPath, shutdown };
+  return { shutdown, drain };
 }
