@@ -78,6 +78,8 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
         .filter(|(_, cmd)| flags.token_activity_command_enabled || *cmd != SlashCommand::Usage)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
+        // uac's unieai-schedule serves /loop; codex has no scheduler.
+        .filter(|(_, cmd)| crate::unieai_engine::session_is_uac() || *cmd != SlashCommand::Loop)
         .filter(|(_, cmd)| flags.worktrees_enabled || *cmd != SlashCommand::Worktree)
         .filter(|(_, cmd)| flags.voice_command_enabled || *cmd != SlashCommand::Voice)
         .filter(|(_, cmd)| {
