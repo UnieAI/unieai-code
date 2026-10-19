@@ -71,6 +71,14 @@ export const PLUGINS = Object.freeze([
   },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
+    id: "unieai-schedule",
+    file: "unieai-schedule.mjs",
+    // Not studio: a Studio turn answers one request, and nobody is watching
+    // the session when a timer would start the next one.
+    profiles: ["cli"],
+    summary: "schedule_wakeup, cron_* and /loop: turns this open session starts later",
+  },
+  {
     id: "unieai-loop-truncation",
     file: "unieai-loop-truncation.mjs",
     config: { maxRetries: 2, growth: 2 },
