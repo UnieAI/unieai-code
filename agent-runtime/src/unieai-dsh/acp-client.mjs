@@ -138,8 +138,14 @@ export function createAcpConnection({ input, output, onError = () => {} }) {
  */
 export async function spawnAcpAgent({ command, args = [], env, cwd, onLog = () => {}, onExit = () => {} }) {
   const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  // The agent does not stop when its stdin closes. A dsh left behind by a
+  // server that died keeps its unieai-control socket, and the next server's
+  // control calls reach that orphan instead of its own dsh.
+  const killWithParent = () => child.kill("SIGTERM");
+  process.once("exit", killWithParent);
   const exited = new Promise((resolve) => {
     child.once("exit", (code, signal) => {
+      process.removeListener("exit", killWithParent);
       onExit({ code, signal });
       resolve({ code, signal });
     });
