@@ -3,7 +3,8 @@
  * unieai-catalog.mjs — the UnieAI dsh plugins and how a host loads them.
  *
  * Each entry names a plugin module in this package, the extra patch rows it
- * needs (e.g. disabling the dsh plugin it replaces), its default config, and
+ * needs (e.g. disabling the dsh plugin it replaces), the plugins it works on
+ * (`requires`: left out of a patch without them), its default config, and
  * the host profiles that load it by default:
  *   - `cli`:    UnieAI Code (uac) and the UnieAI dsh CLI. Only fixes that do
  *               not change a strong model's behaviour are on; budgets are
@@ -29,6 +30,13 @@ export const PLUGINS = Object.freeze([
     execTools: true,
     profiles: ["cli"],
     summary: "codex-style exec_command / write_stdin with long-running sessions",
+  },
+  {
+    id: "unieai-exec-notify",
+    file: "unieai-exec-notify.mjs",
+    requires: ["unieai-exec"],
+    profiles: ["cli"],
+    summary: "a backgrounded exec session reports its exit and unread output; a stop waits on this turn's running build",
   },
   {
     id: "unieai-edit-observe",
@@ -157,7 +165,9 @@ const yamlValue = (value) => JSON.stringify(value);
 export function renderPatchParts({ plugins, profile = "cli", config = {}, urlOf = (plugin) => pluginUrl(plugin.id) }) {
   const rows = [];
   const inserts = [];
+  const present = new Set(plugins.map((plugin) => plugin.id));
   for (const plugin of plugins) {
+    if (plugin.requires?.some((id) => !present.has(id))) continue;
     rows.push(...pluginRows(plugin, profile));
     inserts.push(`    - id: ${plugin.id}`, `      name: ${yamlValue(urlOf(plugin))}`);
     const entries = Object.entries(pluginConfig(plugin, profile, config));
