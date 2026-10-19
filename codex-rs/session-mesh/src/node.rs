@@ -234,11 +234,12 @@ Use a shorter CODEX_HOME.",
         self.context.chain.note_user_input();
     }
 
-    /// Hop to stamp on a message this session sends now: one more than the
-    /// furthest-travelled peer message it has received since its user last
-    /// spoke, or zero.
-    pub fn outbound_hop(&self) -> u32 {
-        self.context.chain.outbound_hop()
+    /// Hop to stamp on a message this session sends to `to` now: one more
+    /// than the furthest-travelled message of the current exchange with `to`
+    /// (or of one from another peer it is passing on), or zero. See
+    /// `unieai_chain`.
+    pub fn outbound_hop(&self, to: ThreadId) -> u32 {
+        self.context.chain.outbound_hop(to)
     }
 
     pub fn thread_id(&self) -> ThreadId {

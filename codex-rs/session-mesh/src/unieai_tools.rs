@@ -32,7 +32,10 @@ its user approves it (unless you are answering a message that peer sent you), an
 notice when they decide. The result reports what actually \
 happened (`started_turn`, `queued`, `held`, or `rejected`) - do not assume a turn started. The \
 peer may also refuse or rate-limit the message, and a long automatic back-and-forth is cut off \
-until a user takes part.";
+until a user takes part. The peer answers with send_peer_message too, and its answer reaches you \
+the same way: it starts a new turn if you are idle, or arrives after your current step if you are \
+busy. So to wait for an answer, end your turn (or keep doing other work); do not sleep, poll, or \
+read the other session's thread to watch for it.";
 
 pub const TARGET_DESCRIPTION: &str = "Peer handle exactly as returned by list_peers, for example \
 `api [k2f8]`. A bare name is accepted only when it matches exactly one peer; if it matches \

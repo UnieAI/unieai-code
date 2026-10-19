@@ -45,15 +45,14 @@ impl Handler {
 
         let selector = PeerSelector::new(args.target.clone());
         let node = mesh_node(&session.services).await?;
-        // Relays carry a hop count so two sessions answering each other cannot
-        // burn tokens in both terminals unattended: anything sent after a peer
-        // message arrived, and before this session's user spoke again, goes
-        // out one hop further than that message.
-        let hop = node.outbound_hop();
         // Stamped so the recipient can hold the message if it runs with
         // broader permissions than this turn.
         let permissions = crate::session::mesh::turn_permission_mode(&turn);
         let peer = node.resolve(&selector).await.map_err(mesh_error)?;
+        // Relays carry a hop count so two sessions answering each other cannot
+        // burn tokens in both terminals unattended: a reply goes out one hop
+        // further than the exchange with that peer, until a user speaks.
+        let hop = node.outbound_hop(peer.thread_id);
         let ack = node
             .send_message(
                 &peer,

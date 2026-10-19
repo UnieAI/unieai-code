@@ -397,6 +397,14 @@ when they approve or deny it; do not resend it or try to route around this.",
         }
     }
 
+    if kind == MessageKind::Message {
+        context.chain.note_arrival(
+            message.from_thread_id,
+            message.hop,
+            crate::unieai_chain::sender_counts_hops(message.sender_engine.as_deref()),
+        );
+    }
+
     // Every limit below downgrades rather than drops: the message still
     // arrives, it just does not get to start a turn. Refusing it would lose
     // the content — typically the answer the other session is waiting for —
@@ -465,7 +473,7 @@ recipient's user taking part",
         InboundDecision::Accepted { delivery } => {
             record_delivery(context, message_id, delivery.as_str()).await;
             if kind == MessageKind::Message {
-                context.chain.note_delivered(message.hop);
+                context.chain.note_delivered(message.from_thread_id, message.hop);
                 if delivery == Delivery::StartedTurn {
                     context.chain.note_turn_started(message.from_thread_id);
                 }

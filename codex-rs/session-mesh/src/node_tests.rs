@@ -1338,7 +1338,7 @@ async fn a_reply_carries_the_hop_count_forward_until_the_user_speaks() {
         .join(thread_id(B), Arc::new(FakeInbound::new("idle")))
         .await;
     let peers = a.list_peers().await.expect("listing should succeed");
-    assert_eq!(b.outbound_hop(), 0);
+    assert_eq!(b.outbound_hop(thread_id(A)), 0);
 
     a.send_message(&peers[0], "ping", true, 1, None)
         .await
@@ -1346,9 +1346,9 @@ async fn a_reply_carries_the_hop_count_forward_until_the_user_speaks() {
 
     // B's automatic reply goes out one hop further, so A→B→A→B ends at the
     // hop limit instead of running forever.
-    assert_eq!(b.outbound_hop(), 2);
+    assert_eq!(b.outbound_hop(thread_id(A)), 2);
     b.note_user_input();
-    assert_eq!(b.outbound_hop(), 0);
+    assert_eq!(b.outbound_hop(thread_id(A)), 0);
 }
 
 #[tokio::test]
@@ -1363,10 +1363,11 @@ async fn one_peer_cannot_start_turns_forever_without_the_user() {
     let b = harness.join(thread_id(B), Arc::clone(&b_inbound)).await;
     let peers = a.list_peers().await.expect("listing should succeed");
 
+    // Automatic relays (hop 1): nobody on either side asked for these.
     let mut deliveries = Vec::new();
     for body in ["one", "two", "three"] {
         let ack = a
-            .send_message(&peers[0], body, true, 0, None)
+            .send_message(&peers[0], body, true, 1, None)
             .await
             .expect("delivery should succeed");
         deliveries.push(ack.delivery);
@@ -1387,6 +1388,33 @@ async fn one_peer_cannot_start_turns_forever_without_the_user() {
         .await
         .expect("delivery should succeed");
     assert_eq!(ack.delivery, Delivery::StartedTurn);
+}
+
+#[tokio::test]
+async fn a_session_that_answers_for_others_keeps_answering() {
+    // B is a session its user rarely types into, asked one question after
+    // another. Each new question (hop 0 from a session that counts hops)
+    // starts its own exchange, so B's budget and hop count do not carry over
+    // from the last one and every question still starts a turn.
+    let mut harness = Harness::new();
+    harness.config.trigger_turn_min_interval = std::time::Duration::ZERO;
+    harness.config.max_auto_turns_per_peer = 2;
+    let a = harness
+        .join(thread_id(A), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let b = harness
+        .join(thread_id(B), Arc::new(FakeInbound::new("idle")))
+        .await;
+    let peers = a.list_peers().await.expect("listing should succeed");
+
+    for question in ["one", "two", "three", "four"] {
+        let ack = a
+            .send_message(&peers[0], question, true, 0, None)
+            .await
+            .expect("delivery should succeed");
+        assert_eq!(ack.delivery, Delivery::StartedTurn, "{question}");
+        assert_eq!(b.outbound_hop(thread_id(A)), 1, "{question}");
+    }
 }
 
 #[tokio::test]
@@ -1507,7 +1535,7 @@ async fn the_answer_to_a_question_the_recipient_asked_is_not_held() {
             &asker_handle,
             "the build is green",
             true,
-            helper.outbound_hop(),
+            helper.outbound_hop(asker_handle.thread_id),
             helper_mode,
         )
         .await
