@@ -354,12 +354,13 @@ jobs:
           # ago is routinely not yet visible to a read, and the first cut of
           # this check called all seven missing while six of them turned up
           # over the following minutes. Retry with a widening gap, and only
-          # call a version lost when it has not appeared in about five.
+          # call a version lost when it has not appeared in about fifteen:
+          # 0.0.35-linux-x64 took longer than five on a rerun and was there.
           missing=("$VERSION")
           for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
             missing+=("${VERSION}-${platform}")
           done
-          for wait in 10 20 30 60 60 90; do
+          for wait in 10 20 30 60 60 90 120 120 120 120 120; do
             sleep "$wait"
             remaining=()
             for expected in "${missing[@]}"; do
