@@ -517,8 +517,8 @@ export function createDshEngine({
   // how to run one (the client answers `item/tool/call`).
   clientTools = () => null,
   callClientTool = null,
-  // The client's sandbox and approval for this thread ({ sandbox, approval }
-  // in dsh's terms), applied to the dsh session whenever it is opened.
+  // The client's sandbox and approval for this thread ({ sandbox, approval,
+  // reviewer } in dsh's terms), applied to the dsh session whenever it is opened.
   permissions = () => null,
   // The dsh provider the model belongs to (a local server for --oss), and
   // work to finish before the first session (declaring that provider).
@@ -817,7 +817,7 @@ export function createDshEngine({
   /** Apply the thread's `-s` / `-a` to the open session. */
   const applyPermissions = async () => {
     const wanted = typeof permissions === "function" ? permissions() : permissions;
-    if (!wanted || (!wanted.sandbox && !wanted.approval)) return;
+    if (!wanted || (!wanted.sandbox && !wanted.approval && !wanted.reviewer)) return;
     try {
       const { applied } = await host.control("setPermissions", { sessionId, ...wanted });
       if (Object.keys(applied ?? {}).length > 0) onLog(`dsh session ${sessionId}: ${JSON.stringify(applied)}`);

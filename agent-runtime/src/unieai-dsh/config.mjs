@@ -337,6 +337,8 @@ export function renderPatch({
   home = unieaiHome(),
   gatewayBaseUrl = null,
   visionModel = null,
+  // A smaller account model for auto mode's reviewer; else the session's own.
+  autoApprovalModel = null,
   mode = "standard",
 }) {
   const q = yamlQuote;
@@ -412,6 +414,7 @@ export function renderPatch({
       "unieai-skills": { home },
       "unieai-web-search": { gatewayBaseUrl },
       "unieai-vision-fallback": visionModel ? { gatewayBaseUrl, visionModel } : {},
+      "unieai-auto-approval": autoApprovalModel ? { model: autoApprovalModel } : {},
     },
   });
   lines.push(...parts.rows);
@@ -520,7 +523,10 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // name it always had.
   const patchPath = join(home, mode === "standard" ? "uac.patch.yml" : `uac.${mode}.patch.yml`);
   const plugins = pluginsForMode(selectPlugins(env), mode);
-  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel, mode }));
+  // UNIEAI_AUTO_APPROVAL_MODEL names a cheaper reviewer for auto mode; only
+  // a model the account serves (the session's provider routes it).
+  const autoApprovalModel = models.includes(env.UNIEAI_AUTO_APPROVAL_MODEL) ? env.UNIEAI_AUTO_APPROVAL_MODEL : null;
+  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel, autoApprovalModel, mode }));
 
   const childEnv = {
     ...env,

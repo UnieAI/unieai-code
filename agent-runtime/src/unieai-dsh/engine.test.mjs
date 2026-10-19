@@ -362,6 +362,13 @@ test("uac loads the vendored uac-plugins cli profile; UNIEAI_DSH_PLUGINS narrows
   assert.doesNotMatch(patch, /repeat-tool-reminder/);
 });
 
+test("auto mode's reviewer is the session's model unless a smaller one is configured", () => {
+  const plugins = selectPlugins({ UNIEAI_DSH_PLUGINS: "unieai-auto-approval" });
+  assert.match(renderPatch({ defaultModel: "A", plugins }), / {4}- id: unieai-auto-approval\n {6}name: "file:[^"]+unieai-auto-approval\.mjs"\n(?! {6}config)/);
+  assert.match(renderPatch({ defaultModel: "A", plugins, autoApprovalModel: "S" }), / {4}- id: unieai-auto-approval\n {6}name: "file:[^"]+"\n {6}config:\n {8}model: "S"/);
+  assert.ok(selectPlugins({}).some((plugin) => plugin.id === "unieai-auto-approval"), "installed by default (inert until chosen)");
+});
+
 test("a text-only default model gets a vision model of its own family", async () => {
   const { pickVisionModel } = await import("./config.mjs");
   const catalog = [
