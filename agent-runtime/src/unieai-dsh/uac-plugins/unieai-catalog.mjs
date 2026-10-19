@@ -83,6 +83,13 @@ export const PLUGINS = Object.freeze([
   { id: "unieai-toolcall-repair", file: "unieai-toolcall-repair.mjs", profiles: ["cli", "studio"], summary: "repair mis-cased or prefixed tool names" },
   { id: "unieai-context-overflow", file: "unieai-context-overflow.mjs", profiles: ["cli", "studio"], summary: "recover from context overflow and failed summaries" },
   {
+    id: "unieai-context-usage",
+    file: "unieai-context-usage.mjs",
+    // Nothing model-visible: a service the host's /context reads, and a dsh /context command.
+    profiles: ["cli", "studio"],
+    summary: "/context: what is using the context window (prompt, tools, instructions, skills, messages, results)",
+  },
+  {
     id: "unieai-loop-guard",
     file: "unieai-loop-guard.mjs",
     profiles: ["cli", "studio"],

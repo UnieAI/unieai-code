@@ -1000,6 +1000,16 @@ export function createDshEngine({
       return Boolean(compacted);
     },
 
+    /**
+     * What is using the context window (the TUI's /context), from the
+     * unieai-context-usage plugin; `childSessionId` measures a subagent.
+     */
+    async context(childSessionId = null) {
+      if (childSessionId) return host.control("context", { sessionId: childSessionId });
+      await ensureSession();
+      return host.control("context", { sessionId });
+    },
+
     /** The conversation's user turns, as protocol items, from dsh's log. */
     async history() {
       if (!sessionId) return [];
