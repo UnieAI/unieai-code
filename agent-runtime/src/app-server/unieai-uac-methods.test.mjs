@@ -247,6 +247,8 @@ test("another client reading a thread does not take over its tool calls and appr
         history: async () => [],
         goal: async () => null,
         fork: async () => ({ sessionId: "forked" }),
+        context: async () => ({ totalTokens: 1 }),
+        revertPreview: async () => ({ available: true, files: [] }),
       };
     },
   });
@@ -260,6 +262,10 @@ test("another client reading a thread does not take over its tool calls and appr
   await handlers["thread/turns/list"]({ threadId: thread.id, limit: 1, sortDirection: "desc" }, ctxA);
   await handlers["thread/items/list"]({ threadId: thread.id }, ctxA);
   await handlers["thread/goal/get"]({ threadId: thread.id }, ctxA);
+  await handlers["unieai/context/read"]({ threadId: thread.id }, ctxA);
+  const { turn } = await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "again" }] }, ctxB);
+  await new Promise((r) => setTimeout(r, 10));
+  await handlers["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: turn.id }, ctxA);
 
   await engineOptions.request("item/tool/call", { threadId: thread.id, tool: "send_peer_message" });
   assert.deepEqual(asked, { a: [], b: ["item/tool/call"] });

@@ -1102,10 +1102,11 @@ export function createHandlers({
 
     // What `thread/revert` with `restoreFiles` would put back: the files the
     // turns from `beforeTurnId` on changed (uac's unieai-rewind checkpoints).
-    async "thread/revert/preview"(params, ctx) {
+    async "thread/revert/preview"(params) {
       const thread = getThread(params?.threadId);
       requireIdle(thread, "revert");
-      const engine = ensureEngine(thread, ctx);
+      // A read: it does not make the asker the thread's client.
+      const engine = ensureEngine(thread, null);
       if (typeof engine.revertPreview !== "function") {
         throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/revert/preview is not supported by this engine");
       }
@@ -1150,13 +1151,14 @@ export function createHandlers({
      * What is using the thread's context window, by kind (TUI /context). Not
      * a codex protocol method: the TUI sends it only to the uac engine.
      */
-    async "unieai/context/read"(params, ctx) {
+    async "unieai/context/read"(params) {
       const child = subagents.get(params?.threadId);
       if (child) {
         if (typeof child.root.engine?.context !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "context usage is not supported by this engine");
         return child.root.engine.context(child.id);
       }
-      const engine = ensureEngine(getThread(params?.threadId), ctx);
+      // A read: it does not make the asker the thread's client.
+      const engine = ensureEngine(getThread(params?.threadId), null);
       if (typeof engine.context !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "context usage is not supported by this engine");
       return engine.context();
     },
