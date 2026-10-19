@@ -147,21 +147,26 @@ impl PeerChain {
 
     /// Hop to stamp on a message this session sends to `to` now: one further
     /// than the exchange with `to`, or than a message from another peer that
-    /// is being passed on.
+    /// is being passed on — one that arrived in the last [`RELAY_WINDOW`] and
+    /// after `to` last wrote. A message `to` sent since is what this answers,
+    /// so an earlier message from someone else is not being relayed to it.
     pub fn outbound_hop(&self, to: ThreadId) -> u32 {
         let state = self.state();
-        state
+        let own = state
+            .inbound_hops
+            .get(&to)
+            .filter(|seen| seen.live(EXCHANGE_IDLE).is_some())
+            .copied();
+        let relayed = state
             .inbound_hops
             .iter()
-            .filter_map(|(peer, seen)| {
-                let window = if *peer == to {
-                    EXCHANGE_IDLE
-                } else {
-                    RELAY_WINDOW
-                };
-                seen.live(window)
+            .filter(|(peer, seen)| {
+                **peer != to && own.is_none_or(|own| seen.at > own.at)
             })
-            .max()
+            .filter_map(|(_, seen)| seen.live(RELAY_WINDOW))
+            .max();
+        own.map(|own| own.value)
+            .max(relayed)
             .map_or(0, |hop| hop.saturating_add(1))
     }
 

@@ -33,6 +33,11 @@ fn passing_a_message_on_to_another_peer_carries_its_hop() {
     let chain = PeerChain::default();
     chain.note_delivered(peer(), 4);
     assert_eq!(chain.outbound_hop(other()), 5);
+    // Also to a peer that wrote earlier: this came in after it.
+    chain.note_delivered(third(), 0);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    chain.note_delivered(peer(), 4);
+    assert_eq!(chain.outbound_hop(third()), 5);
 
     // Long after, a message to someone else is not that request any more.
     chain.age_for_test(RELAY_WINDOW + std::time::Duration::from_secs(1));
@@ -56,7 +61,9 @@ fn a_new_question_from_a_session_starts_its_exchange_over() {
     assert!(!chain.may_start_turn(peer()));
     assert_eq!(chain.outbound_hop(peer()), 5);
 
-    chain.age_for_test(RELAY_WINDOW + std::time::Duration::from_secs(1));
+    // C asks right after: the answer to C is not a relay of A's exchange.
+    // (Measured live: it went out at hop 5 while A's last message was a
+    // minute old.)
     chain.note_arrival(third(), 0, true);
     chain.note_delivered(third(), 0);
     assert_eq!(chain.outbound_hop(third()), 1);
