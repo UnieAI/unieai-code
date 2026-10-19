@@ -579,6 +579,23 @@ impl ChatWidget {
             }
             SlashCommand::Daemon => self.app_event_tx.send(AppEvent::OpenDaemonMenu),
             SlashCommand::Engine => self.app_event_tx.send(AppEvent::OpenEngineMenu),
+            SlashCommand::Context => {
+                if !crate::unieai_engine::session_is_uac() {
+                    self.add_info_message(
+                        "/context shows the context breakdown on the unieai-agent-core engine."
+                            .to_string(),
+                        Some("Switch with /engine, or use /status for token usage.".to_string()),
+                    );
+                } else if let Some(thread_id) = self.thread_id {
+                    self.app_event_tx
+                        .send(AppEvent::FetchContextUsage { thread_id });
+                } else {
+                    self.add_info_message(
+                        "No session yet; /context works once one has started.".to_string(),
+                        /*hint*/ None,
+                    );
+                }
+            }
             SlashCommand::Warnings => self.app_event_tx.send(AppEvent::OpenWarnings),
             SlashCommand::Status => {
                 if self.should_prefetch_rate_limits() {
@@ -1357,6 +1374,7 @@ impl ChatWidget {
             | SlashCommand::Peer
             | SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Context
             | SlashCommand::Daemon
             | SlashCommand::Pwd
             | SlashCommand::Usage

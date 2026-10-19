@@ -1728,6 +1728,27 @@ impl App {
                         .on_plugin_enabled_set(cwd, plugin_id, enabled, result);
                 }
             }
+            AppEvent::FetchContextUsage { thread_id } => {
+                let request_handle = app_server.request_handle();
+                let app_event_tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let result =
+                        crate::unieai_context::fetch_context_usage(request_handle, thread_id).await;
+                    app_event_tx.send(AppEvent::ContextUsageLoaded { thread_id, result });
+                });
+            }
+            AppEvent::ContextUsageLoaded { thread_id, result } => {
+                if Some(thread_id) == self.current_displayed_thread_id() {
+                    match result {
+                        Ok(usage) => self.chat_widget.add_plain_history_lines(
+                            crate::unieai_context::context_usage_lines(&usage),
+                        ),
+                        Err(err) => self
+                            .chat_widget
+                            .add_error_message(format!("/context failed: {err}")),
+                    }
+                }
+            }
             AppEvent::FetchMcpInventory { detail, thread_id } => {
                 self.fetch_mcp_inventory(app_server, detail, thread_id);
             }
