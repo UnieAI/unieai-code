@@ -14,7 +14,9 @@
  * running then is kept as a session the model polls (empty `chars`) or types
  * into (`tty: true`). Sessions are not tied to the tool call that started
  * them, so an interrupted turn does not kill a server; they end when their
- * agent or this plugin is disposed.
+ * agent or this plugin is disposed. A session handed back still running is
+ * published to unieai-exec-state.mjs, so unieai-exec-notify can report its
+ * exit without the model polling for it.
  *
  * Only public dsh seams are used: `ctx.subprocess` (pipes and PTYs),
  * `ctx.sandbox.confine` + `ctx.sandboxPolicy` (the same confinement bash
@@ -38,6 +40,7 @@ import {
 } from "@deepseek-ai/dsh-sandbox";
 import { TOOL_ABORTED, defineTool } from "@deepseek-ai/dsh-tools";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
+import { publishBackground, retireBackground } from "./unieai-exec-state.mjs";
 
 /** Waits on the command instead of exec-ing it, so it stays the parent. */
 export const DETACH_HOLDER = 'trap "" HUP; "$@"; status=$?; exit $status';
@@ -74,6 +77,11 @@ export const DEFAULTS = Object.freeze({
   rows: 40,
   cols: 160,
   terminalType: "dumb",
+  // How long a completion notice waits for an exited command's last output.
+  noticeSettleMs: 1_000,
+  // Sessions whose exit was reported by notice, remembered per agent so a
+  // later poll can say so instead of "Unknown process id".
+  reportedMemory: 64,
 });
 
 export const INTERRUPT = "\u0003";
@@ -303,6 +311,8 @@ class ExecSession {
     this.lock = Promise.resolve();
     this.busy = 0;
     this.waiters = new Set();
+    this.backgroundedAt = undefined; // first returned to the model still running
+    this.interrupted = false; // the model sent Ctrl-C
   }
 
   /** Serializes interactions (codex interaction_lock). */
@@ -335,6 +345,25 @@ class ExecSession {
       }
       this.waiters.add(done);
     });
+  }
+
+  /** Resolves true once the process has exited, false after `ms` or on `signal`. */
+  async whenExited(ms, signal) {
+    if (this.exited) return true;
+    const deadline = Date.now() + ms;
+    const wake = () => this.notify();
+    signal?.addEventListener("abort", wake, { once: true });
+    try {
+      while (!this.exited) {
+        const left = deadline - Date.now();
+        if (left <= 0 || signal?.aborted) return false;
+        // Exit always notifies; the cap only keeps the timer in range.
+        await this.changed(Math.min(left, 60_000));
+      }
+      return true;
+    } finally {
+      signal?.removeEventListener("abort", wake);
+    }
   }
 
   record(text) {
@@ -515,6 +544,8 @@ export function apply(ctx, config = {}) {
   const escalation = cfg.escalation ?? ctx.sandboxPolicy !== undefined;
   /** owner (Agent or NO_OWNER) -> Map<id, ExecSession> */
   const sessions = new Map();
+  /** owner -> Map<id, exit code> of sessions retired by a completion notice */
+  const reported = new Map();
   const NO_OWNER = { id: "no-owner" };
   const cleanupInstalled = new WeakSet();
   let nextId = cfg.firstSessionId ?? 1000;
@@ -530,10 +561,18 @@ export function apply(ctx, config = {}) {
     return table;
   };
 
+  /** Drop a session from its table (and from the background registry). */
+  const retire = (table, session) => {
+    table.delete(session.id);
+    if (session.backgroundedAt !== undefined) retireBackground(session.owner, session.id);
+  };
+
   const terminateOwner = async (owner) => {
     const table = sessions.get(owner);
     sessions.delete(owner);
+    reported.delete(owner);
     if (!table) return;
+    for (const session of table.values()) if (session.backgroundedAt !== undefined) retireBackground(owner, session.id);
     await Promise.allSettled([...table.values()].map((session) => session.terminate()));
   };
 
@@ -560,7 +599,7 @@ export function apply(ctx, config = {}) {
       const victim = pickPruneVictim(meta, cfg.protectRecent);
       if (victim === undefined) return; // everything is protected or busy: allow a soft overflow
       const session = table.get(victim);
-      table.delete(victim);
+      retire(table, session);
       void session.terminate();
       ctx.logger?.info?.(`unieai-exec: pruned session ${victim} (${session.cmd})`);
     }
@@ -604,6 +643,73 @@ export function apply(ctx, config = {}) {
     return error;
   };
 
+  /**
+   * The first time a session goes back to the model still running it becomes
+   * background work, which unieai-exec-notify reports when it exits.
+   */
+  const background = (session, table) => {
+    if (session.backgroundedAt !== undefined || session.owner === NO_OWNER) return;
+    session.backgroundedAt = Date.now();
+    publishBackground(session.owner, {
+      id: session.id,
+      cmd: session.cmd,
+      tty: session.tty,
+      startedAt: session.startedAt,
+      backgroundedAt: session.backgroundedAt,
+      get interrupted() {
+        return session.interrupted;
+      },
+      get running() {
+        return !session.exited;
+      },
+      get busy() {
+        return session.busy > 0;
+      },
+      whenExited: (ms, signal) => session.whenExited(ms, signal),
+      take: (options) => take(session, table, options),
+    });
+  };
+
+  const remember = (owner, id, exitCode) => {
+    let ids = reported.get(owner);
+    if (!ids) {
+      ids = new Map();
+      reported.set(owner, ids);
+    }
+    ids.set(id, exitCode);
+    if (ids.size > cfg.reportedMemory) ids.delete(ids.keys().next().value);
+  };
+
+  /**
+   * An exited background session for a completion notice: the output the
+   * model has not read yet, retiring the session as a poll would. Null when a
+   * poll (or another notice) reported it first, so nothing is said twice.
+   */
+  const take = (session, table, { maxOutputTokens } = {}) =>
+    session.withLock(async () => {
+      if (!session.exited || table.get(session.id) !== session) return null;
+      const collected = await collect(session, cfg.noticeSettleMs);
+      let report;
+      try {
+        report = respond(session, collected, session.startedAt, maxOutputTokens, table);
+      } catch (error) {
+        report = { wall_time_seconds: (Date.now() - session.startedAt) / 1000, exit_code: null, output: "", error: error.message };
+      }
+      remember(session.owner, session.id, report.exit_code);
+      return { id: session.id, cmd: session.cmd, ...report };
+    });
+
+  /** A poll of a session whose exit a completion notice already reported. */
+  const alreadyReported = (owner, id) => {
+    const ids = reported.get(owner);
+    if (!ids?.has(id)) return undefined;
+    return {
+      wall_time_seconds: 0,
+      exit_code: ids.get(id),
+      output: `[session ${id} has exited; its exit and remaining output were in the background-command notice]`,
+    };
+  };
+
   /** Shapes one interaction's result, and retires the session once it has exited. */
   const respond = (session, collected, startedAt, maxOutputTokens, table) => {
     const tokens = Math.min(
@@ -621,11 +727,11 @@ export function apply(ctx, config = {}) {
     };
     session.lastUsed = Date.now();
     if (session.failure !== undefined) {
-      table.delete(session.id);
+      retire(table, session);
       throw new Error(`command failed to run: ${session.failure?.message ?? session.failure}`);
     }
     if (session.exit !== undefined) {
-      table.delete(session.id);
+      retire(table, session);
       const { exitCode, signal } = session.exit;
       value.exit_code = signal ? signalExitCode(signal) : exitCode;
       if (signal) notices.push(`[killed by signal: ${signal}]`);
@@ -644,6 +750,7 @@ export function apply(ctx, config = {}) {
       }
     } else {
       value.session_id = session.id;
+      background(session, table);
     }
     // A command whose stdout has no final newline (`printf`, a bare hash)
     // otherwise runs into whatever the model prints next, and it cannot see
@@ -908,15 +1015,25 @@ export function apply(ctx, config = {}) {
     }),
     presentResult: presentExecResult,
     async execute(args, exec) {
-      const table = sessions.get(ownerOf(exec));
+      const owner = ownerOf(exec);
+      const table = sessions.get(owner);
       const session = table?.get(args.session_id);
-      if (!session) throw new Error(`Unknown process id ${args.session_id}`);
+      if (!session) {
+        const done = alreadyReported(owner, args.session_id);
+        if (done) return done;
+        throw new Error(`Unknown process id ${args.session_id}`);
+      }
       const chars = decodeChars(args.chars ?? "");
       return session.withLock(async () => {
-        if (!table.has(session.id)) throw new Error(`Unknown process id ${args.session_id}`);
+        if (!table.has(session.id)) {
+          const done = alreadyReported(owner, args.session_id);
+          if (done) return done;
+          throw new Error(`Unknown process id ${args.session_id}`);
+        }
         const startedAt = Date.now();
         if (chars && !session.exited) {
           if (chars === INTERRUPT) {
+            session.interrupted = true;
             await session.interrupt();
           } else if (!session.tty) {
             throw new Error(STDIN_CLOSED_MESSAGE);
