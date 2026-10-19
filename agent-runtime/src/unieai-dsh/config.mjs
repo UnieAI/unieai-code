@@ -405,13 +405,15 @@ export function renderPatch({
     lines.push("- id: tool-web", "  config:", "    fetch: true", "    search: false", "    searchTimeoutMs: 60000");
   }
   // One layout for both engines: the user's AGENTS.md (and, through
-  // unieai-skills, their skills) live in the UnieAI home, not dsh's.
+  // unieai-skills and unieai-agents, their skills and agent definitions) live
+  // in the UnieAI home, not dsh's.
   lines.push("- id: agent-instructions", "  config:", "    maxBytes: 65536", `    dshHome: ${q(home)}`);
   const parts = renderPatchParts({
     plugins,
     profile: "cli",
     config: {
       "unieai-skills": { home },
+      "unieai-agents": { home },
       "unieai-web-search": { gatewayBaseUrl },
       "unieai-vision-fallback": visionModel ? { gatewayBaseUrl, visionModel } : {},
       "unieai-auto-approval": autoApprovalModel ? { model: autoApprovalModel } : {},
