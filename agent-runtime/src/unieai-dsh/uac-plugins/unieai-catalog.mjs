@@ -71,6 +71,13 @@ export const PLUGINS = Object.freeze([
   },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
+    id: "unieai-agents",
+    file: "unieai-agents.mjs",
+    profiles: ["cli"],
+    // The host passes { home } (the UnieAI home whose agents/ is read).
+    summary: "user-defined subagents from .unieai/agents/*.md (and .claude/agents), chosen with subagent's `agent`",
+  },
+  {
     id: "unieai-loop-truncation",
     file: "unieai-loop-truncation.mjs",
     config: { maxRetries: 2, growth: 2 },
