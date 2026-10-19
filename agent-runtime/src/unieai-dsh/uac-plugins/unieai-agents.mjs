@@ -31,10 +31,12 @@
  *   and description. A call without `agent` is dsh's call, unchanged; with
  *   one, the child starts through the same subagent service with the
  *   definition's model as its route.
- * - When the child is created its scope gets the body as its persona (the
- *   `deployment:persona-prefix` section, so it replaces the UnieAI persona as
- *   Claude Code's body replaces its default prompt; tool guidance and runtime
- *   context stay) and `tools.restrict({ allow })` from the tool list.
+ * - When the child is created its scope gets the body as a section of its
+ *   own placed right after the UnieAI persona (`deployment:persona-prefix`),
+ *   so the child keeps the persona and reads the definition as its role on
+ *   top of it (unlike Claude Code, where the body replaces the default
+ *   prompt); tool guidance and runtime context stay. It also gets
+ *   `tools.restrict({ allow })` from the tool list.
  * - The resolved definition is logged in the child's session as a plugin
  *   record, so a child resumed after a restart gets the same prompt and tools.
  *
@@ -56,6 +58,9 @@ export const name = "unieai-agents";
 export const inject = ["tools", "agents", "subagents", "systemPrompt"];
 
 export const DEFAULTS = Object.freeze({ toolName: "subagent", provider: "spawn", maxAgents: 64, maxPromptBytes: 65_536 });
+
+/** The child's prompt section holding its definition's body, after the persona. */
+export const DEFINITION_SECTION = "unieai-agents:definition";
 
 /** The session plugin record holding a child's resolved definition. */
 export const RECORD_TYPE = "plugin:unieai-agents/definition";
@@ -282,9 +287,12 @@ export function apply(ctx, rawConfig = {}) {
 
   /** Give a just-created child its definition's prompt and tool set. */
   const applyToChild = (agent, record) => {
+    // Appended after the persona, never in its slot: the persona section is
+    // left as the deployment set it, and this one sorts just after it (the
+    // next named section, the plan policy, is far later).
     agent.ctx.systemPrompt.section({
-      name: "deployment:persona-prefix",
-      order: agent.ctx.systemPrompt.getSectionOrder("DEPLOYMENT_PERSONA_PREFIX"),
+      name: DEFINITION_SECTION,
+      order: agent.ctx.systemPrompt.getSectionOrder("DEPLOYMENT_PERSONA_PREFIX") + 1,
       text: record.prompt,
       interpolate: false,
     });
