@@ -748,10 +748,15 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         selected_cell: Arc<dyn HistoryCell>,
         prompt: UserMessage,
+        /// Whether to put back the files the removed turns changed; `None` until the user
+        /// was asked (only when the server reports such files).
+        restore_files: Option<bool>,
     },
     FinishPromptRevert {
         thread_id: ThreadId,
         nth_user_message: usize,
+        /// The removed turns' file changes were put back too.
+        restored_files: bool,
     },
 
     /// Request to exit the application.

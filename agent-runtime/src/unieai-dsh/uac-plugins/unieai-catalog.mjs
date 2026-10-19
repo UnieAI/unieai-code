@@ -85,6 +85,13 @@ export const PLUGINS = Object.freeze([
     // "Approve for me"); the host may pass { model } for a smaller reviewer.
     summary: "auto mode: a reviewer model approves safe calls and sends only risky ones to the user",
   },
+  {
+    id: "unieai-rewind",
+    file: "unieai-rewind.mjs",
+    // Studio has no file or shell tools and no rewind; nothing to snapshot there.
+    profiles: ["cli"],
+    summary: "shadow-git checkpoints per turn, so rewinding to a message can restore the files too",
+  },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
     id: "unieai-agents",

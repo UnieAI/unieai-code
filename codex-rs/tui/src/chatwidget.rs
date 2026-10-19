@@ -279,6 +279,7 @@ use self::goal_status::GoalStatusState;
 use self::goal_status::goal_status_indicator_from_app_goal;
 mod goal_menu;
 mod ide_context;
+mod unieai_rewind_menu;
 use self::ide_context::IdeContextState;
 mod input_queue;
 mod reconnect;

@@ -2157,7 +2157,14 @@ impl ThreadRequestProcessor {
         let ThreadRevertParams {
             thread_id,
             before_turn_id,
+            restore_files,
         } = params;
+        // This engine keeps no file checkpoints (it does not answer thread/revert/preview).
+        if restore_files {
+            return Err(invalid_request(
+                "thread/revert cannot restore files with this engine",
+            ));
+        }
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;

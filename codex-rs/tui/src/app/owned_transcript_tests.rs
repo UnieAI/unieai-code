@@ -665,6 +665,7 @@ async fn owned_backtrack_keys_edit_the_selected_prompt_and_restore_compact_view(
             thread_id,
             selected_cell,
             prompt,
+            ..
         } => Some((
             thread_id,
             Arc::ptr_eq(&selected_cell, &app.transcript_cells[1]),

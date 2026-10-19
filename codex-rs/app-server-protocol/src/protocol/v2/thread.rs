@@ -1281,7 +1281,8 @@ pub struct ThreadBackgroundTerminalsTerminateResponse {
 
 /// Replace a paginated thread's durable history with the prefix before one turn.
 ///
-/// This only changes persisted conversation history. It does not revert local file changes.
+/// This only changes persisted conversation history. It does not revert local file changes
+/// unless `restoreFiles` is set and the server supports it (see `thread/revert/preview`).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1289,6 +1290,54 @@ pub struct ThreadRevertParams {
     pub thread_id: String,
     /// Turn excluded from the replacement history, together with every later turn.
     pub before_turn_id: String,
+    /// Also put back the workspace files the removed turns changed. Only servers that answer
+    /// `thread/revert/preview` honour it; if a file cannot be restored, nothing is reverted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore_files: bool,
+}
+
+/// Ask which workspace files `thread/revert` with `restoreFiles` would put back.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRevertPreviewParams {
+    pub thread_id: String,
+    /// Turn that would be excluded, together with every later turn.
+    pub before_turn_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRevertPreviewResponse {
+    /// Whether the removed turns were checkpointed; when false, `files` is empty.
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+    /// Files whose current content differs from before the first removed turn, limited to
+    /// files the removed turns changed.
+    pub files: Vec<ThreadRevertFileChange>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRevertFileChange {
+    /// Path relative to the thread's working directory.
+    pub path: String,
+    pub change: ThreadRevertFileChangeKind,
+}
+
+/// What restoring does to one file.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadRevertFileChangeKind {
+    /// Its earlier content is written back.
+    Modify,
+    /// It was created by a removed turn and is deleted.
+    Delete,
+    /// It was deleted by a removed turn and is created again.
+    Create,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

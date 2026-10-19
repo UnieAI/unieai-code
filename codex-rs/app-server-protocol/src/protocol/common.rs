@@ -769,6 +769,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRevertResponse,
     },
+    ThreadRevertPreview => "thread/revert/preview" {
+        params: v2::ThreadRevertPreviewParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadRevertPreviewResponse,
+    },
     ThreadList => "thread/list" {
         params: v2::ThreadListParams,
         inspect_params: true,

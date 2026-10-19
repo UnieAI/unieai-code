@@ -563,7 +563,11 @@ export type { ThreadRealtimeTranscriptRole } from "./ThreadRealtimeTranscriptRol
 export type { ThreadResumeInitialTurnsPageParams } from "./ThreadResumeInitialTurnsPageParams";
 export type { ThreadResumeParams } from "./ThreadResumeParams";
 export type { ThreadResumeResponse } from "./ThreadResumeResponse";
+export type { ThreadRevertFileChange } from "./ThreadRevertFileChange";
+export type { ThreadRevertFileChangeKind } from "./ThreadRevertFileChangeKind";
 export type { ThreadRevertParams } from "./ThreadRevertParams";
+export type { ThreadRevertPreviewParams } from "./ThreadRevertPreviewParams";
+export type { ThreadRevertPreviewResponse } from "./ThreadRevertPreviewResponse";
 export type { ThreadRevertResponse } from "./ThreadRevertResponse";
 export type { ThreadRevertedNotification } from "./ThreadRevertedNotification";
 export type { ThreadSearchResult } from "./ThreadSearchResult";

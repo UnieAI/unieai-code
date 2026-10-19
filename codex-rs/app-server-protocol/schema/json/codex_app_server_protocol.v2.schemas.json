@@ -2312,6 +2312,30 @@
             },
             "method": {
               "enum": [
+                "thread/revert/preview"
+              ],
+              "title": "Thread/revert/previewRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRevertPreviewParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/revert/previewRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/list"
               ],
               "title": "Thread/listRequestMethod",
@@ -22152,13 +22176,59 @@
       "title": "ThreadResumeResponse",
       "type": "object"
     },
+    "ThreadRevertFileChange": {
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/ThreadRevertFileChangeKind"
+        },
+        "path": {
+          "description": "Path relative to the thread's working directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ThreadRevertFileChangeKind": {
+      "description": "What restoring does to one file.",
+      "oneOf": [
+        {
+          "description": "Its earlier content is written back.",
+          "enum": [
+            "modify"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "It was created by a removed turn and is deleted.",
+          "enum": [
+            "delete"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "It was deleted by a removed turn and is created again.",
+          "enum": [
+            "create"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ThreadRevertParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
+      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes unless `restoreFiles` is set and the server supports it (see `thread/revert/preview`).",
       "properties": {
         "beforeTurnId": {
           "description": "Turn excluded from the replacement history, together with every later turn.",
           "type": "string"
+        },
+        "restoreFiles": {
+          "description": "Also put back the workspace files the removed turns changed. Only servers that answer `thread/revert/preview` honour it; if a file cannot be restored, nothing is reverted.",
+          "type": "boolean"
         },
         "threadId": {
           "type": "string"
@@ -22169,6 +22239,53 @@
         "threadId"
       ],
       "title": "ThreadRevertParams",
+      "type": "object"
+    },
+    "ThreadRevertPreviewParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Ask which workspace files `thread/revert` with `restoreFiles` would put back.",
+      "properties": {
+        "beforeTurnId": {
+          "description": "Turn that would be excluded, together with every later turn.",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "beforeTurnId",
+        "threadId"
+      ],
+      "title": "ThreadRevertPreviewParams",
+      "type": "object"
+    },
+    "ThreadRevertPreviewResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "available": {
+          "description": "Whether the removed turns were checkpointed; when false, `files` is empty.",
+          "type": "boolean"
+        },
+        "files": {
+          "description": "Files whose current content differs from before the first removed turn, limited to files the removed turns changed.",
+          "items": {
+            "$ref": "#/definitions/ThreadRevertFileChange"
+          },
+          "type": "array"
+        },
+        "unavailableReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "available",
+        "files"
+      ],
+      "title": "ThreadRevertPreviewResponse",
       "type": "object"
     },
     "ThreadRevertResponse": {

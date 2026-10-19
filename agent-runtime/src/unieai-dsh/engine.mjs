@@ -1061,15 +1061,37 @@ export function createDshEngine({
       return { state: { sessionId: child }, keptTurns };
     },
 
-    /** Drop every turn after the first `keepTurns`, continuing on a trimmed copy. */
-    async revert({ keepTurns }) {
-      if (!sessionId) return;
+    /**
+     * The files reverting to the first `keepTurns` turns could put back:
+     * `{available, files: [{path, change}]}` (unieai-rewind's checkpoints).
+     */
+    async revertPreview({ keepTurns }) {
+      if (!sessionId) return { available: false, files: [] };
+      return host.control("rewindPreview", { sessionId, keepTurns });
+    },
+
+    /**
+     * Drop every turn after the first `keepTurns`, continuing on a trimmed
+     * copy. With `restoreFiles`, the files those turns changed are put back
+     * first; a file that could not be is reported and nothing is dropped.
+     */
+    async revert({ keepTurns, restoreFiles = false }) {
+      if (!sessionId) return { restored: null };
       if (turnActive) throw new Error("cannot revert while a turn is running");
+      let restored = null;
+      if (restoreFiles) {
+        restored = await host.control("rewindRestore", { sessionId, keepTurns });
+        if (restored.failed?.length) {
+          const list = restored.failed.map((file) => `${file.path} (${file.error})`).join(", ");
+          throw Object.assign(new Error(`could not restore ${list}; the conversation was not rewound`), { code: "REWIND_FILES_FAILED" });
+        }
+      }
       await closeSession();
       const { sessionId: child } = await host.control("fork", { sessionId, keepTurns });
       sessionId = child;
       onState({ sessionId });
       messages.length = 0;
+      return { restored };
     },
 
     async close() {

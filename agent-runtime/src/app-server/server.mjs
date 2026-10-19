@@ -42,6 +42,7 @@ export const ENGINE_METHODS = [
   "thread/resume",
   "thread/fork",
   "thread/revert",
+  "thread/revert/preview",
   "thread/goal/get",
   "thread/goal/set",
   "thread/goal/clear",
@@ -1071,13 +1072,38 @@ export function createHandlers({
       }
       const index = thread.turnIds.indexOf(params?.beforeTurnId);
       if (index < 0) throw new RpcError(RPC.INVALID_PARAMS, `unknown turn: ${params?.beforeTurnId}`);
-      await engine.revert({ keepTurns: index });
+      try {
+        await engine.revert({ keepTurns: index, restoreFiles: params?.restoreFiles === true });
+      } catch (error) {
+        // Nothing was rewound: the client keeps its history and says why.
+        if (error?.code === "REWIND_FILES_FAILED") throw new RpcError(RPC.INVALID_REQUEST, error.message);
+        throw error;
+      }
       thread.turnIds = thread.turnIds.slice(0, index);
       thread.updatedAtEpoch = epochNow();
       persist(thread);
       // The client waits for this after the response before redrawing.
       setImmediate(() => ctx?.emit?.("thread/reverted", { threadId: thread.id }));
       return { thread: threadShape(thread), turnsBackwardsCursor: null, itemsBackwardsCursor: null };
+    },
+
+    // What `thread/revert` with `restoreFiles` would put back: the files the
+    // turns from `beforeTurnId` on changed (uac's unieai-rewind checkpoints).
+    async "thread/revert/preview"(params, ctx) {
+      const thread = getThread(params?.threadId);
+      requireIdle(thread, "revert");
+      const engine = ensureEngine(thread, ctx);
+      if (typeof engine.revertPreview !== "function") {
+        throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/revert/preview is not supported by this engine");
+      }
+      const index = thread.turnIds.indexOf(params?.beforeTurnId);
+      if (index < 0) throw new RpcError(RPC.INVALID_PARAMS, `unknown turn: ${params?.beforeTurnId}`);
+      const preview = await engine.revertPreview({ keepTurns: index });
+      return {
+        available: Boolean(preview?.available),
+        unavailableReason: preview?.available ? null : (preview?.reason ?? null),
+        files: (preview?.files ?? []).map((file) => ({ path: file.path, change: file.change })),
+      };
     },
 
     // Goals are codex's long-running task loop; no engine here has one. Asking

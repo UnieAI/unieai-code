@@ -286,6 +286,39 @@ test("fork, revert and history go through the control channel; revert reopens th
   assert.deepEqual(acpCalls.filter(([m]) => m === "session/resume"), [["session/resume", "child-of-s1"]]);
 });
 
+test("revert with restoreFiles puts the files back first, and a failed file stops the revert", async () => {
+  const controlCalls = [];
+  const { client } = fakeAgent(async ({ method }) => {
+    if (method === "session/new") return { sessionId: "s1", configOptions: [] };
+    if (method === "session/prompt") return { stopReason: "end_turn" };
+    return {};
+  });
+  let failed = [{ path: "busy.txt", error: "EACCES" }];
+  const control = async (method, params) => {
+    if (method !== "usage") controlCalls.push([method, params]);
+    if (method === "rewindPreview") return { available: true, files: [{ path: "a.txt", change: "modify" }] };
+    if (method === "rewindRestore") return { files: [{ path: "a.txt", change: "modify" }], failed, undo: "refs/unieai-rewind/undo-1" };
+    if (method === "fork") return { sessionId: `child-of-${params.sessionId}`, keptTurns: params.keepTurns };
+    return {};
+  };
+  const engine = createDshEngine({ host: scriptedHost(client, control), workspace: "/w", onState: () => {} });
+  assert.deepEqual(await engine.revertPreview({ keepTurns: 0 }), { available: false, files: [] }, "no session yet");
+  await engine.send("hi");
+  assert.deepEqual(await engine.revertPreview({ keepTurns: 0 }), { available: true, files: [{ path: "a.txt", change: "modify" }] });
+
+  await assert.rejects(() => engine.revert({ keepTurns: 0, restoreFiles: true }), (error) => error.code === "REWIND_FILES_FAILED" && /busy\.txt/.test(error.message));
+  assert.ok(!controlCalls.some(([m]) => m === "fork"), "nothing is rewound when a file could not be restored");
+
+  failed = [];
+  const { restored } = await engine.revert({ keepTurns: 0, restoreFiles: true });
+  assert.equal(restored.files.length, 1);
+  assert.deepEqual(controlCalls.map(([m]) => m), ["rewindPreview", "rewindRestore", "rewindRestore", "fork"]);
+  assert.deepEqual(controlCalls[1][1], { sessionId: "s1", keepTurns: 0 });
+
+  await engine.revert({ keepTurns: 0 });
+  assert.equal(controlCalls.at(-1)[0], "fork", "conversation only: no restore");
+});
+
 test("a stored conversation is resumed, not recreated", async () => {
   const calls = [];
   const { client } = fakeAgent(async ({ method, params }) => {
