@@ -657,3 +657,78 @@ test("dsh's \"Internal error\" carries the detail that says what went wrong", as
   assert.equal(failed.message, 'Internal error: no adapter registered for provider "unieai"');
   assert.equal(new AcpError("boom", { data: {} }).message, "boom");
 });
+
+test("/loop goes to unieai-schedule: a reply answers without the model, a prompt replaces the text", async () => {
+  const prompts = [];
+  const { client } = fakeAgent(async ({ method, params }) => {
+    if (method === "session/new") return { sessionId: "s7", configOptions: [] };
+    if (method === "session/prompt") {
+      prompts.push(params.prompt.map((block) => block.text).join(""));
+      return { stopReason: "end_turn" };
+    }
+    return {};
+  });
+  const loops = [];
+  const host = scriptedHost(client, async (method, params) => {
+    if (method !== "loopCommand") return {};
+    loops.push(params);
+    return params.text === "/loop" ? { handled: true, reply: "Nothing is scheduled in this session." } : { handled: true, prompt: "<loop>\ncheck CI" };
+  });
+  const texts = [];
+  const engine = createDshEngine({ host, workspace: "/w", onText: (text) => texts.push(text) });
+  await engine.send("/loop");
+  assert.deepEqual(prompts, [], "the list never reaches the model");
+  assert.deepEqual(texts, ["Nothing is scheduled in this session."]);
+  await engine.send("/loop 5m check CI");
+  assert.deepEqual(prompts, ["<loop>\ncheck CI"]);
+  assert.deepEqual(loops, [
+    { sessionId: "s7", text: "/loop" },
+    { sessionId: "s7", text: "/loop 5m check CI" },
+  ]);
+  await engine.send("/looping is a word");
+  assert.equal(prompts.at(-1), "/looping is a word", "only the command itself is intercepted");
+});
+
+test("a scheduled turn's prompt is handed on from the control channel", async () => {
+  let channel;
+  const { client } = fakeAgent(async ({ method }) => (method === "session/new" ? { sessionId: "s8", configOptions: [] } : { stopReason: "end_turn" }));
+  const notes = {};
+  const host = createDshHost({
+    connect: async () => client,
+    connectControl: async () =>
+      (channel = { request: async () => ({}), close() {}, onNotification: (method, handler) => (notes[method] = handler), onRequest() {} }),
+  });
+  const shown = [];
+  const engine = createDshEngine({ host, workspace: "/w", onScheduledPrompt: (text) => shown.push(text) });
+  await engine.send("hi");
+  await engine.compact();
+  assert.ok(channel);
+  notes.scheduledPrompt({ sessionId: "s8", text: "[scheduled] check CI" });
+  notes.scheduledPrompt({ sessionId: "other", text: "not ours" });
+  assert.deepEqual(shown, ["[scheduled] check CI"]);
+});
+
+test("a turn dsh starts on its own ends only after its last streamed text", async () => {
+  const { client, agent } = fakeAgent(async ({ method }) => (method === "session/new" ? { sessionId: "s5", configOptions: [] } : { stopReason: "end_turn" }));
+  const notes = {};
+  const host = createDshHost({
+    connect: async () => client,
+    connectControl: async () => ({ request: async () => ({}), close() {}, onNotification: (method, handler) => (notes[method] = handler), onRequest() {} }),
+  });
+  const log = [];
+  const engine = createDshEngine({
+    host,
+    workspace: "/w",
+    onText: (text) => log.push(`text:${text}`),
+    onEngineTurn: ({ phase }) => log.push(phase),
+  });
+  await engine.send("hi");
+  await engine.compact();
+  log.length = 0;
+  notes.turnBoundary({ sessionId: "s5", phase: "start" });
+  // The end note overtakes the answer, which comes over ACP.
+  notes.turnBoundary({ sessionId: "s5", phase: "end", reason: "completed" });
+  update(agent, "s5", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "WOKE" } });
+  await new Promise((r) => setTimeout(r, 700));
+  assert.deepEqual(log, ["start", "text:WOKE", "end"]);
+});

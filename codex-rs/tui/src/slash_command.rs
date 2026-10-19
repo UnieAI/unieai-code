@@ -44,6 +44,8 @@ pub enum SlashCommand {
     Plan,
     Voice,
     Goal,
+    /// Repeat a prompt on an interval, or let the model pace it (uac only).
+    Loop,
     Agents,
     Side,
     Btw,
@@ -148,6 +150,9 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Voice => "start or stop voice; use /voice settings to choose a voice",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Loop => {
+                "repeat a prompt: /loop 5m <prompt>, /loop <prompt>, /loop stop"
+            }
             SlashCommand::Agents | SlashCommand::MultiAgents => {
                 "switch between this session's subagents"
             }
@@ -193,6 +198,7 @@ impl SlashCommand {
                 | SlashCommand::Fork
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Loop
                 | SlashCommand::Voice
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -281,6 +287,8 @@ impl SlashCommand {
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::Engine
+            // A user turn of its own: mid-turn it would be a steer the model reads.
+            | SlashCommand::Loop
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
@@ -381,6 +389,13 @@ mod tests {
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn loop_command_takes_args_and_waits_for_the_turn() {
+        assert_eq!(SlashCommand::from_str("loop"), Ok(SlashCommand::Loop));
+        assert!(SlashCommand::Loop.supports_inline_args());
+        assert!(!SlashCommand::Loop.available_during_task());
     }
 
     #[test]

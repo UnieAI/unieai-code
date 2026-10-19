@@ -290,6 +290,16 @@ export function apply(ctx, config = {}) {
     bridge.notify?.("goalChanged", { sessionId: session.header.id, goal });
   });
 
+  // A turn unieai-schedule started (a wake-up, a recurring task): the bridge
+  // shows its prompt as the turn's user message, since no one typed it.
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || event?.type !== "user/message" || event.data?.source?.kind !== "unieai-schedule") return;
+    bridge.notify?.("scheduledPrompt", {
+      sessionId: session.header.id,
+      text: event.data.source.summary ?? textOf(event.data.content),
+    });
+  });
+
   // Subagents, so the bridge can show each child as its own thread: when one
   // starts and ends (with its parent and label), and a ping whenever its
   // session gains something to show. The bridge reads the child's turns
@@ -533,6 +543,17 @@ export function apply(ctx, config = {}) {
       if (current === undefined) return { cleared: false };
       goals.clear(agent, { id: current.id, revision: current.revision });
       return { cleared: true };
+    },
+
+    /**
+     * The client's `/loop ...` (unieai-schedule): `{ reply }` answers the
+     * user without the model, `{ prompt }` is what to send the model instead.
+     */
+    async loopCommand({ sessionId, text }) {
+      const schedule = ctx.get?.("unieaiSchedule");
+      if (!schedule) return { handled: true, reply: "Scheduling is not available: the unieai-schedule plugin is not loaded." };
+      if (!ctx.agents.get(sessionId)) throw new Error(`session is not open: ${sessionId}`);
+      return schedule.loopCommand(sessionId, String(text ?? ""));
     },
 
     async steer({ sessionId, text, content = null, clientId = null }, peer) {

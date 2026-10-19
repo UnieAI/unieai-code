@@ -544,6 +544,11 @@ export function createHandlers({
     }
     const turn = beginTurn(thread, thread.connection);
     thread.engineTurn = turn;
+    // A scheduled turn's prompt can arrive before the turn is shown.
+    if (thread.scheduledPrompt) {
+      emitUserMessage(thread, thread.scheduledPrompt);
+      thread.scheduledPrompt = null;
+    }
     // Esc in the client interrupts it like any turn.
     thread.activeTurn.abort.signal.addEventListener("abort", () => thread.engine?.cancel?.(), { once: true });
   };
@@ -646,6 +651,12 @@ export function createHandlers({
       // Turns dsh runs without a prompt from the client (a goal round, a
       // background subagent's result waking this agent) become client turns.
       onEngineTurn: ({ phase, reason }) => (phase === "start" ? startEngineTurn(thread) : endEngineTurn(thread, reason)),
+      // A turn a schedule started (unieai-schedule) shows its prompt as the
+      // user message no one typed.
+      onScheduledPrompt: (text) => {
+        if (thread.engineTurn && thread.pendingAnswer) emitUserMessage(thread, text);
+        else thread.scheduledPrompt = text;
+      },
       // The model's own goal edits (its goal tools) reach the client too.
       onGoalChanged: (goal) => {
         const emit = thread.connection?.emit;

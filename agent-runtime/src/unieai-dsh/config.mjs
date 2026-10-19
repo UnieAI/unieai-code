@@ -230,6 +230,7 @@ const TOOL_PLUGINS = new Set([
   "unieai-web-search",
   "unieai-vision-fallback",
   "unieai-wait-agents",
+  "unieai-schedule",
 ]);
 
 /** The ACP profile's tool rows that minimal mode turns off. */

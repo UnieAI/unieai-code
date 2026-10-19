@@ -17,6 +17,13 @@ import { blamedServer } from "./unieai-mcp-servers.mjs";
 import { DSH_PROVIDER_ID } from "./config.mjs";
 import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from "../app-server/items.mjs";
 
+/**
+ * How long ACP must stay quiet before a turn dsh started on its own is
+ * closed, and the most that wait may take.
+ */
+const ENGINE_TURN_SETTLE_MS = 300;
+const ENGINE_TURN_SETTLE_MAX_MS = 5000;
+
 /** Tools the client shows some other way: a card only when one fails. */
 const QUIET_WHEN_OK = new Set(["subagent", "ask_user_question"]);
 
@@ -287,6 +294,9 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       channel.onNotification?.("turnBoundary", (note) => {
         sessions.get(note?.sessionId)?.onTurnBoundary?.(note);
       });
+      channel.onNotification?.("scheduledPrompt", (note) => {
+        sessions.get(note?.sessionId)?.onScheduledPrompt?.(note);
+      });
       channel.onNotification?.("goalChanged", (note) => {
         sessions.get(note?.sessionId)?.onGoalChanged?.(note.goal);
       });
@@ -535,6 +545,9 @@ export function createDshEngine({
   // Called with { phase: "start" | "end", reason } for turns dsh runs on its
   // own, not in answer to send() (a goal round, a subagent waking the parent).
   onEngineTurn = () => {},
+  // Called with the prompt of a turn unieai-schedule started (a wake-up, a
+  // recurring task, a /loop round), to show as that turn's user message.
+  onScheduledPrompt = () => {},
   // unieai-control's `subagent` note ({ phase: "start" | "end", sessionId,
   // parentSessionId, ... }) for this session's subagents, and its
   // `childActivity` note when one's session gains something to show.
@@ -561,7 +574,12 @@ export function createDshEngine({
   // Tool calls shown some other way than as a card (todo_write -> the plan,
   // subagent -> the child's own thread).
   const quietCalls = new Set();
+  // When dsh last streamed something for this session. Updates come over ACP
+  // and turn boundaries over the control socket, so a turn's end can overtake
+  // its final text.
+  let lastUpdateAt = 0;
   const onUpdate = (update) => {
+    lastUpdateAt = Date.now();
     switch (update?.sessionUpdate) {
       case "agent_message_chunk": {
         const text = update.content?.type === "text" ? update.content.text : "";
@@ -792,9 +810,21 @@ export function createDshEngine({
       engineTurn = true;
       onEngineTurn({ phase: "start" });
     } else if (phase === "end" && engineTurn) {
-      engineTurn = false;
-      reportUsage();
-      onEngineTurn({ phase: "end", reason });
+      // Close it once ACP has gone quiet: ending it on the control note alone
+      // cut off the answer of every turn dsh started on its own.
+      const close = () => {
+        const quietFor = Date.now() - lastUpdateAt;
+        if (quietFor < ENGINE_TURN_SETTLE_MS && Date.now() - endedAt < ENGINE_TURN_SETTLE_MAX_MS) {
+          setTimeout(close, ENGINE_TURN_SETTLE_MS - quietFor);
+          return;
+        }
+        if (dshTurnOpen) return; // the next turn began meanwhile: it carries on as this one
+        engineTurn = false;
+        reportUsage();
+        onEngineTurn({ phase: "end", reason });
+      };
+      const endedAt = Date.now();
+      setTimeout(close, ENGINE_TURN_SETTLE_MS);
     }
   };
 
@@ -872,7 +902,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await withMcpServers((servers) => acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: servers }));
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -885,7 +915,7 @@ export function createDshEngine({
     const created = await withMcpServers((servers) => newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: servers }));
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
@@ -912,6 +942,17 @@ export function createDshEngine({
 
     async send(text, { abortSignal, images = [] } = {}) {
       const acp = await ensureSession();
+      // `/loop ...` is unieai-schedule's: it either answers here, without the
+      // model, or names the prompt that starts the loop's first round.
+      if (/^\/loop(\s|$)/.test(text.trim())) {
+        const loop = await host.control("loopCommand", { sessionId, text: text.trim() });
+        if (loop?.reply) {
+          onText(loop.reply);
+          messages.push({ role: "user", content: text }, { role: "assistant", content: loop.reply });
+          return { stopReason: "end_turn" };
+        }
+        if (loop?.prompt) text = loop.prompt;
+      }
       const prompt = await promptContent(text, images, { imageInput: Boolean(acp.agentCapabilities?.promptCapabilities?.image) });
       messages.push({ role: "user", content: text });
       turnText = "";

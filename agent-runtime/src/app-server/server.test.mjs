@@ -615,3 +615,38 @@ test("a turn the engine starts on its own becomes a client turn, after any open 
   const done = emitted.filter(([m]) => m === "turn/completed").map(([, p]) => p.turn.id);
   assert.deepEqual(done.slice(-1), [second]);
 });
+
+test("a scheduled turn shows its prompt as the user message, even when it arrives first", async () => {
+  let hooks;
+  const h = createHandlers({
+    createEngineFor: (callbacks) => {
+      hooks = callbacks;
+      return { send: async () => ({}) };
+    },
+    codexHome: "/h",
+  });
+  const emitted = [];
+  const ctx = { emit: (m, p) => emitted.push([m, p]) };
+  const { thread } = await h["thread/start"]({}, ctx);
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, ctx);
+  await new Promise((r) => setTimeout(r, 10));
+  const userTexts = () =>
+    emitted
+      .filter(([m, p]) => m === "item/completed" && p.item?.type === "userMessage")
+      .map(([, p]) => [p.turnId, p.item.content.map((c) => c.text).join("")]);
+
+  hooks.onEngineTurn({ phase: "start" });
+  hooks.onScheduledPrompt("[scheduled] check CI");
+  const first = emitted.filter(([m]) => m === "turn/started").at(-1)[1].turn.id;
+  hooks.onEngineTurn({ phase: "end", reason: "completed" });
+
+  hooks.onScheduledPrompt("[scheduled] check CI again");
+  hooks.onEngineTurn({ phase: "start" });
+  const second = emitted.filter(([m]) => m === "turn/started").at(-1)[1].turn.id;
+  hooks.onEngineTurn({ phase: "end", reason: "completed" });
+
+  assert.deepEqual(userTexts().slice(-2), [
+    [first, "[scheduled] check CI"],
+    [second, "[scheduled] check CI again"],
+  ]);
+});

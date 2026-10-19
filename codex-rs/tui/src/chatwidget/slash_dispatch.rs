@@ -443,6 +443,10 @@ impl ChatWidget {
             SlashCommand::Peers => {
                 self.app_event_tx.send(AppEvent::OpenPeersPicker);
             }
+            // The uac engine answers a bare /loop with what is scheduled.
+            SlashCommand::Loop => {
+                self.submit_user_message("/loop".to_string().into());
+            }
             SlashCommand::Peer => {
                 self.add_error_message(PEER_USAGE.to_string());
             }
@@ -965,6 +969,10 @@ impl ChatWidget {
                     self.add_error_message(ENGINE_USAGE.to_string());
                 }
             }
+            // The uac engine hands `/loop ...` to unieai-schedule as it is.
+            SlashCommand::Loop if !trimmed.is_empty() => {
+                self.submit_user_message(format!("/loop {trimmed}").into());
+            }
             SlashCommand::Peer if !trimmed.is_empty() => {
                 // `/peer api [k2f8] hello` — the handle may contain a space, so
                 // split after the bracketed ref when there is one.
@@ -1406,6 +1414,7 @@ impl ChatWidget {
             | SlashCommand::Presets
             | SlashCommand::Plan
             | SlashCommand::Goal
+            | SlashCommand::Loop
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
