@@ -8,7 +8,8 @@
  * this index so they can be listed, resumed, forked and reverted.
  *
  * One JSON document, rewritten atomically. Small by nature: one entry per
- * thread with ids and titles, never conversation content.
+ * thread with ids and titles, never conversation content beyond the short
+ * text of a turn the engine answered without a model turn (`turnMeta`).
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -26,6 +27,9 @@ const FIELDS = [
   "createdAtEpoch",
   "updatedAtEpoch",
   "turnIds",
+  // What each turn began with in the engine (unieai-turn-anchors.mjs): dsh
+  // turn numbers, and the few words shown for a turn the engine never saw.
+  "turnMeta",
   "engineState",
   // The client's tools (thread/start `dynamicTools`); thread/resume does not
   // resend them, as with the Rust server, which keeps them with the thread.
@@ -71,7 +75,7 @@ export function createThreadStore(path) {
   return {
     get(id) {
       const entry = load().get(id);
-      return entry ? { ...entry, turnIds: [...(entry.turnIds ?? [])] } : null;
+      return entry ? { ...entry, turnIds: [...(entry.turnIds ?? [])], turnMeta: { ...(entry.turnMeta ?? {}) } } : null;
     },
     /** Persist the durable fields of a live thread object. */
     save(thread) {

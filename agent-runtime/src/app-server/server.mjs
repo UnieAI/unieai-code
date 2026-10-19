@@ -22,6 +22,7 @@ import { createItemBridge, startedItem, userMessageItem, agentMessageItem, reaso
 import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
+import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -356,6 +357,8 @@ export function createHandlers({
       engineState: null,
       activeTurn: null,
       turnIds: [],
+      // What each client turn began with in the engine (unieai-turn-anchors.mjs).
+      turnMeta: {},
       createdAtEpoch: epoch,
       updatedAtEpoch: epoch,
       ...rest,
@@ -507,8 +510,9 @@ export function createHandlers({
       ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
       // dsh began its next turn while this one was still open (a goal round).
       if (thread.engineTurnWaiting) {
-        thread.engineTurnWaiting = false;
-        startEngineTurn(thread);
+        const { anchor } = thread.engineTurnWaiting;
+        thread.engineTurnWaiting = null;
+        startEngineTurn(thread, anchor);
         return;
       }
       // Messages the running turn could not take go in a turn of their own,
@@ -533,20 +537,54 @@ export function createHandlers({
     const images = queued.flatMap((entry) => entry.images ?? []);
     const turn = beginTurn(thread, ctx);
     for (const entry of queued) emitUserMessage(thread, entry.text, entry.clientId);
+    runSend(thread, turn, { text, shown: text, images });
+  };
+
+  /**
+   * Hand a client turn's text to the engine, noting which engine turn it
+   * became (or that the engine answered it itself) for unieai-turn-anchors.
+   * `shown` is the user message the client displays for it.
+   */
+  const runSend = (thread, turn, { text, shown, images = [], outputSchema = null }) => {
+    const anchors = thread.engine?.turnAnchors === true;
+    let anchored = false;
+    const onTurn = anchors
+      ? ({ turn: dshTurn, rewritten }) => {
+          if (typeof dshTurn !== "number") return;
+          anchored = true;
+          setTurnMeta(thread, turn.turnId, anchoredTurnMeta(dshTurn, { prompt: rewritten || text !== shown ? shown : null }));
+        }
+      : null;
+    const settle = (result) => {
+      if (anchors && !anchored) setTurnMeta(thread, turn.turnId, localTurnMeta({ prompt: shown, reply: result?.reply ?? null }));
+    };
     thread.engine
-      ?.send(text, { abortSignal: thread.activeTurn.abort.signal, images })
-      .then(() => turn.finish())
-      .catch((error) => turn.finish({ error }));
+      ?.send(text, { abortSignal: thread.activeTurn.abort.signal, outputSchema, images, ...(onTurn ? { onTurn } : {}) })
+      .then((result) => {
+        settle(result);
+        turn.finish();
+      })
+      .catch((error) => {
+        settle(null);
+        turn.finish({ error });
+      });
+  };
+
+  const setTurnMeta = (thread, turnId, meta) => {
+    if (!thread.turnIds.includes(turnId)) return;
+    thread.turnMeta = { ...(thread.turnMeta ?? {}), [turnId]: meta };
+    persist(thread);
   };
 
   /** Show a turn the engine started on its own (see onEngineTurn). */
-  const startEngineTurn = (thread) => {
+  const startEngineTurn = (thread, anchor = null) => {
     if (thread.activeTurn) {
-      thread.engineTurnWaiting = true;
+      thread.engineTurnWaiting = { anchor };
       return;
     }
     const turn = beginTurn(thread, thread.connection);
     thread.engineTurn = turn;
+    if (typeof anchor === "number") setTurnMeta(thread, turn.turnId, anchoredTurnMeta(anchor));
     // A scheduled turn's prompt can arrive before the turn is shown.
     if (thread.scheduledPrompt) {
       emitUserMessage(thread, thread.scheduledPrompt);
@@ -557,7 +595,7 @@ export function createHandlers({
   };
 
   const endEngineTurn = (thread, reason) => {
-    thread.engineTurnWaiting = false;
+    thread.engineTurnWaiting = null;
     const turn = thread.engineTurn;
     thread.engineTurn = null;
     if (!turn) return;
@@ -653,7 +691,7 @@ export function createHandlers({
       onChildActivity: (note) => subagents.onChildActivity(thread, note),
       // Turns dsh runs without a prompt from the client (a goal round, a
       // background subagent's result waking this agent) become client turns.
-      onEngineTurn: ({ phase, reason }) => (phase === "start" ? startEngineTurn(thread) : endEngineTurn(thread, reason)),
+      onEngineTurn: ({ phase, reason, turn }) => (phase === "start" ? startEngineTurn(thread, turn) : endEngineTurn(thread, reason)),
       // A turn a schedule started (unieai-schedule) shows its prompt as the
       // user message no one typed.
       onScheduledPrompt: (text) => {
@@ -712,6 +750,21 @@ export function createHandlers({
     await thread.engine?.configure?.({ model, effort, permissions: permissionsChanged });
   };
 
+  /**
+   * The engine's `keepTurns` that drops the client turn `turnId` and every
+   * one after it. `{ keepTurns: null }` when the engine has nothing to drop
+   * (only turns it answered without a dsh turn go).
+   */
+  const engineKeepTurns = async (thread, engine, turnId) => {
+    const index = thread.turnIds.indexOf(turnId);
+    if (engine.turnAnchors !== true) return { keepTurns: index };
+    const history = await engine.history();
+    const entries = alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history });
+    return { keepTurns: keepTurnsBefore(entries, turnId) };
+  };
+
+  const keepMeta = (meta, turnIds) => Object.fromEntries(turnIds.filter((id) => meta?.[id]).map((id) => [id, meta[id]]));
+
   const requireIdle = (thread, what) => {
     if (thread.activeTurn) {
       throw new RpcError(RPC.INVALID_REQUEST, `cannot ${what} while a turn is running`);
@@ -733,6 +786,24 @@ export function createHandlers({
     const engine = ensureEngine(thread, null);
     if (typeof engine.history !== "function") return legacyTurns(thread, engine);
     const history = await engine.history();
+    if (engine.turnAnchors === true) {
+      return alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history }).map((entry) => {
+        const turn = entryTurn(entry, history);
+        const live = thread.activeTurn?.id === entry.id ? thread.activeTurn : null;
+        const items = turn.items.map((item, k) => ({ ...item, id: `${entry.id}:item:${k}` }));
+        return turnShape(
+          {
+            id: entry.id,
+            status: live ? "inProgress" : turn.status,
+            error: null,
+            startedAt: turn.startedAt,
+            completedAt: live ? null : turn.completedAt,
+            durationMs: null,
+          },
+          items,
+        );
+      });
+    }
     return history.map((turn, index) => {
       // Ids given out live are kept; turns from before this index existed
       // (or an index that was lost) get stable synthetic ones.
@@ -850,6 +921,8 @@ export function createHandlers({
       if (!command) throw new RpcError(RPC.INVALID_PARAMS, "thread/shellCommand needs a command");
       thread.connection = ctx ?? thread.connection;
       const own = thread.activeTurn ? null : beginTurn(thread, ctx);
+      // A turn of its own has nothing in the engine's history.
+      if (own && ensureEngine(thread, ctx).turnAnchors === true) setTurnMeta(thread, own.turnId, localTurnMeta());
       const emitItem = thread.pendingAnswer?.emitItem;
       const card = { ...startedItem({ tool: "bash", args: {}, cwd: thread.cwd }), command, source: "userShell" };
       emitItem?.("item/started", { item: card, startedAtMs: Date.now() });
@@ -894,13 +967,11 @@ export function createHandlers({
       // The user's `!` commands since the last turn go to the model with it.
       const notes = thread.shellNotes ?? [];
       thread.shellNotes = [];
+      const shape = turnShape(thread.activeTurn);
       // The turn runs past this response: the client learns what happened from
       // item/* notifications, exactly as it does with the Rust engine.
-      thread.engine
-        .send(withShellNotes(notes, text), { abortSignal: thread.activeTurn.abort.signal, outputSchema: params?.outputSchema ?? null, images: imagesOf(params?.input) })
-        .then(() => turn.finish())
-        .catch((error) => turn.finish({ error }));
-      return { turn: turnShape(thread.activeTurn) };
+      runSend(thread, turn, { text: withShellNotes(notes, text), shown: text, images: imagesOf(params?.input), outputSchema: params?.outputSchema ?? null });
+      return { turn: shape };
     },
 
     async "turn/steer"(params, ctx) {
@@ -959,6 +1030,13 @@ export function createHandlers({
       const itemId = newItemId();
       const stamp = { threadId: thread.id, turnId };
       thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, compaction: true };
+      // The client keeps this turn as its latest: it has to be in the
+      // thread's turns, or the next rewind finds "thread history changed".
+      // (An engine without turn anchors maps turns by index: not there.)
+      if (engine.turnAnchors === true) {
+        thread.turnIds.push(turnId);
+        setTurnMeta(thread, turnId, localTurnMeta({ compaction: true }));
+      }
       ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
       ctx?.emit?.("turn/started", { ...stamp, turn: turnShape(thread.activeTurn) });
       ctx?.emit?.("item/started", { ...stamp, item: { type: "contextCompaction", id: itemId }, startedAtMs: Date.now() });
@@ -1050,12 +1128,20 @@ export function createHandlers({
         throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/fork is not supported by this engine");
       }
       let keepTurns = null;
+      let keptClientTurns = null;
       if (params?.lastTurnId) {
         const index = source.turnIds.indexOf(params.lastTurnId);
         if (index < 0) throw new RpcError(RPC.INVALID_PARAMS, `unknown turn: ${params.lastTurnId}`);
         keepTurns = index + 1;
+        if (engine.turnAnchors === true) {
+          keptClientTurns = index + 1;
+          const next = source.turnIds[index + 1];
+          keepTurns = next ? (await engineKeepTurns(source, engine, next)).keepTurns : null;
+        }
       }
-      const { state, keptTurns } = await engine.fork({ keepTurns });
+      const { state, keptTurns: engineKept } = await engine.fork({ keepTurns });
+      // An anchored engine counts its own turns; the client's are counted here.
+      const keptTurns = engine.turnAnchors === true ? (keptClientTurns ?? source.turnIds.length) : engineKept;
       const thread = newThread({
         cwd: source.cwd,
         model: params?.model || source.model,
@@ -1066,6 +1152,7 @@ export function createHandlers({
         mode: source.mode ?? null,
         engineState: state,
         turnIds: source.turnIds.slice(0, keptTurns),
+        turnMeta: keepMeta(source.turnMeta, source.turnIds.slice(0, keptTurns)),
       });
       thread.connection = ctx;
       threads.set(thread.id, thread);
@@ -1086,13 +1173,16 @@ export function createHandlers({
       const index = thread.turnIds.indexOf(params?.beforeTurnId);
       if (index < 0) throw new RpcError(RPC.INVALID_PARAMS, `unknown turn: ${params?.beforeTurnId}`);
       try {
-        await engine.revert({ keepTurns: index, restoreFiles: params?.restoreFiles === true });
+        const { keepTurns } = await engineKeepTurns(thread, engine, params.beforeTurnId);
+        // Only turns answered without the engine go: nothing to rewind there.
+        if (keepTurns !== null) await engine.revert({ keepTurns, restoreFiles: params?.restoreFiles === true });
       } catch (error) {
         // Nothing was rewound: the client keeps its history and says why.
         if (error?.code === "REWIND_FILES_FAILED") throw new RpcError(RPC.INVALID_REQUEST, error.message);
         throw error;
       }
       thread.turnIds = thread.turnIds.slice(0, index);
+      thread.turnMeta = keepMeta(thread.turnMeta, thread.turnIds);
       thread.updatedAtEpoch = epochNow();
       persist(thread);
       // The client waits for this after the response before redrawing.
@@ -1112,7 +1202,8 @@ export function createHandlers({
       }
       const index = thread.turnIds.indexOf(params?.beforeTurnId);
       if (index < 0) throw new RpcError(RPC.INVALID_PARAMS, `unknown turn: ${params?.beforeTurnId}`);
-      const preview = await engine.revertPreview({ keepTurns: index });
+      const { keepTurns } = await engineKeepTurns(thread, engine, params.beforeTurnId);
+      const preview = keepTurns === null ? { available: true, files: [] } : await engine.revertPreview({ keepTurns });
       return {
         available: Boolean(preview?.available),
         unavailableReason: preview?.available ? null : (preview?.reason ?? null),

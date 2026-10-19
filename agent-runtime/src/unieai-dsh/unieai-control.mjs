@@ -79,14 +79,24 @@ export function textOf(content) {
 
 const epochSeconds = (ms) => (Number.isFinite(ms) ? Math.floor(ms / 1000) : null);
 
+/** Who a dsh turn's opening message came from, for `historyFromEvents`. */
+const OPENERS = { user: "user", "unieai-schedule": "scheduled" };
+
 /**
  * dsh events -> a flat, JSON-friendly history grouped by turn.
  *
- * Only turns opened for a user prompt count: they are the ones a client turn
- * id maps to, in order. Other turns (goal rounds, injected context) fold into
- * the preceding user turn so nothing the model did goes missing.
+ * By default only turns opened for a user prompt count: other turns (goal
+ * rounds, injected context, scheduled turns) fold into the preceding user
+ * turn so nothing the model did goes missing.
+ *
+ * With `everyTurn`, each dsh turn is its own entry, with its dsh turn number
+ * (`dshTurn`) and what opened it (`opener`: "user", "scheduled" or null).
+ * The app-server maps its client turns onto these: the client shows a turn
+ * dsh started on its own (a scheduled turn, a goal round) as a turn of its
+ * own, and answers some prompts (`/loop` list and stop) with no dsh turn at
+ * all, so counting user turns does not say which client turn is which.
  */
-export function historyFromEvents(events) {
+export function historyFromEvents(events, { everyTurn = false } = {}) {
   const turns = [];
   let pendingTurn = null; // a turn/start not yet known to be a user turn
   let current = null;
@@ -95,6 +105,11 @@ export function historyFromEvents(events) {
     switch (event.type) {
       case "turn/start":
         pendingTurn = { dshTurn: data.turn, startSeq: event.seq, startedAt: epochSeconds(event.time) };
+        if (everyTurn) {
+          current = { ...pendingTurn, opener: null, items: [], endSeq: null, reason: null, answered: false };
+          turns.push(current);
+          pendingTurn = null;
+        }
         break;
       case "user/message": {
         const source = data.source?.kind;
@@ -103,13 +118,21 @@ export function historyFromEvents(events) {
           turns.push(current);
           pendingTurn = null;
         }
-        if (source === "user" && current) {
+        if (!current) break;
+        // What opened the turn: a message before the model's first answer
+        // (a steer comes after one).
+        if (everyTurn && current.opener === null && !current.answered && OPENERS[source]) current.opener = OPENERS[source];
+        if (source === "user") {
           current.items.push({ type: "user", text: textOf(data.content) });
+        } else if (everyTurn && source === "unieai-schedule") {
+          // The client shows a scheduled turn's prompt as its user message.
+          current.items.push({ type: "user", text: data.source.summary ?? textOf(data.content) });
         }
         break;
       }
       case "assistant/message": {
         if (!current) break;
+        if (everyTurn) current.answered = true;
         const message = data.message ?? {};
         const reasoning = (message.content ?? [])
           .filter((block) => block?.type === "reasoning")
@@ -149,16 +172,18 @@ export function historyFromEvents(events) {
         break;
     }
   }
+  if (everyTurn) for (const turn of turns) delete turn.answered;
   return turns;
 }
 
 /**
- * Where a fork keeping the first `keepTurns` user turns ends: just past the
- * last kept turn's `turn/end`, or before the first user turn when none are
- * kept. Returns null when a kept turn is still open.
+ * Where a fork keeping the first `keepTurns` turns ends: just past the last
+ * kept turn's `turn/end`, or before the first turn when none are kept.
+ * Returns null when a kept turn is still open. Turns are user turns, or
+ * every dsh turn with `everyTurn` (see historyFromEvents).
  */
-export function forkCut(events, keepTurns) {
-  const turns = historyFromEvents(events);
+export function forkCut(events, keepTurns, { everyTurn = false } = {}) {
+  const turns = historyFromEvents(events, { everyTurn });
   if (keepTurns > turns.length) return null;
   if (keepTurns === 0) {
     const first = turns[0];
@@ -201,8 +226,8 @@ function rewindService(ctx) {
  * session's workspace, its events, and where the first undone turn starts.
  * Null when there is no such turn.
  */
-export function rewindRequest(observed, keepTurns) {
-  const turn = historyFromEvents(observed.events)[keepTurns];
+export function rewindRequest(observed, keepTurns, { everyTurn = false } = {}) {
+  const turn = historyFromEvents(observed.events, { everyTurn })[keepTurns];
   if (!turn) return null;
   return { cwd: observed.header?.cwd, events: observed.events, fromSeq: turn.startSeq };
 }
@@ -628,29 +653,29 @@ export function apply(ctx, config = {}) {
       });
     },
 
-    async history({ sessionId }) {
-      return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events) }));
+    async history({ sessionId, everyTurn = false }) {
+      return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events, { everyTurn }) }));
     },
 
     /**
      * The files that undoing every user turn from `keepTurns` on would put
      * back (the unieai-rewind plugin's checkpoints): `{available, files}`.
      */
-    async rewindPreview({ sessionId, keepTurns }) {
+    async rewindPreview({ sessionId, keepTurns, everyTurn = false }) {
       const rewind = rewindService(ctx);
       if (!rewind) return { available: false, reason: "file checkpoints are off", files: [] };
       return withObservation(ctx, sessionId, (observed) => {
-        const request = rewindRequest(observed, keepTurns);
+        const request = rewindRequest(observed, keepTurns, { everyTurn });
         return request ? rewind.preview(request) : { available: true, files: [] };
       });
     },
 
     /** Put those files back: `{files, failed, undo}`. */
-    async rewindRestore({ sessionId, keepTurns }) {
+    async rewindRestore({ sessionId, keepTurns, everyTurn = false }) {
       const rewind = rewindService(ctx);
       if (!rewind) throw new Error("file checkpoints are off");
       return withObservation(ctx, sessionId, (observed) => {
-        const request = rewindRequest(observed, keepTurns);
+        const request = rewindRequest(observed, keepTurns, { everyTurn });
         return request ? rewind.restore(request) : { files: [], failed: [], undo: null };
       });
     },
@@ -660,12 +685,12 @@ export function apply(ctx, config = {}) {
      * (all completed turns when omitted). The child is persisted and left
      * closed so the client opens it with ACP `session/resume`.
      */
-    async fork({ sessionId, keepTurns = null, provider, model }) {
+    async fork({ sessionId, keepTurns = null, everyTurn = false, provider, model }) {
       return withObservation(ctx, sessionId, async (observed) => {
         const events = observed.events;
-        const total = historyFromEvents(events).filter((turn) => turn.endSeq !== null).length;
+        const total = historyFromEvents(events, { everyTurn }).filter((turn) => turn.endSeq !== null).length;
         const keep = keepTurns === null ? total : Math.max(0, Math.min(keepTurns, total));
-        const cut = forkCut(events, keep);
+        const cut = forkCut(events, keep, { everyTurn });
         if (cut === null) throw new Error("the turn to fork through has not completed");
         const childId = randomUUID();
         const cwd = observed.header?.cwd;

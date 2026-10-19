@@ -313,7 +313,7 @@ test("revert with restoreFiles puts the files back first, and a failed file stop
   const { restored } = await engine.revert({ keepTurns: 0, restoreFiles: true });
   assert.equal(restored.files.length, 1);
   assert.deepEqual(controlCalls.map(([m]) => m), ["rewindPreview", "rewindRestore", "rewindRestore", "fork"]);
-  assert.deepEqual(controlCalls[1][1], { sessionId: "s1", keepTurns: 0 });
+  assert.deepEqual(controlCalls[1][1], { sessionId: "s1", keepTurns: 0, everyTurn: true });
 
   await engine.revert({ keepTurns: 0 });
   assert.equal(controlCalls.at(-1)[0], "fork", "conversation only: no restore");
@@ -720,6 +720,62 @@ test("/loop goes to unieai-schedule: a reply answers without the model, a prompt
   ]);
   await engine.send("/looping is a word");
   assert.equal(prompts.at(-1), "/looping is a word", "only the command itself is intercepted");
+});
+
+test("send names the dsh turn it opened; a /loop answered without the model opens none", async () => {
+  const notes = {};
+  const { client } = fakeAgent(async ({ method, params }) => {
+    if (method === "session/new") return { sessionId: "s9", configOptions: [] };
+    if (method === "session/prompt") {
+      notes.turnBoundary({ sessionId: params.sessionId, phase: "start", turn: 4 });
+      notes.turnBoundary({ sessionId: params.sessionId, phase: "end", turn: 4, reason: "completed" });
+      return { stopReason: "end_turn" };
+    }
+    return {};
+  });
+  const controlCalls = [];
+  const host = createDshHost({
+    connect: async () => client,
+    connectControl: async () => ({
+      request: async (method, params) => {
+        controlCalls.push([method, params]);
+        if (method === "loopCommand") return params.text === "/loop" ? { handled: true, reply: "Nothing is scheduled." } : { handled: true, prompt: "<loop>\ncheck" };
+        if (method === "history") return { turns: [{ dshTurn: 4, opener: "user", endSeq: 3, reason: "completed", items: [{ type: "user", text: "hi" }] }] };
+        return {};
+      },
+      close() {},
+      onNotification: (method, handler) => (notes[method] = handler),
+      onRequest() {},
+    }),
+  });
+  const engine = createDshEngine({ host, workspace: "/w" });
+  assert.equal(engine.turnAnchors, true);
+  const seen = [];
+  const listed = await engine.send("/loop", { onTurn: (turn) => seen.push(turn) });
+  assert.equal(listed.reply, "Nothing is scheduled.");
+  assert.deepEqual(seen, [], "no dsh turn");
+  await engine.send("hi", { onTurn: (turn) => seen.push(turn) });
+  await engine.send("/loop 5m check", { onTurn: (turn) => seen.push(turn) });
+  assert.deepEqual(seen, [{ turn: 4, rewritten: false }, { turn: 4, rewritten: true }]);
+  const history = await engine.history();
+  assert.equal(history[0].anchor, 4);
+  assert.equal(history[0].opener, "user");
+  assert.deepEqual(controlCalls.find(([m]) => m === "history")[1], { sessionId: "s9", everyTurn: true });
+});
+
+test("a turn dsh starts on its own carries its dsh turn number", async () => {
+  const { client } = fakeAgent(async ({ method }) => (method === "session/new" ? { sessionId: "s10", configOptions: [] } : { stopReason: "end_turn" }));
+  const notes = {};
+  const host = createDshHost({
+    connect: async () => client,
+    connectControl: async () => ({ request: async () => ({}), close() {}, onNotification: (method, handler) => (notes[method] = handler), onRequest() {} }),
+  });
+  const turns = [];
+  const engine = createDshEngine({ host, workspace: "/w", onEngineTurn: (event) => turns.push(event) });
+  await engine.send("hi");
+  await engine.compact();
+  notes.turnBoundary({ sessionId: "s10", phase: "start", turn: 7 });
+  assert.deepEqual(turns, [{ phase: "start", turn: 7 }]);
 });
 
 test("a scheduled turn's prompt is handed on from the control channel", async () => {

@@ -56,6 +56,29 @@ test("a fork cuts at the next prompted turn, never inside an open one", () => {
   assert.equal(forkCut(finished, 2), finished.at(-1).seq + 1);
 });
 
+test("every dsh turn on its own: its number, what opened it, and a scheduled prompt as its user message", () => {
+  const events = session();
+  events.splice(12, 0, ...[
+    ev("turn/start", { turn: 9 }),
+    { type: "user/message", seq: 0, time: 0, data: { content: [{ type: "text", text: "<scheduled>long" }], source: { kind: "unieai-schedule", summary: "[scheduled] check CI" } } },
+    ev("turn/end", { turn: 9, reason: { kind: "completed" } }),
+  ]);
+  events.forEach((event, index) => (event.seq = index));
+  const turns = historyFromEvents(events, { everyTurn: true });
+  assert.deepEqual(turns.map((t) => [t.dshTurn, t.opener]), [[1, "user"], [2, null], [9, "scheduled"], [3, "user"], [4, "user"]]);
+  assert.deepEqual(turns[0].items.map((i) => i.type), ["user", "reasoning", "assistant", "tool", "user"], "a steer does not change the opener");
+  assert.deepEqual(turns[2].items, [{ type: "user", text: "[scheduled] check CI" }]);
+  assert.ok(!("answered" in turns[0]));
+  const starts = events.filter((e) => e.type === "turn/start").map((e) => e.seq);
+  assert.equal(forkCut(events, 1, { everyTurn: true }), starts[1], "the goal round is a turn of its own here");
+  assert.equal(forkCut(events, 3, { everyTurn: true }), starts[3]);
+  assert.equal(forkCut(events, 4, { everyTurn: true }), starts[4]);
+  assert.equal(forkCut(events, 5, { everyTurn: true }), null, "turn 4 has not ended");
+  const request = rewindRequest({ events }, 2, { everyTurn: true });
+  assert.equal(events[request.fromSeq].data.turn, 9);
+  assert.equal(historyFromEvents(events).length, 3, "the default still counts user turns");
+});
+
 test("client tool specs flatten across namespaces; responses become MCP results", async () => {
   const { flattenClientTools, mcpResultOf } = await import("./unieai-control.mjs");
   const specs = [

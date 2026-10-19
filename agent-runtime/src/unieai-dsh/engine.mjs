@@ -804,11 +804,21 @@ export function createDshEngine({
   // turn; any other is dsh working on its own.
   let engineTurn = false;
   let dshTurnOpen = false;
-  const onTurnBoundary = ({ phase, reason }) => {
+  // The dsh turn number of the latest turn/start, and who waits to hear of
+  // the first one a send() opens (see send's `onTurn`).
+  let lastDshTurn = null;
+  let awaitingSendTurn = null;
+  const onTurnBoundary = ({ phase, reason, turn = null }) => {
     dshTurnOpen = phase === "start";
+    if (phase === "start") lastDshTurn = turn;
+    if (phase === "start" && turnActive && awaitingSendTurn) {
+      const announce = awaitingSendTurn;
+      awaitingSendTurn = null;
+      announce(turn);
+    }
     if (phase === "start" && !turnActive && !engineTurn) {
       engineTurn = true;
-      onEngineTurn({ phase: "start" });
+      onEngineTurn({ phase: "start", turn });
     } else if (phase === "end" && engineTurn) {
       // Close it once ACP has gone quiet: ending it on the control note alone
       // cut off the answer of every turn dsh started on its own.
@@ -940,8 +950,16 @@ export function createDshEngine({
       return sessionId;
     },
 
-    async send(text, { abortSignal, images = [] } = {}) {
+    /**
+     * Run one client turn. `onTurn({ turn, rewritten })` hears the dsh turn
+     * number of the first dsh turn it opens (`rewritten`: what the model got
+     * is not the text given, e.g. a `/loop` that starts a loop). A turn
+     * answered here without the model opens none: the result's `reply` is
+     * that answer, and `onTurn` is never called.
+     */
+    async send(text, { abortSignal, images = [], onTurn = null } = {}) {
       const acp = await ensureSession();
+      let rewritten = false;
       // `/loop ...` is unieai-schedule's: it either answers here, without the
       // model, or names the prompt that starts the loop's first round.
       if (/^\/loop(\s|$)/.test(text.trim())) {
@@ -949,13 +967,17 @@ export function createDshEngine({
         if (loop?.reply) {
           onText(loop.reply);
           messages.push({ role: "user", content: text }, { role: "assistant", content: loop.reply });
-          return { stopReason: "end_turn" };
+          return { stopReason: "end_turn", reply: loop.reply };
         }
-        if (loop?.prompt) text = loop.prompt;
+        if (loop?.prompt && loop.prompt !== text) {
+          text = loop.prompt;
+          rewritten = true;
+        }
       }
       const prompt = await promptContent(text, images, { imageInput: Boolean(acp.agentCapabilities?.promptCapabilities?.image) });
       messages.push({ role: "user", content: text });
       turnText = "";
+      awaitingSendTurn = onTurn ? (turn) => onTurn({ turn, rewritten }) : null;
       turnActive = true;
       const cancel = () => acp.notify("session/cancel", { sessionId });
       abortSignal?.addEventListener("abort", cancel, { once: true });
@@ -969,13 +991,15 @@ export function createDshEngine({
         return result;
       } finally {
         turnActive = false;
+        awaitingSendTurn = null;
         abortSignal?.removeEventListener("abort", cancel);
         if (turnText) messages.push({ role: "assistant", content: turnText });
         // dsh may already be running its next turn (a goal round) whose start
         // arrived while this one was still ours.
         if (dshTurnOpen && !engineTurn) {
           engineTurn = true;
-          queueMicrotask(() => onEngineTurn({ phase: "start" }));
+          const turn = lastDshTurn;
+          queueMicrotask(() => onEngineTurn({ phase: "start", turn }));
         }
       }
     },
@@ -1051,11 +1075,19 @@ export function createDshEngine({
       return host.control("context", { sessionId });
     },
 
-    /** The conversation's user turns, as protocol items, from dsh's log. */
+    /**
+     * History, fork and revert count every dsh turn, each carrying its dsh
+     * turn number as `anchor`; the client turns say which dsh turn they
+     * began with (send's `onTurn`, onEngineTurn's `turn`), so the server
+     * can line its turns up with them (see app-server/unieai-turn-anchors.mjs).
+     */
+    turnAnchors: true,
+
+    /** Every dsh turn of the conversation, as protocol items, from dsh's log. */
     async history() {
       if (!sessionId) return [];
-      const { turns } = await host.control("history", { sessionId });
-      return turns.map(historyTurn);
+      const { turns } = await host.control("history", { sessionId, everyTurn: true });
+      return turns.map((turn) => ({ ...historyTurn(turn), anchor: turn.dshTurn ?? null, opener: turn.opener ?? null }));
     },
 
     /** One of this session's subagents' turns, the same way. */
@@ -1064,10 +1096,10 @@ export function createDshEngine({
       return turns.map(historyTurn);
     },
 
-    /** A new conversation holding the first `keepTurns` turns (all when null). */
+    /** A new conversation holding the first `keepTurns` dsh turns (all when null). */
     async fork({ keepTurns = null } = {}) {
       if (!sessionId) return { state: null, keptTurns: 0 };
-      const { sessionId: child, keptTurns } = await host.control("fork", { sessionId, keepTurns });
+      const { sessionId: child, keptTurns } = await host.control("fork", { sessionId, keepTurns, everyTurn: true });
       return { state: { sessionId: child }, keptTurns };
     },
 
@@ -1077,7 +1109,7 @@ export function createDshEngine({
      */
     async revertPreview({ keepTurns }) {
       if (!sessionId) return { available: false, files: [] };
-      return host.control("rewindPreview", { sessionId, keepTurns });
+      return host.control("rewindPreview", { sessionId, keepTurns, everyTurn: true });
     },
 
     /**
@@ -1090,14 +1122,14 @@ export function createDshEngine({
       if (turnActive) throw new Error("cannot revert while a turn is running");
       let restored = null;
       if (restoreFiles) {
-        restored = await host.control("rewindRestore", { sessionId, keepTurns });
+        restored = await host.control("rewindRestore", { sessionId, keepTurns, everyTurn: true });
         if (restored.failed?.length) {
           const list = restored.failed.map((file) => `${file.path} (${file.error})`).join(", ");
           throw Object.assign(new Error(`could not restore ${list}; the conversation was not rewound`), { code: "REWIND_FILES_FAILED" });
         }
       }
       await closeSession();
-      const { sessionId: child } = await host.control("fork", { sessionId, keepTurns });
+      const { sessionId: child } = await host.control("fork", { sessionId, keepTurns, everyTurn: true });
       sessionId = child;
       onState({ sessionId });
       messages.length = 0;
