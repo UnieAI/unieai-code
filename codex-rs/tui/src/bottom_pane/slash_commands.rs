@@ -96,10 +96,10 @@ pub(crate) fn commands_for_input(
     let mut commands = Vec::new();
     let tiers_enabled = flags.service_tier_commands_enabled;
     // Hidden here, but still found by name: dispatch says why uac lacks it.
-    for (_, cmd) in builtins_for_input(flags)
-        .into_iter()
-        .filter(|(_, cmd)| !crate::unieai_engine::uac_lacks_command(*cmd))
-    {
+    for (_, cmd) in builtins_for_input(flags).into_iter().filter(|(_, cmd)| {
+        !crate::unieai_engine::uac_lacks_command(*cmd)
+            && !crate::unieai_engine::only_uac_serves(*cmd)
+    }) {
         commands.push(SlashCommandItem::Builtin(cmd));
         if cmd == SlashCommand::Model && tiers_enabled {
             commands.extend(

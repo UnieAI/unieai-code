@@ -1214,6 +1214,17 @@ pub(crate) enum AppEvent {
     /// Abandon the post-install plugin app-auth flow.
     PluginInstallAuthAbandon,
 
+    /// Ask the uac engine what is using the thread's context window (`/context`).
+    FetchContextUsage {
+        thread_id: ThreadId,
+    },
+
+    /// The uac engine's answer to [`AppEvent::FetchContextUsage`].
+    ContextUsageLoaded {
+        thread_id: ThreadId,
+        result: Result<crate::unieai_context::ContextUsage, String>,
+    },
+
     /// Fetch MCP inventory via app-server RPCs and render it into history.
     FetchMcpInventory {
         detail: McpServerStatusDetail,

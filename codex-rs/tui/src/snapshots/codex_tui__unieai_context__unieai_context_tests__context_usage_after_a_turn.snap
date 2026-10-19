@@ -1,0 +1,16 @@
+---
+source: tui/src/unieai_context_tests.rs
+expression: text(&context_usage_lines(&usage))
+---
+/context  12.7K / 131K tokens (9.7%) · fake-model
+  ████████░░░░░░░░░░░░│░░░░░░░░░░░░░░░░░░░
+  █ System prompt                    3.38K    2.6%
+  █ Tools: built-in (28)             7.41K    5.7%
+  █ Instructions (AGENTS.md)           882    0.7%
+  █ Skills                             238    0.2%
+  █ Messages                            65    0.0%
+  █ Tool results                       492    0.4%
+  █ Runtime context & notices          232    0.2%
+  ░ Free                              118K   90.3%
+  │ Auto-compacts at 65.5K (50.0% of the window)
+  Parts are estimates (4 characters a token), scaled to the last request's reported size.

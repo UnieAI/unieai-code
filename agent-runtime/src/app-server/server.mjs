@@ -51,6 +51,8 @@ export const ENGINE_METHODS = [
   "thread/backgroundTerminals/list",
   "thread/backgroundTerminals/clean",
   "review/start",
+  // UnieAI's own: what is using a thread's context window (TUI /context).
+  "unieai/context/read",
 ];
 
 /**
@@ -1130,6 +1132,21 @@ export function createHandlers({
       const goal = threadGoal(thread, await engine.setGoal({ objective: params?.objective ?? null, status }));
       ctx?.emit?.("thread/goal/updated", { threadId: thread.id, turnId: thread.activeTurn?.id ?? null, goal });
       return { goal };
+    },
+
+    /**
+     * What is using the thread's context window, by kind (TUI /context). Not
+     * a codex protocol method: the TUI sends it only to the uac engine.
+     */
+    async "unieai/context/read"(params, ctx) {
+      const child = subagents.get(params?.threadId);
+      if (child) {
+        if (typeof child.root.engine?.context !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "context usage is not supported by this engine");
+        return child.root.engine.context(child.id);
+      }
+      const engine = ensureEngine(getThread(params?.threadId), ctx);
+      if (typeof engine.context !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "context usage is not supported by this engine");
+      return engine.context();
     },
 
     // Reviews run codex's review flow, which no engine here implements.

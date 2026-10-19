@@ -206,6 +206,12 @@ pub(crate) fn uac_lacks_command(command: crate::slash_command::SlashCommand) -> 
         )
 }
 
+/// Slash commands only the uac engine serves: `/context` (dsh measures the
+/// context). Hidden from the popup on codex; dispatch says why when typed.
+pub(crate) fn only_uac_serves(command: crate::slash_command::SlashCommand) -> bool {
+    !session_is_uac() && command == crate::slash_command::SlashCommand::Context
+}
+
 /// Whether images reach the model whatever its own modalities: uac passes
 /// them inline to a vision model and describes them for a text-only one
 /// (unieai-vision-fallback's describe_image).

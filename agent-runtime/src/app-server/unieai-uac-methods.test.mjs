@@ -218,3 +218,15 @@ test("an interrupt ends the turn even when the engine will not stop", async () =
   // with "cannot start a turn while a turn is running" for good.
   await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "again" }] }, ctx);
 });
+
+test("unieai/context/read asks the thread's engine, and says so when it cannot", async () => {
+  const usage = { totalTokens: 1200, categories: [] };
+  const handlers = createHandlers({ codexHome: "/h", createEngineFor: () => ({ context: async () => usage }) });
+  const ctx = { emit: () => {}, request: async () => ({}) };
+  const { thread } = await handlers["thread/start"]({ cwd: process.cwd() }, ctx);
+  assert.deepEqual(await handlers["unieai/context/read"]({ threadId: thread.id }, ctx), usage);
+
+  const plain = createHandlers({ codexHome: "/h", createEngineFor: () => ({}) });
+  const other = (await plain["thread/start"]({ cwd: process.cwd() }, ctx)).thread;
+  await assert.rejects(() => plain["unieai/context/read"]({ threadId: other.id }, ctx), /not supported by this engine/);
+});

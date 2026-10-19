@@ -130,6 +130,7 @@ mod clipboard_paste;
 mod clock_format;
 mod collaboration_modes;
 mod color;
+mod unieai_context;
 mod unieai_engine;
 mod unieai_mesh;
 // Terminal color-level detection + RGB quantization. Infrastructure for the

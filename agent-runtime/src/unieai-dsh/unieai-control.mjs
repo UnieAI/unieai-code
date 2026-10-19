@@ -248,6 +248,8 @@ export function apply(ctx, config = {}) {
   const route = { provider: config.provider, model: config.model };
   /** sessionId -> disposers of the client tools registered for it. */
   const clientTools = new Map();
+  /** sessionId -> names of those tools (what /context counts as the client's). */
+  const clientToolNames = new Map();
   const dropClientTools = (sessionId) => {
     for (const dispose of clientTools.get(sessionId) ?? []) {
       try {
@@ -257,6 +259,7 @@ export function apply(ctx, config = {}) {
       }
     }
     clientTools.delete(sessionId);
+    clientToolNames.delete(sessionId);
   };
   ctx.on("agent/disposed", ({ agent }) => {
     dropClientTools(agent.id);
@@ -440,6 +443,7 @@ export function apply(ctx, config = {}) {
       if (!agent) throw new Error(`session is not open: ${sessionId}`);
       dropClientTools(sessionId);
       const disposers = [];
+      const names = [];
       for (const tool of flattenClientTools(tools)) {
         const definition = createMcpToolDefinition(ctx, {
           name: tool.name,
@@ -459,11 +463,13 @@ export function apply(ctx, config = {}) {
         });
         try {
           disposers.push(agent.ctx.tools.register(definition));
+          names.push(tool.name);
         } catch (error) {
           ctx.logger.warn(`unieai-control: client tool ${tool.name} not registered: ${error?.message ?? error}`);
         }
       }
       clientTools.set(sessionId, disposers);
+      clientToolNames.set(sessionId, names);
       return { registered: disposers.length };
     },
 
@@ -513,6 +519,20 @@ export function apply(ctx, config = {}) {
         // No meter in this profile: the last call's counts stand in.
       }
       return { total, last, modelContextWindow: Number.isFinite(window) ? window : null, contextUsed };
+    },
+
+    /**
+     * What is using the session's context (the TUI's /context), measured by
+     * the unieai-context-usage plugin; a child session counts its parent's
+     * client tools.
+     */
+    async context({ sessionId }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const service = ctx.get?.("unieaiContextUsage");
+      if (!service) throw new Error("context usage is not available: the unieai-context-usage plugin is not loaded");
+      const owner = clientToolNames.has(sessionId) ? sessionId : parentOfChild(sessionId);
+      return service.measure(agent, { clientToolNames: clientToolNames.get(owner) ?? [] });
     },
 
     /** The session's current goal (null when none). */

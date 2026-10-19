@@ -135,3 +135,52 @@ test("a rewind starts at the first undone user turn, so a goal round before it i
   assert.equal(events[rewindRequest(observed, 0).fromSeq].data.turn, 1);
   assert.equal(rewindRequest(observed, 3), null, "no such turn");
 });
+
+test("/context: the plugin measures the session, counting the client's registered tools as its own", async () => {
+  const { apply } = await import("./unieai-control.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { connect } = await import("node:net");
+  const { createInterface } = await import("node:readline");
+  const handlers = {};
+  const measured = [];
+  const parent = { id: "p1", session: { header: { id: "p1" } }, ctx: { tools: { register: () => () => {} } } };
+  const child = { id: "c1", session: { header: { id: "c1", parentSession: "p1" } } };
+  const agents = { p1: parent, c1: child };
+  const service = { measure: async (agent, options) => (measured.push([agent.id, options]), { totalTokens: 42 }) };
+  const socket = join(mkdtempSync(join(tmpdir(), "ctl-")), "c.sock");
+  let loaded = true;
+  apply(
+    {
+      on: (name, fn) => (handlers[name] = fn),
+      get: (name) => (name === "unieaiContextUsage" && loaded ? service : undefined),
+      agents: { get: (id) => agents[id] },
+      logger: { warn() {}, info() {} },
+      effect: () => {},
+    },
+    { socket },
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  const client = connect(socket);
+  const replies = new Map();
+  createInterface({ input: client }).on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.id !== undefined) replies.set(message.id, message);
+  });
+  const call = async (id, method, params) => {
+    client.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    await new Promise((r) => setTimeout(r, 50));
+    return replies.get(id);
+  };
+  const tool = { type: "function", name: "list_threads", description: "", inputSchema: { type: "object" } };
+  assert.deepEqual((await call(1, "registerTools", { sessionId: "p1", tools: [tool] })).result, { registered: 1 });
+  assert.deepEqual((await call(2, "context", { sessionId: "p1" })).result, { totalTokens: 42 });
+  await call(3, "context", { sessionId: "c1" });
+  assert.deepEqual(measured, [["p1", { clientToolNames: ["list_threads"] }], ["c1", { clientToolNames: ["list_threads"] }]]);
+  loaded = false;
+  assert.match((await call(4, "context", { sessionId: "p1" })).error.message, /unieai-context-usage plugin is not loaded/);
+  assert.match((await call(5, "context", { sessionId: "gone" })).error.message, /not open/);
+  client.destroy();
+  handlers.dispose();
+});
