@@ -73,8 +73,11 @@ const SANDBOX_NAMES = {
  * The client's `-s` and `-a` from thread/start or thread/resume params, in
  * the engine's terms: `sandbox` is read-only | workspace-write |
  * danger-full-access, `approval` is "never" or "ask" (every codex policy
- * other than never still asks). Null where the client said nothing, so the
- * engine's default stands. A custom permission profile is not mapped.
+ * other than never still asks), and `reviewer` is who answers the asks:
+ * "auto" for codex's "Approve for me" (approvalsReviewer auto_review; the
+ * unieai-auto-approval plugin), else "user". Null where the client said
+ * nothing, so the engine's default stands. A custom permission profile is
+ * not mapped.
  */
 export function requestedPermissions(params) {
   // thread/start and /resume say `sandbox`; turn/start and
@@ -82,8 +85,14 @@ export function requestedPermissions(params) {
   const sandbox = PROFILE_SANDBOX[params?.permissions] ?? SANDBOX_NAMES[params?.sandbox] ?? SANDBOX_NAMES[params?.sandboxPolicy?.type] ?? null;
   const policy = params?.approvalPolicy;
   const approval = typeof policy !== "string" ? null : policy === "never" ? "never" : "ask";
-  return { sandbox, approval };
+  const reviewer = REVIEWERS[params?.approvalsReviewer] ?? null;
+  return { sandbox, approval, reviewer };
 }
+
+const REVIEWERS = { auto_review: "auto", guardian_subagent: "auto", user: "user" };
+
+/** The protocol's approvalsReviewer for a thread's permissions. */
+const reviewerShape = (permissions) => (permissions?.reviewer === "auto" ? "auto_review" : "user");
 
 const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
 
@@ -293,7 +302,7 @@ export function createHandlers({
     disabledPluginIds: [],
     cwd: t.cwd,
     approvalPolicy: t.permissions?.approval === "never" ? "never" : "on-request",
-    approvalsReviewer: "user",
+    approvalsReviewer: reviewerShape(t.permissions),
     sandboxPolicy: sandboxShape(t),
     activePermissionProfile: permissionProfileShape(t),
     model: t.model || defaultModel || "",
@@ -319,7 +328,7 @@ export function createHandlers({
     runtimeWorkspaceRoots: [t.cwd],
     instructionSources: [],
     approvalPolicy: params?.approvalPolicy || "on-request",
-    approvalsReviewer: params?.approvalsReviewer || "user",
+    approvalsReviewer: t.permissions ? reviewerShape(t.permissions) : params?.approvalsReviewer || "user",
     // What the thread runs under: its own -s when it has one.
     sandbox: sandboxShape(t),
     activePermissionProfile: permissionProfileShape(t),
@@ -1002,7 +1011,7 @@ export function createHandlers({
       const thread = getThread(params?.threadId);
       // A resumed session takes the options of the launch resuming it.
       const wanted = requestedPermissions(params);
-      if (wanted.sandbox || wanted.approval) thread.permissions = { ...thread.permissions, ...Object.fromEntries(Object.entries(wanted).filter(([, v]) => v)) };
+      if (wanted.sandbox || wanted.approval || wanted.reviewer) thread.permissions = { ...thread.permissions, ...Object.fromEntries(Object.entries(wanted).filter(([, v]) => v)) };
       ensureEngine(thread, ctx);
       const turns = await historyTurns(thread, ctx);
       return sessionResponse(thread, params, turns);

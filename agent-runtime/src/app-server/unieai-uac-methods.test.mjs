@@ -47,11 +47,38 @@ test("/model and /permissions reach the engine and stay with the thread", async 
     sandboxPolicy: { type: "readOnly" },
   });
   assert.deepEqual(configured, [{ model: "second", effort: "high", permissions: true }]);
-  assert.deepEqual([live.model, live.effort, live.permissions], ["second", "high", { sandbox: "read-only", approval: "never" }]);
+  assert.deepEqual([live.model, live.effort, live.permissions], ["second", "high", { sandbox: "read-only", approval: "never", reviewer: null }]);
 
   // turn/start carries the same settings every time: unchanged, nothing to do.
   await handlers["turn/start"]({ threadId: thread.id, model: "second", approvalPolicy: "never", input: [{ type: "text", text: "again" }] }, ctx);
   assert.equal(configured.length, 1);
+});
+
+test("\"Approve for me\" (approvalsReviewer auto_review) is auto mode, and is reported back", async () => {
+  const { handlers, ctx, thread, configured, live, emitted } = await setup();
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "hi" }] }, ctx);
+  await handlers["thread/settings/update"]({ threadId: thread.id, approvalPolicy: "on-request", approvalsReviewer: "auto_review" }, ctx);
+  assert.deepEqual(live.permissions, { sandbox: null, approval: "ask", reviewer: "auto" });
+  assert.deepEqual(configured.at(-1), { model: null, effort: null, permissions: true });
+  const [method, params] = emitted.findLast(([m]) => m === "thread/settings/updated");
+  assert.equal(params.threadSettings.approvalsReviewer, "auto_review");
+  if (haveSchemas) {
+    const result = validateAgainstSchema("ServerNotification", { method, params }, { repoRoot });
+    assert.equal(result.ok, true, `${method}\n  ${result.problems.join("\n  ")}`);
+  }
+
+  // Back to "Ask for approval": the TUI sends the reviewer as user.
+  await handlers["thread/settings/update"]({ threadId: thread.id, approvalPolicy: "on-request", approvalsReviewer: "user" }, ctx);
+  assert.equal(live.permissions.reviewer, "user");
+  assert.equal(emitted.findLast(([m]) => m === "thread/settings/updated")[1].threadSettings.approvalsReviewer, "user");
+
+  // A thread started in auto mode says so, and its engine is told.
+  const started = await handlers["thread/start"]({ cwd: process.cwd(), approvalPolicy: "on-request", approvalsReviewer: "auto_review" }, ctx);
+  assert.equal(started.approvalsReviewer, "auto_review");
+  assert.deepEqual(handlers._threads.get(started.thread.id).permissions, { sandbox: null, approval: "ask", reviewer: "auto" });
+  // Not chosen: the user answers, as before.
+  const plain = await handlers["thread/start"]({ cwd: process.cwd(), approvalPolicy: "on-request" }, ctx);
+  assert.equal(plain.approvalsReviewer, "user");
 });
 
 test("a settings update says what is now in force, so the client stops waiting on it", async () => {

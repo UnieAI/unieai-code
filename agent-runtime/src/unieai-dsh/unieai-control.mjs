@@ -28,8 +28,13 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createMcpToolDefinition } from "@deepseek-ai/dsh-mcp-client";
 import { SANDBOX_MODES, setSandboxMode } from "@deepseek-ai/dsh-sandbox-policy";
 import { APPROVAL_POLICIES, setApprovalPolicy } from "@deepseek-ai/dsh-user-approval";
+import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 
 export const name = "unieai-control";
+/** The session record unieai-auto-approval reads (its MODE_RECORD). */
+export const AUTO_APPROVAL_RECORD = "plugin:unieai-auto-approval/mode";
+const REVIEWERS = ["auto", "user"];
+
 export const inject = ["agents", "compaction", "sessionQuery", "sessions", "tools"];
 
 /** Client tool specs (the app-server `DynamicToolSpec` shape) -> flat tool list. */
@@ -439,9 +444,11 @@ export function apply(ctx, config = {}) {
      * The client's `-s` / `-a` for one session, as dsh's own per-session
      * `sandbox/mode` and `approval/policy` events (what its permission
      * picker writes). Only a change is appended, so resuming a session does
-     * not grow its log.
+     * not grow its log. `reviewer` "auto" (codex's "Approve for me") is a
+     * record the unieai-auto-approval plugin reads: a reviewer model answers
+     * the session's approval asks and only risky ones reach the user.
      */
-    async setPermissions({ sessionId, sandbox = null, approval = null }) {
+    async setPermissions({ sessionId, sandbox = null, approval = null, reviewer = null }) {
       const agent = ctx.agents.get(sessionId);
       if (!agent) throw new Error(`session is not open: ${sessionId}`);
       const events = agent.session.snapshotEvents?.() ?? [];
@@ -454,6 +461,10 @@ export function apply(ctx, config = {}) {
       if (approval && APPROVAL_POLICIES.includes(approval) && last("approval/policy", "policy") !== approval) {
         setApprovalPolicy(agent.session, approval);
         applied.approval = approval;
+      }
+      if (REVIEWERS.includes(reviewer) && (last(AUTO_APPROVAL_RECORD, "reviewer") ?? "user") !== reviewer) {
+        appendPluginRecord(agent.session, AUTO_APPROVAL_RECORD, { reviewer });
+        applied.reviewer = reviewer;
       }
       return { applied };
     },

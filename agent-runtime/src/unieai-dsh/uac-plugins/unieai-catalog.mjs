@@ -69,6 +69,14 @@ export const PLUGINS = Object.freeze([
     profiles: ["cli", "studio"],
     summary: "this machine's credentials (npm, git, registry, UnieAI keys, credential env vars) never reach the model",
   },
+  {
+    id: "unieai-auto-approval",
+    file: "unieai-auto-approval.mjs",
+    profiles: ["cli"],
+    // Inert until the host turns auto mode on for a session (codex's
+    // "Approve for me"); the host may pass { model } for a smaller reviewer.
+    summary: "auto mode: a reviewer model approves safe calls and sends only risky ones to the user",
+  },
   { id: "unieai-wait-agents", file: "unieai-wait-agents.mjs", profiles: ["cli"], summary: "wait_agents: block on background subagents instead of polling" },
   {
     id: "unieai-loop-truncation",
