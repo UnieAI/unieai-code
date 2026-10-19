@@ -216,10 +216,26 @@ pub fn resolve_peer(
             .iter()
             .filter(|peer| peer.thread_id == thread_id)
             .collect(),
-        SelectorForm::NameAndRef { name, short_ref } => peers
-            .iter()
-            .filter(|peer| peer.name() == name && peer.short_ref.starts_with(&short_ref))
-            .collect(),
+        SelectorForm::NameAndRef { name, short_ref } => {
+            let exact: Vec<&PeerHandle> = peers
+                .iter()
+                .filter(|peer| peer.name() == name && peer.short_ref.starts_with(&short_ref))
+                .collect();
+            if exact.is_empty() && !peers.iter().any(|peer| peer.name() == name) {
+                // The name is a label that changes when the session gets a
+                // title (`wc [w28r]` becomes `ask-wb-session… [w28r]`), so a
+                // handle copied before that names no live session at all.
+                // The ref still does: fall back to it. A name that belongs to
+                // another live session is a real disagreement and resolves to
+                // nothing, and an ambiguous ref still fails below.
+                peers
+                    .iter()
+                    .filter(|peer| peer.short_ref.starts_with(&short_ref))
+                    .collect()
+            } else {
+                exact
+            }
+        }
         SelectorForm::ShortRef(short_ref) => peers
             .iter()
             .filter(|peer| peer.short_ref.starts_with(&short_ref))

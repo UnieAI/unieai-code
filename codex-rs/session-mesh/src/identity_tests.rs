@@ -189,6 +189,30 @@ fn a_bracketed_form_whose_halves_disagree_resolves_to_nothing() {
 }
 
 #[test]
+fn a_handle_from_before_the_session_was_renamed_still_resolves() {
+    // Seen live: A listed `wc [w28r]`, C then got a thread title, and A's
+    // send to `wc [w28r]` failed with "no such peer".
+    let peers = [
+        peer(
+            "019460c8-1b2a-7c3d-8e4f-5a6b0c0d0e0f",
+            Some("ask-wb-for-its-port"),
+            "/w/wc",
+        ),
+        peer(
+            "019460c8-1b2a-7c3d-8e4f-5a6b9a8b7c6d",
+            Some("web"),
+            "/w/web",
+        ),
+    ];
+    let stale = format!("wc [{}]", &peers[0].short_ref[..4]);
+
+    let resolved = resolve_peer(&PeerSelector::new(stale), &peers)
+        .expect("the ref still names the session");
+
+    assert_eq!(resolved.thread_id, peers[0].thread_id);
+}
+
+#[test]
 fn a_full_thread_id_resolves_as_an_escape_hatch() {
     let peers = [peer(
         "019460c8-1b2a-7c3d-8e4f-5a6b0c0d0e0f",

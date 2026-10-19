@@ -341,9 +341,9 @@ async fn send(
         .resolve(&PeerSelector::new(args.target))
         .await
         .map_err(|err| err.to_string())?;
-    // Same relay rule as the codex engine: one hop further than the furthest
-    // peer message received since this session's user last spoke.
-    let hop = node.outbound_hop();
+    // Same relay rule as the codex engine: one hop further than the current
+    // exchange with that peer (see `unieai_session_mesh::unieai_chain`).
+    let hop = node.outbound_hop(peer.thread_id);
     let ack = node
         .send_message(
             &peer,

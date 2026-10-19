@@ -718,9 +718,19 @@ export function createHandlers({
     }
   };
 
-  /** The thread's turns with items, from the engine's history. */
-  const historyTurns = async (thread, ctx) => {
-    const engine = ensureEngine(thread, ctx);
+  /**
+   * The thread's turns with items, from the engine's history.
+   *
+   * Reading never makes the reader the thread's client: one uac server serves
+   * every TUI on the machine, and another session's model reads this thread
+   * (`wait_threads`, `read_thread`) while its own TUI is still driving it.
+   * Claiming it here sent that TUI's tool calls and approvals to the reader,
+   * which answered "the session mesh is not available in this session" to a
+   * `send_peer_message` that was never its own. The methods that act on the
+   * thread claim it themselves (`ensureEngine(thread, ctx)`).
+   */
+  const historyTurns = async (thread) => {
+    const engine = ensureEngine(thread, null);
     if (typeof engine.history !== "function") return legacyTurns(thread, engine);
     const history = await engine.history();
     return history.map((turn, index) => {
@@ -868,7 +878,7 @@ export function createHandlers({
       const child = subagentThread(params?.threadId);
       if (child) return { thread: threadShape(child, params?.includeTurns ? await subagents.turns(subagents.get(child.id)) : []) };
       const thread = getThread(params?.threadId);
-      const turns = params?.includeTurns ? await historyTurns(thread, ctx) : [];
+      const turns = params?.includeTurns ? await historyTurns(thread) : [];
       return { thread: threadShape(thread, turns) };
     },
 
@@ -976,7 +986,7 @@ export function createHandlers({
 
     async "thread/turns/list"(params, ctx) {
       const child = subagents.get(params?.threadId);
-      let turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId), ctx);
+      let turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId));
       if (params?.itemsView === "notLoaded") turns = turns.map((turn) => ({ ...turn, items: [], itemsView: "notLoaded" }));
       if (params?.sortDirection !== "asc") turns.reverse();
       return { data: turns, nextCursor: null, backwardsCursor: null };
@@ -984,7 +994,7 @@ export function createHandlers({
 
     async "thread/items/list"(params, ctx) {
       const child = subagents.get(params?.threadId);
-      const turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId), ctx);
+      const turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId));
       const data = turns
         .filter((turn) => !params?.turnId || turn.id === params.turnId)
         .flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item })));
@@ -1027,14 +1037,15 @@ export function createHandlers({
       const wanted = requestedPermissions(params);
       if (wanted.sandbox || wanted.approval || wanted.reviewer) thread.permissions = { ...thread.permissions, ...Object.fromEntries(Object.entries(wanted).filter(([, v]) => v)) };
       ensureEngine(thread, ctx);
-      const turns = await historyTurns(thread, ctx);
+      const turns = await historyTurns(thread);
       return sessionResponse(thread, params, turns);
     },
 
     async "thread/fork"(params, ctx) {
       const source = getThread(params?.threadId);
       requireIdle(source, "fork");
-      const engine = ensureEngine(source, ctx);
+      // The fork is the forker's; the source stays with the client driving it.
+      const engine = ensureEngine(source, null);
       if (typeof engine.fork !== "function") {
         throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/fork is not supported by this engine");
       }
@@ -1059,7 +1070,7 @@ export function createHandlers({
       thread.connection = ctx;
       threads.set(thread.id, thread);
       persist(thread);
-      const turns = params?.excludeTurns ? [] : await historyTurns(thread, ctx);
+      const turns = params?.excludeTurns ? [] : await historyTurns(thread);
       const response = sessionResponse(thread, params, turns);
       ctx?.emit?.("thread/started", { thread: { ...response.thread, turns: [] } });
       return response;
@@ -1110,9 +1121,10 @@ export function createHandlers({
 
     // Goals are codex's long-running task loop; no engine here has one. Asking
     // for the goal is routine (the TUI does it on resume), so answer "none".
-    async "thread/goal/get"(params, ctx) {
+    async "thread/goal/get"(params) {
       const thread = getThread(params?.threadId);
-      const engine = ensureEngine(thread, ctx);
+      // A read: it does not make the asker the thread's client.
+      const engine = ensureEngine(thread, null);
       if (typeof engine.goal !== "function") return { goal: null };
       return { goal: threadGoal(thread, await engine.goal()) };
     },
@@ -1164,7 +1176,8 @@ export function createHandlers({
       if (child) return sessionResponse(child, params, await subagents.turns(subagents.get(child.id)));
       const thread = threads.get(params?.threadId);
       if (!thread) throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/resume is not supported by this engine");
-      return sessionResponse(thread, params, await historyTurns(thread, ctx));
+      ensureEngine(thread, ctx);
+      return sessionResponse(thread, params, await historyTurns(thread));
     };
     return handlers;
   }

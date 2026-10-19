@@ -24,9 +24,9 @@
  * Each dsh mode runs in its own dsh process, started when a thread first
  * needs it; a thread keeps the mode it started in.
  */
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
-import { readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
@@ -45,6 +45,7 @@ import { loadCredentials } from "../src/config.mjs";
 import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-dsh/unieai-mcp-servers.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
+import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
 
 const oneShotCall = createOneShotModel();
 // Logged with its duration: the client gives these turns 30 seconds.
@@ -71,6 +72,23 @@ if (nodeMajor < 22) {
 const sandboxMode = process.env.UNIEAI_SANDBOX || "workspace-write";
 const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
 const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac", "app-server.sock");
+// One server per socket. Two TUIs opened together each start one; the second
+// must not start a dsh of its own next to the first one's (see
+// unieai-server-lock.mjs). It waits for the first to answer and leaves, which
+// is what its TUI is waiting for. A server that hands the socket over to
+// another release (unieai-launch's drain) gives up the lock with it, so the
+// new release's server can take both while this one serves its clients.
+mkdirSync(dirname(appSocket), { recursive: true });
+const claimed = await claimServer(appSocket).catch((error) => {
+  log(`uac: ${error.message}`);
+  process.exit(1);
+});
+if (!claimed.release) {
+  log(`uac: another server is already serving ${appSocket}; this one is not needed`);
+  process.exit(0);
+}
+process.once("exit", claimed.release);
+
 // Next to the app-server socket, whose path the TUI already kept short. The
 // pid keeps it this process's: a server of another release can start while
 // this one still serves its clients (see unieai-launch's drain), and a shared

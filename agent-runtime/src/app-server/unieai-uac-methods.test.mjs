@@ -230,3 +230,38 @@ test("unieai/context/read asks the thread's engine, and says so when it cannot",
   const other = (await plain["thread/start"]({ cwd: process.cwd() }, ctx)).thread;
   await assert.rejects(() => plain["unieai/context/read"]({ threadId: other.id }, ctx), /not supported by this engine/);
 });
+
+test("another client reading a thread does not take over its tool calls and approvals", async () => {
+  // One uac server serves every TUI on the machine. Session A's model reads
+  // session B's thread (wait_threads / read_thread) while B's TUI drives it;
+  // B's client tool calls (send_peer_message) and approvals must still reach B.
+  const asked = { a: [], b: [] };
+  let engineOptions = null;
+  const handlers = createHandlers({
+    codexHome: "/h",
+    createEngineFor: (options) => {
+      engineOptions = options;
+      return {
+        configure: async () => {},
+        send: async () => {},
+        history: async () => [],
+        goal: async () => null,
+        fork: async () => ({ sessionId: "forked" }),
+      };
+    },
+  });
+  const client = (name) => ({ emit: () => {}, request: async (method) => (asked[name].push(method), {}) });
+  const ctxA = client("a");
+  const ctxB = client("b");
+  const { thread } = await handlers["thread/start"]({ cwd: process.cwd(), model: "m" }, ctxB);
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "hi" }] }, ctxB);
+
+  await handlers["thread/read"]({ threadId: thread.id, includeTurns: true }, ctxA);
+  await handlers["thread/turns/list"]({ threadId: thread.id, limit: 1, sortDirection: "desc" }, ctxA);
+  await handlers["thread/items/list"]({ threadId: thread.id }, ctxA);
+  await handlers["thread/goal/get"]({ threadId: thread.id }, ctxA);
+
+  await engineOptions.request("item/tool/call", { threadId: thread.id, tool: "send_peer_message" });
+  assert.deepEqual(asked, { a: [], b: ["item/tool/call"] });
+  assert.equal(handlers._threads.get(thread.id).connection, ctxB);
+});
