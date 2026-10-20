@@ -1,10 +1,8 @@
 name: Issue Labeler
 
+# UnieAI: upstream Codex automation, off in this fork; run by hand if needed.
 on:
-  issues:
-    types:
-      - opened
-      - labeled
+  workflow_dispatch:
 
 jobs:
   gather-labels:

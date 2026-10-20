@@ -4,9 +4,9 @@ name: v8-canary
 # postmerge-ci, and GitHub cannot share a path filter between pull_request and
 # workflow_call. v8_canary_changes.py is the single source of truth instead;
 # unrelated events run only the cheap metadata job below.
+# UnieAI: upstream Codex automation, off in this fork; run by hand if needed.
 on:
   workflow_call:
-  pull_request: {}
   workflow_dispatch:
 
 concurrency:

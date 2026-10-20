@@ -1,9 +1,7 @@
 name: CLA Assistant
+# UnieAI: upstream Codex automation, off in this fork; run by hand if needed.
 on:
-  issue_comment:
-    types: [created]
-  pull_request_target:
-    types: [opened, closed, synchronize]
+  workflow_dispatch:
 
 permissions:
   actions: write
