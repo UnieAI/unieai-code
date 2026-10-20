@@ -6,7 +6,7 @@
 [![GitHub Issues](https://img.shields.io/github/issues/UnieAI/unieai-code)](https://github.com/UnieAI/unieai-code/issues)
 
 <p align="center">
-  <a href="#what-you-get">What you get</a> · <a href="#quick-start">Quick Start</a> · <a href="#commands">Commands</a> · <a href="#configuration">Config</a> · <a href="#repository-structure">Structure</a> · <a href="#contributing">Contributing</a>
+  <a href="#whats-new">What's new</a> · <a href="#what-you-get">What you get</a> · <a href="#quick-start">Quick Start</a> · <a href="#commands">Commands</a> · <a href="#configuration">Config</a> · <a href="#repository-structure">Structure</a> · <a href="#contributing">Contributing</a>
 </p>
 
 ---
@@ -17,7 +17,7 @@ own [UnieAI Studio](https://studio.demo.unieai.com) model gateway (Qwen, MiniMax
 and other open models). Nothing leaves your environment except the model calls you
 already make.
 
-It comes in three forms, all sharing one engine:
+It comes in three forms:
 
 | Surface | What it is |
 |---|---|
@@ -25,8 +25,25 @@ It comes in three forms, all sharing one engine:
 | **Engine** (`@unieai/code-agent-runtime`) | The coding runtime as an npm library, to embed in your own tools. |
 | **VS Code extension** | An in-editor chat panel powered by the same engine. |
 
-Internally the engine runs on [`@unieai/agent-core`](third_party/unieai-agent-core) —
-our shared agent loop, also used by UnieAI Studio.
+The CLI runs a session on one of two engines, picked with `/engine`: **uac**
+(unieai-agent-core on deepseek-harness, the default) or **codex**. The embeddable engine
+runs on [`@unieai/agent-core`](third_party/unieai-agent-core) — our shared agent loop,
+also used by UnieAI Studio.
+
+## What's new
+
+**0.0.37** (2026-10-20) — highlights of the last two releases:
+
+- **Rewind with files** — Esc Esc back to an earlier message can restore the files the
+  later turns changed, not just the conversation (uac).
+- **`/context`** — see what is filling the context window, and how close compaction is.
+- **`/loop` and scheduled turns** — repeat a prompt on an interval; `/loop stop` ends it.
+- **Custom subagents and auto approval** — define subagents in `.unieai/agents/*.md`;
+  "Approve for me" in `/permissions` lets a reviewer model handle routine approvals.
+- **Worktrees on uac** — `create_worktree`, with tools and rewind following the session
+  into the new directory; plus the new UnieAI welcome logo.
+
+Every release, newest first: [CHANGELOG.md](CHANGELOG.md).
 
 ## Why it's good
 
@@ -59,14 +76,16 @@ edits that survive whitespace drift, and open-model resilience (empty-response r
 
 ### Install the CLI
 
-**macOS / Linux:**
+**macOS / Linux / Windows** (needs Node.js 22+):
 
 ```shell
-curl -fsSL https://www.unieai.com/code/install.sh | sh
+npm install -g @unieai/code
 ```
 
-Installs the `unieai` binary to `~/.local/bin`. (Windows and pinned-version install
-options: see [docs/install.md](./docs/install.md).)
+Installs the `unieai` command. For a machine with no network or no Node, each
+[GitHub Release](https://github.com/UnieAI/unieai-code/releases) has an offline bundle
+per platform: unpack it and run `sh install.sh` (Windows: `install.ps1`). Pin a version
+with `npm install -g @unieai/code@<version>`.
 
 ### Run
 
@@ -83,7 +102,9 @@ unieai login --studio-url https://studio.demo.unieai.com
 
 Opens a device-code flow in your browser; once confirmed, your model list is saved to
 `~/.unieai/unieai.json`. For on-prem deployments, point `--studio-url` at your Studio
-endpoint — the inference gateway is auto-derived (`studio.` → `api.`).
+endpoint — the inference gateway is auto-derived (`studio.` → `api.`). For a UnieAI
+Rabi account, use `unieai login --rabi` (runs on the uac engine). `unieai login sync`
+refreshes the model list from your account.
 
 ### Use in VS Code
 
@@ -109,11 +130,23 @@ unieai [OPTIONS] [PROMPT]        # interactive TUI
 | `unieai exec PROMPT` | Run the agent non-interactively |
 | `unieai review --diff PATH` | Non-interactive code review |
 | `unieai resume` / `fork` | Resume or fork a previous session |
-| `unieai login` / `logout` | Manage UnieAI Studio credentials |
+| `unieai login` / `logout` | Manage UnieAI Studio (or `--rabi`) credentials |
 | `unieai mcp` | Manage external MCP servers |
+| `unieai peers mcp` | Let Claude Code or another MCP client talk to your sessions |
 | `unieai sandbox` | Run a command in the sandbox |
 | `unieai doctor` | Diagnose install, config, auth, and runtime health |
 | `unieai update` | Update to the latest version |
+
+UnieAI's own slash commands in the TUI (alongside the usual `/model`, `/permissions`,
+`/compact`, `/resume`, … — see [docs/slash_commands.md](./docs/slash_commands.md)):
+
+| Command | Description |
+|---------|-------------|
+| `/engine [codex\|uac]` | Switch the agent engine for new sessions (uac modes: `/engine ptc`, …) |
+| `/context` | Show what is using the context window (uac) |
+| `/loop [interval] <prompt>` | Repeat a prompt; `/loop` lists loops, `/loop stop` ends them (uac) |
+| `/peers` / `/peer` | Browse or message other UnieAI Code sessions on this machine |
+| Esc Esc | Rewind to an earlier message; on uac, optionally restore the files too |
 
 ## Configuration
 
@@ -125,7 +158,8 @@ diagnose issues.
 
 ```
 ├── codex-rs/                     # Rust CLI (TUI, exec, sandbox, app-server)
-├── agent-runtime/                # @unieai/code-agent-runtime — the coding engine (npm)
+├── agent-runtime/                # @unieai/code-agent-runtime — engines (npm), incl. the uac server
+│   ├── bin/unieai-uac-server.mjs #   uac: drives deepseek-harness for the TUI
 │   ├── src/engine.mjs            #   one turn on the agent-core loop + coding layer
 │   └── src/tools.mjs             #   bash / read / write / edit (sandboxed, verifying)
 ├── third_party/
@@ -139,7 +173,8 @@ diagnose issues.
 ## Contributing
 
 See [docs/contributing.md](./docs/contributing.md) for setup and build instructions.
-The CLI is a Rust project; the engine is Node ≥ 20. Clone with submodules:
+The CLI is a Rust project; the engines are Node (≥ 22 for uac). Each release adds an
+entry to [CHANGELOG.md](CHANGELOG.md) — see the note at its top. Clone with submodules:
 
 ```shell
 git clone --recursive https://github.com/UnieAI/unieai-code.git

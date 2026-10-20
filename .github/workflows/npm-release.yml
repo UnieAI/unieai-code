@@ -45,7 +45,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Every release needs a CHANGELOG.md entry ("## <version> — <date>"); see the
+  # comment at the top of CHANGELOG.md and scripts/unieai_changelog_draft.py.
+  # A run that publishes (tag push, or workflow_dispatch with publish) fails
+  # here before anything is built; an artifacts-only dispatch only warns.
+  changelog:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Require a CHANGELOG.md entry for this version
+        shell: bash
+        env:
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          PUBLISHING: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION#npm-v}"
+          version_re="${VERSION//./\\.}"
+          if grep -qE "^## \[?${version_re}\]?([[:space:]]|$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has an entry for ${VERSION}."
+            exit 0
+          fi
+          msg="CHANGELOG.md has no '## ${VERSION}' section. Draft one with 'python3 scripts/unieai_changelog_draft.py --version ${VERSION}', edit it for users, commit it, and push the tag again on that commit."
+          if [ "$PUBLISHING" = "true" ]; then
+            echo "::error file=CHANGELOG.md::${msg}"
+            exit 1
+          fi
+          echo "::warning file=CHANGELOG.md::${msg} (not publishing, so not failing)"
+
   build:
+    needs: changelog
     strategy:
       fail-fast: false
       matrix:
