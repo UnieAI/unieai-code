@@ -84,6 +84,35 @@ gallery (Office ▸ 作品) next to ava's own artifacts.
   A Studio-only user is told to link a Rabi account until single sign-on
   (integration plan, phase 2) lands.
 
+## Client implementation (unieai-code)
+
+Built against an in-memory stub of the routes above
+(`agent-runtime/scripts/unieai-ava-artifacts-stub.mjs`) until ava ships them.
+
+- **Tool:** `publish_artifact` (actions `publish | list | read | delete`) is a
+  uac host plugin, `agent-runtime/src/unieai-dsh/unieai-artifacts.mjs`, with
+  the logic in `unieai-artifacts-core.mjs`. It is not in uac-plugins because
+  it reads the UnieAI Code login, which Studio's runtime does not have.
+  `UNIEAI_DSH_PLUGINS` must name `unieai-artifacts` when it narrows the set.
+- **Engines:** uac only. The tool needs the Rabi key, and a Rabi login already
+  runs on uac only (Rabi's relay has no Responses API), so a codex-engine
+  session never has a key to publish with. Revisit with Studio single sign-on.
+- **Local checks:** the limits above, and external http(s) references in
+  HTML, CSS and ESM, each reported with what to inline instead.
+- **Conflicts:** a 409 returns the current version to the model; with
+  `merge: true` the tool lays its files over the current version's (same path
+  wins) and retries once.
+- **Id memory:** `$UNIEAI_HOME/artifacts.json`, workspace (git root) → path →
+  `{id, account, version, viewerUrl, title}`, shared by the tool and the CLI.
+  Not the project's `.unieai/`: ids belong to the account and `.unieai/` is
+  checked into repositories.
+- **Skill:** `artifact`, bundled in `agent-runtime/src/unieai-dsh/skills/`
+  (passed to `unieai-skills` as `bundledSkillDir`, so a user or project skill of
+  the same name wins).
+- **CLI:** `unieai artifact list | open <id> | delete <id> | publish <path>
+  [--title] [--description] [--id] [--force]`
+  (`codex-rs/login/src/unieai_artifacts.rs`, `codex-rs/cli/src/unieai_artifact.rs`).
+
 ## Open questions
 
 1. Should the `artifacts` scope also be granted to existing "UnieAI Agent
