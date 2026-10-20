@@ -24,6 +24,7 @@ import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./un
 import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
 import { createThreadClients } from "./unieai-thread-clients.mjs";
+import { createRemoteBridge } from "./unieai-remote-bridge.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -1448,8 +1449,20 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
         return forward(method, params, ...context);
       }
     : null;
-  const dispatch = createDispatcher({ handlers, fallback: forwardPlatform, onError });
   const trace = typeof onTrace === "function" ? onTrace : () => {};
+  // Remote Control (unieai-remote-bridge.mjs): browsers become clients of
+  // these handlers through a relay. Started when a local client asks; these
+  // methods are local only, a browser can call none of them.
+  let remote = null;
+  const remoteBridge = () => (remote ??= createRemoteBridge({ handlers, codexHome, version, log: trace }));
+  Object.assign(handlers, {
+    "unieai/remote/start": (params) => remoteBridge().start(params ?? {}),
+    "unieai/remote/stop": async () => (remote ? remote.stop() : { running: false }),
+    "unieai/remote/status": async () => remoteBridge().status(),
+    "unieai/remote/devices": async () => remoteBridge().devices(),
+    "unieai/remote/revoke": async (params) => remoteBridge().revoke(params ?? {}),
+  });
+  const dispatch = createDispatcher({ handlers, fallback: forwardPlatform, onError });
   // Full payloads are large; opt in when a client renders something wrong.
   const tracePayloads = Boolean(process.env.UNIEAI_TRACE_PAYLOADS);
   let connections = 0;
@@ -1566,6 +1579,9 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
     /** How many clients are connected right now. */
     connections: () => live.size,
     ...transport,
+    // Not part of close(): a server handing its socket over keeps serving
+    // its clients, remote ones included, until they leave.
+    stopRemote: async () => remote?.close(),
     handlers,
     socketPath,
     /** Push a server-originated notification to every connected client. */

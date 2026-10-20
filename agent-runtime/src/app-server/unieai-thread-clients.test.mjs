@@ -4,14 +4,13 @@
 // tools stay with the TUI that owns them however many others touch the thread.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { connect } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createThreadClients } from "./unieai-thread-clients.mjs";
 import { createApprovalBridge } from "./approval.mjs";
 import { createHandlers, startAppServer } from "./server.mjs";
-import { decodeFrames, newClientKey } from "./ws.mjs";
+import { connectSocketClient } from "./unieai-socket-client.mjs";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -318,64 +317,6 @@ test("one client unsubscribing does not unload a thread another is watching", as
 
 // --- Over the socket: two real connections -----------------------------------
 
-/** A minimal websocket client for the server's unix socket. */
-function socketClient(socketPath) {
-  const socket = connect(socketPath);
-  const messages = [];
-  const waiters = [];
-  let buf = Buffer.alloc(0);
-  let carry = { opcode: null, chunks: [] };
-  let upgraded = false;
-  let ready;
-  const opened = new Promise((resolve) => (ready = resolve));
-  const frame = (text) => {
-    const body = Buffer.from(text);
-    const mask = Buffer.from([7, 3, 5, 1]);
-    const out = Buffer.from(body);
-    for (let i = 0; i < out.length; i++) out[i] ^= mask[i % 4];
-    const header = body.length < 126
-      ? Buffer.from([0x81, 0x80 | body.length])
-      : Buffer.from([0x81, 0x80 | 126, body.length >> 8, body.length & 0xff]);
-    return Buffer.concat([header, mask, out]);
-  };
-  socket.on("connect", () => socket.write(`GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${newClientKey()}\r\n\r\n`));
-  socket.on("data", (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    if (!upgraded) {
-      const end = buf.indexOf("\r\n\r\n");
-      if (end < 0) return;
-      buf = buf.subarray(end + 4);
-      upgraded = true;
-      ready();
-    }
-    const decoded = decodeFrames(buf, carry);
-    buf = decoded.rest;
-    carry = decoded.carry;
-    for (const f of decoded.frames) {
-      const message = JSON.parse(f.data.toString());
-      messages.push(message);
-      for (const waiter of [...waiters]) {
-        if (waiter.match(message)) {
-          waiters.splice(waiters.indexOf(waiter), 1);
-          waiter.resolve(message);
-        }
-      }
-    }
-  });
-  socket.on("error", () => {});
-  return {
-    messages,
-    opened,
-    send: (message) => socket.write(frame(JSON.stringify(message))),
-    next: (match) => {
-      const seen = messages.find(match);
-      if (seen) return Promise.resolve(seen);
-      return new Promise((resolve) => waiters.push({ match, resolve }));
-    },
-    close: () => socket.destroy(),
-  };
-}
-
 test("over the socket: both TUIs are asked, the first answer wins, the other is told", async () => {
   const dir = mkdtempSync(join(tmpdir(), "uac-fanout-"));
   const socketPath = join(dir, "s.sock");
@@ -390,8 +331,8 @@ test("over the socket: both TUIs are asked, the first answer wins, the other is 
       },
     }),
   });
-  const a = socketClient(socketPath);
-  const b = socketClient(socketPath);
+  const a = connectSocketClient(socketPath);
+  const b = connectSocketClient(socketPath);
   try {
     await Promise.all([a.opened, b.opened]);
     a.send({ id: 1, method: "thread/start", params: { cwd: dir } });
