@@ -212,7 +212,7 @@ test("a dropped connection releases a waiting approval instead of hanging the tu
   const server = await startAppServer({
     socketPath, codexHome: dir, version: "0.1.0",
     createEngineFor: ({ request }) => ({
-      send: async () => { answer = await request("item/commandExecution/requestApproval", { callId: "c1" }); },
+      send: async () => { answer = await request("item/commandExecution/requestApproval", { callId: "c1" }).catch((error) => ({ rejected: error.message })); },
     }),
   });
   try {
@@ -241,9 +241,10 @@ test("a dropped connection releases a waiting approval instead of hanging the tu
       socket.on("error", () => {});
       setTimeout(() => reject(new Error("timed out")), 4000).unref?.();
     });
-    // `cancel` is the v2 vocabulary for "stop"; `abort` was the core enum's, and
-    // the wire never used it. Either way it must not read as an approval.
-    assert.deepEqual(answer, { decision: "cancel" }, "the waiter is released, and not as an approval");
+    // The client that left answered nothing: the request fails, which the
+    // approval bridge reads as a refusal (unieai-thread-clients.mjs: another
+    // client watching the thread could still have answered it).
+    assert.ok(answer?.rejected, "the waiter is released, and not as an approval");
   } finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -428,14 +429,16 @@ test("a message the running turn cannot take is sent in a turn of its own when i
   const h = createHandlers({ createEngineFor: () => engine, codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
   const emitted = [];
-  await h["turn/steer"]({ threadId: thread.id, input: "hello" }, { emit: (method, params) => emitted.push([method, params]) });
+  // One client: every client watching the thread gets its notifications.
+  const ctx = { emit: (method, params) => emitted.push([method, params]) };
+  await h["turn/steer"]({ threadId: thread.id, input: "hello" }, ctx);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(sent, ["hello"], "steering with nothing running starts the turn itself");
   engine.releaseFirst();
   await new Promise((resolve) => setImmediate(resolve));
   sent.length = 0;
   emitted.length = 0;
-  await h["turn/start"]({ threadId: thread.id, input: "go" }, { emit: (method, params) => emitted.push([method, params]) });
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, ctx);
   await h["turn/steer"]({ threadId: thread.id, input: "while it works", clientUserMessageId: "c1" });
   await h["turn/steer"]({ threadId: thread.id, input: "and this", clientUserMessageId: "c2" });
   assert.deepEqual(sent, ["go"], "nothing is sent while the turn runs");

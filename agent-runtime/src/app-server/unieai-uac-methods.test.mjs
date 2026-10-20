@@ -269,5 +269,5 @@ test("another client reading a thread does not take over its tool calls and appr
 
   await engineOptions.request("item/tool/call", { threadId: thread.id, tool: "send_peer_message" });
   assert.deepEqual(asked, { a: [], b: ["item/tool/call"] });
-  assert.equal(handlers._threads.get(thread.id).connection, ctxB);
+  assert.equal(handlers._threads.get(thread.id).connection.driver, ctxB);
 });
