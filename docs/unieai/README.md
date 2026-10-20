@@ -10,6 +10,7 @@ UnieAI Code 是以 [openai/codex](https://github.com/openai/codex)（Rust）為�
 | [login.md](login.md) | UnieAI Studio 登入（device flow、公司/地端、gateway 憑證） |
 | [vscode-extension.md](vscode-extension.md) | VS Code 聊天面板：安裝、雙引擎、功能 |
 | [benchmarks.md](benchmarks.md) | Benchmark 方法與結果（HumanEval、SWE-bench） |
+| [remote-control-protocol.md](remote-control-protocol.md) | Remote Control 協定 v1：relay、配對、Noise 端對端加密、方法白名單（給 Ava 實作 relay 與網頁端） |
 
 ## 三個 repo 的關係
 
