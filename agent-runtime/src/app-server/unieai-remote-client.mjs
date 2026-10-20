@@ -55,7 +55,8 @@ export function parsePairingLink(link) {
  *   device         { privateKey, publicKey, deviceId } once paired
  *   deviceName     the label the host lists this device under
  *   onNotification(method, params)
- *   onRequest(method, params) -> result   approvals and questions
+ *   onRequest(method, params, id) -> result   approvals and questions; `id`
+ *                                         is what serverRequest/resolved names
  *   onPaired(device)                      store it: the next visit needs it
  *   onState(state, detail)                "connecting" | "ready" | "host-offline" | "reset" | "error" | "closed"
  */
@@ -193,7 +194,7 @@ export function createRemoteClient({
     }
     if (message.id !== undefined && message.id !== null) {
       try {
-        const result = await onRequest(message.method, message.params ?? {});
+        const result = await onRequest(message.method, message.params ?? {}, message.id);
         channel?.send({ id: message.id, result });
       } catch (error) {
         channel?.send({ id: message.id, error: { code: -32603, message: String(error?.message || error) } });
