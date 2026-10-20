@@ -20,6 +20,18 @@ export function sessionCwd(exec) {
 }
 
 /**
+ * The calling agent's current directory, or undefined for agentless calls.
+ * dsh's own fs and bash tools resolve relative paths against it, and it moves
+ * away from the session workspace with `working_directory` and
+ * `create_worktree`.
+ */
+export async function currentDirectory(ctx, exec) {
+  if (!exec?.agent) return undefined;
+  const service = ctx.get?.("workingDirectory");
+  return service ? service.ensure(exec.agent, exec.signal) : sessionCwd(exec);
+}
+
+/**
  * The standing sandbox policy for this call (no escalation), or undefined when
  * the mounted filesystem does not confine.
  */
@@ -32,8 +44,8 @@ export function policyFor(ctx, exec) {
 }
 
 /** Resolve a model path the way dsh's fs tools do. */
-export function resolveTarget(ctx, exec, path, policy) {
-  const cwd = policy?.workspaceRoot ?? sessionCwd(exec);
+export async function resolveTarget(ctx, exec, path, policy) {
+  const cwd = (await currentDirectory(ctx, exec)) ?? policy?.workspaceRoot;
   return ctx.fs.resolve(path, { ...(cwd !== undefined ? { cwd } : {}), signal: exec.signal });
 }
 

@@ -446,6 +446,17 @@ export function renderPatch({
     "      config:",
     "        refreshIntervalMs: 1800000",
   );
+  // create_worktree: a new branch and checkout under <repo>/.agents/worktrees
+  // that the session moves into. dsh ships it off (its GUI turns it on);
+  // minimal mode keeps only its shell.
+  if (mode !== "minimal") {
+    inserts.push(
+      "    - id: worktree",
+      "      name: '@deepseek-ai/dsh-experimental-worktree'",
+      "    - id: tool-worktree",
+      "      name: '@deepseek-ai/dsh-experimental-tool-worktree'",
+    );
+  }
   inserts.push(...parts.inserts, ...modeRows.inserts);
   lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;

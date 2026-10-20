@@ -20,6 +20,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { currentDirectory } from "./unieai-edit-dsh.mjs";
 import { resolveCredential } from "./unieai-loop-common.mjs";
 
 export const name = "unieai-vision-fallback";
@@ -128,7 +129,7 @@ export function apply(ctx, rawConfig = {}, { fetchImpl = globalThis.fetch } = {}
       },
       presentCall: (args) => ({ card: "generic", title: `Describe image ${args.path}` }),
       async execute(args, exec) {
-        const cwd = exec.agent?.session?.header?.cwd ?? process.cwd();
+        const cwd = (await currentDirectory(ctx, exec)) ?? process.cwd();
         const path = isAbsolute(args.path) ? args.path : resolve(cwd, args.path);
         const key = await resolveCredential(ctx, config.gatewayKeyRef);
         if (!key) throw new Error("no gateway key is configured for the vision model");

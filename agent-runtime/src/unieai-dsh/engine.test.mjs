@@ -469,6 +469,7 @@ test("dsh modes: each is a patch on the flat standard composition", async () => 
   const plugins = selectPlugins({});
   const standard = renderPatch({ defaultModel: "A", plugins });
   assert.equal(renderPatch({ defaultModel: "A", plugins, mode: "standard" }), standard);
+  assert.match(standard, /- id: worktree\n {6}name: '@deepseek-ai\/dsh-experimental-worktree'\n {4}- id: tool-worktree\n/, "create_worktree is on");
 
   const ptc = renderPatch({ defaultModel: "A", plugins, mode: "ptc" });
   assert.match(ptc, /- id: tools\n {2}config:\n {4}mode: ptc\n/);
@@ -480,6 +481,7 @@ test("dsh modes: each is a patch on the flat standard composition", async () => 
   const minimal = renderPatch({ defaultModel: "A", plugins, mode: "minimal" });
   for (const id of ["tool-bash", "tool-fs", "tool-subagent", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
   assert.match(minimal, /- id: persistent-bash/);
+  assert.doesNotMatch(minimal, /tool-worktree/, "minimal keeps only its shell");
   assert.doesNotMatch(minimal, /unieai-exec|unieai-apply-patch|unieai-web-search/, "no tool plugins in minimal");
   assert.match(minimal, /unieai-loop-guard/, "the loop plugins stay");
   assert.match(minimal, /Your one tool/);

@@ -18,7 +18,7 @@
  * turn history, rewinding a turn with its files, and fork. Exits non-zero
  * when any step fails.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -286,6 +286,36 @@ try {
     const turns = (await client.request("thread/turns/list", { threadId })).data ?? [];
     if (turns.some((listedTurn) => listedTurn.id === turn.id)) throw new Error("the turn is still in the history");
     return `restored: ${listed}`;
+  });
+
+  await step("create_worktree moves the session into a new checkout", async () => {
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const git = (...argv) => execFileSync("git", argv, { cwd: repo, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(repo, "base.txt"), "base\n");
+    git("add", "base.txt");
+    git("-c", "user.name=uac", "-c", "user.email=uac@example.invalid", "commit", "-q", "-m", "base");
+    const { thread } = await client.request("thread/start", { cwd: repo, model, sandbox: "danger-full-access", approvalPolicy: "never" });
+    const done = client.waitFor(completedTurn(thread.id));
+    const { turn } = await client.request("turn/start", {
+      threadId: thread.id,
+      input: userInput("Call create_worktree with name `wt-check` and wait for its result before doing anything else. After it returns, use exec_command to run exactly `printf 'in worktree' > wt.txt && pwd` (a relative path, no workdir) and reply with what pwd printed."),
+    });
+    const completed = await done;
+    if (completed.params.turn?.status !== "completed") throw new Error(`turn ${completed.params.turn?.status}: ${JSON.stringify(completed.params.turn?.error)}`);
+    const checkout = join(repo, ".agents", "worktrees", "wt-check");
+    if (!existsSync(join(checkout, "base.txt"))) throw new Error(`no checkout at ${checkout}`);
+    if (readFileSync(join(checkout, "wt.txt"), "utf8").trim() !== "in worktree") throw new Error("wt.txt was not written in the worktree");
+    if (existsSync(join(repo, "wt.txt"))) throw new Error("wt.txt landed in the source checkout");
+    if (!git("branch", "--list", "wt-check")) throw new Error("no wt-check branch");
+    // Rewinding the turn takes the file back out of the worktree.
+    const preview = await client.request("thread/revert/preview", { threadId: thread.id, beforeTurnId: turn.id });
+    const listed = preview.files.map((file) => `${file.change} ${file.path}`).join(", ");
+    if (!listed.includes("delete .agents/worktrees/wt-check/wt.txt")) throw new Error(`preview: ${JSON.stringify(preview)}`);
+    await client.request("thread/revert", { threadId: thread.id, beforeTurnId: turn.id, restoreFiles: true });
+    if (existsSync(join(checkout, "wt.txt"))) throw new Error("rewind left wt.txt in the worktree");
+    return `pwd: ${agentText(client, thread.id, turn.id).slice(0, 80).replace(/\s+/g, " ")}; rewind: ${listed}`;
   });
 
   await step("thread/fork", async () => {

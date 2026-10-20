@@ -18,7 +18,10 @@
  * - A top-level turn is snapshotted before its first tool that may change
  *   files (anything outside {@link READ_ONLY_TOOLS}; subagents are started by
  *   a tool of their parent, so their edits fall inside its turn), and again
- *   when it ends. A chat-only turn costs nothing.
+ *   when it ends. A chat-only turn costs nothing. The snapshot is of the
+ *   agent's current directory; a turn that moves (`create_worktree`,
+ *   `working_directory`) is also snapshotted in each directory it moves to,
+ *   and restoring looks in every directory the session has been in.
  * - A turn is named by its `turn/start` event (time and dsh turn number), which
  *   a forked session keeps, so checkpoints stay valid after a revert.
  * - `preview` / `restore` (the `unieaiRewind` service, called by the host's
@@ -91,6 +94,15 @@ const REF_PREFIX = "refs/unieai-rewind/";
 /** The identity of a turn: its `turn/start` time and number, which forks keep. */
 export function turnKey(event) {
   return `${event.time ?? 0}:${event.data?.turn ?? 0}`;
+}
+
+/**
+ * Every directory a session's turns may have snapshotted: its workspace, then
+ * each directory it moved to (`working_directory`, `create_worktree`).
+ */
+export function directoriesOf(cwd, events) {
+  const moved = (events ?? []).filter((event) => event?.type === "working-directory/change").map((event) => event.data?.cwd);
+  return [...new Set([cwd, ...moved].filter((dir) => typeof dir === "string" && dir).map((dir) => resolve(dir)))];
 }
 
 /** Keys of the turns that start at or after `fromSeq`, in order. */
@@ -442,8 +454,10 @@ export function apply(ctx, rawConfig = {}) {
     }
     return store;
   };
-  /** session -> the open top-level turn: { key, store, started } */
+  /** session -> the open top-level turn: { key, turn, header, started: Map<store, Promise> } */
   const turns = new WeakMap();
+  // Sync, and read only when present: the ACP profile mounts it.
+  const currentDirectory = (session) => ctx.get?.("workingDirectory")?.get(session);
 
   pruneStores(root, limits.retainDays, ctx.logger).catch(() => {});
   ctx.effect?.(() => () => {
@@ -452,30 +466,32 @@ export function apply(ctx, rawConfig = {}) {
 
   ctx.on("session/event", (session, event) => {
     if (event?.type === "turn/start") {
-      const cwd = workspaceOf(session.header);
-      if (cwd) turns.set(session, { key: turnKey(event), turn: event.data?.turn, store: storeFor(cwd), started: null });
+      if (workspaceOf(session.header)) turns.set(session, { key: turnKey(event), turn: event.data?.turn, header: session.header, started: new Map() });
       return;
     }
     if (event?.type !== "turn/end") return;
     const open = turns.get(session);
     if (!open || open.turn !== event.data?.turn) return;
     turns.delete(session);
-    if (!open.started) return;
-    open.started
-      .then(
-        () => open.store.checkpoint(open.key, "end"),
-        () => null, // the start already failed and was reported
-      )
-      .catch((error) => ctx.logger.warn(`${name}: no end checkpoint for turn ${open.key}: ${error?.message ?? error}`));
+    for (const [store, started] of open.started) {
+      started
+        .then(
+          () => store.checkpoint(open.key, "end"),
+          () => null, // the start already failed and was reported
+        )
+        .catch((error) => ctx.logger.warn(`${name}: no end checkpoint for turn ${open.key}: ${error?.message ?? error}`));
+    }
   });
 
   ctx.on("tools/pre-execute", async (exec, next) => {
     const session = exec?.parent === undefined ? exec?.agent?.session : undefined;
     const open = session ? turns.get(session) : undefined;
-    if (open && !READ_ONLY_TOOLS.has(exec.name)) {
-      open.started ??= open.store.checkpoint(open.key, "start");
+    const cwd = open && !READ_ONLY_TOOLS.has(exec.name) ? workspaceOf({ ...open.header, cwd: currentDirectory(session) ?? open.header.cwd }) : null;
+    if (cwd) {
+      const store = storeFor(cwd);
+      if (!open.started.has(store)) open.started.set(store, store.checkpoint(open.key, "start"));
       try {
-        await open.started;
+        await open.started.get(store);
       } catch (error) {
         if (!open.warned) ctx.logger.warn(`${name}: turn ${open.key} is not snapshotted: ${error?.message ?? error}`);
         open.warned = true;
@@ -484,23 +500,40 @@ export function apply(ctx, rawConfig = {}) {
     return next();
   });
 
+  /** The stores the session's turns may be in, each with how its paths read from the workspace. */
   const target = ({ cwd, events, fromSeq }) => {
     const workspace = workspaceOf({ cwd });
-    return workspace ? { store: storeFor(workspace), keys: turnKeysFrom(events, fromSeq) } : null;
+    if (!workspace) return null;
+    const stores = directoriesOf(workspace, events)
+      .map((dir) => workspaceOf({ cwd: dir }))
+      .filter(Boolean)
+      .map((dir) => ({ store: storeFor(dir), prefix: dir === workspace ? "" : dir.startsWith(workspace + sep) ? dir.slice(workspace.length + 1) : dir }));
+    return { stores, keys: turnKeysFrom(events, fromSeq) };
   };
+  const shown = (prefix, files) => files.map((file) => ({ ...file, path: prefix ? join(prefix, file.path) : file.path }));
 
   ctx.provide?.(SERVICE, {
     /** The files restoring before `fromSeq` would change: { available, files: [{path, change}] }. */
     async preview(request) {
       const found = target(request);
       if (!found) return { available: false, reason: "this workspace is not snapshotted", files: [] };
-      return found.store.preview(found.keys);
+      const previews = await Promise.all(found.stores.map(async ({ store, prefix }) => ({ prefix, ...(await store.preview(found.keys)) })));
+      const available = previews.filter((preview) => preview.available);
+      if (available.length === 0) return { available: false, reason: previews[0]?.reason, files: [] };
+      return { available: true, files: available.flatMap(({ prefix, files }) => shown(prefix, files)) };
     },
     /** Put those files back: { files, failed: [{path, error}], undo }. */
     async restore(request) {
       const found = target(request);
       if (!found) return { files: [], failed: [], undo: null };
-      return found.store.restore(found.keys);
+      const result = { files: [], failed: [], undo: null };
+      for (const { store, prefix } of found.stores) {
+        const restored = await store.restore(found.keys);
+        result.files.push(...shown(prefix, restored.files));
+        result.failed.push(...shown(prefix, restored.failed));
+        result.undo ??= restored.undo;
+      }
+      return result;
     },
   });
 }

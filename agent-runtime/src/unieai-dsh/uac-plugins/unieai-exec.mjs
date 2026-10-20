@@ -40,6 +40,7 @@ import {
 } from "@deepseek-ai/dsh-sandbox";
 import { TOOL_ABORTED, defineTool } from "@deepseek-ai/dsh-tools";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
+import { currentDirectory } from "./unieai-edit-dsh.mjs";
 import { publishBackground, retireBackground } from "./unieai-exec-state.mjs";
 
 /** Waits on the command instead of exec-ing it, so it stays the parent. */
@@ -279,12 +280,12 @@ export function pickPruneVictim(meta, protect) {
 }
 
 /**
- * Where the command runs: an explicit workdir (relative to the session
- * workspace), else the workspace the sandbox confines to, else the session
- * cwd. Same order as tool-bash so confinement and cwd agree.
+ * Where the command runs: an explicit workdir (relative to `base`), else
+ * `base`, else the session cwd. The caller passes the agent's current
+ * directory, as tool-bash resolves against it.
  */
-export function resolveWorkdir(workdir, agent, workspaceRoot) {
-  const base = workspaceRoot ?? agent?.session?.header?.cwd ?? process.cwd();
+export function resolveWorkdir(workdir, agent, base) {
+  base ??= agent?.session?.header?.cwd ?? process.cwd();
   if (!workdir) return base;
   return isAbsolute(workdir) ? workdir : join(base, workdir);
 }
@@ -843,7 +844,7 @@ export function apply(ctx, config = {}) {
     }
     const tty = args.tty === true;
     if (tty && !cfg.allowTty) throw new Error("tty sessions are disabled in this deployment");
-    const cwd = resolveWorkdir(args.workdir, exec.agent, standing?.workspaceRoot);
+    const cwd = resolveWorkdir(args.workdir, exec.agent, (await currentDirectory(ctx, exec)) ?? standing?.workspaceRoot);
     const login = args.login ?? cfg.login;
     // Pipes: fold stderr into stdout inside bash so the two stay interleaved;
     // the runner's own stderr (sandbox diagnostics) is still read separately.

@@ -27,7 +27,7 @@
  */
 import { FsError } from "@deepseek-ai/dsh-fs";
 import { isAbsolute, join } from "node:path";
-import { policyFor, sessionCwd } from "./unieai-edit-dsh.mjs";
+import { currentDirectory, policyFor } from "./unieai-edit-dsh.mjs";
 
 export const name = "unieai-edit-observe";
 export const inject = ["fs"];
@@ -173,7 +173,7 @@ export function apply(ctx, config = {}) {
     if (!paths.length) return;
     const policy = policyFor(ctx, exec);
     const workdir = exec.arguments?.workdir;
-    const base = policy?.workspaceRoot ?? sessionCwd(exec);
+    const base = (await currentDirectory(ctx, exec)) ?? policy?.workspaceRoot;
     const cwd = workdir ? (isAbsolute(workdir) || base === undefined ? workdir : join(base, workdir)) : base;
     for (const path of paths) {
       try {

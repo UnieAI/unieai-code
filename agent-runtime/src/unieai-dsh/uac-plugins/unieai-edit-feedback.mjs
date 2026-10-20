@@ -21,7 +21,7 @@
  */
 import { execFile } from "node:child_process";
 import { unifiedDiff } from "./unieai-edit-match.mjs";
-import { appendOnPostExecute, policyFor, sessionCwd } from "./unieai-edit-dsh.mjs";
+import { appendOnPostExecute, currentDirectory, policyFor } from "./unieai-edit-dsh.mjs";
 
 export const name = "unieai-edit-feedback";
 export const inject = ["tools"];
@@ -74,7 +74,7 @@ function runHost(python, path, source, timeoutMs) {
 async function runShell(ctx, exec, python, path, source, timeoutMs) {
   const shell = ctx.get("shell");
   const policy = policyFor(ctx, exec);
-  const workdir = policy?.workspaceRoot ?? sessionCwd(exec);
+  const workdir = (await currentDirectory(ctx, exec)) ?? policy?.workspaceRoot;
   const spec = shell.resolve({
     command: `${python} -c ${shellQuote(COMPILE)} ${shellQuote(path)}`,
     ...(workdir !== undefined ? { workdir } : {}),
