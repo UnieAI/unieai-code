@@ -128,12 +128,15 @@ fn first_screen_single_click_replays_the_visible_blossom() {
         Some(FRAME_INTERVAL)
     );
     assert_ne!(buffer, static_frame);
+    // A click during a replay starts from the mark that replay was heading to and turns back to
+    // the bunny.
     assert!(animation.handle_mouse(click));
     assert_eq!(
         draw(&mut animation, &mut buffer, Some(ComposerState::Empty)),
         Some(FRAME_INTERVAL)
     );
-    assert_eq!(buffer, static_frame);
+    assert_ne!(buffer, static_frame);
+    assert!(buffer.content.iter().any(|cell| cell.symbol() != " "));
     let finished_at =
         animation.last_frame.unwrap() + sequence::SPIN_DURATION - animation.spin_elapsed;
     let mut fade_frames = Vec::new();
@@ -189,7 +192,9 @@ fn first_screen_single_click_replays_the_visible_blossom() {
         draw(&mut animation, &mut buffer, Some(ComposerState::Empty)),
         None
     );
-    assert_eq!(buffer, static_frame);
+    // The interrupted replay had already chosen the other mark, so that is the one left standing.
+    assert_ne!(buffer, static_frame);
+    assert!(buffer.content.iter().any(|cell| cell.symbol() != " "));
     // Disabling motion removes both the logo and its click target.
     buffer.reset();
     animation.render_first_screen(
@@ -208,24 +213,62 @@ fn loop_closes_and_light_themes_preserve_coverage() {
     let dark = Lighting::terminal(/*fg*/ (210, 221, 235), /*bg*/ (15, 20, 37));
     let first = renderer
         .frame(
-            /*columns*/ 60, /*rows*/ 21, /*phase*/ 0.0, &dark,
+            /*columns*/ 60,
+            /*rows*/ 21,
+            /*phase*/ 0.0,
+            /*marks*/ [1, 1],
+            &dark,
         )
         .to_vec();
     assert_eq!(
         renderer.frame(
-            /*columns*/ 60, /*rows*/ 21, /*phase*/ 1.0, &dark
+            /*columns*/ 60,
+            /*rows*/ 21,
+            /*phase*/ 1.0,
+            /*marks*/ [1, 1],
+            &dark
         ),
         first
     );
     let other_mark = renderer.frame(
-        /*columns*/ 60, /*rows*/ 21, /*phase*/ 0.5, &dark,
+        /*columns*/ 60,
+        /*rows*/ 21,
+        /*phase*/ 0.5,
+        /*marks*/ [1, 1],
+        &dark,
     );
     assert!(first.iter().any(|cell| cell.dots != 0));
     assert!(other_mark.iter().any(|cell| cell.dots != 0));
     assert_ne!(other_mark, first);
+    let other_mark = other_mark.to_vec();
+    // A replay starts on one UnieAI mark and settles on the other.
+    let newer_mark = renderer
+        .frame(
+            /*columns*/ 60,
+            /*rows*/ 21,
+            /*phase*/ 0.5,
+            /*marks*/ [2, 2],
+            &dark,
+        )
+        .to_vec();
+    assert_ne!(newer_mark, other_mark);
+    assert_eq!(
+        renderer.frame(
+            /*columns*/ 60,
+            /*rows*/ 21,
+            /*phase*/ 1.5,
+            /*marks*/ [1, 2],
+            &dark,
+        ),
+        newer_mark
+    );
     let light = Lighting::terminal(/*fg*/ (32, 32, 32), /*bg*/ (250, 250, 250));
     let light_frame = renderer.frame(
-        /*columns*/ 60, /*rows*/ 21, /*phase*/ 0.0, &light,
+        /*columns*/ 60,
+        /*rows*/ 21,
+        /*phase*/ 0.0,
+        /*marks*/ [1, 1],
+        &light,
     );
     assert_eq!(
         light_frame.iter().map(|cell| cell.dots).collect::<Vec<_>>(),

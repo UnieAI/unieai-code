@@ -1,5 +1,8 @@
 //! Deterministic surface projection and Braille rasterization of the Codex-to-UnieAI logo morph.
 //!
+//! `marks` names the UnieAI field (an index into `FIELDS`) shown before and after phase 1.0:
+//! the sequence is Codex, `marks[0]`, Codex, `marks[1]`.
+//!
 //! Fields and depth use Float32 sampling; all other math uses Float64.
 
 use std::f64::consts::TAU;
@@ -54,11 +57,13 @@ impl Renderer {
         columns: u16,
         rows: u16,
         phase: f64,
+        marks: [usize; 2],
         light: &Lighting,
     ) -> &[Cell] {
         assert!(columns <= MAX_COLUMNS && rows <= MAX_ROWS);
         let columns = usize::from(columns);
         let rows = usize::from(rows);
+        let mark = if phase < 1.0 { marks[0] } else { marks[1] };
         let phase = phase.rem_euclid(/*rhs*/ 1.0);
         let second = if phase >= 0.5 { 1.0 } else { 0.0 };
         let spin = smooth((phase * 2.0 - second) / 0.82);
@@ -75,8 +80,8 @@ impl Renderer {
         let dot_height = 550.0 / dot_rows as f64;
         self.depth.fill(f32::NEG_INFINITY);
         for (i, value) in self.shape.iter_mut().enumerate() {
-            *value =
-                (f64::from(FIELDS[0][i]) * (1.0 - blend) + f64::from(FIELDS[1][i]) * blend) as f32;
+            *value = (f64::from(FIELDS[0][i]) * (1.0 - blend) + f64::from(FIELDS[mark][i]) * blend)
+                as f32;
         }
         let mut project = |[x, y, mut z]: [f64; 3], [mut nx, mut ny, mut nz]: [f64; 3]| {
             let u = x * 2.2 + y * 0.7;

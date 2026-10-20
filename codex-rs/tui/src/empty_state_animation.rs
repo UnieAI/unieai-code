@@ -51,6 +51,10 @@ pub(crate) struct EmptyStateAnimation {
     renderer: Option<Renderer>,
     stage: Option<Rect>,
     replaying: bool,
+    /// Which UnieAI mark the logo settles on: the bunny, or the newer mark once a click flips it.
+    alternate_mark: bool,
+    /// The mark a replay starts from; equal to `alternate_mark` outside a replay.
+    previous_mark: bool,
 }
 
 impl EmptyStateAnimation {
@@ -85,6 +89,7 @@ impl EmptyStateAnimation {
     pub(crate) fn cancel_replay(&mut self) {
         self.stage = None;
         self.replaying = false;
+        self.previous_mark = self.alternate_mark;
         self.pause_clock();
     }
 
@@ -97,6 +102,8 @@ impl EmptyStateAnimation {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if inside => {
                 self.start_fresh();
+                // Each replay turns through Codex to the other UnieAI mark.
+                self.alternate_mark = !self.alternate_mark;
                 self.spin_elapsed =
                     Duration::from_secs_f64(SETTLED_BLOSSOM * sequence::LOOP_SECONDS);
                 self.opacity = sequence::STATIC_OPACITY;
@@ -227,6 +234,7 @@ impl EmptyStateAnimation {
             }
             // The replay has faded back to the idle pose and no longer needs redraws.
             self.replaying = false;
+            self.previous_mark = self.alternate_mark;
         }
         self.paint_frame(stage, buffer, SETTLED_BLOSSOM, sequence::STATIC_OPACITY);
         None
@@ -248,6 +256,7 @@ impl EmptyStateAnimation {
             area.width,
             area.height,
             phase,
+            [self.previous_mark, self.alternate_mark].map(|alternate| 1 + usize::from(alternate)),
             &light,
         );
         for (i, cell) in cells.iter().enumerate().filter(|(_, cell)| cell.dots != 0) {
