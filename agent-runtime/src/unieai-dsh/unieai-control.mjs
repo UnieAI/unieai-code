@@ -29,6 +29,7 @@ import { createMcpToolDefinition } from "@deepseek-ai/dsh-mcp-client";
 import { SANDBOX_MODES, setSandboxMode } from "@deepseek-ai/dsh-sandbox-policy";
 import { APPROVAL_POLICIES, setApprovalPolicy } from "@deepseek-ai/dsh-user-approval";
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
+import { isBillingFailure } from "../unieai-billing.mjs";
 
 export const name = "unieai-control";
 /** The session record unieai-auto-approval reads (its MODE_RECORD). */
@@ -290,6 +291,15 @@ export function apply(ctx, config = {}) {
     dropClientTools(agent.id);
     steersWaiting.delete(agent.id);
   });
+
+  // A UnieAI billing refusal (plan limit, empty wallet, monthly ceiling) lasts
+  // until the user acts or the window resets: retrying it as a rate limit
+  // only delays the message. Ahead of llm-retry, end the turn instead.
+  ctx.on(
+    "agent/request-error",
+    (payload, next) => (isBillingFailure(payload?.failure?.message) ? Promise.resolve(undefined) : next()),
+    { prepend: true },
+  );
 
   // The bridge's connection, for changes it did not ask about (goal edits
   // the model makes with its goal tools).

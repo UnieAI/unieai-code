@@ -107,6 +107,37 @@ test("an engine failure surfaces as an error notification, not an unhandled reje
   assert.ok(emitted.some(([m]) => m === "turn/completed"));
 });
 
+test("a gateway billing refusal reads as what to do about it, as a usage limit", async () => {
+  const home = mkdtempSync(join(tmpdir(), "uac-billing-"));
+  const previous = process.env.UNIEAI_HOME;
+  process.env.UNIEAI_HOME = home; // no unieai.json: the public Studio's plan page
+  try {
+    const h = createHandlers({
+      createEngineFor: () => ({
+        send: async () => {
+          throw new Error('Internal error: 402 {"error":{"code":"insufficient_balance","message":"Insufficient balance"}}');
+        },
+      }),
+      codexHome: home,
+    });
+    const emitted = [];
+    const { thread } = await h["thread/start"]({});
+    await h["turn/start"]({ threadId: thread.id, input: "x" }, { emit: (m, p) => emitted.push([m, p]) });
+    await new Promise((r) => setTimeout(r, 10));
+    const error = emitted.find(([m]) => m === "error");
+    assert.deepEqual(error[1].error, {
+      message: "Your UnieAI wallet is out of credits. Top up at https://studio.unieai.com/plan to continue.",
+      codexErrorInfo: "usageLimitExceeded",
+    });
+    const completed = emitted.find(([m]) => m === "turn/completed");
+    assert.equal(completed[1].turn.error.codexErrorInfo, "usageLimitExceeded");
+  } finally {
+    if (previous === undefined) delete process.env.UNIEAI_HOME;
+    else process.env.UNIEAI_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("interrupting a turn aborts the engine's signal", async () => {
   let seenSignal = null;
   const h = createHandlers({

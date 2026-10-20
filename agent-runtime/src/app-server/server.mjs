@@ -23,6 +23,7 @@ import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
+import { describeTurnError } from "../unieai-billing.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -480,16 +481,20 @@ export function createHandlers({
       runAfterCards();
       const current = thread.activeTurn;
       if (error) {
+        const raw = String(error?.message || error);
+        // A gateway billing refusal reads as what to do about it, like on the
+        // codex engine, and the client treats it as a usage limit.
+        const { message, codexErrorInfo } = describeTurnError(raw);
+        const turnError = codexErrorInfo ? { message, codexErrorInfo } : { message };
         if (current) {
           current.status = "failed";
-          current.error = { message: String(error?.message || error) };
+          current.error = turnError;
         }
         // The client files an error by thread and turn and needs to know
         // whether to expect a retry; without those it cannot place the error
         // at all, so an engine failure was invisible.
-        const message = String(error?.message || error);
-        onTurnError(message, { threadId: thread.id, turnId });
-        ctx?.emit?.("error", { error: { message }, willRetry: false, threadId: thread.id, turnId });
+        onTurnError(raw, { threadId: thread.id, turnId });
+        ctx?.emit?.("error", { error: turnError, willRetry: false, threadId: thread.id, turnId });
       }
       thread.activeTurn = null;
       thread.pendingAnswer = null;
