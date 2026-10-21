@@ -140,21 +140,25 @@ test("a uac turn publishes a page, a later turn updates it in place and lists it
       index === 0
         ? { calls: [{ name: "publish_artifact", args: { action: "publish", path: "pages/notes.html" } }] }
         : index === 1
-          ? { calls: [{ name: "publish_artifact", args: { action: "list" } }] }
-          : { text: "Updated." },
+          ? { calls: [{ name: "publish_artifact", args: { action: "update_settings", id: "art_1", visibility: "org", header: { description: "For the team" } } }] }
+          : index === 2
+            ? { calls: [{ name: "publish_artifact", args: { action: "list" } }] }
+            : { text: "Updated." },
     );
     const run2 = await runTurn({ model: second, unieaiHome, dshHome, work, prompt: "update the page" });
     second.close();
     assert.equal(run2.code, 0, run2.stderr.slice(-2000));
-    const [updated, listed] = toolTexts(second.requests[2]);
+    const [updated, settings, listed] = toolTexts(second.requests[3]);
+    assert.match(settings, /^Updated the settings of artifact art_1: visibility org, header updated\./);
     assert.match(updated, /^Updated the page in place: "Release Notes"[\s\S]*id art_1 · version 2/);
     assert.match(listed, /^1 artifact:\n- "Release Notes" http:\/\/127\.0\.0\.1:\d+\/share\/html\/[\w-]+\n {3}id art_1 · version 2/);
-    dumps.push(`turn 2 publish_artifact -> ${updated}`, `turn 2 publish_artifact(list) -> ${listed}`);
+    dumps.push(`turn 2 publish_artifact -> ${updated}`, `turn 2 publish_artifact(update_settings) -> ${settings}`, `turn 2 publish_artifact(list) -> ${listed}`);
 
     assert.equal(stub.store.size, 1);
     const row = stub.store.get("art_1");
     assert.equal(row.version, 2);
-    assert.deepEqual(row.header, { icon: "notes" });
+    assert.deepEqual([row.visibility, row.orgId], ["org", "org_a"], "one org: used without asking");
+    assert.deepEqual(row.header, { showAuthor: false, description: "For the team" });
     assert.match(Buffer.from(row.files[0].contentBase64, "base64").toString(), /v2/);
     const viewed = await (await fetch(`${stub.url}/share/html/${row.token}`)).text();
     assert.match(viewed, /<h1>v2<\/h1>/);
@@ -162,6 +166,7 @@ test("a uac turn publishes a page, a later turn updates it in place and lists it
     assert.deepEqual(calls.map((c) => c.replace(/ auth=true$/, "")), [
       "POST /api/agent-next/artifacts/site",
       "PUT /api/agent-next/artifacts/art_1",
+      "PATCH /api/agent-next/artifacts/art_1",
       "GET /api/agent-next/artifacts?mine=1&source=unieai-code",
     ]);
     dumps.push(`ava stub saw: ${calls.join(" | ")}`, `id memory: ${readFileSync(join(unieaiHome, "artifacts.json"), "utf8").trim()}`);

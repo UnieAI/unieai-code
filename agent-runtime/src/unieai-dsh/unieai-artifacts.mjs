@@ -15,6 +15,7 @@ import { currentDirectory, sessionCwd } from "./uac-plugins/unieai-edit-dsh.mjs"
 import {
   ArtifactsClient,
   ArtifactsError,
+  updateSettings,
   IdMemory,
   LIMITS,
   list,
@@ -38,14 +39,16 @@ export const DESCRIPTION =
   "Publish a web page you wrote (a report, dashboard, diagram, small tool) to the user's UnieAI gallery at a private link, and update it in place later. " +
   "Use it for a page meant for people to read or use, not for code that belongs in the repository. " +
   "Actions: publish (path to an .html file or a directory with index.html, or inline files; publishing the same path again updates the same page, " +
-  "and id updates a given page), list, read (an existing page's files, e.g. before you rewrite it), delete. " +
+  "and id updates a given page), update_settings (visibility and the viewer header of an existing page), list, " +
+  "read (an existing page's files, e.g. before you rewrite it), delete. " +
   "Only delete when the user asks for that page to be deleted. " +
-  "Pages are inline-only: no external http(s) scripts, styles, fonts or images (a publish that has them is refused with what to inline). " +
+  "Pages should be self-contained: external http(s) scripts, styles, fonts and images are refused (with what to inline), " +
+  "except from cdn.jsdelivr.net, unpkg.com, cdnjs.cloudflare.com and Google Fonts. " +
   `Limits: ${LIMITS.maxFileBytes / 1048576} MiB per file, ${LIMITS.maxDeps} files besides index.html, ${LIMITS.maxShareBytes / 1048576} MiB per page. ` +
   "Load the artifact skill before writing a page for it.";
 
 export const PARAMETERS = {
-  action: { type: "string", enum: ["publish", "list", "read", "delete"], required: true, description: "What to do." },
+  action: { type: "string", enum: ["publish", "update_settings", "list", "read", "delete"], required: true, description: "What to do." },
   path: { type: "string", description: "publish: an .html file (it becomes index.html) or a directory with index.html at its top." },
   files: {
     type: "array",
@@ -62,21 +65,27 @@ export const PARAMETERS = {
   },
   title: { type: "string", description: "publish: the page's name, 2-4 words (default: the page's <title>)." },
   description: { type: "string", description: "publish: one sentence for the gallery card." },
-  id: { type: "string", description: "publish: the artifact to update (default: the one this path was published as). read/delete: the artifact." },
-  expected_version: { type: "number", description: "publish: the version your update is based on (default: the version last published from this path)." },
+  id: { type: "string", description: "publish: the artifact to update (default: the one this path was published as). update_settings/read/delete: the artifact." },
+  expected_version: { type: "number", description: "publish/delete: the version this is based on (publish default: the version last published from this path)." },
   merge: { type: "boolean", description: "publish: on a version conflict, lay your files over the current version's (same path wins) and retry once." },
-  visibility: { type: "string", enum: ["private", "org"], description: 'publish: "private" (default) or "org". Only the user makes a page public, in the web UI.' },
+  visibility: {
+    type: "string",
+    enum: ["private", "org"],
+    description: 'publish/update_settings: "private" (a new page\'s default) or "org"; an update without it keeps the page\'s. Only the user makes a page public, in the web UI.',
+  },
+  org_id: { type: "string", description: 'With visibility "org", when the user belongs to several organizations: the one to share with (ask the user).' },
   header: {
     type: "object",
     additionalProperties: false,
-    description: "publish: the viewer's header bar above the page (never draw one in the page itself).",
+    description: "publish/update_settings: the viewer's header bar above the page (never draw one in the page itself); an update without it keeps the page's.",
     properties: {
       title: { type: "string", description: "Header title (default: the page title)." },
       description: { type: "string", description: "One line under the title." },
       icon: { type: "string", description: "One short generic word or an emoji, e.g. chart." },
-      show_author: { type: "boolean", description: "Show the author's name." },
+      show_author: { type: "boolean", description: "Show the author's name (default false)." },
     },
   },
+  clear_header: { type: "boolean", description: "update_settings: remove the page's header settings." },
   save_to: { type: "string", description: "read: also write the page's files into this directory, which then publishes back to the same page." },
 };
 
@@ -99,11 +108,14 @@ export async function runArtifactAction(args, { home = unieaiHome(), cwd = proce
     case "read":
       if (!args.id) throw new ArtifactsError("bad_request", "read needs id (see action list).");
       return renderRead(await read({ client, memory, account, cwd, workspace: root, id: args.id, saveTo: args.save_to }), client);
+    case "update_settings":
+      if (!args.id) throw new ArtifactsError("bad_request", "update_settings needs id (see action list).");
+      return updateSettings({ client, memory, args });
     case "delete":
       if (!args.id) throw new ArtifactsError("bad_request", "delete needs id.");
-      return remove({ client, memory, id: args.id });
+      return remove({ client, memory, id: args.id, expectedVersion: args.expected_version });
     default:
-      throw new ArtifactsError("bad_request", `unknown action "${args.action}": use publish, list, read or delete.`);
+      throw new ArtifactsError("bad_request", `unknown action "${args.action}": use publish, update_settings, list, read or delete.`);
   }
 }
 

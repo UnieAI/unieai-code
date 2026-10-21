@@ -13,18 +13,20 @@ whenToUse: "The user wants a page to read, share or use: a report, summary, dash
 
 ## The file
 - One self-contained `index.html`, saved where the user asks, else at `.unieai/pages/<name>/index.html`.
-- Inline everything: CSS in `<style>`, JS in `<script>`, images as inline `<svg>` or `data:` URIs, data as a JSON literal. No `http(s)://` scripts, stylesheets, fonts, images, `import`s or `fetch` — the viewer loads nothing from the network and the publish is refused.
-- No web fonts: `font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`.
+- Inline everything: CSS in `<style>`, JS in `<script>`, images as inline `<svg>` or `data:` URIs, data as a JSON literal. No `http(s)://` scripts, stylesheets, fonts, images, `import`s or `fetch`: the viewer loads nothing from the network and the publish is refused. The one exception: when a library is genuinely needed and too big to inline, `cdn.jsdelivr.net`, `unpkg.com`, `cdnjs.cloudflare.com` and Google Fonts are accepted. Inline first.
+- System fonts: `font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`.
 - `<title>` is a name of 2–4 words ("Q3 Latency Report"), not a sentence.
 - Colours as tokens on `:root`, overridden under `@media (prefers-color-scheme: dark)`; `body` gets an explicit `background` and `color` from the tokens.
 - Works at phone width: `<meta name="viewport" content="width=device-width, initial-scale=1">`, a 16px side gutter, `max-width` on the content, nothing wider than the screen (tables and code scroll inside their own box with `overflow-x: auto`), so the page never scrolls sideways.
 - Size budget: aim under 300 KB; the hard limits are 4 MiB per file and 16 MiB per page. Draw charts by hand as inline SVG (a `<rect>` per bar, a `<polyline>` per series, text labels, coloured through CSS classes that use the tokens) instead of bundling a chart library.
-- The viewer shows its own header bar (title, one-line description, icon, author). Set it with the tool's `header` fields; never draw a header, logo bar or "made with" mark in the page.
+- The viewer shows its own header bar (title, one-line description, icon, author). Set it with the tool's `header` fields (`title`, `description`, `icon`, `show_author`, which is off by default); never draw a header, logo bar or "made with" mark in the page.
 
 ## Publishing and updating
 - `publish_artifact {action: "publish", path: ".unieai/pages/q3/index.html", title: "Q3 Latency Report", description: "p50/p99 by region, July–September", header: {icon: "chart"}}`
 - To change a page, edit the same file and publish the same path again: it updates the page in place and keeps the link. Never publish a new page for an edit. For a page from another session, `list` to find its id and publish with that `id`.
 - A version conflict means the page changed elsewhere: `read` it with `save_to`, merge your change into those files, and publish that directory; or publish again with `merge: true` to lay your files over the current ones.
+- Pages are private. Share with the user's organization only when asked: `visibility: "org"` (if they belong to several organizations the tool says so; ask which and pass `org_id`). Making a page public is the user's step in the web UI.
+- To change only who can see a page or its header, use `update_settings` with the `id` (no new version); `clear_header: true` removes the header.
 - A refusal lists each external reference and how to inline it; fix them all and publish again.
 
 ## Template

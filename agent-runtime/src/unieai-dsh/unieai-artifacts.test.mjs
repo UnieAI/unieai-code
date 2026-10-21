@@ -9,7 +9,9 @@ import {
   ArtifactsClient,
   IdMemory,
   LIMITS,
+  checkBodySize,
   collectFromPath,
+  isAllowedRef,
   findExternalRefs,
   mergeFiles,
   normalizeSitePath,
@@ -41,13 +43,13 @@ function workspace() {
 
 // --- validation ---------------------------------------------------------------
 
-test("external references are found in HTML, CSS and ESM, each with what to inline", () => {
+test("external references are found in HTML, CSS and ESM, each with what to inline; ava's four CDNs pass", () => {
   const html = [
     "<!doctype html><html><head>",
     '<link rel="stylesheet" href="https://cdn.example.com/x.css">',
     '<link rel="preconnect" href="https://fonts.googleapis.com">',
     '<link rel="canonical" href="https://example.com/page">',
-    '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
+    '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script src="https://cdn.example.com/lib.js"></script>',
     "<style>@import url('https://fonts.googleapis.com/css2?family=Inter'); body{background:url(//img.example.com/bg.png)}</style>",
     '<script type="module">import { x } from "https://esm.sh/lib"; const d = await fetch("https://api.example.com/data");</script>',
     "</head><body>",
@@ -63,21 +65,21 @@ test("external references are found in HTML, CSS and ESM, each with what to inli
   assert.deepEqual(summary, [
     "index.html:7 import https://esm.sh/lib",
     "index.html:7 fetch() https://api.example.com/data",
-    "index.html:6 @import https://fonts.googleapis.com/css2?family=Inter",
     "index.html:6 url() //img.example.com/bg.png",
     "index.html:2 <link> https://cdn.example.com/x.css",
-    "index.html:3 <link> https://fonts.googleapis.com",
-    "index.html:5 <script> https://cdn.jsdelivr.net/npm/chart.js",
+    "index.html:5 <script> https://cdn.example.com/lib.js",
     "index.html:11 <img> https://x.example/b.png",
     "index.html:12 <iframe> https://youtube.com/embed/x",
-    "app.js:1 import https://unpkg.com/a.js",
     "app.js:2 export from //cdn.x/y.js",
     "s.css:1 url() https://x/y.png",
   ]);
   const byRef = Object.fromEntries(refs.map((ref) => [ref.ref, ref.fix]));
-  assert.match(byRef["https://cdn.jsdelivr.net/npm/chart.js"], /inline <script>.*inline <svg>/);
+  assert.match(byRef["https://cdn.example.com/lib.js"], /inline <script>.*inline <svg>.*cdn\.jsdelivr\.net/);
   assert.match(byRef["https://cdn.example.com/x.css"], /<style> block/);
-  assert.match(byRef["https://fonts.googleapis.com/css2?family=Inter"], /system-ui/);
+  assert.match(findExternalRefs([file("a.css", "@import url(https://use.typekit.net/x.css);")])[0].fix, /system-ui.*Google Fonts/);
+  for (const ok of ["https://cdn.jsdelivr.net/npm/x", "//unpkg.com/x", "https://cdnjs.cloudflare.com/a", "https://fonts.googleapis.com/css2", "https://fonts.gstatic.com/s/x.woff2"]) assert.ok(isAllowedRef(ok), ok);
+  for (const bad of ["http://cdn.jsdelivr.net/x", "https://cdn.jsdelivr.net.evil.com/x", "https://esm.sh/x"]) assert.equal(isAllowedRef(bad), false, bad);
+  assert.deepEqual(findExternalRefs([file("a.js", 'fetch("https://cdn.jsdelivr.net/data.json")')]).map((r) => r.what), ["fetch()"], "no connections, even to a CDN");
   assert.match(byRef["https://api.example.com/data"], /connect-src 'none'/);
   assert.match(byRef["https://esm.sh/lib"], /import it relatively/);
   assert.match(byRef["https://x/y.png"], /data: URI/);
@@ -142,16 +144,17 @@ test("requests: routes, bearer key, body shape; the key never appears in errors"
     if (url.endsWith("/art_9") && init.method === "PUT") {
       return new Response(JSON.stringify({ error: { code: "quota_exceeded", message: `no room for ${KEY}` } }), { status: 429 });
     }
-    if (url.includes("?mine=1")) return Response.json({ artifacts: [{ id: "art_1", title: "T", url: "/share/html/tok", version: 2 }] });
+    if (url.includes("?mine=1")) return Response.json({ mine: [{ id: "art_1", title: "T", url: "/share/html/tok", version: 2 }], org: [], usage: { activeShares: 1 }, limits: { activeShares: 100 } });
+    if (init.method === "PATCH") return new Response(JSON.stringify({ error: { code: "org_required", message: "several orgs" } }), { status: 403 });
     return Response.json({ id: "art_1", viewerUrl: "/share/html/tok", version: 1 });
   };
   const client = new ArtifactsClient({ baseUrl: "https://agent.example.com/", apiKey: KEY, fetchImpl });
   assert.equal(JSON.stringify(client).includes(KEY), false);
   await client.create({ title: "T", entry: "index.html", files: [], visibility: "private" });
   await client.update("art_1", { title: "T" }, 3);
-  assert.deepEqual(await client.list(), [{ id: "art_1", title: "T", url: "/share/html/tok", version: 2 }]);
+  assert.deepEqual(await client.list(), { mine: [{ id: "art_1", title: "T", url: "/share/html/tok", version: 2 }], org: [], usage: { activeShares: 1 }, limits: { activeShares: 100 } });
   await client.get("art_1");
-  await client.remove("art_1");
+  await client.remove("art_1", 4);
   assert.deepEqual(
     calls.map((c) => `${c.method} ${c.url}`),
     [
@@ -159,9 +162,10 @@ test("requests: routes, bearer key, body shape; the key never appears in errors"
       "PUT https://agent.example.com/api/agent-next/artifacts/art_1",
       "GET https://agent.example.com/api/agent-next/artifacts?mine=1&source=unieai-code",
       "GET https://agent.example.com/api/agent-next/artifacts/art_1",
-      "DELETE https://agent.example.com/api/agent-next/artifacts/art_1",
+      "DELETE https://agent.example.com/api/agent-next/artifacts/art_1?expectedVersion=4",
     ],
   );
+  await assert.rejects(client.updateSettings("art_1", { visibility: "org" }), { code: "org_required", message: /several organizations: ask which one/ });
   assert.ok(calls.every((c) => c.auth === `Bearer ${KEY}`));
   assert.equal(calls[1].body.expectedVersion, 3);
   assert.equal(client.absolute("/share/html/tok"), "https://agent.example.com/share/html/tok");
@@ -204,6 +208,12 @@ test("publish body: entry, base64 files with mime, visibility, header; public is
   });
   assert.match(out, /^Published a new page: "Hello Page"\nhttps:\/\/agent\.example\.com\/share\/html\/tok\nid art_1 · version 1 · org · 2 files/);
   await assert.rejects(runArtifactAction({ action: "publish", files: [{ path: "index.html", content: "x" }], visibility: "public" }, { home, cwd: ws, fetchImpl }), /web UI/);
+  // ava's 23 MiB request limit is checked locally, before anything is sent.
+  const sent = bodies.length;
+  assert.throws(() => checkBodySize({ files: [{ contentBase64: "A".repeat(23 * 1024 * 1024) }] }), { code: "too_large", message: /23\.0 MiB per request/ });
+  const big = Array.from({ length: 7 }, (_, i) => ({ path: `d${i}.bin`, content_base64: Buffer.alloc(1.9 * 1024 * 1024).toString("base64") }));
+  await assert.rejects(runArtifactAction({ action: "publish", files: [{ path: "index.html", content: "x" }, ...big] }, { home, cwd: ws, fetchImpl }), /12\.0 MiB/);
+  assert.equal(bodies.length, sent);
 });
 
 // --- against the stub: memory, updates, 409 ---------------------------------
@@ -295,7 +305,7 @@ test("the stub's own preflight errors come back with ava's codes", async () => {
       .create({ title: "x", entry: "index.html", visibility: "private", files: [{ path: "index.html", contentBase64: Buffer.from('<img src="https://x/y.png">').toString("base64") }] })
       .catch((e) => e);
     assert.equal(error.code, "external_ref");
-    assert.match(error.message, /inline it/);
+    assert.match(error.message, /Inline it/);
     const wrongKey = new ArtifactsClient({ baseUrl: stub.url, apiKey: "other" });
     await assert.rejects(wrongKey.list(), { code: "unauthorized" });
     assert.ok(home);
@@ -311,7 +321,7 @@ test("the plugin registers publish_artifact; errors reach the model as plain mes
   apply({ tools: { register: (definition) => (tool = definition) }, get: () => undefined }, { home: fakeHome({ account: "studio" }) });
   assert.equal(tool.name, TOOL_NAME);
   assert.match(DESCRIPTION, /Only delete when the user asks/);
-  assert.deepEqual(PARAMETERS.action.enum, ["publish", "list", "read", "delete"]);
+  assert.deepEqual(PARAMETERS.action.enum, ["publish", "update_settings", "list", "read", "delete"]);
   await assert.rejects(tool.execute({ action: "list" }, undefined), (error) => error.constructor === Error && /signed in to UnieAI Studio[\s\S]*unieai login --rabi/.test(error.message));
 });
 
@@ -333,4 +343,63 @@ test("the bundled artifact skill parses and covers the rules", () => {
   assert.match(text, /^---\nname: artifact\ndescription: "[^"]+"\n/);
   for (const rule of [/link once/, /2–4 words/, /prefers-color-scheme: dark/, /16px side gutter/, /inline SVG/, /updates the page in place/, /`header` fields/]) assert.match(text, rule);
   assert.deepEqual(findExternalRefs([file("index.html", text.match(/```html\n([\s\S]*?)```/)[1])]), [], "the template is inline-only");
+});
+
+test("ava's API: update keeps visibility, update_settings patches, org choice, chat pages, scope", async () => {
+  const stub = await startStub({ apiKey: KEY, orgs: ["org_a", "org_b"] });
+  try {
+    const home = fakeHome({ url: stub.url });
+    const ws = workspace();
+    writeFileSync(join(ws, "page.html"), page("v1", "Org Page"));
+    const orgRequired = await runArtifactAction({ action: "publish", path: "page.html", visibility: "org" }, { home, cwd: ws }).catch((e) => e);
+    assert.equal(orgRequired.code, "org_required");
+    assert.match(orgRequired.message, /ask which one, and pass its id as org_id/);
+    const forbidden = await runArtifactAction({ action: "publish", path: "page.html", visibility: "org", org_id: "org_x" }, { home, cwd: ws }).catch((e) => e);
+    assert.equal(forbidden.code, "org_forbidden");
+    assert.match(await runArtifactAction({ action: "publish", path: "page.html", visibility: "org", org_id: "org_b", header: { icon: "chart" } }, { home, cwd: ws }), /id art_1 · version 1 · org/);
+    const row = stub.store.get("art_1");
+    assert.deepEqual([row.visibility, row.orgId, row.header], ["org", "org_b", { showAuthor: false, icon: "chart" }]);
+    assert.equal(row.files[0].mime, "text/html");
+
+    // An update naming neither visibility nor header keeps both.
+    writeFileSync(join(ws, "page.html"), page("v2", "Org Page"));
+    const updated = await runArtifactAction({ action: "publish", path: "page.html" }, { home, cwd: ws });
+    assert.match(updated, /Updated the page in place[\s\S]*id art_1 · version 2 · 1 file/);
+    assert.equal(stub.requests.at(-1).body.visibility, undefined);
+    assert.deepEqual([row.visibility, row.orgId, row.header?.icon], ["org", "org_b", "chart"]);
+
+    // update_settings -> PATCH: visibility and header only.
+    assert.match(await runArtifactAction({ action: "update_settings", id: "art_1", visibility: "private", header: { title: "Q3", show_author: true } }, { home, cwd: ws }), /visibility private, header updated/);
+    assert.deepEqual(stub.requests.at(-1), { method: "PATCH", path: "/api/agent-next/artifacts/art_1", query: "", authorized: true, body: { visibility: "private", header: { title: "Q3", showAuthor: true } } });
+    assert.match(await runArtifactAction({ action: "update_settings", id: "art_1", clear_header: true }, { home, cwd: ws }), /header cleared/);
+    assert.equal(row.header, null);
+    assert.equal(row.version, 2, "settings do not make a new version");
+    await assert.rejects(runArtifactAction({ action: "update_settings", id: "art_1" }, { home, cwd: ws }), /needs visibility, header or clear_header/);
+    await assert.rejects(runArtifactAction({ action: "update_settings", id: "art_1", visibility: "public" }, { home, cwd: ws }), /web UI/);
+
+    // A page published from an ava chat cannot be replaced.
+    const chat = await stub.chatPage();
+    const notUploadable = await runArtifactAction({ action: "publish", path: "page.html", id: chat.id }, { home, cwd: ws }).catch((e) => e);
+    assert.equal(notUploadable.code, "not_uploadable");
+    assert.match(notUploadable.message, /published from an ava chat[\s\S]*Publish a new page instead/);
+
+    // list is {mine, org, usage, limits}; usage is shown.
+    assert.match(await runArtifactAction({ action: "list" }, { home, cwd: ws }), /^1 artifact:\n- "Org Page"[\s\S]*Usage: activeShares 2\/100, bytes \d+\/268435456/);
+
+    // An external reference ava refuses comes back with path and reference.
+    const refused = await new ArtifactsClient({ baseUrl: stub.url, apiKey: KEY })
+      .create({ title: "x", files: [{ path: "index.html", contentBase64: Buffer.from('<img src="https://x.example/y.png">').toString("base64") }] })
+      .catch((e) => e);
+    assert.equal(refused.code, "external_ref");
+    assert.match(refused.message, /\(index\.html https:\/\/x\.example\/y\.png\) Inline it[^\n]*\n- index\.html: https:\/\/x\.example\/y\.png is not on the allow-list/);
+
+    // A key without the artifacts scope.
+    await assert.rejects(new ArtifactsClient({ baseUrl: stub.url, apiKey: "rk-noscope" }).list(), { code: "unauthorized", message: /`artifacts` scope[\s\S]*unieai login --rabi/ });
+
+    // delete with expected_version.
+    await assert.rejects(runArtifactAction({ action: "delete", id: "art_1", expected_version: 1 }, { home, cwd: ws }), { code: "version_conflict" });
+    assert.match(await runArtifactAction({ action: "delete", id: "art_1", expected_version: 2 }, { home, cwd: ws }), /Deleted artifact art_1/);
+  } finally {
+    await stub.close();
+  }
 });

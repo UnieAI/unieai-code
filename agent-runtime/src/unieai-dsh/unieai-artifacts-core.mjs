@@ -7,8 +7,9 @@
  * `/api/agent-next/artifacts`, authenticated with the Rabi desktop key that
  * `unieai login --rabi` stores in `$UNIEAI_HOME/unieai.json`
  * (`account: "rabi"`, `studio_url` = the Rabi origin, `gateway_api_key` = the
- * key). v1 is inline-only: ava's preflight rejects external http(s)
- * references, so they are found here first, with what to inline instead.
+ * key). ava's preflight rejects external http(s) references except to
+ * jsdelivr, unpkg, cdnjs and Google Fonts, so the others are found here
+ * first, with what to inline instead.
  *
  * The id memory (`$UNIEAI_HOME/artifacts.json`) maps a workspace and a source
  * path to the artifact it was published as, so publishing the same file again
@@ -41,7 +42,21 @@ export const LIMITS = Object.freeze({
   maxDepsBytes: 12 * MiB,
   maxDeps: 48,
   maxShareBytes: 16 * MiB,
+  /** The whole JSON request body (base64 inflates the files by a third). */
+  maxBodyBytes: 23 * MiB,
 });
+
+/**
+ * Hosts ava's preflight accepts references to (jsdelivr, unpkg, cdnjs and
+ * Google Fonts), over https or protocol-relative. Every other external
+ * reference is refused.
+ */
+export const ALLOWED_HOSTS = Object.freeze(["cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "fonts.googleapis.com", "fonts.gstatic.com"]);
+
+export function isAllowedRef(ref) {
+  const match = String(ref).trim().match(/^(https:)?\/\/([^/?#:]+)/i);
+  return Boolean(match) && ALLOWED_HOSTS.includes(match[2].toLowerCase());
+}
 
 /** Directory entries never uploaded from a site directory. */
 const SKIPPED_DIRS = new Set(["node_modules", ".git"]);
@@ -190,13 +205,13 @@ const lineAt = (text, index) => text.slice(0, index).split("\n").length;
 const clip = (value, max = 90) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
 
 const FIX = {
-  script: "paste the library's code into an inline <script>…</script> (for a chart library, draw the chart as inline <svg> instead)",
+  script: "paste the library's code into an inline <script>…</script> (for a chart library, draw the chart as inline <svg> instead), or load it from cdn.jsdelivr.net, unpkg.com or cdnjs.cloudflare.com",
   stylesheet: "copy the CSS into a <style> block",
-  font: 'drop the web font and use a system stack: font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  font: 'use a system stack (font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif) or Google Fonts (fonts.googleapis.com)',
   image: "embed it as a data: URI (data:image/png;base64,…) or inline <svg>, or add the file to the upload and use a relative path",
   embed: "external embeds cannot load in the viewer; link to it with <a href> instead",
   cssImport: "copy the imported CSS into this stylesheet",
-  module: 'inline the module\'s code, or add it to the upload as a file and import it relatively ("./lib.js")',
+  module: 'inline the module\'s code, add it to the upload as a file and import it relatively ("./lib.js"), or import it from cdn.jsdelivr.net, unpkg.com or cdnjs.cloudflare.com',
   network: "the page cannot make network requests (connect-src 'none'); embed the data in the page, e.g. <script type=\"application/json\" id=\"data\">…</script>",
   base: "remove the <base> tag; use relative paths",
   remove: "remove it (preloads and prefetches of external URLs cannot load)",
@@ -207,6 +222,8 @@ const EMBED_TAGS = new Set(["iframe", "embed", "object", "frame", "portal"]);
 /** <link rel> values that only describe the page, never load anything. */
 const INERT_RELS = new Set(["canonical", "alternate", "author", "license", "me", "help", "search", "bookmark", "external", "nofollow", "noopener", "noreferrer"]);
 const isFontHost = (ref) => /fonts\.(googleapis|gstatic)\.com|use\.typekit\.net|fonts\.bunny\.net/i.test(ref);
+/** fetch() and sockets: the viewer allows no connections, not even to the accepted CDNs. */
+const NETWORK_KINDS = new Set(["fetch()", "connection", "XMLHttpRequest"]);
 
 function attrValue(attrs, name) {
   const match = attrs.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
@@ -295,8 +312,16 @@ function scanHtml(file, text, out) {
   }
 }
 
-/** External http(s) references in a site's HTML, CSS and JS files, with the fix for each. */
+/**
+ * External http(s) references ava would refuse in a site's HTML, CSS and JS
+ * files, with the fix for each. References to the accepted CDNs pass, except
+ * network requests (fetch, sockets), which cannot work in the viewer.
+ */
 export function findExternalRefs(files) {
+  return findAllExternalRefs(files).filter((ref) => NETWORK_KINDS.has(ref.what) || !isAllowedRef(ref.ref));
+}
+
+function findAllExternalRefs(files) {
   const out = [];
   for (const file of files) {
     const mime = mimeOf(file.path);
@@ -315,6 +340,7 @@ export function findExternalRefs(files) {
  * of them; returns nothing when the site is fine.
  */
 export function validateSite(files, limits = LIMITS) {
+  if (files.length === 0) throw new ArtifactsError("bad_request", "Nothing to publish: no files.");
   const problems = [];
   const paths = new Set();
   for (const file of files) {
@@ -342,8 +368,19 @@ export function validateSite(files, limits = LIMITS) {
     if (refs.length > shown.length) shown.push(`- … and ${refs.length - shown.length} more`);
     throw new ArtifactsError(
       "external_ref",
-      `Not published: ${refs.length} external reference${refs.length === 1 ? "" : "s"}. Pages are inline-only: the viewer loads nothing from the network, so every script, style, font, image and data file must be inside the upload.\n${shown.join("\n")}\nFix these and publish again.`,
+      `Not published: ${refs.length} external reference${refs.length === 1 ? "" : "s"}. The viewer loads nothing from the network except the CDNs cdn.jsdelivr.net, unpkg.com, cdnjs.cloudflare.com and Google Fonts, so every other script, style, font, image and data file must be inside the upload.\n${shown.join("\n")}\nFix these and publish again.`,
       { refs },
+    );
+  }
+}
+
+/** ava's 23 MiB limit on the whole request body, checked before sending it. */
+export function checkBodySize(body, limits = LIMITS) {
+  const size = Buffer.byteLength(JSON.stringify(body));
+  if (size > limits.maxBodyBytes) {
+    throw new ArtifactsError(
+      "too_large",
+      `Not published: the upload is ${fmtBytes(size)} once encoded; ava takes at most ${fmtBytes(limits.maxBodyBytes)} per request (base64 adds a third to binary files). Shrink or drop large images and data.`,
     );
   }
 }
@@ -376,10 +413,15 @@ export function mergeFiles(current, ours) {
 // --- HTTP -------------------------------------------------------------------
 
 const ERROR_HINTS = {
-  too_large: "The page is over ava's limits (4 MiB per file, 12 MiB and 48 files besides index.html, 16 MiB per page).",
-  external_ref: "ava found an external reference; inline it (pages are inline-only).",
-  quota_exceeded: "The account's artifact quota is full: delete pages you no longer need (action list, then delete — only with the user's go-ahead) or ask the user to free space in ava's gallery.",
+  too_large: "The page is over ava's limits (4 MiB per file, 12 MiB and 48 files besides index.html, 16 MiB per page, 23 MiB per request).",
+  external_ref: "Inline it, or use cdn.jsdelivr.net, unpkg.com, cdnjs.cloudflare.com or Google Fonts.",
+  preflight_failed: "ava's check of the page failed; fix what it names and publish again.",
+  quota_exceeded:
+    "The account's artifact quota is full (100 active pages, shared with pages published from ava chats, and 256 MiB): ask the user which pages to delete (action list, then delete only with their go-ahead) or to free space in ava's gallery.",
   version_conflict: "The page changed since this version.",
+  not_uploadable: "This page was published from an ava chat, and only pages published from UnieAI Code can be replaced. Publish a new page instead (without id).",
+  org_required: "The user belongs to several organizations: ask which one, and pass its id as org_id.",
+  org_forbidden: "The user is not a member of that organization: ask which organization to share with.",
 };
 
 /** The routes under `/api/agent-next/artifacts`. */
@@ -432,7 +474,7 @@ export class ArtifactsClient {
       const current = Number(json?.error?.currentVersion ?? json?.currentVersion ?? json?.error?.version ?? json?.version);
       return new ArtifactsError(code, serverMessage || "version conflict", { status, currentVersion: Number.isFinite(current) ? current : null });
     }
-    if (status === 401 || status === 403) {
+    if (status === 401 || (status === 403 && !["org_required", "org_forbidden"].includes(code))) {
       return new ArtifactsError(
         "unauthorized",
         `ava refused the Rabi key (HTTP ${status}${serverMessage ? `: ${serverMessage}` : ""}). Publishing needs a desktop key with the \`artifacts\` scope, which keys granted before artifacts existed do not have: run \`unieai login --rabi\` again to re-grant.`,
@@ -443,8 +485,13 @@ export class ArtifactsClient {
       return new ArtifactsError("not_found", `${this.baseUrl} answered 404 (not found): the artifact does not exist, or this ava deployment does not serve artifact publishing yet.`, { status });
     }
     const hint = ERROR_HINTS[code];
-    const detail = serverMessage || clip(String(text ?? "").split(this.apiKey).join("[key]"), 300) || `HTTP ${status}`;
-    return new ArtifactsError(code, hint ? `${detail} ${hint}` : `ava answered HTTP ${status}: ${detail}`, { status });
+    let detail = serverMessage || clip(String(text ?? "").split(this.apiKey).join("[key]"), 300) || `HTTP ${status}`;
+    const where = [json?.error?.path, json?.error?.reference].filter(Boolean).join(" ");
+    if (where && !detail.includes(where)) detail += ` (${where})`;
+    if (hint) detail += ` ${hint}`;
+    const issues = Array.isArray(json?.error?.issues) ? json.error.issues : [];
+    if (issues.length > 0) detail += `\n${issues.slice(0, 20).map((issue) => `- ${typeof issue === "string" ? issue : JSON.stringify(issue)}`).join("\n")}`;
+    return new ArtifactsError(code, hint ? detail : `ava answered HTTP ${status}: ${detail}`, { status });
   }
 
   create(body) {
@@ -455,17 +502,25 @@ export class ArtifactsClient {
     return this.request("PUT", `/${encodeURIComponent(id)}`, { ...body, expectedVersion });
   }
 
+  /** Visibility and header only. */
+  updateSettings(id, body) {
+    return this.request("PATCH", `/${encodeURIComponent(id)}`, body);
+  }
+
+  /** `{mine, org, usage, limits}`: the user's pages from UnieAI Code, and those shared with their org. */
   async list() {
     const json = await this.request("GET", `?mine=1&source=${SOURCE}`);
-    return Array.isArray(json) ? json : (json?.artifacts ?? json?.items ?? []);
+    if (Array.isArray(json)) return { mine: json, org: [], usage: null, limits: null };
+    return { mine: json?.mine ?? [], org: json?.org ?? [], usage: json?.usage ?? null, limits: json?.limits ?? null };
   }
 
   get(id) {
     return this.request("GET", `/${encodeURIComponent(id)}`);
   }
 
-  remove(id) {
-    return this.request("DELETE", `/${encodeURIComponent(id)}`);
+  remove(id, expectedVersion) {
+    const query = Number.isFinite(expectedVersion) ? `?expectedVersion=${expectedVersion}` : "";
+    return this.request("DELETE", `/${encodeURIComponent(id)}${query}`);
   }
 }
 
@@ -575,6 +630,7 @@ export class IdMemory {
 const VISIBILITIES = new Set(["private", "org"]);
 
 function headerOf(header) {
+  if (header === null) return null;
   if (!header || typeof header !== "object") return undefined;
   const out = {};
   for (const key of ["title", "description", "icon"]) if (typeof header[key] === "string" && header[key].trim()) out[key] = header[key].trim();
@@ -596,8 +652,8 @@ function headerOf(header) {
 export async function publish({ client, memory, account, cwd, workspace = workspaceRoot(cwd), args }) {
   if (args.path && args.files) throw new ArtifactsError("bad_request", "Pass either path or files, not both.");
   if (!args.path && !args.files) throw new ArtifactsError("bad_request", "publish needs path (an .html file or a directory with index.html) or files.");
-  const visibility = args.visibility ?? "private";
-  if (!VISIBILITIES.has(visibility)) {
+  const visibility = args.visibility;
+  if (visibility !== undefined && !VISIBILITIES.has(visibility)) {
     throw new ArtifactsError("bad_request", `visibility must be "private" or "org"; making a page public is done by the user in ava's web UI.`);
   }
   const absPath = args.path ? resolve(cwd, args.path) : null;
@@ -607,16 +663,20 @@ export async function publish({ client, memory, account, cwd, workspace = worksp
   const remembered = absPath ? memory.lookup(workspace, absPath, account) : null;
   let id = args.id ?? remembered?.id ?? null;
   const title = String(args.title ?? "").trim() || titleOf(files) || remembered?.title || (absPath ? basename(absPath) : "Untitled page");
-  const body = { title, entry: ENTRY, files: toUpload(files), visibility };
+  // An update that names no visibility or header keeps the page's own.
+  const body = { title, entry: ENTRY, files: toUpload(files) };
+  if (visibility) body.visibility = visibility;
+  if (args.org_id) body.orgId = String(args.org_id);
   if (args.description) body.description = String(args.description);
   const header = headerOf(args.header);
   if (header) body.header = header;
+  checkBodySize(body);
 
   let result;
   let mode = "created";
   let merged = false;
   if (!id) {
-    result = await client.create(body);
+    result = await client.create({ visibility: "private", ...body });
   } else {
     mode = "updated";
     let expected = Number.isFinite(args.expected_version) ? args.expected_version : remembered?.id === id ? remembered.version : undefined;
@@ -629,13 +689,15 @@ export async function publish({ client, memory, account, cwd, workspace = worksp
         memory.forget(id);
         id = null;
         mode = "created";
-        result = await client.create(body);
+        result = await client.create({ visibility: "private", ...body });
       } else if (error.code === "version_conflict" && args.merge) {
         const current = await client.get(id);
         const mergedFiles = mergeFiles(current?.files, files);
         validateSite(mergedFiles);
+        const mergedBody = { ...body, files: toUpload(mergedFiles) };
+        checkBodySize(mergedBody);
         try {
-          result = await client.update(id, { ...body, files: toUpload(mergedFiles) }, current?.version ?? error.currentVersion);
+          result = await client.update(id, mergedBody, current?.version ?? error.currentVersion);
         } catch (again) {
           if (again.code === "version_conflict") {
             throw new ArtifactsError("version_conflict", `Artifact ${id} changed again while merging (now version ${again.currentVersion ?? "?"}). Read it (action read), merge by hand, and publish with expected_version.`, { currentVersion: again.currentVersion });
@@ -661,7 +723,7 @@ export async function publish({ client, memory, account, cwd, workspace = worksp
     viewerUrl: client.absolute(result?.viewerUrl ?? result?.url ?? ""),
     version: Number(result?.version ?? 1),
     title,
-    visibility,
+    visibility: visibility ?? (mode === "created" ? "private" : null),
     mode,
     merged,
     files: files.length,
@@ -676,31 +738,44 @@ export function renderPublished(out) {
   return [
     `${verb}: "${out.title}"`,
     out.viewerUrl,
-    `id ${out.id} · version ${out.version} · ${out.visibility} · ${out.files} file${out.files === 1 ? "" : "s"}`,
+    [`id ${out.id}`, `version ${out.version}`, out.visibility, `${out.files} file${out.files === 1 ? "" : "s"}`].filter(Boolean).join(" · "),
     "Give the user this link once. To change the page later, edit the same file and publish it again (it updates this page in place).",
   ].join("\n");
 }
 
 export async function list({ client, memory }) {
-  const items = await client.list();
-  return items.map((item) => ({
+  const { mine, org, usage, limits } = await client.list();
+  const view = (item) => ({
     id: String(item.id),
     title: String(item.title ?? ""),
-    url: client.absolute(item.url ?? item.viewerUrl ?? ""),
+    url: client.absolute(item.viewerUrl ?? item.url ?? ""),
     version: item.version ?? null,
     updatedAt: item.updatedAt ?? null,
     local: memory.pathsOf(String(item.id)).map(({ workspace, path }) => (isAbsolute(path) ? path : join(workspace, path))),
-  }));
+  });
+  return { mine: mine.map(view), org: org.map(view), usage, limits };
 }
 
-export function renderList(items) {
-  if (items.length === 0) return "No artifacts published from UnieAI Code on this account yet.";
-  const lines = items.map((item) => {
+function renderItems(items) {
+  return items.map((item) => {
     const meta = [`id ${item.id}`, item.version != null ? `version ${item.version}` : null, item.updatedAt ? `updated ${item.updatedAt}` : null].filter(Boolean).join(" · ");
     const local = item.local.length > 0 ? `\n   from ${item.local.join(", ")}` : "";
     return `- "${item.title}" ${item.url}\n   ${meta}${local}`;
   });
-  return `${items.length} artifact${items.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
+}
+
+export function renderList({ mine, org = [], usage = null, limits = null }) {
+  const parts = [
+    mine.length === 0
+      ? "No artifacts published from UnieAI Code on this account yet."
+      : `${mine.length} artifact${mine.length === 1 ? "" : "s"}:\n${renderItems(mine).join("\n")}`,
+  ];
+  if (org.length > 0) parts.push(`Shared with the user's organization (${org.length}):\n${renderItems(org).join("\n")}`);
+  if (usage && typeof usage === "object") {
+    const used = Object.entries(usage).map(([key, value]) => `${key} ${value}${limits?.[key] != null ? `/${limits[key]}` : ""}`);
+    if (used.length > 0) parts.push(`Usage: ${used.join(", ")}`);
+  }
+  return parts.join("\n\n");
 }
 
 const READ_TEXT_LIMIT = 64 * 1024;
@@ -727,7 +802,7 @@ export async function read({ client, memory, account, cwd, workspace = workspace
 export function renderRead({ meta, files, savedDir }, client) {
   const lines = [
     `"${meta?.title ?? ""}" ${client.absolute(meta?.viewerUrl ?? meta?.url ?? "")}`,
-    `id ${meta?.id} · version ${meta?.version ?? "?"} · ${meta?.visibility ?? "?"}${meta?.updatedAt ? ` · updated ${meta.updatedAt}` : ""}`,
+    [`id ${meta?.id}`, `version ${meta?.version ?? "?"}`, meta?.visibility, meta?.origin ? `origin ${meta.origin}` : null, meta?.updatedAt ? `updated ${meta.updatedAt}` : null].filter(Boolean).join(" · "),
   ];
   if (meta?.description) lines.push(`description: ${meta.description}`);
   if (meta?.header) lines.push(`header: ${JSON.stringify(meta.header)}`);
@@ -753,8 +828,30 @@ export function renderRead({ meta, files, savedDir }, client) {
   return lines.join("\n");
 }
 
-export async function remove({ client, memory, id }) {
-  await client.remove(id);
+/** Visibility and header of an existing page (PATCH). */
+export async function updateSettings({ client, memory, args }) {
+  const body = {};
+  if (args.visibility !== undefined) {
+    if (!VISIBILITIES.has(args.visibility)) {
+      throw new ArtifactsError("bad_request", `visibility must be "private" or "org"; making a page public is done by the user in ava's web UI.`);
+    }
+    body.visibility = args.visibility;
+  }
+  if (args.org_id) body.orgId = String(args.org_id);
+  const header = args.clear_header ? null : headerOf(args.header);
+  if (header !== undefined) body.header = header;
+  if (body.visibility === undefined && body.header === undefined) {
+    throw new ArtifactsError("bad_request", "update_settings needs visibility, header or clear_header.");
+  }
+  const result = await client.updateSettings(args.id, body);
+  if (result?.version != null) memory.touch(String(args.id), Number(result.version));
+  const changed = [body.visibility ? `visibility ${body.visibility}` : null, body.header === null ? "header cleared" : body.header ? "header updated" : null].filter(Boolean).join(", ");
+  const url = client.absolute(result?.viewerUrl ?? "");
+  return `Updated the settings of artifact ${args.id}: ${changed}.${url ? `\n${url}` : ""}`;
+}
+
+export async function remove({ client, memory, id, expectedVersion }) {
+  await client.remove(id, expectedVersion);
   memory.forget(id);
   return `Deleted artifact ${id}; its link no longer works.`;
 }
