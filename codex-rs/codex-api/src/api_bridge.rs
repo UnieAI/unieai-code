@@ -13,6 +13,8 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::ConnectionFailedError;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
+use codex_protocol::error::UnieAIBillingError;
+use codex_protocol::error::UnieAIPlanWindow;
 use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::protocol::MisalignmentErrorDetails;
 use http::HeaderMap;
@@ -65,6 +67,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         ApiError::ServerOverloaded { .. } => CodexErr::ServerOverloaded,
         ApiError::FlexUnavailable => CodexErr::new(CodexErrorDetails::FlexUnavailable),
         ApiError::Api { status, message } => {
+            if let Some(billing) = parse_unieai_billing_error(status, &message) {
+                return CodexErr::new(CodexErrorDetails::UnieAIBilling(billing));
+            }
             let user_message = api_error_user_message(status, &message);
             CodexErr::UnexpectedStatus(UnexpectedResponseError {
                 status,
@@ -101,6 +106,10 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 ..
             } => {
                 let body_text = body.unwrap_or_default();
+
+                if let Some(billing) = parse_unieai_billing_error(status, &body_text) {
+                    return CodexErr::new(CodexErrorDetails::UnieAIBilling(billing));
+                }
 
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
                     && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
@@ -353,4 +362,45 @@ struct UsageErrorBody {
     plan_type: Option<PlanType>,
     resets_at: Option<i64>,
     limit_window_minutes: Option<Value>,
+}
+
+/// UnieAI gateway billing refusals, by `error.code` (docs/unieai/usage-api.md):
+/// 429 `plan_limit_reached`, 402 `insufficient_balance` and 402
+/// `wallet_monthly_limit_reached`. Anything else keeps its usual mapping.
+fn parse_unieai_billing_error(status: http::StatusCode, body: &str) -> Option<UnieAIBillingError> {
+    if status != http::StatusCode::PAYMENT_REQUIRED && status != http::StatusCode::TOO_MANY_REQUESTS
+    {
+        return None;
+    }
+    let parsed = serde_json::from_str::<Value>(body).ok()?;
+    let error = parsed.get("error")?;
+    // The error's own fields first, then its `details` (Studio's createError).
+    let field = |name: &str| {
+        error
+            .get(name)
+            .or_else(|| error.get("details").and_then(|details| details.get(name)))
+            .and_then(Value::as_str)
+    };
+    let time = |name: &str| {
+        field(name)
+            .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+            .map(|time| time.with_timezone(&Utc))
+    };
+    match (status, error.get("code").and_then(Value::as_str)?) {
+        (http::StatusCode::TOO_MANY_REQUESTS, "plan_limit_reached") => {
+            Some(UnieAIBillingError::PlanLimitReached {
+                window: field("window").and_then(UnieAIPlanWindow::parse),
+                resets_at: time("resetsAt"),
+            })
+        }
+        (http::StatusCode::PAYMENT_REQUIRED, "insufficient_balance") => {
+            Some(UnieAIBillingError::InsufficientBalance)
+        }
+        (http::StatusCode::PAYMENT_REQUIRED, "wallet_monthly_limit_reached") => {
+            Some(UnieAIBillingError::WalletMonthlyLimitReached {
+                period_end: time("periodEnd"),
+            })
+        }
+        _ => None,
+    }
 }

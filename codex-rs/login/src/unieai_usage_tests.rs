@@ -28,7 +28,10 @@ fn usage_body() -> Value {
 #[test]
 fn parses_the_usage_contract() {
     let usage = parse_studio_usage(usage_body()).expect("parse");
-    assert_eq!(usage.plan.as_ref().map(StudioPlan::display_name), Some("Pro"));
+    assert_eq!(
+        usage.plan.as_ref().map(StudioPlan::display_name),
+        Some("Pro")
+    );
     let five_hour = usage.windows.five_hour.as_ref().expect("five hour");
     assert_eq!(five_hour.used_percent(), Some(62.0));
     assert_eq!(

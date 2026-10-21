@@ -180,8 +180,12 @@ pub enum CodexErrorDetails {
     ConnectionFailed(ConnectionFailedError),
     #[error("Quota exceeded. Check your plan and billing details.")]
     QuotaExceeded,
-    #[error("To use UnieAI, upgrade your plan: https://studio.unieai.com/plan.")]
+    #[error("To use UnieAI, upgrade your plan: {}.", unieai_plan_url())]
     UsageNotIncluded,
+    /// The UnieAI gateway refused a request for billing: a plan window is
+    /// used up with extra usage off, or the wallet cannot pay.
+    #[error("{0}")]
+    UnieAIBilling(UnieAIBillingError),
     #[error("We’re currently experiencing high demand, which may cause temporary errors.")]
     InternalServerError,
     /// Retry limit exceeded.
@@ -413,6 +417,7 @@ impl CodexErr {
             | CodexErrorDetails::EnvVar(_)
             | CodexErrorDetails::Fatal(_)
             | CodexErrorDetails::UsageNotIncluded
+            | CodexErrorDetails::UnieAIBilling(_)
             | CodexErrorDetails::QuotaExceeded
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
@@ -489,7 +494,8 @@ impl CodexErr {
             CodexErrorDetails::RateLimitExceeded(_) => CodexErrorInfo::RateLimitExceeded,
             CodexErrorDetails::UsageLimitReached(_)
             | CodexErrorDetails::QuotaExceeded
-            | CodexErrorDetails::UsageNotIncluded => CodexErrorInfo::UsageLimitExceeded,
+            | CodexErrorDetails::UsageNotIncluded
+            | CodexErrorDetails::UnieAIBilling(_) => CodexErrorInfo::UsageLimitExceeded,
             CodexErrorDetails::ServerOverloaded => CodexErrorInfo::ServerOverloaded,
             CodexErrorDetails::FlexUnavailable => CodexErrorInfo::FlexUnavailable,
             CodexErrorDetails::CyberPolicy { .. } => CodexErrorInfo::CyberPolicy,
@@ -546,6 +552,7 @@ impl CodexErr {
             CodexErrorDetails::FlexUnavailable => Some(StatusCode::TOO_MANY_REQUESTS),
             CodexErrorDetails::RetryLimit(err) => Some(err.status),
             CodexErrorDetails::UnexpectedStatus(err) => Some(err.status),
+            CodexErrorDetails::UnieAIBilling(err) => Some(err.status()),
             CodexErrorDetails::ConnectionFailed(err) => err.source.status(),
             CodexErrorDetails::ResponseStreamFailed(err) => err.source.status(),
             _ => None,
@@ -710,20 +717,141 @@ pub struct UsageLimitReachedError {
     pub rate_limit_reached_type: Option<RateLimitReachedType>,
 }
 
-/// Resolve the UnieAI Studio base URL for user-facing upgrade links, honoring a
-/// custom `UNIEAI_STUDIO_URL` (on-prem / self-hosted gateways) and falling back
-/// to the public default.
-fn unieai_studio_url() -> String {
-    std::env::var("UNIEAI_STUDIO_URL")
-        .ok()
+/// The Studio the signed-in UnieAI login belongs to, recorded by config
+/// loading from `unieai.json` so billing errors link to that Studio (company
+/// and on-prem deployments) rather than the public one.
+static UNIEAI_LOGIN_STUDIO_URL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Record the signed-in login's Studio URL for user-facing billing links.
+pub fn set_unieai_studio_url(url: Option<&str>) {
+    let url = url
         .map(|url| url.trim().trim_end_matches('/').to_string())
-        .filter(|url| !url.is_empty())
-        .unwrap_or_else(|| "https://studio.unieai.com".to_string())
+        .filter(|url| !url.is_empty());
+    if let Ok(mut current) = UNIEAI_LOGIN_STUDIO_URL.write() {
+        *current = url;
+    }
+}
+
+/// Resolve the UnieAI Studio base URL for user-facing upgrade links: the
+/// signed-in login's Studio, else a custom `UNIEAI_STUDIO_URL` (on-prem /
+/// self-hosted gateways), else the public default.
+pub fn unieai_studio_url() -> String {
+    let login = UNIEAI_LOGIN_STUDIO_URL
+        .read()
+        .ok()
+        .and_then(|url| url.clone());
+    resolve_unieai_studio_url(
+        login.as_deref(),
+        std::env::var("UNIEAI_STUDIO_URL").ok().as_deref(),
+    )
+}
+
+fn resolve_unieai_studio_url(login: Option<&str>, env: Option<&str>) -> String {
+    [login, env]
+        .into_iter()
+        .flatten()
+        .map(|url| url.trim().trim_end_matches('/'))
+        .find(|url| !url.is_empty())
+        .unwrap_or("https://studio.unieai.com")
+        .to_string()
 }
 
 /// The plan / billing page users are pointed at when they hit a usage limit.
-fn unieai_plan_url() -> String {
+pub fn unieai_plan_url() -> String {
     format!("{}/plan", unieai_studio_url())
+}
+
+/// Which plan allowance window ran out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnieAIPlanWindow {
+    FiveHour,
+    Week,
+}
+
+impl UnieAIPlanWindow {
+    /// The gateway's `error.window` value.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "fiveHour" | "five_hour" | "5h" => Some(Self::FiveHour),
+            "week" | "weekly" => Some(Self::Week),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::FiveHour => "5-hour",
+            Self::Week => "weekly",
+        }
+    }
+}
+
+/// A UnieAI gateway billing refusal (see `docs/unieai/usage-api.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnieAIBillingError {
+    /// 429 `plan_limit_reached`: a plan window is used up and extra usage is
+    /// off. Never retried: it lasts until the window resets.
+    PlanLimitReached {
+        window: Option<UnieAIPlanWindow>,
+        resets_at: Option<DateTime<Utc>>,
+    },
+    /// 402 `insufficient_balance`.
+    InsufficientBalance,
+    /// 402 `wallet_monthly_limit_reached`.
+    WalletMonthlyLimitReached { period_end: Option<DateTime<Utc>> },
+}
+
+impl UnieAIBillingError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::PlanLimitReached { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::InsufficientBalance | Self::WalletMonthlyLimitReached { .. } => {
+                StatusCode::PAYMENT_REQUIRED
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for UnieAIBillingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlanLimitReached { window, resets_at } => {
+                let limit = match window {
+                    Some(window) => format!("{} plan limit", window.label()),
+                    None => "plan limit".to_string(),
+                };
+                let resets = resets_at
+                    .as_ref()
+                    .map(|at| format!(" It resets at {}.", format_retry_timestamp(at)))
+                    .unwrap_or_default();
+                write!(
+                    f,
+                    "You've reached your {limit}.{resets} Turn on extra usage in /usage to keep going on API credits."
+                )
+            }
+            Self::InsufficientBalance => write!(
+                f,
+                "Your UnieAI wallet is out of credits. Top up at {} to continue.",
+                unieai_plan_url()
+            ),
+            Self::WalletMonthlyLimitReached { period_end } => {
+                let wait = period_end
+                    .as_ref()
+                    .map(|at| {
+                        format!(
+                            ", or wait until it resets at {}",
+                            format_retry_timestamp(at)
+                        )
+                    })
+                    .unwrap_or_default();
+                write!(
+                    f,
+                    "You've reached your monthly wallet spending limit. Raise it at {}{wait}.",
+                    unieai_plan_url()
+                )
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for UsageLimitReachedError {

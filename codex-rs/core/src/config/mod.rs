@@ -4027,6 +4027,16 @@ impl Config {
             .filter(|value| !value.trim().is_empty())
             .is_some();
         let unieai_credentials = codex_login::unieai::load_unieai_credentials(&codex_home);
+        // Billing errors (top up, raise the monthly limit) link to the Studio
+        // this login belongs to, not the public one.
+        codex_protocol::error::set_unieai_studio_url(
+            unieai_credentials
+                .as_ref()
+                .filter(|credentials| {
+                    credentials.account == codex_login::unieai::UnieAIAccountKind::Studio
+                })
+                .map(|credentials| credentials.studio_url.as_str()),
+        );
         if !unieai_api_key_env_set
             && let Some(credentials) = unieai_credentials.as_ref()
             && let Some(provider) =

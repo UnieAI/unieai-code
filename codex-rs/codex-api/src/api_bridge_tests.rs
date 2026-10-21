@@ -776,3 +776,98 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
     );
     assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
 }
+
+fn http_error(status: http::StatusCode, body: serde_json::Value) -> CodexErr {
+    map_api_error(ApiError::Transport(TransportError::Http {
+        retry_after: Some(RetryAfter::from_delay(std::time::Duration::from_secs(3600)).unwrap()),
+        status,
+        url: None,
+        headers: None,
+        body: Some(body.to_string()),
+    }))
+}
+
+#[test]
+fn map_api_error_maps_unieai_billing_refusals() {
+    let resets_at = DateTime::parse_from_rfc3339("2026-10-20T15:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let cases = [
+        (
+            http::StatusCode::PAYMENT_REQUIRED,
+            serde_json::json!({"error": {"code": "insufficient_balance", "message": "Insufficient balance"}}),
+            UnieAIBillingError::InsufficientBalance,
+        ),
+        (
+            http::StatusCode::PAYMENT_REQUIRED,
+            serde_json::json!({"error": {
+                "code": "wallet_monthly_limit_reached",
+                "details": {"periodEnd": "2026-10-20T15:00:00.000Z"}
+            }}),
+            UnieAIBillingError::WalletMonthlyLimitReached {
+                period_end: Some(resets_at),
+            },
+        ),
+        (
+            http::StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"error": {
+                "code": "plan_limit_reached", "window": "fiveHour", "resetsAt": "2026-10-20T15:00:00Z"
+            }}),
+            UnieAIBillingError::PlanLimitReached {
+                window: Some(UnieAIPlanWindow::FiveHour),
+                resets_at: Some(resets_at),
+            },
+        ),
+        (
+            http::StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"error": {"code": "plan_limit_reached", "window": "week"}}),
+            UnieAIBillingError::PlanLimitReached {
+                window: Some(UnieAIPlanWindow::Week),
+                resets_at: None,
+            },
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let err = http_error(status, body);
+        let CodexErrorDetails::UnieAIBilling(billing) = err.details() else {
+            panic!("{status}: {err:?}");
+        };
+        assert_eq!(billing, &expected);
+        // Billing refusals last until the user acts or the window resets:
+        // even a Retry-After from the gateway must not schedule a retry.
+        assert_eq!(err.retry_delay(/*retry_count*/ 1), None, "{status}");
+        assert_eq!(
+            err.to_codex_protocol_error(),
+            CodexErrorInfo::UsageLimitExceeded
+        );
+    }
+}
+
+#[test]
+fn map_api_error_leaves_other_402s_and_429s_alone() {
+    let other_402 = http_error(
+        http::StatusCode::PAYMENT_REQUIRED,
+        serde_json::json!({"error": {"code": "something_else"}}),
+    );
+    assert!(matches!(
+        other_402.details(),
+        CodexErrorDetails::UnexpectedStatus(_)
+    ));
+    // The billing codes only count with their own status.
+    let wrong_status = http_error(
+        http::StatusCode::PAYMENT_REQUIRED,
+        serde_json::json!({"error": {"code": "plan_limit_reached"}}),
+    );
+    assert!(matches!(
+        wrong_status.details(),
+        CodexErrorDetails::UnexpectedStatus(_)
+    ));
+    let rate_limited = http_error(
+        http::StatusCode::TOO_MANY_REQUESTS,
+        serde_json::json!({"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}),
+    );
+    assert!(matches!(
+        rate_limited.details(),
+        CodexErrorDetails::RetryLimit(_)
+    ));
+}
