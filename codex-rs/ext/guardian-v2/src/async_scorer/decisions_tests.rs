@@ -2,6 +2,7 @@ use super::super::startup::decisions_api_key;
 use super::*;
 use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::ContextualUserFragment;
+use codex_context_fragments::RenderedFragment;
 use codex_guardian_context::TrustedTool;
 use codex_guardian_context::TrustedToolSource;
 use codex_http_client::HttpClientBuilder;
@@ -21,14 +22,9 @@ use wiremock::matchers::path;
 
 #[test]
 fn adapter_rejects_unsupported_evidence() {
-    let rubric = RenderedFragment::new(
-        "developer",
-        AnnotatedContent::text(
-            "Classify risk.",
-            ContentItemKind("guardian.test".into()),
-            ContentItemMetadata::harness(),
-        ),
-    );
+    let rubric = ContentItem::InputText {
+        text: "Classify risk.".into(),
+    };
     let user: ResponseItem = serde_json::from_value(json!({"type":"message", "role":"user", "content":[
         {"type":"input_text", "text":"Authorized task"}, {"type":"input_text", "text":"Planned action"}
     ]})).unwrap();
@@ -66,14 +62,9 @@ fn adapter_rejects_unsupported_evidence() {
 
 #[test]
 fn adapter_preserves_trusted_tool_authority_and_scope() {
-    let rubric = RenderedFragment::new(
-        "developer",
-        AnnotatedContent::text(
-            "Classify risk.",
-            ContentItemKind("guardian.test".into()),
-            ContentItemMetadata::harness(),
-        ),
-    );
+    let rubric = ContentItem::InputText {
+        text: "Classify risk.".into(),
+    };
     let tool = TrustedTool {
         server: "example".into(),
         connector_id: None,
@@ -228,7 +219,9 @@ async fn http_contract_and_untrusted_response_validation() {
     request.input.extend(
         serde_json::from_value::<Vec<ResponseItem>>(json!([
             {"type":"message", "role":"system", "content":[{"type":"input_text", "text":"System guidance"}]},
-            {"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"Prior assessment"}]}
+            {"type":"message", "role":"assistant", "phase":"commentary", "content":[{"type":"output_text", "text":"Prior assessment"}]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"Additional trusted instructions"}]},
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"Next planned action"}]}
         ]))
         .unwrap(),
     );
@@ -236,7 +229,9 @@ async fn http_contract_and_untrusted_response_validation() {
         "input":[
             {"role":"user", "content":[{"type":"input_text", "text":"The user requested a README summary."}]},
             {"role":"system", "content":[{"type":"input_text", "text":"System guidance"}]},
-            {"role":"assistant", "content":[{"type":"output_text", "text":"Prior assessment"}]}
+            {"role":"assistant", "phase":"commentary", "content":[{"type":"output_text", "text":"Prior assessment"}]},
+            {"role":"developer", "content":[{"type":"input_text", "text":"Additional trusted instructions"}]},
+            {"role":"user", "content":[{"type":"input_text", "text":"Next planned action"}]}
         ],
         "questions":[{"type":"choice",
         "name":"guardian_risk", "instructions":"Classify risk", "choices":[{"value":"low"},{"value":"high"}]}]});
@@ -246,7 +241,7 @@ async fn http_contract_and_untrusted_response_validation() {
         .and(header("authorization", "Bearer synthetic-key"))
         .and(body_json(body.clone()))
         .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(response.clone()))
-        .expect(/*r*/ 1)
+        .expect(/*r*/ 2)
         .mount(&server)
         .await;
     let sampler = DecisionsSampler::new(
@@ -256,8 +251,45 @@ async fn http_contract_and_untrusted_response_validation() {
     )
     .unwrap();
     let mut sampler = Arc::new(sampler);
-    let task = sampler.spawn(&request, /*max_input_tokens*/ 128_000);
+    let task = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
     assert_eq!(task.finish().await.unwrap().0, Ok("low"));
+    let (mut retained, _) = LunaSampler::prepare_input(
+        &request,
+        /*history*/ None,
+        request
+            .input
+            .iter()
+            .cloned()
+            .map(ResponseItemEnvelope::new)
+            .collect(),
+    );
+    retained.splice(
+        4..4,
+        serde_json::from_value::<Vec<ResponseItem>>(json!([
+            {"type":"reasoning", "summary":[], "encrypted_content":"retained reasoning"},
+            {"type":"compaction", "encrypted_content":"retained compaction"},
+            {"type":"context_compaction", "encrypted_content":"retained context compaction"}
+        ]))
+        .unwrap()
+        .into_iter()
+        .map(ResponseItemEnvelope::new),
+    );
+    // Only the three unsupported retained item types are omitted from the wire body.
+    let task = sampler.start_conversation_comparison(&retained);
+    assert_eq!(task.finish().await.unwrap().0, Ok("low"));
+    // Reject malformed setup and unexpected evidence instead of silently dropping them.
+    let task = sampler.start_conversation_comparison(&retained[1..]);
+    assert_eq!(
+        task.finish().await.unwrap().0,
+        Err(DecisionsError::UnsupportedEvidence)
+    );
+    retained.push(ResponseItemEnvelope::new(ResponseItem::Other));
+    let task = sampler.start_conversation_comparison(&retained);
+    assert_eq!(
+        task.finish().await.unwrap().0,
+        Err(DecisionsError::UnsupportedEvidence)
+    );
+    server.verify().await;
     let mut invalid = response;
     invalid["answers"][0]["choice"] = json!("untrusted server text");
     assert_eq!(parse_answer(&invalid), Err(DecisionsError::InvalidResponse));
@@ -293,11 +325,11 @@ async fn decisions_admits_newest_request_by_cancelling_oldest() {
         .acquire_many(MAX_CONCURRENT_REQUESTS as u32)
         .await
         .unwrap();
-    let oldest = sampler.spawn(&request, /*max_input_tokens*/ 128_000);
+    let oldest = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
     let mut remaining = (1..MAX_CONCURRENT_REQUESTS)
-        .map(|_| sampler.spawn(&request, /*max_input_tokens*/ 128_000))
+        .map(|_| sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000))
         .collect::<Vec<_>>();
-    remaining.push(sampler.spawn(&request, /*max_input_tokens*/ 128_000));
+    remaining.push(sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000));
     assert!(oldest.finish().await.unwrap_err().is_cancelled());
     assert!(server.received_requests().await.unwrap().is_empty());
     drop(permits);
@@ -320,7 +352,7 @@ fn adapter_preserves_inline_images_and_bounds_image_bytes() {
         .unwrap();
     request.input = vec![image];
     let body = request_body(
-        &request.instructions,
+        request.instructions.annotated_content().content(),
         &request.input,
         /*parent_compaction*/ None,
     )
@@ -340,7 +372,7 @@ fn adapter_preserves_inline_images_and_bounds_image_bytes() {
     ];
     assert_eq!(
         request_body(
-            &request.instructions,
+            request.instructions.annotated_content().content(),
             &request.input,
             /*parent_compaction*/ None
         ),
@@ -373,7 +405,7 @@ async fn cancelling_a_decisions_request_releases_thread_capacity() {
         .unwrap(),
     );
     let request = super::super::sampler::tests::sample_request("turn");
-    let task = sampler.spawn(&request, /*max_input_tokens*/ 128_000);
+    let task = sampler.start_snapshot_comparison(&request, /*max_input_tokens*/ 128_000);
     tokio::time::timeout(Duration::from_secs(5), received.notified())
         .await
         .unwrap();

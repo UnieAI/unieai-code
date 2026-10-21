@@ -1446,6 +1446,9 @@ class FeedbackUploadParams(BaseModel):
     classification: str
     extra_log_files: Annotated[list[str] | None, Field(alias="extraLogFiles")] = None
     include_logs: Annotated[bool | None, Field(alias="includeLogs")] = None
+    rating: Annotated[
+        str | None, Field(description='Optional thumbs rating for the session: "up" or "down".')
+    ] = None
     reason: str | None = None
     tags: dict[str, Any] | None = None
     thread_id: Annotated[str | None, Field(alias="threadId")] = None
@@ -1984,6 +1987,8 @@ class HookErrorInfo(BaseModel):
 
 
 class HookEventName(Enum):
+    pre_model_request = "preModelRequest"
+    post_model_request = "postModelRequest"
     pre_tool_use = "preToolUse"
     permission_request = "permissionRequest"
     post_tool_use = "postToolUse"
@@ -2285,7 +2290,7 @@ class ChatgptAuthTokensLoginAccountParams(BaseModel):
         str | None,
         Field(
             alias="chatgptPlanType",
-            description="Optional plan type supplied by the client.\n\nWhen `null`, Codex attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
+            description="Optional plan type supplied by the client.\n\nWhen `null`, UnieAI attempts to derive the plan type from access-token claims. If unavailable, the plan defaults to `unknown`.",
         ),
     ] = None
     type: Annotated[
@@ -2422,8 +2427,14 @@ class ManagedHooksRequirements(BaseModel):
         list[ConfiguredHookMatcherGroup], Field(alias="PermissionRequest")
     ]
     post_compact: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PostCompact")]
+    post_model_request: Annotated[
+        list[ConfiguredHookMatcherGroup] | None, Field(alias="PostModelRequest")
+    ] = []
     post_tool_use: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PostToolUse")]
     pre_compact: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PreCompact")]
+    pre_model_request: Annotated[
+        list[ConfiguredHookMatcherGroup] | None, Field(alias="PreModelRequest")
+    ] = []
     pre_tool_use: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PreToolUse")]
     session_end: Annotated[list[ConfiguredHookMatcherGroup] | None, Field(alias="SessionEnd")] = []
     session_start: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="SessionStart")]
@@ -3139,6 +3150,8 @@ class PlanType(str, Enum):
     edu = "edu"
     edu_plus = "edu_plus"
     edu_pro = "edu_pro"
+    sci = "sci"
+    sci_plus = "sci_plus"
     unknown = "unknown"
 
     @classmethod
@@ -6107,6 +6120,12 @@ class ThreadResumeParams(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadRevertFileChangeKind(Enum):
+    modify = "modify"
+    delete = "delete"
+    create = "create"
+
+
 class ThreadRevertParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6116,6 +6135,27 @@ class ThreadRevertParams(BaseModel):
         Field(
             alias="beforeTurnId",
             description="Turn excluded from the replacement history, together with every later turn.",
+        ),
+    ]
+    restore_files: Annotated[
+        bool | None,
+        Field(
+            alias="restoreFiles",
+            description="Also put back the workspace files the removed turns changed. Only servers that answer `thread/revert/preview` honour it; if a file cannot be restored, nothing is reverted.",
+        ),
+    ] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadRevertPreviewParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    before_turn_id: Annotated[
+        str,
+        Field(
+            alias="beforeTurnId",
+            description="Turn that would be excluded, together with every later turn.",
         ),
     ]
     thread_id: Annotated[str, Field(alias="threadId")]
@@ -7189,6 +7229,17 @@ class ThreadRevertRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/revert"], Field(title="Thread/revertRequestMethod")]
     params: ThreadRevertParams
+
+
+class ThreadRevertPreviewRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/revert/preview"], Field(title="Thread/revert/previewRequestMethod")
+    ]
+    params: ThreadRevertPreviewParams
 
 
 class ThreadSectionListRequest(BaseModel):
@@ -10234,7 +10285,7 @@ class WebSearchThreadItem(BaseModel):
     results: Annotated[
         list | None,
         Field(
-            description="Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release."
+            description="Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a UnieAI release."
         ),
     ] = None
     type: Annotated[Literal["webSearch"], Field(title="WebSearchThreadItemType")]
@@ -10422,6 +10473,33 @@ class ThreadResumeInitialTurnsPageParams(BaseModel):
             description="Optional turn pagination direction; defaults to descending.",
         ),
     ] = None
+
+
+class ThreadRevertFileChange(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    change: ThreadRevertFileChangeKind
+    path: Annotated[str, Field(description="Path relative to the thread's working directory.")]
+
+
+class ThreadRevertPreviewResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    available: Annotated[
+        bool,
+        Field(
+            description="Whether the removed turns were checkpointed; when false, `files` is empty."
+        ),
+    ]
+    files: Annotated[
+        list[ThreadRevertFileChange],
+        Field(
+            description="Files whose current content differs from before the first removed turn, limited to files the removed turns changed."
+        ),
+    ]
+    unavailable_reason: Annotated[str | None, Field(alias="unavailableReason")] = None
 
 
 class ThreadSection(BaseModel):
@@ -12857,6 +12935,7 @@ class ClientRequest(
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
         | ThreadRevertRequest
+        | ThreadRevertPreviewRequest
         | ThreadListRequest
         | ThreadSectionListRequest
         | ThreadSectionCreateRequest
@@ -12968,6 +13047,7 @@ class ClientRequest(
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
         | ThreadRevertRequest
+        | ThreadRevertPreviewRequest
         | ThreadListRequest
         | ThreadSectionListRequest
         | ThreadSectionCreateRequest

@@ -195,7 +195,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                 "model_provider = \"openai\"\nfeatures.daemon_auto_start = true\n"
             },
             if command == "discovered" {
-                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]"
+                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]\nfeatures.daemon_auto_start=false"
             } else {
                 ""
             },
@@ -480,6 +480,12 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             }) {
                                 continue;
                             }
+                        }
+                        // A replacement PID can appear before the TUI observes the disconnect.
+                        // Wait for reconnect to clear/rebuild the transcript, so the old
+                        // composer's command popup cannot make the status probe look ready.
+                        if *input == b"/status" && !output.contains("\x1b[3J") {
+                            continue;
                         }
                         // The old header can linger while the daemon stops. Check both
                         // the draft and its Enter against the replacement process and UI.
