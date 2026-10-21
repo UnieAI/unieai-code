@@ -43,6 +43,9 @@ export function artifactsEnabled(env = process.env) {
   return choice.split(",").map((id) => id.trim()).includes("unieai-artifacts");
 }
 
+/** Starts dsh's CLI on Nodes where its bin.js would not start itself. */
+export const DSH_LAUNCHER = join(here, "unieai-dsh-launch.mjs");
+
 /** `bin.js` of the `@deepseek-ai/dsh` this package depends on, if installed. */
 export function installedDshBin() {
   try {
@@ -67,7 +70,8 @@ export function dshCommand(env = process.env) {
   const patch = env.UNIEAI_DSH_PATCH;
   if (patch) args.push("--patch", patch);
   if (!target) return { command: "dsh", args };
-  if (/\.[cm]?js$/.test(target)) return { command: process.execPath, args: [target, ...args] };
+  // Through the launcher: dsh's bin.js does not start on a Node without import.meta.main.
+  if (/\.[cm]?js$/.test(target)) return { command: process.execPath, args: [DSH_LAUNCHER, target, ...args] };
   return { command: target, args };
 }
 
