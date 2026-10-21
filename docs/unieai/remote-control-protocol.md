@@ -592,7 +592,27 @@ local socket (never over the relay):
 7. On `err unknown_device`, forget the host record and ask the person to pair
    again.
 
-## 13. Versioning
+## 13. Reference implementation and trying it
+
+| Piece | Where |
+|---|---|
+| Host bridge | `agent-runtime/src/app-server/unieai-remote-bridge.mjs` |
+| Noise handshakes (shared by host and browser) | `agent-runtime/src/app-server/unieai-remote-noise.mjs` |
+| Encrypted channel: seq, ack, chunking, replay (shared) | `agent-runtime/src/app-server/unieai-remote-channel.mjs` |
+| Browser side as a library (shared) | `agent-runtime/src/app-server/unieai-remote-client.mjs` |
+| Reference relay + test page | `agent-runtime/src/remote-relay/`, run with `agent-runtime/bin/unieai-remote-relay.mjs` |
+| End-to-end test against the real uac server | `node agent-runtime/scripts/unieai-remote-e2e.mjs` |
+
+```
+REMOTE_RELAY_STUB_AUTH=1 node agent-runtime/bin/unieai-remote-relay.mjs     # local test only
+unieai remote-control start --relay http://127.0.0.1:8790/api/remote         # or /remote-control in the TUI
+```
+
+On-prem: run the relay with `REMOTE_RELAY_ALLOWED_ORIGINS=<your Rabi/Studio origin>`
+and `REMOTE_RELAY_PUBLIC_URL=https://…` behind TLS, and point hosts at it with
+`UNIEAI_REMOTE_RELAY_URL` (or `relayUrl` in `$CODEX_HOME/remote-control/settings.json`).
+
+## 14. Versioning
 
 `protocol: 1` at registration, `v:1` in the fragment and in every handshake
 payload. A breaking change bumps all three; a host refuses a handshake payload
