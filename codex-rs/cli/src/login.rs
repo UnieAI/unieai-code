@@ -295,7 +295,11 @@ pub fn read_access_token_from_stdin() -> String {
     )
 }
 
-fn read_stdin_secret(terminal_message: &str, reading_message: &str, empty_message: &str) -> String {
+pub(crate) fn read_stdin_secret(
+    terminal_message: &str,
+    reading_message: &str,
+    empty_message: &str,
+) -> String {
     let mut stdin = std::io::stdin();
 
     if stdin.is_terminal() {
@@ -564,6 +568,10 @@ pub async fn run_login_sync(cli_config_overrides: CliConfigOverrides) -> ! {
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
+    let self_hosted = crate::unieai_self_hosted_login::self_hosted_status_lines(&config.codex_home);
+    for line in &self_hosted {
+        eprintln!("{line}");
+    }
     if let Some(credentials) = codex_login::unieai::load_unieai_credentials(&config.codex_home) {
         let product = credentials.account.display_name();
         match &credentials.email {
@@ -571,6 +579,10 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
             None => eprintln!("Logged in to {product}"),
         }
         eprintln!("Inference gateway: {}", credentials.gateway_base_url);
+        std::process::exit(0);
+    }
+    // A self-hosted server is enough to use UnieAI Code.
+    if !self_hosted.is_empty() {
         std::process::exit(0);
     }
 
@@ -727,7 +739,7 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     std::process::exit(0);
 }
 
-async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
+pub(crate) async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
     let cli_overrides = match cli_config_overrides.parse_overrides() {
         Ok(v) => v,
         Err(e) => {

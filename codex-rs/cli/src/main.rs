@@ -577,6 +577,44 @@ struct LoginCommand {
     #[arg(long = "rabi-url", value_name = "URL", requires = "use_rabi")]
     rabi_url: Option<String>,
 
+    /// Add a self-hosted OpenAI-compatible model server (vLLM, SGLang, TGI,
+    /// llama.cpp, Ollama, LM Studio, …); no UnieAI account needed. Runs on the uac engine.
+    #[arg(
+        long = "self-hosted",
+        value_name = "URL",
+        conflicts_with_all = ["use_chatgpt", "use_rabi", "studio_url", "gateway_url", "use_device_code", "with_access_token"]
+    )]
+    self_hosted: Option<String>,
+
+    /// Name for the self-hosted server (default: from its host, e.g. `local`).
+    #[arg(long = "name", value_name = "NAME", requires = "self_hosted")]
+    self_hosted_name: Option<String>,
+
+    /// Environment variable that holds the self-hosted server's API key (read on each use, not stored).
+    #[arg(
+        long = "api-key-env",
+        value_name = "VAR",
+        requires = "self_hosted",
+        conflicts_with = "with_api_key"
+    )]
+    self_hosted_api_key_env: Option<String>,
+
+    /// Model to use instead of the server's `/models` list; repeat for several.
+    #[arg(long = "model", value_name = "MODEL", requires = "self_hosted")]
+    self_hosted_models: Vec<String>,
+
+    /// Context window (tokens) of the server's models, when it does not report one.
+    #[arg(
+        long = "context-window",
+        value_name = "TOKENS",
+        requires = "self_hosted"
+    )]
+    self_hosted_context_window: Option<i64>,
+
+    /// The server's models accept images.
+    #[arg(long = "vision", requires = "self_hosted")]
+    self_hosted_vision: bool,
+
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
     /// Override the OAuth issuer base URL (advanced)
     #[arg(long = "experimental_issuer", value_name = "URL", hide = true)]
@@ -596,6 +634,23 @@ enum LoginSubcommand {
     Status,
     /// Sync the UnieAI model list (and Studio gateway key) from your account.
     Sync,
+    /// List or remove self-hosted model servers (add one with `--self-hosted <URL>`).
+    #[command(name = "self-hosted")]
+    SelfHosted {
+        #[command(subcommand)]
+        action: SelfHostedSubcommand,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SelfHostedSubcommand {
+    /// List the configured self-hosted model servers and their models.
+    List,
+    /// Remove a self-hosted model server.
+    Remove {
+        /// The server's name, as `list` shows it.
+        name: String,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -1779,8 +1834,38 @@ async fn cli_main(
                 Some(LoginSubcommand::Sync) => {
                     run_login_sync(login_cli.config_overrides).await;
                 }
+                Some(LoginSubcommand::SelfHosted { action }) => match action {
+                    SelfHostedSubcommand::List => {
+                        codex_cli::unieai_self_hosted_login::run_self_hosted_list(
+                            login_cli.config_overrides,
+                        )
+                        .await;
+                    }
+                    SelfHostedSubcommand::Remove { name } => {
+                        codex_cli::unieai_self_hosted_login::run_self_hosted_remove(
+                            login_cli.config_overrides,
+                            name,
+                        )
+                        .await;
+                    }
+                },
                 None => {
-                    if login_cli.with_api_key && login_cli.with_access_token {
+                    if let Some(base_url) = login_cli.self_hosted {
+                        let args = codex_cli::unieai_self_hosted_login::SelfHostedLoginArgs {
+                            base_url,
+                            name: login_cli.self_hosted_name,
+                            api_key_env: login_cli.self_hosted_api_key_env,
+                            key_from_stdin: login_cli.with_api_key,
+                            models: login_cli.self_hosted_models,
+                            context_window: login_cli.self_hosted_context_window,
+                            vision: login_cli.self_hosted_vision,
+                        };
+                        codex_cli::unieai_self_hosted_login::run_login_with_self_hosted(
+                            login_cli.config_overrides,
+                            args,
+                        )
+                        .await;
+                    } else if login_cli.with_api_key && login_cli.with_access_token {
                         eprintln!(
                             "Choose one login credential source: --with-api-key or --with-access-token."
                         );

@@ -6,7 +6,9 @@
  * private one under `$CODEX_HOME/uac/dsh-home` and writes a `settings.yaml`
  * there that declares the signed-in gateway as an OpenAI-compatible provider,
  * so dsh uses the same account and models as the rest of UnieAI Code without
- * touching the user's own `~/.dsh`.
+ * touching the user's own `~/.dsh`. Self-hosted model servers
+ * (`unieai login --self-hosted`) are declared beside it, or alone when there
+ * is no UnieAI sign-in.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -117,19 +119,96 @@ export function localProviderBaseUrl(id, env = process.env) {
 }
 
 /** The models a local OpenAI-compatible server offers (`GET /models`). */
-export async function fetchLocalModels(baseUrl, { fetchImpl = globalThis.fetch, timeoutMs = 5_000 } = {}) {
-  const response = await fetchImpl(`${baseUrl}/models`, { signal: AbortSignal.timeout(timeoutMs) });
+export async function fetchLocalModels(baseUrl, { fetchImpl = globalThis.fetch, timeoutMs = 5_000, apiKey = null } = {}) {
+  const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+  const response = await fetchImpl(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`${baseUrl}/models answered HTTP ${response.status}`);
   const body = await response.json();
   return (body?.data ?? body?.models ?? []).map((entry) => entry?.id ?? entry?.name).filter(Boolean);
 }
 
-export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs = 300_000, localProviders = [] }) {
+/**
+ * Self-hosted model servers, as `unieai login --self-hosted` saved them in
+ * `$CODEX_HOME/unieai-self-hosted.json`. The keys stay there: settings.yaml
+ * names each server's key by its own env var (selfHostedKeyEnv), and the
+ * value goes to dsh's owner-only credential store, as the gateway key does.
+ */
+export const SELF_HOSTED_FILE = "unieai-self-hosted.json";
+
+/** Context window assumed for a self-hosted model that declares none. */
+export const SELF_HOSTED_CONTEXT_WINDOW = 32_768;
+
+export function loadSelfHostedProviders(home = unieaiHome()) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(join(home, SELF_HOSTED_FILE), "utf8"));
+  } catch {
+    return [];
+  }
+  return (parsed?.providers ?? [])
+    .filter((p) => p?.id && p?.base_url)
+    .map((p) => ({
+      id: String(p.id),
+      displayName: p.name || String(p.id),
+      baseUrl: String(p.base_url).replace(/\/+$/, ""),
+      apiKey: p.api_key || null,
+      apiKeyEnv: p.api_key_env || null,
+      models: (p.models ?? [])
+        .filter((m) => m?.id)
+        .map((m) => ({ id: String(m.id), contextWindow: Number(m.context_window) || null, vision: Boolean(m.vision) })),
+    }));
+}
+
+/** The env var a self-hosted server's key is referenced by in dsh's settings. */
+export function selfHostedKeyEnv(id) {
+  return `UNIEAI_SELF_HOSTED_${String(id).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+}
+
+/** A server's key: the stored one, else its `--api-key-env` variable now. */
+export function selfHostedKey(provider, env = process.env) {
+  return provider.apiKey || (provider.apiKeyEnv ? env[provider.apiKeyEnv] : null) || null;
+}
+
+/**
+ * `{ provider, model, server }` for a model slug: `<server id>/<model>` names
+ * a self-hosted server's model; anything else is the gateway's.
+ */
+export function routeModel(slug, selfHosted = []) {
+  const value = String(slug ?? "");
+  const cut = value.indexOf("/");
+  if (cut > 0) {
+    const server = selfHosted.find((p) => p.id === value.slice(0, cut));
+    const model = value.slice(cut + 1);
+    if (server?.models.some((m) => m.id === model)) return { provider: server.id, model, server };
+  }
+  return { provider: DSH_PROVIDER_ID, model: value, server: null };
+}
+
+/** A self-hosted server as a settings.yaml provider (see renderSettings). */
+export function selfHostedProviderSpec(server) {
+  return {
+    id: server.id,
+    displayName: `${server.displayName} (self-hosted)`,
+    baseUrl: server.baseUrl,
+    keyEnv: selfHostedKeyEnv(server.id),
+    defaultContextWindow: SELF_HOSTED_CONTEXT_WINDOW,
+    models: server.models.map((m) => ({
+      id: m.id,
+      contextWindow: m.contextWindow ?? SELF_HOSTED_CONTEXT_WINDOW,
+      input: m.vision ? ["text", "image"] : null,
+    })),
+  };
+}
+
+export function renderSettings({ baseUrl, models, defaultModel, defaultProvider = DSH_PROVIDER_ID, shellTimeoutMs = 300_000, localProviders = [], providers = [] }) {
   const q = yamlQuote;
   const lines = [
     "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
     "llm-pi-ai:",
     "  providers:",
+  ];
+  // The gateway only with a UnieAI sign-in: a self-hosted-only setup has none.
+  if (baseUrl) lines.push(
     `    ${DSH_PROVIDER_ID}:`,
     `      displayName: ${q("UnieAI")}`,
     `      apiKeyEnv: ${GATEWAY_KEY_ENV}`,
@@ -148,8 +227,8 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
     "        supportsDeveloperRole: false",
     "        maxTokensField: max_tokens",
     "      models:",
-  ];
-  for (const model of models.map(gatewayModel)) {
+  );
+  for (const model of baseUrl ? models.map(gatewayModel) : []) {
     lines.push(`        - id: ${q(model.id)}`);
     if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
     if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
@@ -171,6 +250,27 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
       ...local.models.map((id) => `        - id: ${q(id)}`),
     );
   }
+  // Self-hosted servers and config.toml providers: each with its own key
+  // env var (the value is in the credential store, never here).
+  for (const provider of providers) {
+    lines.push(
+      `    ${provider.id}:`,
+      `      displayName: ${q(provider.displayName ?? provider.id)}`,
+      `      apiKeyEnv: ${provider.keyEnv}`,
+      "      api: openai-completions",
+      `      baseURL: ${q(provider.baseUrl)}`,
+      `      defaultContextWindow: ${provider.defaultContextWindow ?? SELF_HOSTED_CONTEXT_WINDOW}`,
+      "      compat:",
+      "        supportsDeveloperRole: false",
+      "        maxTokensField: max_tokens",
+      "      models:",
+    );
+    for (const model of provider.models) {
+      lines.push(`        - id: ${q(model.id)}`);
+      if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
+      if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+    }
+  }
   // Codex yields long commands instead of killing them at 60s. With plain
   // bash the next best thing is a foreground budget that fits a build.
   lines.push(
@@ -180,7 +280,7 @@ export function renderSettings({ baseUrl, models, defaultModel, shellTimeoutMs =
     "  maxOutputBytes: 1048576",
   );
   if (defaultModel) {
-    lines.push("agent-default-model:", `  provider: ${DSH_PROVIDER_ID}`, `  model: ${q(defaultModel)}`);
+    lines.push("agent-default-model:", `  provider: ${defaultProvider}`, `  model: ${q(defaultModel)}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -330,6 +430,8 @@ const indent = (text, spaces) => text.split("\n").map((line) => (line ? " ".repe
  */
 export function renderPatch({
   defaultModel,
+  // The dsh provider `defaultModel` belongs to (a self-hosted server's id).
+  defaultProvider = DSH_PROVIDER_ID,
   controlSocket = null,
   pluginUrl = CONTROL_PLUGIN_URL,
   plugins = [],
@@ -338,6 +440,10 @@ export function renderPatch({
   home = unieaiHome(),
   gatewayBaseUrl = null,
   visionModel = null,
+  // Where visionModel is served when not on the gateway (a self-hosted
+  // server), and the env var its key is referenced by.
+  visionBaseUrl = null,
+  visionKeyRef = null,
   // A smaller account model for auto mode's reviewer; else the session's own.
   autoApprovalModel = null,
   mode = "standard",
@@ -347,7 +453,7 @@ export function renderPatch({
   const execTools = plugins.some((plugin) => plugin.execTools);
   const lines = [];
   if (acp) {
-    lines.push("- id: acp", "  config:", `    provider: ${DSH_PROVIDER_ID}`, `    model: ${q(defaultModel)}`);
+    lines.push("- id: acp", "  config:", `    provider: ${defaultProvider}`, `    model: ${q(defaultModel)}`);
   }
   if (persona) {
     // The measured-failure rules ship inert: they are written from benchmark
@@ -416,7 +522,9 @@ export function renderPatch({
       "unieai-skills": { home },
       "unieai-agents": { home },
       "unieai-web-search": { gatewayBaseUrl },
-      "unieai-vision-fallback": visionModel ? { gatewayBaseUrl, visionModel } : {},
+      "unieai-vision-fallback": visionModel
+        ? { gatewayBaseUrl: visionBaseUrl ?? gatewayBaseUrl, visionModel, ...(visionKeyRef ? { gatewayKeyRef: visionKeyRef } : {}) }
+        : {},
       "unieai-auto-approval": autoApprovalModel ? { model: autoApprovalModel } : {},
     },
   });
@@ -430,7 +538,7 @@ export function renderPatch({
       `      name: ${q(pluginUrl)}`,
       "      config:",
       `        socket: ${q(controlSocket)}`,
-      `        provider: ${DSH_PROVIDER_ID}`,
+      `        provider: ${defaultProvider}`,
       `        model: ${q(defaultModel)}`,
     );
   }
@@ -492,8 +600,15 @@ export function pickDefaultModel({ explicit, configured, listed }) {
 /** Local servers take no key, but dsh refuses a provider without one. */
 export const LOCAL_KEY_ENV = "UNIEAI_LOCAL_API_KEY";
 
-export function renderCredentials({ apiKey }) {
-  return `version: 1\n\nrefs:\n  ${GATEWAY_KEY_ENV}: ${JSON.stringify(String(apiKey))}\n  ${LOCAL_KEY_ENV}: "local"\n`;
+/**
+ * `keys`: { ENV_NAME: value } for self-hosted servers (a placeholder when
+ * keyless). dsh rejects the whole store over an empty value, so without a
+ * UnieAI sign-in the gateway key is left out rather than written empty.
+ */
+export function renderCredentials({ apiKey, keys = {} }) {
+  const gateway = apiKey ? `  ${GATEWAY_KEY_ENV}: ${JSON.stringify(String(apiKey))}\n` : "";
+  const extra = Object.entries(keys).map(([name, value]) => `  ${name}: ${JSON.stringify(String(value || "none"))}\n`);
+  return `version: 1\n\nrefs:\n${gateway}  ${LOCAL_KEY_ENV}: "local"\n${extra.join("")}`;
 }
 
 function writePrivate(path, contents) {
@@ -503,28 +618,82 @@ function writePrivate(path, contents) {
 
 /**
  * Point dsh at the signed-in account: its models (as last synced from Studio
- * into unieai.json — the TUI syncs on every launch) and its gateway key.
- * dsh hot-reloads both files, so a running dsh follows a later sync; call this
- * again before each new thread.
+ * into unieai.json — the TUI syncs on every launch) and its gateway key, and
+ * at every self-hosted model server (`<server>/<model>` slugs). Either alone
+ * is enough. dsh hot-reloads both files, so a running dsh follows a later
+ * sync; call this again before each new thread.
+ *
+ * `providers` are further OpenAI-compatible providers to declare (config.toml
+ * `[model_providers]` a thread asked for), each with its `keyValue`.
  */
-export function writeDshAccount({ env = process.env, localProviders = [] } = {}) {
+export function writeDshAccount({ env = process.env, localProviders = [], providers = [], unieai = unieaiHome() } = {}) {
   const credentials = loadCredentials();
-  if (!credentials.signedIn || !credentials.gatewayBaseUrl) {
-    throw new Error("unieai-agent-core needs a UnieAI sign-in; run `unieai login` first");
+  const gateway = credentials.signedIn && credentials.gatewayBaseUrl ? credentials : null;
+  const selfHosted = loadSelfHostedProviders(unieai);
+  if (!gateway && selfHosted.length === 0) {
+    throw new Error("unieai-agent-core needs a UnieAI sign-in or a self-hosted model server; run `unieai login` (or `unieai login --self-hosted <URL>`) first");
   }
   const home = dshHome(env);
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const catalog = credentials.models.filter((m) => m?.id);
+  const gatewayCatalog = gateway ? credentials.models.filter((m) => m?.id) : [];
+  const selfHostedCatalog = selfHosted.flatMap((server) =>
+    server.models.map((m) => ({ id: `${server.id}/${m.id}`, input_modalities: m.vision ? ["text", "image"] : ["text"] })),
+  );
+  const catalog = [...gatewayCatalog, ...selfHostedCatalog];
   const listed = catalog.map((m) => m.id);
-  const defaultModel = pickDefaultModel({ explicit: env.UNIEAI_MODEL, configured: configuredModel(), listed });
+  let defaultModel = pickDefaultModel({ explicit: env.UNIEAI_MODEL, configured: configuredModel(unieai), listed });
+  // Without a gateway only a self-hosted model can run.
+  if (!gateway && !routeModel(defaultModel, selfHosted).server) defaultModel = selfHostedCatalog[0]?.id ?? null;
   if (!defaultModel) {
     throw new Error("no models are available for this UnieAI account; add models in UnieAI Studio");
   }
+  const route = routeModel(defaultModel, selfHosted);
+  const gatewayIds = gatewayCatalog.map((m) => m.id);
+  // The gateway declares the default model even when its listing does not.
+  const gatewayModels = route.server ? gatewayIds : [...new Set([defaultModel, ...gatewayIds])];
+  const declared = gatewayModels.map((id) => gatewayCatalog.find((m) => m.id === id) ?? { id });
   const models = [...new Set([defaultModel, ...listed])];
-  const declared = models.map((id) => catalog.find((m) => m.id === id) ?? { id });
-  writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: credentials.gatewayApiKey || "" }));
-  writeFileSync(join(home, "settings.yaml"), renderSettings({ baseUrl: credentials.gatewayBaseUrl, models: declared, defaultModel, localProviders }));
-  return { home, defaultModel, models, gatewayBaseUrl: credentials.gatewayBaseUrl, visionModel: pickVisionModel(catalog, defaultModel) };
+  const keys = Object.fromEntries([
+    ...selfHosted.map((server) => [selfHostedKeyEnv(server.id), selfHostedKey(server, env)]),
+    ...providers.map((provider) => [provider.keyEnv, provider.keyValue]),
+  ]);
+  writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: gateway?.gatewayApiKey || "", keys }));
+  writeFileSync(
+    join(home, "settings.yaml"),
+    renderSettings({
+      baseUrl: gateway?.gatewayBaseUrl ?? null,
+      models: declared,
+      defaultModel: route.model,
+      defaultProvider: route.provider,
+      localProviders,
+      providers: [...selfHosted.map(selfHostedProviderSpec), ...providers],
+    }),
+  );
+  return {
+    home,
+    defaultModel,
+    defaultRoute: { provider: route.provider, model: route.model },
+    models,
+    selfHosted,
+    gatewayBaseUrl: gateway?.gatewayBaseUrl ?? null,
+    vision: pickVisionRoute({ catalog, defaultModel, selfHosted, gatewayBaseUrl: gateway?.gatewayBaseUrl ?? null }),
+  };
+}
+
+/**
+ * Where describe_image sends images when the default model cannot see them:
+ * a vision model on the gateway or on a self-hosted server (see
+ * pickVisionModel), as renderPatch's vision fields. Null when the default
+ * model takes images or no model does.
+ */
+export function pickVisionRoute({ catalog, defaultModel, selfHosted = [], gatewayBaseUrl = null }) {
+  const slug = pickVisionModel(catalog, defaultModel);
+  if (!slug) return null;
+  const route = routeModel(slug, selfHosted);
+  if (route.server) {
+    return { visionModel: route.model, visionBaseUrl: route.server.baseUrl, visionKeyRef: selfHostedKeyEnv(route.server.id) };
+  }
+  return gatewayBaseUrl ? { visionModel: route.model, visionBaseUrl: null, visionKeyRef: null } : null;
 }
 
 /**
@@ -532,7 +701,7 @@ export function writeDshAccount({ env = process.env, localProviders = [] } = {})
  * Throws when the user is not signed in: without a gateway dsh has no model.
  */
 export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null, mode = "standard" } = {}) {
-  const { home, defaultModel, models, gatewayBaseUrl, visionModel } = writeDshAccount({ env });
+  const { home, defaultModel, defaultRoute, models, gatewayBaseUrl, vision } = writeDshAccount({ env });
   // One dsh process per mode, each with its own patch; standard keeps the
   // name it always had.
   const patchPath = join(home, mode === "standard" ? "uac.patch.yml" : `uac.${mode}.patch.yml`);
@@ -540,7 +709,19 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // UNIEAI_AUTO_APPROVAL_MODEL names a cheaper reviewer for auto mode; only
   // a model the account serves (the session's provider routes it).
   const autoApprovalModel = models.includes(env.UNIEAI_AUTO_APPROVAL_MODEL) ? env.UNIEAI_AUTO_APPROVAL_MODEL : null;
-  writeFileSync(patchPath, renderPatch({ defaultModel, controlSocket, plugins, gatewayBaseUrl, visionModel, autoApprovalModel, mode }));
+  writeFileSync(
+    patchPath,
+    renderPatch({
+      defaultModel: defaultRoute.model,
+      defaultProvider: defaultRoute.provider,
+      controlSocket,
+      plugins,
+      gatewayBaseUrl,
+      ...(vision ?? {}),
+      autoApprovalModel,
+      mode,
+    }),
+  );
 
   const childEnv = {
     ...env,
@@ -552,6 +733,7 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // The launch environment outranks the credential store and is frozen at
   // launch, so a key there would pin dsh to it across a Studio key rotation.
   delete childEnv[GATEWAY_KEY_ENV];
+  for (const name of Object.keys(childEnv)) if (/^UNIEAI_SELF_HOSTED_.*_API_KEY$/.test(name)) delete childEnv[name];
   return { env: childEnv, defaultModel, models, controlSocket, mode, plugins: plugins.map((p) => p.id), ...dshCommand(childEnv) };
 }
 

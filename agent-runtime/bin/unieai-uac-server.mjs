@@ -36,8 +36,12 @@ import {
   LOCAL_PROVIDERS,
   configuredUacMode,
   fetchLocalModels,
+  loadSelfHostedProviders,
   localProviderBaseUrl,
   prepareDsh,
+  routeModel,
+  selfHostedKey,
+  selfHostedKeyEnv,
   writeDshAccount,
 } from "../src/unieai-dsh/config.mjs";
 import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
@@ -47,7 +51,14 @@ import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
 import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
 
-const oneShotCall = createOneShotModel();
+// A thread on a self-hosted model titles itself on that server: no UnieAI
+// sign-in is needed, and nothing about it reaches the gateway.
+const oneShotCall = createOneShotModel({
+  route: (model) => {
+    const { server, model: id } = routeModel(model, loadSelfHostedProviders());
+    return server ? { baseUrl: server.baseUrl, apiKey: selfHostedKey(server), model: id } : null;
+  },
+});
 // Logged with its duration: the client gives these turns 30 seconds.
 const oneShotModel = async (request) => {
   const started = Date.now();
@@ -174,7 +185,10 @@ const threadMode = () => configuredUacMode({ home: codexHome });
  * would cut off a thread still using it.
  */
 const localProviders = new Map();
-const writeAccount = () => writeDshAccount({ localProviders: [...localProviders.values()] });
+/** config.toml `[model_providers]` threads asked for, declared the same way. */
+const configuredProviders = new Map();
+const writeAccount = () =>
+  writeDshAccount({ localProviders: [...localProviders.values()], providers: [...configuredProviders.values()] });
 
 /** Declare the local provider `id` with the models it serves now. */
 async function declareLocalProvider(id) {
@@ -189,6 +203,34 @@ async function declareLocalProvider(id) {
   localProviders.set(id, { id, baseUrl, models });
   writeAccount();
   log(`[uac] local provider ${id} at ${baseUrl}: ${models.join(", ")}`);
+  return models;
+}
+
+/**
+ * Declare config.toml's `[model_providers.<id>]` (codex's own mechanism) for a
+ * thread on that provider: dsh speaks chat completions to its `base_url`,
+ * with the key from its `env_key` (or `experimental_bearer_token`).
+ */
+async function declareConfiguredProvider(id, info) {
+  const baseUrl = String(info?.base_url ?? "").replace(/\/+$/, "");
+  if (!baseUrl) throw new Error(`model provider ${id} has no base_url in config.toml`);
+  const keyValue = (info.env_key ? process.env[info.env_key] : null) || info.experimental_bearer_token || null;
+  let models;
+  try {
+    models = await fetchLocalModels(baseUrl, { apiKey: keyValue });
+  } catch (error) {
+    throw new Error(`model provider ${id} is not reachable at ${baseUrl}: ${error.message}`);
+  }
+  configuredProviders.set(id, {
+    id,
+    displayName: info.name || id,
+    baseUrl,
+    keyEnv: selfHostedKeyEnv(id),
+    keyValue,
+    models: models.map((model) => ({ id: model, contextWindow: null, input: null })),
+  });
+  writeAccount();
+  log(`[uac] config provider ${id} at ${baseUrl}: ${models.join(", ")}`);
   return models;
 }
 hostFor(threadMode());
@@ -255,11 +297,40 @@ await launchAppServer({
     } catch (error) {
       log("[uac] could not refresh the account for dsh:", error.message);
     }
+    const selfHosted = account.selfHosted ?? loadSelfHostedProviders();
+    // A thread whose provider is a self-hosted server itself (config.toml
+    // `model_provider = "<id>"`) names the server's model bare.
+    const ownServer = selfHosted.find((server) => server.id === modelProvider);
+    if (ownServer && model && !model.startsWith(`${ownServer.id}/`)) model = `${ownServer.id}/${model}`;
     // Already resolved by `resolveModel` for threads the client started;
     // a stored thread's model is checked again here.
     const chosen = model && account.models.includes(model) ? model : account.defaultModel;
     // The client's hidden structured turns (thread titles): one tool-less call.
     if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
+    // Where a model runs: a self-hosted server's `<server>/<model>`, else the gateway.
+    const route = (slug) => {
+      const { provider, model: id } = routeModel(slug, loadSelfHostedProviders());
+      return { provider, model: id };
+    };
+    // config.toml `[model_providers.<id>]` that is none of the above: declare
+    // it from the config before the first session.
+    if (modelProvider && modelProvider !== "unieai" && !LOCAL_PROVIDERS[modelProvider] && !ownServer) {
+      return createDshEngine({
+        host: hostFor(variant ?? "standard"),
+        workspace: cwd,
+        model,
+        provider: modelProvider,
+        prepare: async () => {
+          const { config } = (await readConfig?.()) ?? {};
+          const info = config?.model_providers?.[modelProvider];
+          if (!info) throw new Error(`model provider ${modelProvider} is not defined in config.toml`);
+          return declareConfiguredProvider(modelProvider, info);
+        },
+        onLog: (line) => log("[uac]", line),
+        mcpServers,
+        ...callbacks,
+      });
+    }
     // A local model server (--oss / --local-provider): the thread's model
     // comes from it, declared in dsh before the first session.
     if (LOCAL_PROVIDERS[modelProvider]) {
@@ -274,11 +345,14 @@ await launchAppServer({
         ...callbacks,
       });
     }
+    const routed = route(chosen);
     return createDshEngine({
       // Threads stored before modes existed have none: standard.
       host: hostFor(variant ?? "standard"),
       workspace: cwd,
-      model: chosen,
+      model: routed.model,
+      provider: routed.provider,
+      routeModel: route,
       onLog: (line) => log("[uac]", line),
       mcpServers,
       ...callbacks,
