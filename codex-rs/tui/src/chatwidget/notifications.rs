@@ -16,6 +16,17 @@ impl ChatWidget {
         self.bottom_pane.set_agent_tree_agents(agents);
     }
 
+    /// The resident tree as plain text lines, for tests.
+    #[cfg(test)]
+    pub(crate) fn agent_tree_text(&self) -> Vec<String> {
+        self.bottom_pane.agent_tree_text()
+    }
+
+    /// Sets how many finished tasks left the resident tree unseen.
+    pub(crate) fn set_agent_tree_hidden_done(&mut self, hidden_done: usize) {
+        self.bottom_pane.set_agent_tree_hidden_done(hidden_done);
+    }
+
     /// Records how many peer messages remain unacknowledged.
     pub(crate) fn set_unread_peer_messages(&mut self, unread: usize) {
         self.bottom_pane.set_unread_peer_messages(unread);

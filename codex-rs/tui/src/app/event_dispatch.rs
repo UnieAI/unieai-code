@@ -1785,6 +1785,7 @@ impl App {
             },
             AppEvent::RemoteViewersChanged => self.chat_widget.refresh_status_line(),
             AppEvent::OpenTasks => self.open_tasks(),
+            AppEvent::RefreshAgentTree => self.refresh_agent_tree(),
             AppEvent::ConfirmStopTask {
                 target,
                 label,

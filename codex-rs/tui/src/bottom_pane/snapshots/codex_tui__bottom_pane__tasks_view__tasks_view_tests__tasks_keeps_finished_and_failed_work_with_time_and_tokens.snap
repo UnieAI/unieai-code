@@ -1,0 +1,16 @@
+---
+source: tui/src/bottom_pane/tasks_view_tests.rs
+expression: "rendered(&view, 110)"
+---
+Tasks  subagents and background commands
+
+  Subagents
+› ◉ still_working  running 2m 10s · ↓ 8.8k tokens · Qwen3.6-35B-A3B  Running cargo test
+  ◯ date_check     done    6s · ↓ 1.9k tokens · Qwen3.6-35B-A3B
+  ✗ flaky_worker   failed  41s · ↓ 5.3k tokens · Qwen3.6-35B-A3B
+
+  Background commands
+  $ npm run build  done    3s  started by main · exit 0
+  $ make lint      failed  9s  started by date_check · exit 2
+
+  ↑↓ select · enter/o open · x stop · esc close

@@ -758,6 +758,12 @@ impl BottomPane {
         self.composer.plugins()
     }
 
+    /// The resident tree as plain text lines, for tests.
+    #[cfg(test)]
+    pub(crate) fn agent_tree_text(&self) -> Vec<String> {
+        self.agent_tree.text_lines(/*width*/ 100)
+    }
+
     #[cfg(test)]
     pub(crate) fn context_window_percent(&self) -> Option<i64> {
         self.context_window_percent
@@ -974,6 +980,13 @@ impl BottomPane {
     /// Replaces the resident agent and peer rows.
     pub(crate) fn set_agent_tree_agents(&mut self, agents: Vec<agent_tree::AgentRow>) {
         if self.agent_tree.set_agents(agents) {
+            self.request_redraw();
+        }
+    }
+
+    /// Sets how many finished tasks left the panel unseen ("N done · /tasks").
+    pub(crate) fn set_agent_tree_hidden_done(&mut self, hidden_done: usize) {
+        if self.agent_tree.set_hidden_done(hidden_done) {
             self.request_redraw();
         }
     }

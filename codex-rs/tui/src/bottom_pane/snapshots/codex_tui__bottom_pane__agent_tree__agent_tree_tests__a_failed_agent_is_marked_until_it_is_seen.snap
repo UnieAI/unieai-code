@@ -1,0 +1,5 @@
+---
+source: tui/src/bottom_pane/agent_tree_tests.rs
+expression: "rendered(&tree).join(\"\\n\")"
+---
+  ✗ flaky_worker  failed                                                                             12s · ↓ 3.4k tokens

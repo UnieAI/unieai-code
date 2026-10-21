@@ -10,6 +10,11 @@
 //! stops (interrupt the agent, or terminate the command) — stopping always
 //! asks first, through the confirmation list the app shows.
 //!
+//! Finished work stays listed — a subagent whose turn ended, a command that
+//! exited — marked done or failed with the time it took and what it cost, and
+//! a finished subagent still opens to its transcript. The resident tree drops
+//! them as they finish, so this is where they are found again.
+//!
 //! The view is a snapshot: it closes when a row is opened or stopped, and the
 //! app reopens it with fresh rows after a stop, so it never shows a stale
 //! state for long.
@@ -46,6 +51,8 @@ pub(crate) enum TaskStatus {
     Running,
     Idle,
     Done,
+    /// Its last turn failed, or the command exited non-zero.
+    Failed,
 }
 
 impl TaskStatus {
@@ -54,6 +61,7 @@ impl TaskStatus {
             Self::Running => "running".green(),
             Self::Idle => "idle".cyan(),
             Self::Done => "done".dim(),
+            Self::Failed => "failed".red(),
         }
     }
 }
@@ -197,6 +205,7 @@ impl TasksView {
                     TaskStatus::Running => "◉ ".green(),
                     TaskStatus::Idle => "● ".cyan(),
                     TaskStatus::Done => "◯ ".dim(),
+                    TaskStatus::Failed => "✗ ".red(),
                 }
             });
             let label = pad(&truncate(&row.label, label_width), label_width);

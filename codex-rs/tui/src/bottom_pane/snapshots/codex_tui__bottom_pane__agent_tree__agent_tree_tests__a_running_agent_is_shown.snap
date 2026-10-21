@@ -1,0 +1,5 @@
+---
+source: tui/src/bottom_pane/agent_tree_tests.rs
+expression: "rendered(&tree).join(\"\\n\")"
+---
+  ◉ date_check  Running date                                                        Qwen3.6-35B-A3B · 4s · ↓ 1.2k tokens

@@ -998,6 +998,14 @@ pub struct Tui {
     #[serde(default)]
     pub agents_overview_grouping: AgentsOverviewGrouping,
 
+    /// Keep finished subagents on the resident agent tree under the composer.
+    /// Defaults to `false`: the tree shows only running work, work waiting on
+    /// you, and failures you have not seen, and finished work is listed in
+    /// `/tasks`. Set to `true` for the earlier panel, where a subagent stayed
+    /// until its thread closed.
+    #[serde(default)]
+    pub agent_tree_show_finished: bool,
+
     /// Working directory to use when resuming or forking a session.
     /// When unset, prompt if the current and session directories differ.
     #[serde(default)]

@@ -103,22 +103,45 @@ impl App {
     /// Recomputed rather than mutated in place: the sources update
     /// independently (thread events, the peer poll, token accounting) and
     /// keeping one derivation avoids the rows disagreeing with each other.
+    ///
+    /// The panel answers "who is working, and who needs me". A subagent row
+    /// stays while it is running or waiting on an approval or question,
+    /// while its turn has failed and the user has not seen that, and for
+    /// [`FINISHED_GRACE`] after it finishes cleanly. Commands stay while they
+    /// run. Everything else is in `/tasks`, which a dim "N done · /tasks"
+    /// line points at until the user opens it. The main row is only there
+    /// to sit among other rows (marking which thread is on screen, with its
+    /// context meter): on its own it repeats the status indicator, so it is
+    /// left out. `[tui] agent_tree_show_finished = true` keeps the old panel:
+    /// every thread that is not closed, the main row always, and no hint.
+    ///
+    /// [`FINISHED_GRACE`]: super::unieai_tasks::FINISHED_GRACE
     pub(super) fn refresh_agent_tree(&mut self) {
+        let show_finished = self.config.tui_agent_tree_show_finished;
+        // Looking at a thread is seeing how it ended.
+        if let Some(displayed) = self.current_displayed_thread_id() {
+            self.tasks.acknowledge_agent(displayed);
+        }
         let threads: Vec<(ThreadId, crate::multi_agents::AgentPickerThreadEntry)> = self
             .agent_navigation
             .ordered_threads()
             .into_iter()
-            // A closed thread is neither planned nor working, so it is not
-            // what this panel answers. Closed entries are kept in the
-            // navigation cache for the agents overview to list and for a
-            // resume to find; leaving them here grew the panel by one row
-            // per subagent the session ever spawned and never shrank it.
             .filter(|(thread_id, entry)| {
-                !entry.is_closed || Some(*thread_id) == self.primary_thread_id
+                if Some(*thread_id) == self.primary_thread_id {
+                    return true;
+                }
+                if show_finished {
+                    // A closed thread is neither planned nor working. Closed
+                    // entries are kept in the navigation cache for the agents
+                    // overview to list and for a resume to find.
+                    return !entry.is_closed;
+                }
+                self.subagent_stays_on_panel(*thread_id, entry)
             })
             .map(|(thread_id, entry)| (thread_id, entry.clone()))
             .collect();
         let mut rows: Vec<crate::bottom_pane::AgentRow> = Vec::new();
+        let mut main_rows: Vec<crate::bottom_pane::AgentRow> = Vec::new();
         for (thread_id, entry) in &threads {
             let thread_id = *thread_id;
             // Recorded here as well as on upsert: a thread can reach the
@@ -128,17 +151,35 @@ impl App {
                 .agent_started_at
                 .entry(thread_id)
                 .or_insert_with(std::time::Instant::now);
-            rows.push(crate::bottom_pane::AgentRow {
+            let finished = self.tasks.finished_agent(thread_id).copied();
+            let is_failed = !show_finished
+                && !entry.is_running
+                && finished.is_some_and(|finished| finished.failed && !finished.acknowledged);
+            let activity = if is_failed {
+                Some("failed".to_string())
+            } else if !show_finished && !entry.is_running && finished.is_some() {
+                // Inside its grace period.
+                Some("done".to_string())
+            } else {
+                self.agent_activity.get(&thread_id).cloned()
+            };
+            let row = crate::bottom_pane::AgentRow {
                 target: crate::bottom_pane::TreeTarget::Thread(thread_id),
                 label: self.agent_label(thread_id, entry),
-                activity: self.agent_activity.get(&thread_id).cloned(),
+                activity,
                 is_running: entry.is_running,
                 is_active: self.active_thread_id == Some(thread_id),
-                // Like upstream's status indicator: a per-turn clock,
-                // shown only while the agent is working.
-                elapsed: entry
-                    .is_running
-                    .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
+                is_failed,
+                // Like upstream's status indicator: a per-turn clock, shown
+                // while the agent is working; a finished row still on the
+                // panel shows how long it took.
+                elapsed: if entry.is_running {
+                    Some(crate::bottom_pane::format_elapsed(started_at.elapsed()))
+                } else if show_finished {
+                    None
+                } else {
+                    finished.map(|finished| crate::bottom_pane::format_elapsed(finished.elapsed))
+                },
                 tokens: self.agent_tokens.get(&thread_id).copied(),
                 model: self.agent_model(thread_id),
                 // Only the thread on screen: the percentage is read from
@@ -146,9 +187,16 @@ impl App {
                 context_left_percent: (self.active_thread_id == Some(thread_id))
                     .then(|| self.chat_widget.context_left_percent())
                     .flatten(),
-            });
+            };
             // The commands it left running sit right under it.
-            rows.extend(self.exec_session_tree_rows(thread_id));
+            let commands = self.exec_session_tree_rows(thread_id);
+            if Some(thread_id) == self.primary_thread_id {
+                main_rows.push(row);
+                main_rows.extend(commands);
+            } else {
+                rows.push(row);
+                rows.extend(commands);
+            }
         }
         // Commands whose agent has no row (it finished, or is not listed)
         // still run, so they still show.
@@ -165,6 +213,13 @@ impl App {
         for thread_id in orphans {
             rows.extend(self.exec_session_tree_rows(thread_id));
         }
+        // The main row leads, but only when it has company: its own
+        // commands, or another agent's rows.
+        let rows = if show_finished || main_rows.len() > 1 || !rows.is_empty() {
+            main_rows.into_iter().chain(rows).collect()
+        } else {
+            rows
+        };
 
         // Peers are deliberately not in this list. This panel answers "what is
         // my session doing right now", and a peer is somebody else's session —
@@ -173,6 +228,29 @@ impl App {
         // have their own surfaces: the unread badge, transcript cards, and
         // `/peers`.
         self.chat_widget.set_agent_tree_agents(rows);
+        self.chat_widget
+            .set_agent_tree_hidden_done(if show_finished {
+                0
+            } else {
+                self.tasks.hidden_done()
+            });
+    }
+
+    /// Whether a subagent's row belongs on the resident tree.
+    fn subagent_stays_on_panel(
+        &self,
+        thread_id: ThreadId,
+        entry: &crate::multi_agents::AgentPickerThreadEntry,
+    ) -> bool {
+        if entry.is_running || self.tasks.is_waiting(thread_id) {
+            return true;
+        }
+        match self.tasks.finished_agent(thread_id) {
+            Some(finished) if finished.failed => !finished.acknowledged,
+            Some(finished) => finished.finished_at.elapsed() < super::unieai_tasks::FINISHED_GRACE,
+            // Never seen working in this session: nothing to show.
+            None => false,
+        }
     }
 
     /// Spawns a background task to fetch account rate limits and deliver the

@@ -231,6 +231,27 @@ impl App {
             .active_agent_label(self.current_displayed_thread_id(), self.primary_thread_id);
         self.chat_widget.set_active_agent_label(label);
         self.sync_side_thread_ui();
+        // The thread on screen may have changed (which also counts as seeing
+        // how it ended), and a replaced chat widget starts with an empty tree.
+        self.refresh_agent_tree();
+    }
+
+    /// Redraws the tree once a cleanly finished subagent's grace period is
+    /// over, so its row leaves and the "N done" line appears without waiting
+    /// for the next notification.
+    pub(super) fn schedule_agent_tree_grace_refresh(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let app_event_tx = self.app_event_tx.clone();
+        runtime.spawn(async move {
+            // A little past the grace period, so the row is due when it runs.
+            tokio::time::sleep(
+                super::unieai_tasks::FINISHED_GRACE + std::time::Duration::from_millis(100),
+            )
+            .await;
+            app_event_tx.send(AppEvent::RefreshAgentTree);
+        });
     }
 
     pub(super) async fn thread_cwd(&self, thread_id: ThreadId) -> Option<AbsolutePathBuf> {
@@ -944,16 +965,22 @@ impl App {
             .collect();
 
         let mut pending_thread_ids = Vec::new();
+        let mut waiting = std::collections::HashSet::new();
         for (thread_id, store) in channels {
+            let store = store.lock().await;
+            if !store.has_pending_thread_approvals() {
+                continue;
+            }
+            // A thread waiting on the user keeps its row on the tree.
+            waiting.insert(thread_id);
             if Some(thread_id) == self.active_thread_id || Some(thread_id) == side_parent_thread_id
             {
                 continue;
             }
-
-            let store = store.lock().await;
-            if store.has_pending_thread_approvals() {
-                pending_thread_ids.push(thread_id);
-            }
+            pending_thread_ids.push(thread_id);
+        }
+        if self.tasks.set_waiting(waiting) {
+            self.refresh_agent_tree();
         }
 
         pending_thread_ids.sort_by_key(ThreadId::to_string);
@@ -1113,6 +1140,21 @@ impl App {
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
+        // A failed turn keeps its subagent on the resident tree until seen.
+        let turn_failed = match &notification {
+            ServerNotification::TurnCompleted(completed) => {
+                completed.turn.status == codex_app_server_protocol::TurnStatus::Failed
+            }
+            ServerNotification::ThreadStatusChanged(changed) => matches!(
+                changed.status,
+                codex_app_server_protocol::ThreadStatus::SystemError
+            ),
+            _ => false,
+        };
+        let was_running = self
+            .agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running);
         // Fallback for `turn_stopped`, which needs the cached active turn id that
         // a session refresh can clear before `turn/completed` arrives.
         let status_went_idle = matches!(
@@ -1166,6 +1208,7 @@ impl App {
             self.agent_started_at
                 .insert(thread_id, std::time::Instant::now());
             self.agent_activity.remove(&thread_id);
+            self.tasks.agent_started(thread_id);
         } else if is_thread_closed {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped || status_went_idle {
@@ -1176,7 +1219,22 @@ impl App {
             // A finished command is no longer what the agent is doing.
             self.agent_activity.remove(&thread_id);
         }
-        if is_turn_started || went_idle {
+        // A subagent that was working and stopped, or whose turn failed, has
+        // finished: `/tasks` keeps it, and the tree lets it go.
+        if (went_idle || turn_failed)
+            && (was_running || turn_failed)
+            && Some(thread_id) != self.primary_thread_id
+        {
+            let elapsed = self
+                .agent_started_at
+                .get(&thread_id)
+                .map(std::time::Instant::elapsed)
+                .unwrap_or_default();
+            if self.tasks.agent_finished(thread_id, elapsed, turn_failed) && !turn_failed {
+                self.schedule_agent_tree_grace_refresh();
+            }
+        }
+        if is_turn_started || went_idle || turn_failed {
             // Marking alone changes nothing on screen; the tree is a snapshot.
             self.refresh_agent_tree();
         }

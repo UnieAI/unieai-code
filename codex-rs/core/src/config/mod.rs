@@ -893,6 +893,10 @@ pub struct Config {
     /// Last selected grouping in Agent Command Center.
     pub tui_agents_overview_grouping: codex_config::types::AgentsOverviewGrouping,
 
+    /// Keep finished subagents on the resident agent tree (`[tui]
+    /// agent_tree_show_finished`).
+    pub tui_agent_tree_show_finished: bool,
+
     /// Working directory to use when resuming or forking a session.
     /// When unset, prompt if the current and session directories differ.
     pub tui_resume_cwd: Option<ResumeCwdMode>,
@@ -4932,6 +4936,10 @@ impl Config {
                 .and_then(|t| t.session_picker_view)
                 .unwrap_or_default(),
             tui_agents_overview_grouping: cfg.tui.as_ref().map(|t| t.agents_overview_grouping).unwrap_or_default(),
+            tui_agent_tree_show_finished: cfg
+                .tui
+                .as_ref()
+                .is_some_and(|t| t.agent_tree_show_finished),
             tui_resume_cwd: cfg.tui.as_ref().and_then(|t| t.resume_cwd),
             terminal_resize_reflow,
             tui_keymap: cfg

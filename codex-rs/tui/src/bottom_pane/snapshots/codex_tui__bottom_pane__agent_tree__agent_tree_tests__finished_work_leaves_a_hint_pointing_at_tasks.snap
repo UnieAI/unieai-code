@@ -1,0 +1,8 @@
+---
+source: tui/src/bottom_pane/agent_tree_tests.rs
+expression: "rendered(&tree).join(\"\\n\")"
+---
+  ▶ check the date
+
+  ◉ still_working                                                                                                    30s
+  2 done · /tasks
