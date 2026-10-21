@@ -835,3 +835,12 @@ test("a turn dsh starts on its own ends only after its last streamed text", asyn
   await new Promise((r) => setTimeout(r, 700));
   assert.deepEqual(log, ["start", "text:WOKE", "end"]);
 });
+
+test("dsh starts through the launcher, so a Node without import.meta.main still runs it", async () => {
+  // dsh's bin.js runs only `if (import.meta.main)`; Node 23 never sets it and dsh
+  // exited silently with status 0 (a Mac on Node 23.11 could not start uac at all).
+  const { dshCommand, DSH_LAUNCHER } = await import("./config.mjs");
+  const { args } = dshCommand({ UNIEAI_DSH_BIN: "/opt/dsh/lib/bin.js" });
+  assert.deepEqual(args.slice(0, 2), [DSH_LAUNCHER, "/opt/dsh/lib/bin.js"]);
+  assert.deepEqual(dshCommand({ UNIEAI_DSH_BIN: "/usr/local/bin/dsh" }).args.slice(0, 1), ["--profile"]);
+});
