@@ -4,6 +4,7 @@ pub mod test_support;
 pub mod token_data;
 pub mod unieai;
 pub mod unieai_rabi;
+pub mod unieai_usage;
 pub use auth::WorkspaceRouting;
 pub use auth::WorkspaceRoutingRequest;
 pub use auth::WorkspaceRoutingResolver;

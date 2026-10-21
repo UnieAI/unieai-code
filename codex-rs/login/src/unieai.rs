@@ -567,6 +567,27 @@ fn models_from_provider_config(config: &StudioProviderConfig) -> Option<Vec<Unie
 /// Seconds of validity below which the access token is refreshed first.
 const ACCESS_TOKEN_REFRESH_MARGIN_SECS: i64 = 60;
 
+/// Refresh the Studio access token when it is about to expire (or always,
+/// with `force`, after Studio rejected it) and persist the rotated tokens.
+pub(crate) async fn ensure_fresh_studio_token(
+    client: &codex_http_client::HttpClient,
+    codex_home: &Path,
+    credentials: &mut UnieAICredentials,
+    force: bool,
+) -> io::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    if !force && credentials.expires_at - now > ACCESS_TOKEN_REFRESH_MARGIN_SECS {
+        return Ok(());
+    }
+    let tokens = refresh_access_token(client, credentials).await?;
+    credentials.access_token = tokens.access_token;
+    credentials.refresh_token = tokens.refresh_token;
+    credentials.expires_at = now + tokens.expires_in;
+    // Persist the rotated refresh token before anything else can fail: the
+    // old one is no longer valid.
+    save_unieai_credentials(codex_home, credentials)
+}
+
 /// Exchange the stored refresh token for new tokens (Studio rotates both).
 async fn refresh_access_token(
     client: &codex_http_client::HttpClient,
@@ -736,16 +757,7 @@ pub async fn sync_unieai_account(codex_home: &Path) -> io::Result<Option<UnieAIC
             .map(Some);
     }
     let client = create_client();
-    let now = chrono::Utc::now().timestamp();
-    if credentials.expires_at - now <= ACCESS_TOKEN_REFRESH_MARGIN_SECS {
-        let tokens = refresh_access_token(&client, &credentials).await?;
-        credentials.access_token = tokens.access_token;
-        credentials.refresh_token = tokens.refresh_token;
-        credentials.expires_at = now + tokens.expires_in;
-        // Persist the rotated refresh token before anything else can fail:
-        // the old one is no longer valid.
-        save_unieai_credentials(codex_home, &credentials)?;
-    }
+    ensure_fresh_studio_token(&client, codex_home, &mut credentials, /*force*/ false).await?;
 
     let config = get_json::<serde_json::Value>(
         &client,
