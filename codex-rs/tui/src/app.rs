@@ -244,6 +244,7 @@ mod quick_dials;
 mod turn_tips;
 mod unieai_engine_menu;
 mod unieai_peer_mesh;
+mod unieai_tasks;
 pub(crate) use new_session::has_launch_setting;
 mod clipboard;
 mod footer_selection;
@@ -572,6 +573,8 @@ pub(crate) struct App {
     pub(crate) agent_tokens: HashMap<ThreadId, u64>,
     /// Latest one-line activity per thread.
     pub(crate) agent_activity: HashMap<ThreadId, String>,
+    /// Commands left running and each thread's model, for the tree and `/tasks`.
+    pub(crate) tasks: unieai_tasks::TaskMonitor,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,

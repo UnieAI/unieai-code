@@ -104,7 +104,7 @@ impl App {
     /// independently (thread events, the peer poll, token accounting) and
     /// keeping one derivation avoids the rows disagreeing with each other.
     pub(super) fn refresh_agent_tree(&mut self) {
-        let rows: Vec<crate::bottom_pane::AgentRow> = self
+        let threads: Vec<(ThreadId, crate::multi_agents::AgentPickerThreadEntry)> = self
             .agent_navigation
             .ordered_threads()
             .into_iter()
@@ -116,57 +116,55 @@ impl App {
             .filter(|(thread_id, entry)| {
                 !entry.is_closed || Some(*thread_id) == self.primary_thread_id
             })
-            .map(|(thread_id, entry)| {
-                // Recorded here as well as on upsert: a thread can reach the
-                // panel through paths that never call the picker upsert, and a
-                // row with no elapsed time looks like a bug rather than a gap.
-                let started_at = *self
-                    .agent_started_at
-                    .entry(thread_id)
-                    .or_insert_with(std::time::Instant::now);
-                let label = entry
-                    .agent_nickname
-                    .clone()
-                    .or_else(|| entry.agent_role.clone())
-                    // A spawned agent is named by its path (`/root/plan`) even
-                    // when it has no nickname, and that name is what the user
-                    // asked for — falling straight through to a short ref threw
-                    // away the one label they chose.
-                    .or_else(|| {
-                        entry.agent_path.as_deref().and_then(|path| {
-                            path.rsplit('/')
-                                .next()
-                                .filter(|name| !name.is_empty())
-                                .map(str::to_string)
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        if Some(thread_id) == self.primary_thread_id {
-                            "main".to_string()
-                        } else {
-                            crate::multi_agents::short_thread_label(thread_id)
-                        }
-                    });
-                crate::bottom_pane::AgentRow {
-                    target: crate::bottom_pane::TreeTarget::Thread(thread_id),
-                    label,
-                    activity: self.agent_activity.get(&thread_id).cloned(),
-                    is_running: entry.is_running,
-                    is_active: self.active_thread_id == Some(thread_id),
-                    // Like upstream's status indicator: a per-turn clock,
-                    // shown only while the agent is working.
-                    elapsed: entry
-                        .is_running
-                        .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
-                    tokens: self.agent_tokens.get(&thread_id).copied(),
-                    // Only the thread on screen: the percentage is read from
-                    // its own token usage.
-                    context_left_percent: (self.active_thread_id == Some(thread_id))
-                        .then(|| self.chat_widget.context_left_percent())
-                        .flatten(),
-                }
-            })
+            .map(|(thread_id, entry)| (thread_id, entry.clone()))
             .collect();
+        let mut rows: Vec<crate::bottom_pane::AgentRow> = Vec::new();
+        for (thread_id, entry) in &threads {
+            let thread_id = *thread_id;
+            // Recorded here as well as on upsert: a thread can reach the
+            // panel through paths that never call the picker upsert, and a
+            // row with no elapsed time looks like a bug rather than a gap.
+            let started_at = *self
+                .agent_started_at
+                .entry(thread_id)
+                .or_insert_with(std::time::Instant::now);
+            rows.push(crate::bottom_pane::AgentRow {
+                target: crate::bottom_pane::TreeTarget::Thread(thread_id),
+                label: self.agent_label(thread_id, entry),
+                activity: self.agent_activity.get(&thread_id).cloned(),
+                is_running: entry.is_running,
+                is_active: self.active_thread_id == Some(thread_id),
+                // Like upstream's status indicator: a per-turn clock,
+                // shown only while the agent is working.
+                elapsed: entry
+                    .is_running
+                    .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
+                tokens: self.agent_tokens.get(&thread_id).copied(),
+                model: self.agent_model(thread_id),
+                // Only the thread on screen: the percentage is read from
+                // its own token usage.
+                context_left_percent: (self.active_thread_id == Some(thread_id))
+                    .then(|| self.chat_widget.context_left_percent())
+                    .flatten(),
+            });
+            // The commands it left running sit right under it.
+            rows.extend(self.exec_session_tree_rows(thread_id));
+        }
+        // Commands whose agent has no row (it finished, or is not listed)
+        // still run, so they still show.
+        let mut orphans: Vec<ThreadId> = Vec::new();
+        for entry in self.tasks.exec_sessions() {
+            if !threads
+                .iter()
+                .any(|(thread_id, _)| *thread_id == entry.thread_id)
+                && !orphans.contains(&entry.thread_id)
+            {
+                orphans.push(entry.thread_id);
+            }
+        }
+        for thread_id in orphans {
+            rows.extend(self.exec_session_tree_rows(thread_id));
+        }
 
         // Peers are deliberately not in this list. This panel answers "what is
         // my session doing right now", and a peer is somebody else's session —

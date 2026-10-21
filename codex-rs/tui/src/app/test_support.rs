@@ -109,6 +109,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         peer_mesh: Default::default(),
         agent_started_at: HashMap::new(),
         agent_tokens: HashMap::new(),
+        tasks: Default::default(),
         agent_activity: HashMap::new(),
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,

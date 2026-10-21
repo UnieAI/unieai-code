@@ -79,7 +79,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     onError: (error) => log("[app-server]", error.message),
     onTurnError: (message, { threadId }) => log(`[turn] ${threadId} failed: ${message}`),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onScheduledPrompt, onSubagent, onChildActivity, askUser, onCompaction }) =>
+    createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onScheduledPrompt, onSubagent, onChildActivity, onExecSession, askUser, onCompaction }) =>
       buildEngine({
         // The effective config as codex resolves it for this directory
         // (profiles, project layers): where `[mcp_servers]` comes from.
@@ -94,6 +94,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onScheduledPrompt,
         onSubagent,
         onChildActivity,
+        onExecSession,
         askUser,
         onCompaction,
         cwd,

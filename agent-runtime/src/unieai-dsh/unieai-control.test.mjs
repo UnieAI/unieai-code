@@ -241,3 +241,132 @@ test("/context: the plugin measures the session, counting the client's registere
   client.destroy();
   handlers.dispose();
 });
+
+/** The control plugin on a socket, with a client that calls it and collects its notes. */
+async function controlClient(ctxExtras) {
+  const { apply } = await import("./unieai-control.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { connect } = await import("node:net");
+  const { createInterface } = await import("node:readline");
+  const handlers = {};
+  const socket = join(mkdtempSync(join(tmpdir(), "ctl-")), "c.sock");
+  apply({ on: (name, fn) => (handlers[name] = fn), logger: { warn() {}, info() {} }, effect: () => {}, ...ctxExtras }, { socket });
+  await new Promise((r) => setTimeout(r, 50));
+  const client = connect(socket);
+  const replies = new Map();
+  const notes = [];
+  createInterface({ input: client }).on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.id !== undefined) replies.set(message.id, message);
+    else notes.push(message);
+  });
+  let nextId = 0;
+  const call = async (method, params) => {
+    const id = (nextId += 1);
+    client.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    await new Promise((r) => setTimeout(r, 50));
+    return replies.get(id);
+  };
+  const close = () => {
+    client.destroy();
+    handlers.dispose();
+  };
+  return { call, notes, close };
+}
+
+/** A handle as unieai-exec publishes it, over a process that exits on `exit(code)`. */
+function fakeHandle(id, cmd) {
+  let settle;
+  const exited = new Promise((resolve) => (settle = resolve));
+  const handle = {
+    id,
+    cmd,
+    cwd: "/work",
+    tty: false,
+    startedAt: 1_700_000_000_000,
+    backgroundedAt: 1_700_000_010_000,
+    running: true,
+    exitCode: null,
+    killed: false,
+    whenExited: async (_ms, signal) => Promise.race([exited, new Promise((resolve) => signal?.addEventListener("abort", () => resolve(false)))]),
+    peek: (maxBytes) => "line 1\nline 2\n".slice(-maxBytes),
+    kill: async () => {
+      handle.killed = true;
+      handle.exit(143);
+    },
+    exit: (code) => {
+      handle.running = false;
+      handle.exitCode = code;
+      settle(true);
+    },
+  };
+  return handle;
+}
+
+test("exec sessions left running: announced, listed per session tree, read without taking, stopped", async () => {
+  const { publishBackground } = await import("./uac-plugins/unieai-exec-state.mjs");
+  const parent = { id: "p1", session: { header: { id: "p1" } } };
+  const child = { id: "c1", session: { header: { id: "c1", parentSession: "p1" } } };
+  const other = { id: "o1", session: { header: { id: "o1" } } };
+  const agents = { p1: parent, c1: child, o1: other };
+  const { call, notes, close } = await controlClient({ agents: { get: (id) => agents[id] } });
+  // Any call makes the caller the bridge that hears notes.
+  await call("execSessions", {});
+
+  const mine = fakeHandle(1000, "sleep 120");
+  const childs = fakeHandle(1001, "make test");
+  const theirs = fakeHandle(1002, "npm run dev");
+  publishBackground(parent, mine);
+  publishBackground(child, childs);
+  publishBackground(other, theirs);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(
+    notes.filter((note) => note.method === "execSession").map(({ params }) => [params.phase, params.sessionId, params.id, params.cmd, params.parentSessionId]),
+    [
+      ["start", "p1", 1000, "sleep 120", null],
+      ["start", "c1", 1001, "make test", "p1"],
+      ["start", "o1", 1002, "npm run dev", null],
+    ],
+  );
+
+  const listed = (await call("execSessions", { sessionId: "p1" })).result.sessions;
+  assert.deepEqual(listed.map((session) => [session.sessionId, session.id, session.cwd, session.running]), [
+    ["p1", 1000, "/work", true],
+    ["c1", 1001, "/work", true],
+  ]);
+  assert.deepEqual((await call("execSessions", { sessionId: "c1" })).result.sessions.map((session) => session.id), [1001]);
+
+  const output = (await call("execOutput", { id: 1000, maxBytes: 7 })).result;
+  assert.deepEqual([output.id, output.output, output.running], [1000, "line 2\n", true]);
+  assert.match((await call("execOutput", { id: 4242 })).error.message, /no background exec session 4242/);
+
+  assert.deepEqual((await call("execKill", { id: 1000 })).result, { killed: true });
+  childs.exit(0);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(
+    notes.filter((note) => note.params?.phase === "end").map(({ params }) => [params.id, params.exitCode, params.killed]),
+    [
+      [1000, 143, true],
+      [1001, 0, false],
+    ],
+  );
+  // Ended sessions leave the list.
+  assert.deepEqual((await call("execSessions", { sessionId: "p1" })).result.sessions, []);
+  assert.match((await call("execKill", { id: 1000 })).error.message, /no background exec session/);
+  close();
+});
+
+test("stopping a subagent interrupts it as the user, under its direct parent", async () => {
+  const interrupts = [];
+  const child = { id: "c1", session: { header: { id: "c1", parentSession: "p1" } } };
+  const { call, close } = await controlClient({
+    agents: { get: (id) => (id === "c1" ? child : undefined) },
+    get: (name) => (name === "subagents" ? { interrupt: (id, authority) => interrupts.push([id, authority]) } : undefined),
+  });
+  assert.deepEqual((await call("subagentInterrupt", { sessionId: "c1" })).result, { interrupted: true });
+  assert.deepEqual(interrupts, [["c1", { kind: "user", parentSessionId: "p1" }]]);
+  assert.match((await call("subagentInterrupt", { sessionId: "p9" })).error.message, /not a subagent/);
+  close();
+});

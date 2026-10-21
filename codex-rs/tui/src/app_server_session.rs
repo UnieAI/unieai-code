@@ -81,6 +81,8 @@ use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsTerminateParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsTerminateResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
@@ -1780,6 +1782,27 @@ impl AppServerSession {
             .await
             .wrap_err("thread/backgroundTerminals/clean failed in TUI")?;
         Ok(())
+    }
+
+    /// Stop one background terminal; false when it had already ended.
+    pub(crate) async fn thread_background_terminals_terminate(
+        &mut self,
+        thread_id: ThreadId,
+        process_id: String,
+    ) -> Result<bool> {
+        let request_id = self.next_request_id();
+        let response: ThreadBackgroundTerminalsTerminateResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadBackgroundTerminalsTerminate {
+                request_id,
+                params: ThreadBackgroundTerminalsTerminateParams {
+                    thread_id: thread_id.to_string(),
+                    process_id,
+                },
+            })
+            .await
+            .wrap_err("thread/backgroundTerminals/terminate failed in TUI")?;
+        Ok(response.terminated)
     }
 
     pub(crate) async fn review_start(

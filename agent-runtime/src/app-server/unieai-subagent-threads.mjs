@@ -11,7 +11,8 @@
  * child's turns are read from dsh's log through the root thread's engine.
  *
  * A child's thread is read-only: its input comes from the agent that
- * started it, not from the user.
+ * started it, not from the user. Each read also reports the child's token
+ * usage on its own thread, so the client can say what every agent costs.
  */
 
 const ACTIVITY_KIND = { completed: "completed", aborted: "interrupted", interrupted: "interrupted" };
@@ -104,6 +105,30 @@ export function createSubagentThreads({ turnShape, threadShape, refreshMs = 300 
     }
   };
 
+  /**
+   * The child's token usage on its own thread, when it changed: the client
+   * keeps a cost per agent from these, as it does for the thread on screen.
+   */
+  const reportUsage = async (child) => {
+    const engine = child.root.engine;
+    if (typeof engine?.subagentUsage !== "function") return;
+    let usage;
+    try {
+      usage = await engine.subagentUsage(child.id);
+    } catch {
+      // A finished one-shot child is no longer live; its last report stands.
+      return;
+    }
+    if (!usage?.total || !usage?.last) return;
+    const tokenUsage = { total: usage.total, last: usage.last, modelContextWindow: usage.modelContextWindow ?? null };
+    const key = JSON.stringify(tokenUsage);
+    const turnId = child.lastTurnId;
+    const emit = emitOf(child);
+    if (key === child.usageShown || !turnId || !emit) return;
+    child.usageShown = key;
+    emit("thread/tokenUsage/updated", { threadId: child.id, turnId, tokenUsage });
+  };
+
   /** Re-read a child; pings that arrive meanwhile cause one more read. */
   const refresh = async (child) => {
     if (child.reading) {
@@ -115,6 +140,7 @@ export function createSubagentThreads({ turnShape, threadShape, refreshMs = 300 
       do {
         child.readAgain = false;
         showTurns(child, await turnsOf(child));
+        await reportUsage(child);
       } while (child.readAgain);
     } catch {
       // The session is not readable right now; the next ping reads again.
@@ -219,6 +245,7 @@ export function createSubagentThreads({ turnShape, threadShape, refreshMs = 300 
             timer: null,
             reading: false,
             readAgain: false,
+            usageShown: null,
           };
           children.set(id, child);
           emitOf(child)?.("thread/started", { thread: threadShape(threadFields(child)) });

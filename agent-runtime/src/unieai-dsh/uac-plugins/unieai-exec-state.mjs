@@ -10,11 +10,17 @@
  * must load this module from the same URL (the package's own copy).
  *
  * A handle is a narrow view of one session:
- *   { id, cmd, tty, startedAt, backgroundedAt, interrupted, running, busy,
+ *   { id, cmd, cwd, tty, startedAt, backgroundedAt, interrupted, running, busy,
+ *     exitCode, killed,
  *     whenExited(ms, signal) -> Promise<boolean>,
- *     take({maxOutputTokens}) -> Promise<report | null> }
+ *     take({maxOutputTokens}) -> Promise<report | null>,
+ *     peek(maxBytes) -> string,
+ *     kill() -> Promise<void> }
  * `take` drains the output the model has not read and retires the session,
  * exactly as a poll would; it returns null when a poll got there first.
+ * `peek` and `kill` are the client's (a task list): `peek` returns the last
+ * output without consuming what the model has not read, `kill` stops the
+ * process (its exit is then reported like any other).
  */
 
 const background = new WeakMap(); // agent -> Map<id, handle>

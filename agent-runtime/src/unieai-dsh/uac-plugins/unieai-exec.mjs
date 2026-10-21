@@ -654,6 +654,7 @@ export function apply(ctx, config = {}) {
     publishBackground(session.owner, {
       id: session.id,
       cmd: session.cmd,
+      cwd: session.cwd,
       tty: session.tty,
       startedAt: session.startedAt,
       backgroundedAt: session.backgroundedAt,
@@ -666,8 +667,25 @@ export function apply(ctx, config = {}) {
       get busy() {
         return session.busy > 0;
       },
+      get exitCode() {
+        if (session.exit === undefined) return null;
+        return session.exit.signal ? signalExitCode(session.exit.signal) : (session.exit.exitCode ?? null);
+      },
+      get killed() {
+        return session.killed === true;
+      },
       whenExited: (ms, signal) => session.whenExited(ms, signal),
       take: (options) => take(session, table, options),
+      // The client's view (a task list): the last output, without consuming
+      // what the model has not read yet, and a stop the user asked for.
+      peek: (maxBytes = 16_000) => {
+        session.pull();
+        return suffixByBytes(session.diagTail, maxBytes);
+      },
+      kill: async () => {
+        session.killed = true;
+        await session.terminate();
+      },
     });
   };
 

@@ -410,6 +410,7 @@ test("thread-scoped methods are answered here, never forwarded", async () => {
   for (const method of [
     "turn/steer", "thread/compact/start", "thread/items/list",
     "thread/turns/list", "thread/resume", "thread/fork", "thread/revert", "thread/revert/preview", "review/start",
+    "thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate", "unieai/exec/output",
     "thread/sample",
   ]) {
     await dispatch({ method, id: 1, params: { threadId: "nope" } });
@@ -722,4 +723,100 @@ test("revert previews and restores files through the engine; a failed restore re
   await h["thread/revert"]({ threadId: thread.id, beforeTurnId: second, restoreFiles: true }, ctx);
   await h["thread/revert"]({ threadId: thread.id, beforeTurnId: first.id }, ctx);
   assert.deepEqual(reverts, [{ keepTurns: 1, restoreFiles: true }, { keepTurns: 0, restoreFiles: false }]);
+});
+
+/** An engine with exec sessions: `sessions` is what unieai-control would list. */
+function execEngine(sessions) {
+  const killed = [];
+  let hooks = null;
+  const { engine, release } = heldEngine({
+    execSessions: async ({ ownerSessionId = null } = {}) =>
+      sessions.filter((session) => ownerSessionId === null || session.sessionId === ownerSessionId),
+    execOutput: async (id) => ({ ...sessions.find((session) => session.id === id), output: "tick 1\ntick 2\n" }),
+    execKill: async (id) => {
+      const session = sessions.find((entry) => entry.id === id);
+      if (!session?.running) return { killed: false };
+      session.running = false;
+      killed.push(id);
+      return { killed: true };
+    },
+  });
+  return {
+    killed,
+    release,
+    hooks: () => hooks,
+    factory: (options) => {
+      hooks = options;
+      return engine;
+    },
+  };
+}
+
+test("an exec session the model left running is a background terminal: items with a process id, list, output, stop", async () => {
+  const repoRoot = join(import.meta.dirname, "..", "..", "..");
+  const sessions = [
+    { sessionId: "dsh-root", id: 1000, cmd: "sleep 120", cwd: "/repo", running: true, startedAt: Date.now() - 5_000, exitCode: null },
+    { sessionId: "dsh-root", id: 1001, cmd: "make test", cwd: "/repo", running: false, startedAt: Date.now() - 9_000, exitCode: 0 },
+  ];
+  const fake = execEngine(sessions);
+  const emitted = [];
+  const ctx = { emit: (method, params) => emitted.push([method, params]), request: async () => ({}) };
+  const h = createHandlers({ createEngineFor: fake.factory, codexHome: "/h" });
+  const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
+  await h["turn/start"]({ threadId: thread.id, input: "run it in the background" }, ctx);
+  const turnId = h._threads.get(thread.id).activeTurn.id;
+
+  fake.hooks().onExecSession({ phase: "start", ...sessions[0] });
+  fake.hooks().onExecSession({ phase: "end", ...sessions[1], startedAt: Date.now() - 1_000 });
+  const items = emitted.filter(([method, params]) => (method === "item/started" || method === "item/completed") && params.item.type === "commandExecution");
+  for (const [method, params] of items) {
+    const result = validateAgainstSchema("ServerNotification", { method, params }, { repoRoot });
+    assert.equal(result.ok, true, `${method}\n  ${result.problems.join("\n  ")}`);
+  }
+  assert.deepEqual(
+    items.map(([method, params]) => [method, params.threadId, params.turnId, params.item.processId, params.item.source, params.item.status, params.item.exitCode]),
+    [
+      ["item/started", thread.id, turnId, "1000", "unifiedExecStartup", "inProgress", null],
+      ["item/completed", thread.id, turnId, "1001", "unifiedExecStartup", "completed", 0],
+    ],
+  );
+
+  const listed = await h["thread/backgroundTerminals/list"]({ threadId: thread.id });
+  // The ThreadBackgroundTerminal fields (the method is experimental: no generated schema).
+  assert.deepEqual(Object.keys(listed.data[0]).sort(), ["command", "cpuPercent", "cwd", "itemId", "osPid", "processId", "rssKb"]);
+  assert.deepEqual(listed.data.map((terminal) => [terminal.processId, terminal.command, terminal.itemId]), [["1000", "sleep 120", "exec-session-1000"]]);
+  assert.equal(listed.nextCursor, null);
+
+  const output = await h["unieai/exec/output"]({ threadId: thread.id, processId: "1000" });
+  assert.deepEqual([output.processId, output.command, output.running, output.output], ["1000", "sleep 120", true, "tick 1\ntick 2\n"]);
+  await assert.rejects(() => h["unieai/exec/output"]({ threadId: thread.id, processId: "42" }), /no background terminal 42/);
+
+  assert.deepEqual(await h["thread/backgroundTerminals/terminate"]({ threadId: thread.id, processId: "42" }), { terminated: false });
+  assert.deepEqual(await h["thread/backgroundTerminals/terminate"]({ threadId: thread.id, processId: "1000" }), { terminated: true });
+  assert.deepEqual(fake.killed, [1000]);
+  assert.deepEqual((await h["thread/backgroundTerminals/list"]({ threadId: thread.id })).data, []);
+  fake.release();
+});
+
+test("cleaning background terminals stops every running exec session of the thread", async () => {
+  const sessions = [
+    { sessionId: "dsh-root", id: 7, cmd: "npm run dev", cwd: "/repo", running: true },
+    { sessionId: "dsh-root", id: 8, cmd: "tail -f log", cwd: "/repo", running: true },
+  ];
+  const fake = execEngine(sessions);
+  const ctx = { emit: () => {}, request: async () => ({}) };
+  const h = createHandlers({ createEngineFor: fake.factory, codexHome: "/h" });
+  const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
+  await h["turn/start"]({ threadId: thread.id, input: "go" }, ctx);
+  assert.deepEqual(await h["thread/backgroundTerminals/clean"]({ threadId: thread.id }), {});
+  assert.deepEqual(fake.killed, [7, 8]);
+  fake.release();
+});
+
+test("a thread whose engine has no exec sessions lists none and stops none", async () => {
+  const h = createHandlers({ createEngineFor: () => ({ send: async () => ({}) }), codexHome: "/h" });
+  const { thread } = await h["thread/start"]({ cwd: "/repo" });
+  assert.deepEqual(await h["thread/backgroundTerminals/list"]({ threadId: thread.id }), { data: [], nextCursor: null });
+  assert.deepEqual(await h["thread/backgroundTerminals/terminate"]({ threadId: thread.id, processId: "1" }), { terminated: false });
+  assert.deepEqual(await h["thread/backgroundTerminals/clean"]({ threadId: thread.id }), {});
 });

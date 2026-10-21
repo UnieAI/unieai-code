@@ -18,7 +18,7 @@ const CHILD = "55473fec-fb8b-424a-a5ba-7e6478803548";
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 /** A thread whose engine is running a turn, with the engine's subagent hooks captured. */
-async function parentWithTurn(history) {
+async function parentWithTurn(history, engineExtras = {}) {
   const emitted = [];
   let hooks = null;
   let finishTurn = null;
@@ -29,6 +29,7 @@ async function parentWithTurn(history) {
       return {
         send: () => new Promise((resolve) => (finishTurn = resolve)),
         subagentHistory: async (id) => (id === CHILD ? history() : []),
+        ...engineExtras,
       };
     },
   });
@@ -137,5 +138,66 @@ test("a row that arrives while a card runs waits for that card", async () => {
     .filter(([method, params]) => method === "item/completed" && (params.item.type === "subAgentActivity" || params.item.id === "wait-1"))
     .map(([, params]) => (params.item.type === "subAgentActivity" ? params.item.kind : params.item.id));
   assert.deepEqual(order, ["started", "wait-1", "completed"]);
+  finishTurn();
+});
+
+test("each read reports the child's token usage on its own thread, once per change", { skip }, async () => {
+  const breakdown = (total) => ({ totalTokens: total, inputTokens: total - 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0 });
+  let total = 1200;
+  const asked = [];
+  const { emitted, hooks, finishTurn } = await parentWithTurn(() => [{ status: "inProgress", items: [userMessageItem("", "count the lines")] }], {
+    subagentUsage: async (id) => (asked.push(id), { total: breakdown(total), last: breakdown(total), modelContextWindow: 128_000 }),
+  });
+  const base = { sessionId: CHILD, parentSessionId: "parent-session" };
+  hooks.onSubagent({ ...base, phase: "start", label: "count", model: "Qwen3.6-35B-A3B" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  hooks.onChildActivity({ ...base, type: "assistant/message" }); // nothing new: no second report
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  total = 2500;
+  hooks.onChildActivity({ ...base, type: "assistant/message" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const usage = emitted.filter(([method]) => method === "thread/tokenUsage/updated");
+  for (const [method, params] of usage) {
+    const result = validateAgainstSchema("ServerNotification", { method, params }, { repoRoot });
+    assert.equal(result.ok, true, `${method}\n  ${result.problems.join("\n  ")}`);
+  }
+  assert.deepEqual(
+    usage.map(([, params]) => [params.threadId, params.turnId, params.tokenUsage.total.totalTokens, params.tokenUsage.modelContextWindow]),
+    [
+      [CHILD, `${CHILD}:turn:0`, 1200, 128_000],
+      [CHILD, `${CHILD}:turn:0`, 2500, 128_000],
+    ],
+  );
+  assert.ok(asked.length >= 3 && asked.every((id) => id === CHILD));
+  // The child's thread says which model it runs on.
+  const started = emitted.find(([method, params]) => method === "thread/started" && params.thread.id === CHILD)[1].thread;
+  assert.equal(started.model, "Qwen3.6-35B-A3B");
+  finishTurn();
+});
+
+test("a child whose usage cannot be read (already gone) reports nothing and keeps its turns", { skip }, async () => {
+  const { emitted, hooks, finishTurn } = await parentWithTurn(() => [{ status: "completed", items: [agentMessageItem("", "done")] }], {
+    subagentUsage: async () => {
+      throw new Error("session is not open");
+    },
+  });
+  hooks.onSubagent({ sessionId: CHILD, parentSessionId: "parent-session", phase: "start", label: "x" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(emitted.filter(([method]) => method === "thread/tokenUsage/updated").length, 0);
+  assert.ok(emitted.some(([method, params]) => method === "turn/completed" && params.threadId === CHILD));
+  finishTurn();
+});
+
+test("stopping a subagent's thread interrupts the child through its root engine", async () => {
+  const interrupted = [];
+  const { handlers, thread, hooks, finishTurn } = await parentWithTurn(() => [], {
+    interruptSubagent: async (id) => (interrupted.push(id), { interrupted: true }),
+  });
+  hooks.onSubagent({ sessionId: CHILD, parentSessionId: "parent-session", phase: "start", label: "x" });
+  assert.deepEqual(await handlers["turn/interrupt"]({ threadId: CHILD, turnId: "any" }), {});
+  assert.deepEqual(interrupted, [CHILD]);
+  // The parent's own turn is untouched.
+  assert.ok(handlers._threads.get(thread.id).activeTurn);
   finishTurn();
 });

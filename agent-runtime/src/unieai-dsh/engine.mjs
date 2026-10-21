@@ -317,6 +317,13 @@ export function createDshHost({ connect, connectControl = null, onLog = () => {}
       };
       channel.onNotification?.("subagent", (note) => routeChild(note)?.onSubagent?.(note));
       channel.onNotification?.("childActivity", (note) => routeChild(note)?.onChildActivity?.(note));
+      // An exec session left running: the owning session's thread, or the
+      // root thread of the subagent that started it.
+      channel.onNotification?.("execSession", (note) => {
+        const owner = note?.sessionId;
+        const root = sessions.has(owner) ? owner : childRoots.get(owner);
+        if (root) sessions.get(root)?.onExecSession?.(note);
+      });
       channel.onRequest?.("askUser", (asked) => {
         const session = sessions.get(asked?.sessionId);
         if (!session?.onAskUser) throw new Error(`no one to ask for session ${asked?.sessionId}`);
@@ -558,6 +565,10 @@ export function createDshEngine({
   // `childActivity` note when one's session gains something to show.
   onSubagent = () => {},
   onChildActivity = () => {},
+  // unieai-control's `execSession` note ({ phase: "start" | "end", sessionId,
+  // id, cmd, cwd, running, exitCode, ... }) for an exec session this session
+  // or one of its subagents left running.
+  onExecSession = () => {},
   // Called with { phase: "start" | "end", requested } when dsh compacts the
   // context, including the compactions it decides on itself.
   onCompaction = () => {},
@@ -917,7 +928,7 @@ export function createDshEngine({
       host.unregister(sessionId);
       try {
         const resumed = await withMcpServers((servers) => acp.request("session/resume", { sessionId, cwd: workspace, mcpServers: servers }));
-        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
+        host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onExecSession, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
         sessionAgent = acp;
         await selectModel(acp, resumed?.configOptions);
         await registerClientTools();
@@ -930,7 +941,7 @@ export function createDshEngine({
     const created = await withMcpServers((servers) => newSessionWhenRoutesReady(acp, { cwd: workspace, mcpServers: servers }));
     sessionId = created.sessionId;
     sessionAgent = acp;
-    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
+    host.register(sessionId, { onUpdate, onPermission, onToolCall, onSteerDelivered, onGoalChanged, onTurnBoundary, onSubagent, onChildActivity, onExecSession, onAskUser, onCompaction: handleCompaction, onScheduledPrompt: ({ text }) => onScheduledPrompt(text) });
     onState({ sessionId });
     await selectModel(acp, created.configOptions);
     await registerClientTools();
@@ -1096,6 +1107,37 @@ export function createDshEngine({
       if (!sessionId) return [];
       const { turns } = await host.control("history", { sessionId, everyTurn: true });
       return turns.map((turn) => ({ ...historyTurn(turn), anchor: turn.dshTurn ?? null, opener: turn.opener ?? null }));
+    },
+
+    /** A subagent's token usage, in the shape `onUsage` reports the session's own. */
+    async subagentUsage(childSessionId) {
+      return withOccupancy(await host.control("usage", { sessionId: childSessionId }), null);
+    },
+
+    /** Stop a subagent's current work (the user's stop in the task list). */
+    async interruptSubagent(childSessionId) {
+      return host.control("subagentInterrupt", { sessionId: childSessionId });
+    },
+
+    /**
+     * Exec sessions left running by this session, or by `ownerSessionId`
+     * (one of its subagents), and by their subagents.
+     */
+    async execSessions({ ownerSessionId = null } = {}) {
+      const owner = ownerSessionId ?? sessionId;
+      if (!owner) return [];
+      const { sessions } = await host.control("execSessions", { sessionId: owner });
+      return sessions ?? [];
+    },
+
+    /** One exec session's last output, leaving what the model has not read. */
+    async execOutput(id, { maxBytes = 16_000 } = {}) {
+      return host.control("execOutput", { id, maxBytes });
+    },
+
+    /** Stop one exec session. */
+    async execKill(id) {
+      return host.control("execKill", { id });
     },
 
     /** One of this session's subagents' turns, the same way. */

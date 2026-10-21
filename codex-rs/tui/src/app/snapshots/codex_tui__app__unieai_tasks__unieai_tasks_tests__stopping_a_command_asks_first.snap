@@ -1,0 +1,11 @@
+---
+source: tui/src/app/unieai_tasks_tests.rs
+expression: "render(&view, 72)"
+---
+
+  Stop `sleep 120`?
+
+
+  1. Yes, stop the command  Terminate the process; the agent sees it was
+                            killed
+› 2. No, keep it running

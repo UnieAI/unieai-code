@@ -1523,6 +1523,28 @@ impl ChatWidget {
         ));
     }
 
+    /// The recent output lines the footer kept for one unified exec process,
+    /// for `/tasks` when the engine cannot page a command's output itself.
+    pub(crate) fn unified_exec_recent_output(&self, process_id: &str) -> Option<Vec<String>> {
+        self.unified_exec_processes
+            .iter()
+            .find(|process| process.key == process_id)
+            .map(|process| process.recent_chunks.clone())
+    }
+
+    /// Opens `/tasks` with `rows`.
+    pub(crate) fn show_tasks(&mut self, rows: Vec<crate::bottom_pane::TaskRow>) {
+        self.bottom_pane.show_tasks(rows);
+        self.request_redraw();
+    }
+
+    /// Moves focus into the resident agent tree (its keybinding).
+    pub(crate) fn focus_agent_tree(&mut self) -> bool {
+        self.bottom_pane.focus_agent_tree()
+    }
+
+    // `/ps` opens `/tasks` now; kept for upstream's tests and merges.
+    #[allow(dead_code)]
     pub(crate) fn add_ps_output(&mut self) {
         let processes = self
             .unified_exec_processes

@@ -1239,6 +1239,31 @@ pub(crate) enum AppEvent {
     /// The number of remote viewers changed: redraw the status line.
     RemoteViewersChanged,
 
+    /// Open `/tasks`: this session's subagents and the commands left running.
+    OpenTasks,
+
+    /// Ask before stopping a task. `reopen_tasks` returns to `/tasks` after.
+    ConfirmStopTask {
+        target: crate::bottom_pane::TreeTarget,
+        label: String,
+        reopen_tasks: bool,
+    },
+
+    /// Stop a task: interrupt an agent's turn, or terminate a command.
+    StopTask {
+        target: crate::bottom_pane::TreeTarget,
+        reopen_tasks: bool,
+    },
+
+    /// Open a task: switch to an agent's thread, or page a command's output.
+    OpenTask(crate::bottom_pane::TreeTarget),
+
+    /// A background command's recent output, for the pager.
+    TaskOutputLoaded {
+        title: String,
+        result: Result<Vec<String>, String>,
+    },
+
     /// Fetch MCP inventory via app-server RPCs and render it into history.
     FetchMcpInventory {
         detail: McpServerStatusDetail,

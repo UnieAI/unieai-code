@@ -30,6 +30,9 @@ import { SANDBOX_MODES, setSandboxMode } from "@deepseek-ai/dsh-sandbox-policy";
 import { APPROVAL_POLICIES, setApprovalPolicy } from "@deepseek-ai/dsh-user-approval";
 import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import { isBillingFailure } from "../unieai-billing.mjs";
+// The same module URL unieai-exec loads (config.mjs points dsh at this
+// directory's uac-plugins), so both see one registry of background sessions.
+import { onBackground } from "./uac-plugins/unieai-exec-state.mjs";
 
 export const name = "unieai-control";
 /** The session record unieai-auto-approval reads (its MODE_RECORD). */
@@ -262,6 +265,24 @@ export function usageFromEvents(events) {
   return { total, last };
 }
 
+/**
+ * One background exec session as the client sees it: who owns it (the dsh
+ * session), its command and directory, and whether it is still running.
+ */
+export function execSessionView(sessionId, handle) {
+  return {
+    sessionId,
+    id: handle.id,
+    cmd: String(handle.cmd ?? ""),
+    cwd: handle.cwd ?? null,
+    tty: Boolean(handle.tty),
+    startedAt: Number.isFinite(handle.startedAt) ? handle.startedAt : null,
+    backgroundedAt: Number.isFinite(handle.backgroundedAt) ? handle.backgroundedAt : null,
+    running: Boolean(handle.running),
+    exitCode: handle.exitCode ?? null,
+  };
+}
+
 /** A subagent's session events that change what its thread shows. */
 const CHILD_ACTIVITY = new Set(["turn/start", "turn/end", "user/message", "assistant/message", "tool/call", "tool/result"]);
 
@@ -414,6 +435,35 @@ export function apply(ctx, config = {}) {
     for (const [child, parent] of childParent) if (parent === agent.id) childParent.delete(child);
   });
 
+  // Exec sessions an agent left running (unieai-exec), so the client can list,
+  // read and stop them like codex's background terminals. Each one is
+  // announced when it is backgrounded and again when it exits.
+  const execSessions = new Map(); // exec session id -> { agent, handle }
+  const execLifetime = new AbortController();
+  const unsubscribeExec = onBackground((agent, handle) => {
+    if (execLifetime.signal.aborted || !agent?.id) return;
+    execSessions.set(handle.id, { agent, handle });
+    const view = () => ({ ...execSessionView(agent.id, handle), parentSessionId: parentOfChild(agent.id) ?? null });
+    bridge?.notify?.("execSession", { phase: "start", ...view() });
+    void handle.whenExited(Infinity, execLifetime.signal).then((exited) => {
+      if (!exited) return;
+      if (execSessions.get(handle.id)?.handle === handle) execSessions.delete(handle.id);
+      bridge?.notify?.("execSession", { phase: "end", ...view(), killed: Boolean(handle.killed) });
+    });
+  });
+  /** Whether `sessionId` is `rootId` or one of its subagents (at any depth). */
+  const withinSession = (sessionId, rootId) => {
+    for (let id = sessionId, hops = 0; id && hops < 32; id = parentOfChild(id), hops += 1) {
+      if (id === rootId) return true;
+    }
+    return false;
+  };
+  const execEntry = (id) => {
+    const entry = execSessions.get(Number(id));
+    if (!entry) throw new Error(`no background exec session ${id}`);
+    return entry;
+  };
+
   // The model's questions to the user (ask_user_question, and exit_plan_mode's
   // plan review) go to the bridge, which asks through the client. Without a
   // bridge the next answerer (none, under ACP) decides.
@@ -554,6 +604,55 @@ export function apply(ctx, config = {}) {
         // No meter in this profile: the last call's counts stand in.
       }
       return { total, last, modelContextWindow: Number.isFinite(window) ? window : null, contextUsed };
+    },
+
+    /**
+     * Stop a subagent's current work, as the user (the TUI's task list):
+     * dsh's own interrupt, under the authority of the child's direct parent.
+     * One-shot and continuable children alike are resident activations; an
+     * idle or finished one is a no-op.
+     */
+    async subagentInterrupt({ sessionId }) {
+      const parentSessionId = parentOfChild(sessionId);
+      if (!parentSessionId) throw new Error(`not a subagent: ${sessionId}`);
+      const subagents = ctx.get?.("subagents");
+      if (subagents?.interrupt) {
+        subagents.interrupt(sessionId, { kind: "user", parentSessionId });
+        return { interrupted: true };
+      }
+      // A composition without the subagent service: cancel the child's turn.
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) return { interrupted: false };
+      agent.cancel?.({ kind: "user" }, { keepInbox: true });
+      return { interrupted: true };
+    },
+
+    /**
+     * Exec sessions left running by `sessionId` and its subagents (all of
+     * them without a session), oldest first.
+     */
+    async execSessions({ sessionId = null } = {}) {
+      const sessions = [];
+      for (const { agent, handle } of execSessions.values()) {
+        if (sessionId && !withinSession(agent.id, sessionId)) continue;
+        sessions.push({ ...execSessionView(agent.id, handle), parentSessionId: parentOfChild(agent.id) ?? null });
+      }
+      return { sessions };
+    },
+
+    /** The last output of one exec session, without consuming what the model has not read. */
+    async execOutput({ id, maxBytes = 16_000 }) {
+      const { agent, handle } = execEntry(id);
+      const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, 256_000) : 16_000;
+      return { ...execSessionView(agent.id, handle), output: handle.peek?.(limit) ?? "" };
+    },
+
+    /** Stop one exec session (the user's /tasks stop). Its exit is announced as usual. */
+    async execKill({ id }) {
+      const { handle } = execEntry(id);
+      if (!handle.running) return { killed: false };
+      await handle.kill?.();
+      return { killed: true };
     },
 
     /**
@@ -781,6 +880,8 @@ export function apply(ctx, config = {}) {
     ctx.logger.info(`unieai-control: listening on ${socketPath}`);
   });
   ctx.on("dispose", () => {
+    execLifetime.abort();
+    unsubscribeExec();
     server.close();
     rmSync(socketPath, { force: true });
   });

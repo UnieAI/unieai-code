@@ -935,6 +935,7 @@ See the Codex keymap documentation for supported actions and examples."
             peer_mesh: Default::default(),
             agent_started_at: HashMap::new(),
             agent_tokens: HashMap::new(),
+            tasks: Default::default(),
             agent_activity: HashMap::new(),
             cli_kv_overrides,
             harness_overrides,

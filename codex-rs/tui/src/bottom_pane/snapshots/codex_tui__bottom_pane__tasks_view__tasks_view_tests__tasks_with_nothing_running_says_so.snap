@@ -1,0 +1,9 @@
+---
+source: tui/src/bottom_pane/tasks_view_tests.rs
+expression: "rendered(&view, 80)"
+---
+Tasks  subagents and background commands
+
+  No subagents or background commands in this session.
+
+  esc close

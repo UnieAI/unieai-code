@@ -1,0 +1,9 @@
+---
+source: tui/src/bottom_pane/agent_tree_tests.rs
+expression: "rendered(&tree).join(\"\\n\")"
+---
+  ● main                                                                                                 Qwen3.6-35B-A3B
+›   $ sleep 120                                                                                                      12s
+  ◉ count_lines  Running cargo test                                            Qwen3.6-35B-A3B · 1m 05s · ↓ 12.3k tokens
+    $ npm run dev                                                                                                    12s
+    ↑↓ select · enter open · x stop · esc back to input
