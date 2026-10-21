@@ -52,6 +52,7 @@ export const ENGINE_METHODS = [
   "thread/backgroundTerminals/list",
   "thread/backgroundTerminals/clean",
   "review/start",
+  "thread/sample",
   // UnieAI's own: what is using a thread's context window (TUI /context).
   "unieai/context/read",
 ];
@@ -1256,6 +1257,9 @@ export function createHandlers({
 
     // Reviews run codex's review flow, which no engine here implements.
     async "review/start"() { throw new RpcError(RPC.METHOD_NOT_FOUND, "review/start is not supported by this engine"); },
+
+    // A one-off sample from a temporary fork of the thread (desktop prediction).
+    async "thread/sample"() { throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/sample is not supported by this engine"); },
 
     /** Exposed for tests and for the CLI's `/threads`-style introspection. */
     _threads: threads,
