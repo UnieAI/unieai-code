@@ -600,6 +600,16 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::RemoteControl => {
+                if crate::unieai_engine::session_is_uac() {
+                    self.app_event_tx.send(AppEvent::StartRemoteControl);
+                } else {
+                    self.add_info_message(
+                        crate::unieai_remote::ONLY_UAC.to_string(),
+                        Some("Switch with /engine, then run /remote-control again.".to_string()),
+                    );
+                }
+            }
             SlashCommand::Warnings => self.app_event_tx.send(AppEvent::OpenWarnings),
             SlashCommand::Status => {
                 if self.should_prefetch_rate_limits() {
@@ -1383,6 +1393,7 @@ impl ChatWidget {
             | SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Context
+            | SlashCommand::RemoteControl
             | SlashCommand::Daemon
             | SlashCommand::Pwd
             | SlashCommand::Usage

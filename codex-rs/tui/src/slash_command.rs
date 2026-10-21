@@ -41,6 +41,8 @@ pub enum SlashCommand {
     Compact,
     /// What is using the context window (uac engine).
     Context,
+    /// Watch, steer and approve this session from a phone or browser (uac).
+    RemoteControl,
     Config,
     Recap,
     Plan,
@@ -108,6 +110,9 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for UnieAI Code",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Context => "show what is using the context window",
+            SlashCommand::RemoteControl => {
+                "watch, steer and approve this session from a phone or browser"
+            }
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
@@ -309,6 +314,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Context
+            | SlashCommand::RemoteControl
             | SlashCommand::Daemon
             | SlashCommand::Warnings
             | SlashCommand::Pwd

@@ -3,6 +3,7 @@ pub(crate) mod debug_sandbox;
 mod exit_status;
 pub(crate) mod login;
 pub mod unieai_peers;
+pub mod unieai_remote_control;
 
 use clap::Args;
 use clap::Parser;

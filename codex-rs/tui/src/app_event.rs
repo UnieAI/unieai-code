@@ -1225,6 +1225,17 @@ pub(crate) enum AppEvent {
         result: Result<crate::unieai_context::ContextUsage, String>,
     },
 
+    /// Ask the uac engine to start Remote Control (`/remote-control`).
+    StartRemoteControl,
+
+    /// The uac engine's answer to [`AppEvent::StartRemoteControl`].
+    RemoteControlStarted {
+        result: Result<crate::unieai_remote::RemoteControlInfo, String>,
+    },
+
+    /// The number of remote viewers changed: redraw the status line.
+    RemoteViewersChanged,
+
     /// Fetch MCP inventory via app-server RPCs and render it into history.
     FetchMcpInventory {
         detail: McpServerStatusDetail,

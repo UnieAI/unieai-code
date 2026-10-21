@@ -201,7 +201,10 @@ impl ChatWidget {
     }
 
     fn refresh_status_line_from_selections(&mut self, selections: &StatusSurfaceSelections) {
-        let enabled = !selections.status_line_items.is_empty();
+        // While Remote Control runs, the status line says so whatever the
+        // user configured: someone else may be watching this session.
+        let remote = crate::unieai_remote::status_segment();
+        let enabled = !selections.status_line_items.is_empty() || remote.is_some();
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {
             self.set_status_line(/*status_line*/ None);
@@ -216,11 +219,19 @@ impl ChatWidget {
             }
         }
 
-        self.set_status_line(status_line_from_segments(
+        let mut status_line = status_line_from_segments(
             segments,
             self.local_settings.tui.status_line_use_colors,
             self.thread_id,
-        ));
+        );
+        if let Some(remote) = remote {
+            let line = status_line.get_or_insert_with(Line::default);
+            if !line.spans.is_empty() {
+                line.spans.push(ratatui::text::Span::raw(" · ").dim());
+            }
+            line.spans.push(ratatui::text::Span::raw(remote).cyan());
+        }
+        self.set_status_line(status_line);
         let hyperlink_url = selections
             .status_line_items
             .contains(&StatusLineItem::PullRequestNumber)
