@@ -27,6 +27,22 @@ const require = createRequire(import.meta.url);
 /** The control plugin dsh loads by URL (see unieai-control.mjs). */
 export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "unieai-control.mjs")).href;
 
+/** `publish_artifact` (see unieai-artifacts.mjs), a uac host plugin loaded by URL. */
+export const ARTIFACTS_PLUGIN_URL = pathToFileURL(join(here, "unieai-artifacts.mjs")).href;
+
+/** Skills that ship with UnieAI Code (the `artifact` skill); user and project skills outrank them. */
+export const BUNDLED_SKILLS_DIR = join(here, "skills");
+
+/**
+ * Whether uac offers `publish_artifact`: on by default, and named in
+ * `UNIEAI_DSH_PLUGINS` like a catalog plugin so an A/B run can leave it out.
+ */
+export function artifactsEnabled(env = process.env) {
+  const choice = String(env.UNIEAI_DSH_PLUGINS ?? "").trim();
+  if (!choice || choice === "all") return true;
+  return choice.split(",").map((id) => id.trim()).includes("unieai-artifacts");
+}
+
 /** `bin.js` of the `@deepseek-ai/dsh` this package depends on, if installed. */
 export function installedDshBin() {
   try {
@@ -447,9 +463,13 @@ export function renderPatch({
   // A smaller account model for auto mode's reviewer; else the session's own.
   autoApprovalModel = null,
   mode = "standard",
+  // publish_artifact and the bundled `artifact` skill (not in minimal mode).
+  artifacts = false,
+  artifactsUrl = ARTIFACTS_PLUGIN_URL,
 }) {
   const q = yamlQuote;
   plugins = pluginsForMode(plugins, mode);
+  artifacts = artifacts && mode !== "minimal";
   const execTools = plugins.some((plugin) => plugin.execTools);
   const lines = [];
   if (acp) {
@@ -519,7 +539,7 @@ export function renderPatch({
     plugins,
     profile: "cli",
     config: {
-      "unieai-skills": { home },
+      "unieai-skills": artifacts ? { home, bundledSkillDir: BUNDLED_SKILLS_DIR } : { home },
       "unieai-agents": { home },
       "unieai-web-search": { gatewayBaseUrl },
       "unieai-vision-fallback": visionModel
@@ -564,6 +584,9 @@ export function renderPatch({
       "    - id: tool-worktree",
       "      name: '@deepseek-ai/dsh-experimental-tool-worktree'",
     );
+  }
+  if (artifacts) {
+    inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
   }
   inserts.push(...parts.inserts, ...modeRows.inserts);
   lines.push("- insert:", ...inserts);
@@ -709,6 +732,7 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // UNIEAI_AUTO_APPROVAL_MODEL names a cheaper reviewer for auto mode; only
   // a model the account serves (the session's provider routes it).
   const autoApprovalModel = models.includes(env.UNIEAI_AUTO_APPROVAL_MODEL) ? env.UNIEAI_AUTO_APPROVAL_MODEL : null;
+  const artifacts = artifactsEnabled(env);
   writeFileSync(
     patchPath,
     renderPatch({
@@ -720,6 +744,7 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
       ...(vision ?? {}),
       autoApprovalModel,
       mode,
+      artifacts,
     }),
   );
 
