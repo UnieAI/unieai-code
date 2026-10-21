@@ -587,10 +587,12 @@ pub(super) fn studio_rate_limit_snapshot(usage: &StudioUsage) -> RateLimitSnapsh
         normal_model_slug: None,
         primary: window(usage.windows.five_hour.as_ref(), FIVE_HOUR_WINDOW_MINUTES),
         secondary: window(usage.windows.week.as_ref(), WEEK_WINDOW_MINUTES),
-        credits: usage.wallet.as_ref().map(|wallet| CreditsSnapshot {
+        credits: usage.wallet.is_some().then(|| CreditsSnapshot {
             has_credits: usage.extra_usage.enabled && usage.credits_available(),
             unlimited: false,
-            balance: Some(format!("{:.2}", wallet.balance_usd())),
+            // /status would print a dollar balance as "N credits"; the exact
+            // amount is in /usage.
+            balance: None,
         }),
         individual_limit: None,
         spend_control_reached: None,
