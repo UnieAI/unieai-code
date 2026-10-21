@@ -257,6 +257,7 @@ impl ChatWidget {
         self.codex_spend_control_reached = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.usage_notice_state = usage_notice::UsageNoticeState::default();
+        self.unieai_usage = unieai_usage::UnieAIUsageState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
         self.bottom_pane
             .dismiss_view_by_id(RATE_LIMIT_SWITCH_PROMPT_VIEW_ID);

@@ -245,6 +245,12 @@ impl ChatWidget {
             // An absent aggregate limit type is not a contradiction of model-scoped recovery.
             self.clear_backend_banner();
         }
+        if !self.has_codex_backend_auth && self.note_unieai_rate_limit_headers(&snapshot) {
+            // No account read follows for a UnieAI Studio login: the gateway's
+            // headers are the reading /status and the status line show.
+            self.on_rate_limit_snapshot_from(Some(snapshot), RateLimitSnapshotSource::AccountUsage);
+            return;
+        }
         // Rolling app-server notifications are sparse. Preserve metadata learned from the full read.
         self.on_rate_limit_snapshot_from(Some(snapshot), RateLimitSnapshotSource::RollingUpdate);
     }

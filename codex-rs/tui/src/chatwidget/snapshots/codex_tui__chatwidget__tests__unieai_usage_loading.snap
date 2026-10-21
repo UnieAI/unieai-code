@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Studio
+
+  Loading your plan usage...
+
+
+› 1. Close
+
+  enter select · esc back

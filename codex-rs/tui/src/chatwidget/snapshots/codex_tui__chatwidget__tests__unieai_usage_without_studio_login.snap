@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: history_text(&mut rx)
+---
+■ /usage shows your UnieAI Studio plan: its 5-hour and weekly limits, extra usage and your wallet. This session isn't signed in to UnieAI Studio (it uses an API key or a self-hosted model, which have no plan usage). Run `unieai login` to sign in.

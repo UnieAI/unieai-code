@@ -1898,6 +1898,9 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::UnieAIUsage(event) => {
+                self.chat_widget.on_unieai_usage_event(event);
+            }
             AppEvent::ApplyBackendBannerFallback { thread_id } => {
                 if self.active_thread_id == Some(thread_id)
                     && self.chat_widget.thread_id() == Some(thread_id)

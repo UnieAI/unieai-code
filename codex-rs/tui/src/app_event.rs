@@ -813,6 +813,9 @@ pub(crate) enum AppEvent {
         matches: Vec<crate::task_mentions::TaskMention>,
     },
 
+    /// UnieAI Studio `/usage` and live plan usage (chatwidget/unieai_usage.rs).
+    UnieAIUsage(crate::chatwidget::UnieAIUsageEvent),
+
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,

@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Studio
+
+  Plan usage isn't available from this Studio yet.
+
+  Wallet        $4.20 available
+  This month    No limit · $3.10 spent · resets 1 Nov
+
+
+› 1. Top up credits  http://127.0.0.1:9/plan
+  2. Refresh
+
+  enter select · esc back
