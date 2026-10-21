@@ -358,3 +358,38 @@ test("over the socket: both TUIs are asked, the first answer wins, the other is 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a gateway billing refusal reaches every subscriber as a usage limit, a remote included", async () => {
+  const home = mkdtempSync(join(tmpdir(), "uac-billing-fanout-"));
+  const previous = process.env.UNIEAI_HOME;
+  process.env.UNIEAI_HOME = home; // no unieai.json: the public Studio's plan page
+  try {
+    const handlers = createHandlers({
+      codexHome: home,
+      createEngineFor: () => ({
+        send: async () => {
+          throw new Error('Internal error: 402 {"error":{"code":"insufficient_balance","message":"Insufficient balance"}}');
+        },
+      }),
+    });
+    const tui = fakeClient("tui");
+    const phone = fakeClient("phone", { remote: true });
+    const { thread } = await handlers["thread/start"]({ cwd: process.cwd() }, tui);
+    handlers._attach(thread.id, phone);
+    await handlers["turn/start"]({ threadId: thread.id, input: "x" }, tui);
+    await tick();
+    for (const client of [tui, phone]) {
+      const error = client.notes.find(([method]) => method === "error");
+      assert.ok(error, `${client.name} is told`);
+      assert.equal(error[1].error.codexErrorInfo, "usageLimitExceeded");
+      assert.match(error[1].error.message, /wallet is out of credits/);
+      assert.equal(error[1].willRetry, false);
+      const completed = client.notes.find(([method]) => method === "turn/completed");
+      assert.equal(completed[1].turn.error.codexErrorInfo, "usageLimitExceeded");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.UNIEAI_HOME;
+    else process.env.UNIEAI_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});

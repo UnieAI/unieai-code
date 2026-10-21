@@ -1,0 +1,21 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Studio · Pro plan
+
+  5-hour limit  [████████████████████] 100% used · resets in 2h 10m (14:10)
+  Weekly limit  [██████░░░░░░░░░░░░░░] 30% used · resets in 5d 12h (00:00 on 26 Oct)
+  Extra usage   On · past a limit, requests bill your API credits
+
+  Credits       Welcome credit $2.00 · expires 30 Nov
+  Wallet        $18.25 available
+  This month    Limit $50.00 · $7.50 spent · $42.50 left · resets 1 Nov
+
+
+› 1. Extra usage: On  Turn off to stop at plan limits instead of billing credits
+  2. Manage plan      https://agent.unieai.com/settings/subscription
+  3. Top up credits   http://127.0.0.1:9/plan
+  4. Refresh
+
+  enter select · esc back

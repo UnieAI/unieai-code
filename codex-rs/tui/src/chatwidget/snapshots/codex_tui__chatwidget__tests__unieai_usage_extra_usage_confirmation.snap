@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Turn on extra usage?
+
+  When your 5-hour or weekly plan limit is reached, requests keep going and are billed
+  to your wallet instead of stopping until the limit resets. Credit grants are always
+  used first, before the plan allowance.
+
+  Your wallet's monthly spending limit still applies.
+
+
+  1. Turn on extra usage  Bill API credits after the plan allowance
+› 2. Cancel               Keep stopping at plan limits
+
+  enter confirm · esc back

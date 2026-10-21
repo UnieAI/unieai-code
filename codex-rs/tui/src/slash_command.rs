@@ -145,6 +145,8 @@ impl SlashCommand {
             // Served by uac itself; on the codex engine dispatch says to
             // switch with /engine, which is not "coming soon".
             SlashCommand::RemoteControl => false,
+            // A Studio account gets the UnieAI plan panel on either engine.
+            SlashCommand::Usage => false,
             _ => false,
         }
     }
@@ -510,15 +512,18 @@ mod tests {
     }
 
     #[test]
-    fn remote_control_is_never_coming_soon() {
-        for uac_engine in [false, true] {
-            for no_openai_services in [false, true] {
-                for feedback_to_openai in [false, true] {
-                    assert!(!SlashCommand::RemoteControl.coming_soon(ComingSoonContext {
-                        uac_engine,
-                        no_openai_services,
-                        feedback_to_openai,
-                    }));
+    fn unieai_served_commands_are_never_coming_soon() {
+        for command in [SlashCommand::RemoteControl, SlashCommand::Usage] {
+            for uac_engine in [false, true] {
+                for no_openai_services in [false, true] {
+                    for feedback_to_openai in [false, true] {
+                        let context = ComingSoonContext {
+                            uac_engine,
+                            no_openai_services,
+                            feedback_to_openai,
+                        };
+                        assert!(!command.coming_soon(context), "{command:?} {context:?}");
+                    }
                 }
             }
         }

@@ -1407,7 +1407,7 @@ async fn usage_error_slash_command_is_available_from_local_recall() {
 }
 
 #[tokio::test]
-async fn signed_out_usage_command_reports_chatgpt_login_requirement() {
+async fn signed_out_usage_command_reports_studio_login_requirement() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     submit_composer_text(&mut chat, "/usage");
@@ -1419,14 +1419,14 @@ async fn signed_out_usage_command_reports_chatgpt_login_requirement() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_chatwidget_snapshot!(
-        "signed_out_usage_command_reports_chatgpt_login_requirement",
+        "signed_out_usage_command_reports_studio_login_requirement",
         rendered
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/usage");
 }
 
 #[tokio::test]
-async fn signed_out_usage_command_with_args_reports_chatgpt_login_requirement() {
+async fn signed_out_usage_command_with_args_reports_studio_login_requirement() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     submit_composer_text(&mut chat, "/usage weekly");
@@ -1438,8 +1438,8 @@ async fn signed_out_usage_command_with_args_reports_chatgpt_login_requirement() 
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Sign in with ChatGPT to use /usage."),
-        "expected ChatGPT login requirement, got: {rendered:?}"
+        rendered.contains("isn't signed in to UnieAI Studio"),
+        "expected Studio login requirement, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/usage weekly");
 }

@@ -146,6 +146,40 @@ test("a steered message is reported to the client when the model takes it, not w
   handlers.dispose();
 });
 
+test("a billing refusal is not retried; other request failures go on to llm-retry", async () => {
+  const { apply } = await import("./unieai-control.mjs");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const handlers = {};
+  const options = {};
+  apply(
+    {
+      on: (name, fn, opts) => {
+        handlers[name] = fn;
+        options[name] = opts;
+      },
+      agents: { get: () => undefined },
+      logger: { warn() {}, info() {} },
+      effect: () => {},
+    },
+    { socket: join(mkdtempSync(join(tmpdir(), "ctl-")), "c.sock") },
+  );
+  assert.deepEqual(options["agent/request-error"], { prepend: true }, "ahead of llm-retry");
+  let delegated = 0;
+  const next = async () => {
+    delegated += 1;
+    return { kind: "retry" };
+  };
+  const billing = { failure: { code: "RATE_LIMIT", message: '429 {"error":{"code":"plan_limit_reached","window":"week"}}' } };
+  assert.equal(await handlers["agent/request-error"](billing, next), undefined);
+  assert.equal(delegated, 0);
+  const transient = { failure: { code: "RATE_LIMIT", message: "429 Too Many Requests" } };
+  assert.deepEqual(await handlers["agent/request-error"](transient, next), { kind: "retry" });
+  assert.equal(delegated, 1);
+  handlers.dispose();
+});
+
 test("a rewind starts at the first undone user turn, so a goal round before it is kept", () => {
   const events = session();
   const observed = { header: { cwd: "/w" }, events };

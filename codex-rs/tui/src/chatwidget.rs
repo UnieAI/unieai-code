@@ -410,6 +410,8 @@ mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod usage;
+mod unieai_usage;
+pub(crate) use self::unieai_usage::UnieAIUsageEvent;
 mod user_messages;
 mod working_directory;
 use self::user_messages::MessageDelivery;
@@ -592,6 +594,7 @@ pub(crate) struct ChatWidget {
     rate_limit_warnings: RateLimitWarningState,
     clock_format: crate::clock_format::ClockFormat,
     usage_notice_state: usage_notice::UsageNoticeState,
+    unieai_usage: unieai_usage::UnieAIUsageState,
     backend_banner_state: backend_banners::BackendBannerState,
     pub(crate) security_setup_request_id: uuid::Uuid,
     security_setup_presented: bool,

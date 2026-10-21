@@ -167,6 +167,7 @@ impl ChatWidget {
             rate_limit_warnings: RateLimitWarningState::default(),
             clock_format: crate::clock_format::ClockFormat::system(),
             usage_notice_state: usage_notice::UsageNoticeState::default(),
+            unieai_usage: unieai_usage::UnieAIUsageState::default(),
             backend_banner_state: backend_banners::BackendBannerState::default(),
             security_setup_request_id: uuid::Uuid::new_v4(),
             security_setup_presented: false,

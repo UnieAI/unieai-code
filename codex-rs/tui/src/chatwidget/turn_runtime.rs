@@ -179,6 +179,7 @@ impl ChatWidget {
             self.request_status_line_git_summary_refresh();
             self.refresh_thread_usage_after_turn();
             self.restore_undelivered_steers_after_turn();
+            self.maybe_poll_unieai_usage();
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.clear_context_compaction();
@@ -467,6 +468,9 @@ impl ChatWidget {
         // on_error can drain queued input, before the asynchronous recovery read completes.
         self.input_queue.rate_limit_recovery_pending = self.has_chatgpt_account;
         let usage_limit_error = matches!(error_kind, RateLimitErrorKind::UsageLimit);
+        if usage_limit_error && !self.has_chatgpt_account {
+            self.refresh_unieai_usage_after_limit_error();
+        }
         let rate_limit_reached_type = self.codex_rate_limit_reached_type.map(|kind| {
             if usage_limit_error {
                 match kind {

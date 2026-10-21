@@ -1,0 +1,6 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: history_text(&mut rx)
+---
+⚠ Plan limit reached — your 5-hour limit resets at 14:10. Turn on extra usage
+  in /usage to keep going on API credits.

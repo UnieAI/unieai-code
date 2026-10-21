@@ -572,7 +572,7 @@ impl ChatWidget {
 }
 
 /// Keep usage actions readable on narrow terminals and honor customized list bindings.
-fn usage_hint_line(
+pub(super) fn usage_hint_line(
     keymap: &crate::keymap::ListKeymap,
     accept_label: &'static str,
 ) -> Line<'static> {

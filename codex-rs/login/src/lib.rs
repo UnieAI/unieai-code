@@ -6,6 +6,7 @@ pub mod unieai;
 pub mod unieai_artifacts;
 pub mod unieai_rabi;
 pub mod unieai_self_hosted;
+pub mod unieai_usage;
 pub use auth::WorkspaceRouting;
 pub use auth::WorkspaceRoutingRequest;
 pub use auth::WorkspaceRoutingResolver;

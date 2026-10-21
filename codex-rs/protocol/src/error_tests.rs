@@ -755,3 +755,69 @@ fn usage_limit_reached_with_promo_message() {
         assert_eq!(err.to_string(), expected);
     });
 }
+
+#[test]
+fn unieai_studio_url_prefers_the_login_then_the_env() {
+    assert_eq!(
+        resolve_unieai_studio_url(Some("https://studio.corp.example/"), Some("https://env")),
+        "https://studio.corp.example"
+    );
+    assert_eq!(
+        resolve_unieai_studio_url(None, Some(" https://studio.env.example/ ")),
+        "https://studio.env.example"
+    );
+    assert_eq!(
+        resolve_unieai_studio_url(Some(""), None),
+        "https://studio.unieai.com"
+    );
+}
+
+#[test]
+fn unieai_billing_errors_explain_the_remedy_and_never_retry() {
+    let base = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let resets_at = base + ChronoDuration::hours(2);
+    with_now_override(base, move || {
+        let expected_time = format_retry_timestamp(&resets_at);
+        let plan = CodexErr::new(CodexErrorDetails::UnieAIBilling(
+            UnieAIBillingError::PlanLimitReached {
+                window: Some(UnieAIPlanWindow::FiveHour),
+                resets_at: Some(resets_at),
+            },
+        ));
+        assert_eq!(
+            plan.to_string(),
+            format!(
+                "You've reached your 5-hour plan limit. It resets at {expected_time}. Turn on extra usage in /usage to keep going on API credits."
+            )
+        );
+        assert_eq!(plan.retry_delay(/*retry_count*/ 1), None);
+        assert_eq!(plan.http_status_code_value(), Some(429));
+        assert_eq!(
+            plan.to_codex_protocol_error(),
+            CodexErrorInfo::UsageLimitExceeded
+        );
+    });
+
+    let empty = CodexErr::new(CodexErrorDetails::UnieAIBilling(
+        UnieAIBillingError::InsufficientBalance,
+    ));
+    assert_eq!(empty.retry_delay(/*retry_count*/ 1), None);
+    assert_eq!(empty.http_status_code_value(), Some(402));
+    assert!(
+        empty
+            .to_string()
+            .starts_with("Your UnieAI wallet is out of credits. Top up at "),
+        "{empty}"
+    );
+    let capped = UnieAIBillingError::WalletMonthlyLimitReached { period_end: None };
+    assert!(
+        capped
+            .to_string()
+            .starts_with("You've reached your monthly wallet spending limit. Raise it at "),
+        "{capped}"
+    );
+    assert_eq!(
+        UnieAIPlanWindow::parse("week"),
+        Some(UnieAIPlanWindow::Week)
+    );
+}
