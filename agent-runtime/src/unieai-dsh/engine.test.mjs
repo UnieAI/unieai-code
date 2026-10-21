@@ -452,6 +452,18 @@ test("a dying agent's own error is what gets reported", async () => {
   assert.equal(agentFailureReason([]), null);
 });
 
+test("an agent that dies without a word is reported by its exit status", async () => {
+  // macOS SIGKILLs a process whose native addon it refuses to load; nothing reaches
+  // stderr, so "closed the connection" alone said nothing about why.
+  const { spawnAcpAgent } = await import("./acp-client.mjs");
+  for (const [script, expected] of [
+    ["process.kill(process.pid, 'SIGKILL')", /killed by SIGKILL/],
+    ["process.exit(3)", /exit code 3/],
+  ]) {
+    await assert.rejects(spawnAcpAgent({ command: process.execPath, args: ["-e", script] }), expected);
+  }
+});
+
 test("terminal cards show the command's output and exit code, not the model-facing header", async () => {
   const { terminalView } = await import("./engine.mjs");
   const text = "Chunk ID: 926d2c\nWall time: 0.2580 seconds\nProcess exited with code 1\nOriginal token count: 40\nOutput:\nTraceback...\nAssertionError\n";

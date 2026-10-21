@@ -158,6 +158,8 @@ export async function spawnAcpAgent({ command, args = [], env, cwd, onLog = () =
     output: child.stdin,
     onError: (error) => onLog(`[acp] ${error.message}`),
   });
+  const exitedDuringInit = ({ code, signal }) =>
+    new AcpError(`ACP agent exited during initialize (${signal ? `killed by ${signal}` : `exit code ${code}`})`);
   const init = await Promise.race([
     connection.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
@@ -165,10 +167,16 @@ export async function spawnAcpAgent({ command, args = [], env, cwd, onLog = () =
       clientInfo: { name: "unieai-agent-core", version: "1" },
     }),
     spawnError,
-    exited.then(({ code, signal }) => {
-      throw new AcpError(`ACP agent exited during initialize (code ${code}, signal ${signal})`);
+    exited.then((status) => {
+      throw exitedDuringInit(status);
     }),
-  ]);
+  ]).catch(async (error) => {
+    // stdout usually closes before "exit" fires, so a dying agent reads as "closed the
+    // connection". An agent killed without a word (macOS SIGKILL on a native addon) only
+    // shows why through its exit status, so wait briefly for it.
+    const status = await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 1000, null))]);
+    throw status ? exitedDuringInit(status) : error;
+  });
 
   return {
     ...connection,
