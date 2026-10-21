@@ -2,13 +2,17 @@
 
 # 用量與計費 API（Studio ↔ UnieAI Code 契約）
 
-UnieAI 訂閱方案比照 Claude Code / Codex：每個請求先吃**方案額度**（5 小時與每週兩個
-視窗）。視窗用完之後怎麼辦，由使用者自己決定的 **Extra usage（額外用量）** 開關控制：
+UnieAI 訂閱方案比照 Claude Code / Codex。每個請求的扣款順序：
+
+1. **grants**（贈送／促銷點數，最早到期的先扣）：一律最先扣，不受 Extra usage 影響，
+   免得免費額度沒用完就過期；
+2. **方案額度**（5 小時與每週兩個視窗）；
+3. 視窗用完之後怎麼辦，由使用者自己決定的 **Extra usage（額外用量）** 開關控制：
 
 | 視窗用完時 | 行為 |
 |---|---|
 | Extra usage **關**（預設） | gateway 擋下請求，回 `429 plan_limit_reached`，等視窗重置 |
-| Extra usage **開** | 改從 API 點數扣：先扣 grants（最早到期的先扣），再扣錢包 |
+| Extra usage **開** | 改扣錢包（仍受每月上限約束） |
 
 沒有訂閱方案（`plan: null`）的帳號維持現況：每個請求直接扣錢包（pay-as-you-go），
 Extra usage 開關對它沒有意義。
@@ -115,8 +119,8 @@ Extra usage 開關對它沒有意義。
 - **403** `{"error":{"code":"forbidden","message":"..."}}`：例如群組成員沒有權限改群組設定。CLI 顯示 `message`。
 - **409** `{"error":{"code":"no_plan","message":"..."}}`：沒有訂閱方案時不能開。CLI 顯示 `message`。
 
-開啟時 CLI 會先跳確認：「視窗用完後，請求會改扣 API 點數（先 grants 再錢包），
-仍受錢包每月上限約束」。關閉不需確認。
+開啟時 CLI 會先跳確認：「視窗用完後，請求會改扣錢包，仍受錢包每月上限約束；
+grants 一律在方案額度之前先扣」。關閉不需確認。
 
 開關的生效範圍與錢包相同（個人或群組帳單主體）。請記稽核紀錄（比照
 `user_wallet.monthly_limit_set`）。
@@ -202,7 +206,7 @@ gateway 若在每個 inference 回應帶上 codex 格式的標頭，codex 引擎
 - [ ] `windows.*` 由現有 `user-plan-quotas.mjs` 的配額資料算出 used／limit／resetsAt
 - [ ] `extraUsage.enabled` 存在帳單主體上（個人／群組），預設 `false`
 - [ ] `POST /api/usage/extra-usage`：寫入開關、記稽核、回完整 usage 物件；無方案回 409、無權限回 403
-- [ ] 扣款順序：方案視窗 → （Extra usage 開）grants → 錢包；Extra usage 關且視窗用完 → 429 `plan_limit_reached`（含 `window`、`resetsAt`，建議帶 `Retry-After`）
+- [ ] 扣款順序：grants → 方案視窗 → （Extra usage 開）錢包；Extra usage 關且視窗用完 → 429 `plan_limit_reached`（含 `window`、`resetsAt`，建議帶 `Retry-After`）
 - [ ] 錢包空 → 402 `insufficient_balance`；超過每月上限 → 402 `wallet_monthly_limit_reached`（已存在，確認 gateway 原樣轉出 `error.code`）
 - [ ] 錯誤一律走 `{"error":{"code":...}}`，`/v1/responses` 與 `/v1/chat/completions` 一致
 - [ ] （選填）inference 回應帶 `x-codex-*` rate-limit 標頭

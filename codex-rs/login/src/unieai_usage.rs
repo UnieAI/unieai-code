@@ -1,10 +1,10 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 //! UnieAI Studio plan usage and wallet.
 //!
-//! A Studio subscription draws each request from the plan's allowance first
-//! (a 5-hour and a weekly window). When a window runs out, requests either
-//! stop until it resets or, with the account's opt-in "extra usage", go on
-//! against API credits (grants, then the wallet). This module reads that
+//! A Studio subscription draws each request from credit grants first, then
+//! from the plan's allowance (a 5-hour and a weekly window). When a window
+//! runs out, requests either stop until it resets or, with the account's
+//! opt-in "extra usage", go on against the wallet. This module reads that
 //! state from Studio's `GET /api/usage/me`, flips extra usage with
 //! `POST /api/usage/extra-usage`, and falls back to `GET /api/wallet/me` for a
 //! Studio that predates plan usage. The contract is in

@@ -332,7 +332,7 @@ impl ChatWidget {
                     Line::from("Turn on extra usage?".bold()),
                     Line::default(),
                     Line::from(
-                        "When your 5-hour or weekly plan limit is reached, requests keep going and are billed to your API credits (grants first, then your wallet) instead of stopping until the limit resets."
+                        "When your 5-hour or weekly plan limit is reached, requests keep going and are billed to your wallet instead of stopping until the limit resets. Credit grants are always used first, before the plan allowance."
                             .dim(),
                     ),
                     Line::default(),
