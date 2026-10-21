@@ -20,6 +20,7 @@ import { createDispatcher, RpcError, RPC } from "./rpc.mjs";
 import { randomUUID } from "node:crypto";
 import { createItemBridge, startedItem, userMessageItem, agentMessageItem, reasoningItem, newItemId } from "./items.mjs";
 import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
+import { backgroundTerminal, createExecSessions } from "./unieai-exec-sessions.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
@@ -51,10 +52,13 @@ export const ENGINE_METHODS = [
   "thread/shellCommand",
   "thread/backgroundTerminals/list",
   "thread/backgroundTerminals/clean",
+  "thread/backgroundTerminals/terminate",
   "review/start",
   "thread/sample",
   // UnieAI's own: what is using a thread's context window (TUI /context).
   "unieai/context/read",
+  // UnieAI's own: a background exec session's last output (TUI /tasks).
+  "unieai/exec/output",
 ];
 
 /**
@@ -251,6 +255,8 @@ export function createHandlers({
     // exactly the history an engine can give; paging is not needed.
     historyMode: "legacy",
     modelProvider: t.modelProvider,
+    // The client's agent list shows which model each agent runs on.
+    model: t.model ?? null,
     createdAt: t.createdAtEpoch,
     updatedAt: t.updatedAtEpoch,
     recencyAt: t.updatedAtEpoch,
@@ -271,8 +277,19 @@ export function createHandlers({
     canAcceptDirectInput: t.canAcceptDirectInput ?? true,
   });
 
+  /**
+   * How a notification reaches a thread's client, for notifications sent
+   * outside a turn's own item stream. One helper, so routing them to several
+   * subscribers changes in one place.
+   */
+  const threadEmitter = (thread) => thread?.connection?.emit ?? null;
+
   // dsh subagents, each shown as a thread of its own.
   const subagents = createSubagentThreads({ turnShape, threadShape });
+  // Commands the model left running, as the client's background terminals.
+  const execSessions = createExecSessions({ subagent: (threadId) => subagents.get(threadId), emitterOf: threadEmitter });
+  /** A thread the task list may address: a subagent's, or a thread of ours. */
+  const taskThread = (threadId) => subagents.get(threadId) ?? getThread(threadId);
   /** A subagent's thread fields, or null when `threadId` is not a subagent. */
   const subagentThread = (threadId) => {
     const child = subagents.get(threadId);
@@ -690,6 +707,7 @@ export function createHandlers({
       },
       onSubagent: (note) => subagents.onSubagent(thread, note),
       onChildActivity: (note) => subagents.onChildActivity(thread, note),
+      onExecSession: (note) => execSessions.onExecSession(thread, note),
       // Turns dsh runs without a prompt from the client (a goal round, a
       // background subagent's result waking this agent) become client turns.
       onEngineTurn: ({ phase, reason, turn }) => (phase === "start" ? startEngineTurn(thread, turn) : endEngineTurn(thread, reason)),
@@ -936,16 +954,37 @@ export function createHandlers({
       return {};
     },
 
-    // The TUI's background terminals are codex's unified exec; dsh's commands
-    // are not among them, so there are none to list (and /cd is not blocked).
+    // The TUI's background terminals are codex's unified exec; here they are
+    // the exec sessions the model left running (unieai-exec), its own and its
+    // subagents'. A running one blocks /cd and a worktree switch, as in codex.
     async "thread/backgroundTerminals/list"(params) {
-      getThread(params?.threadId);
-      return { data: [], nextCursor: null };
+      const sessions = await execSessions.list(taskThread(params?.threadId));
+      const limit = Number.isInteger(params?.limit) && params.limit > 0 ? params.limit : sessions.length;
+      const start = Number.parseInt(params?.cursor ?? "0", 10) || 0;
+      const page = sessions.slice(start, start + limit);
+      const next = start + page.length;
+      return { data: page.map(backgroundTerminal), nextCursor: next < sessions.length ? String(next) : null };
     },
 
     async "thread/backgroundTerminals/clean"(params) {
-      getThread(params?.threadId);
+      await execSessions.clean(taskThread(params?.threadId));
       return {};
+    },
+
+    async "thread/backgroundTerminals/terminate"(params) {
+      const terminated = await execSessions.terminate(taskThread(params?.threadId), params?.processId);
+      return { terminated };
+    },
+
+    /**
+     * A background exec session's last output, without taking what the model
+     * has not read yet (TUI /tasks). Not a codex protocol method.
+     */
+    async "unieai/exec/output"(params) {
+      const thread = taskThread(params?.threadId);
+      const result = await execSessions.output(thread, params?.processId, { maxBytes: params?.maxBytes });
+      if (!result) throw new RpcError(RPC.INVALID_PARAMS, `no background terminal ${params?.processId} in thread ${thread.id}`);
+      return result;
     },
 
     async "thread/read"(params, ctx) {
@@ -1094,6 +1133,15 @@ export function createHandlers({
      * it is still open after that.
      */
     async "turn/interrupt"(params) {
+      // A subagent's turn is its parent's to run, but the user may stop it
+      // (the TUI's task list): dsh interrupts the child, and its parent hears
+      // the child was interrupted.
+      const child = subagents.get(params?.threadId);
+      if (child) {
+        if (typeof child.root.engine?.interruptSubagent !== "function") throw new RpcError(RPC.METHOD_NOT_FOUND, "this engine cannot stop a subagent");
+        await child.root.engine.interruptSubagent(child.id);
+        return {};
+      }
       const thread = threads.get(params?.threadId);
       const turn = thread?.activeTurn;
       if (!turn) return {};
