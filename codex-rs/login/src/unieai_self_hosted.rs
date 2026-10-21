@@ -1,7 +1,11 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
-//! Self-hosted model servers: OpenAI-compatible endpoints the user runs
-//! themselves (vLLM, SGLang, TGI, llama.cpp server, Ollama, LM Studio, …),
-//! on this machine or another one.
+//! Connected model APIs: OpenAI-compatible endpoints the user brings
+//! themselves. Either a provider from [`API_PRESETS`] (OpenAI, OpenRouter,
+//! DeepSeek, Groq, Together, Mistral, Gemini, a local Ollama or LM Studio),
+//! or any URL: a self-hosted server (vLLM, SGLang, TGI, llama.cpp server, …)
+//! on this machine or another one. Both are the same thing to UnieAI Code;
+//! a preset only fills in the URL, the default name and the label, and says
+//! whether a key is required.
 //!
 //! Each server is a named provider kept in `$CODEX_HOME/unieai-self-hosted.json`
 //! (owner-only, like `unieai.json`): its `/v1` base URL, an optional API key
@@ -14,7 +18,9 @@
 //! engine), so the same model id on two servers, or on a server and the
 //! Studio gateway, stays unambiguous. Servers speak chat completions; the
 //! codex engine only speaks the Responses API, so these models run on the uac
-//! engine (see `docs/unieai/login.md`).
+//! engine (see `docs/unieai/login.md`). OpenAI itself speaks the Responses
+//! API too, so its preset also runs on the codex engine through
+//! `model_provider = "<provider id>"`.
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -34,6 +40,161 @@ const STORE_VERSION: u32 = 1;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ID_LEN: usize = 32;
 
+/// At most this many models of one provider are kept: a provider such as
+/// OpenRouter lists hundreds, which would bury the /model picker. Narrow the
+/// list with a filter (onboarding) or pin models with `--model` (CLI).
+pub const MAX_STORED_MODELS: usize = 50;
+
+/// `kind` of a provider connected by URL rather than from a preset.
+pub const CUSTOM_KIND: &str = "custom";
+
+/// A model API a user can connect by picking it rather than typing its URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApiPreset {
+    /// Stored as the provider's `kind`; also what `--api <preset>` takes.
+    pub kind: &'static str,
+    /// What the UI calls the provider and its models ("OpenRouter").
+    pub label: &'static str,
+    pub base_url: &'static str,
+    /// The provider id when the user names none. Never a built-in provider
+    /// id (`openai`, `ollama`, `lmstudio` are taken), see [`validate_provider_id`].
+    pub default_id: &'static str,
+    /// Cloud APIs refuse every request without a key; local servers need none.
+    pub key_required: bool,
+    /// The API also serves the Responses API, so the codex engine can use it.
+    pub codex_engine: bool,
+    /// Other spellings `--api` accepts.
+    pub aliases: &'static [&'static str],
+}
+
+/// The providers offered before "Custom URL", in the order shown.
+pub const API_PRESETS: &[ApiPreset] = &[
+    ApiPreset {
+        kind: "openai",
+        label: "OpenAI",
+        base_url: "https://api.openai.com/v1",
+        default_id: "openai-api",
+        key_required: true,
+        codex_engine: true,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "openrouter",
+        label: "OpenRouter",
+        base_url: "https://openrouter.ai/api/v1",
+        default_id: "openrouter",
+        key_required: true,
+        codex_engine: false,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "deepseek",
+        label: "DeepSeek",
+        base_url: "https://api.deepseek.com/v1",
+        default_id: "deepseek",
+        key_required: true,
+        codex_engine: false,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "groq",
+        label: "Groq",
+        base_url: "https://api.groq.com/openai/v1",
+        default_id: "groq",
+        key_required: true,
+        codex_engine: false,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "together",
+        label: "Together",
+        base_url: "https://api.together.xyz/v1",
+        default_id: "together",
+        key_required: true,
+        codex_engine: false,
+        aliases: &["togetherai", "together-ai"],
+    },
+    ApiPreset {
+        kind: "mistral",
+        label: "Mistral",
+        base_url: "https://api.mistral.ai/v1",
+        default_id: "mistral",
+        key_required: true,
+        codex_engine: false,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "gemini",
+        label: "Google Gemini",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        default_id: "gemini",
+        key_required: true,
+        codex_engine: false,
+        aliases: &["google"],
+    },
+    ApiPreset {
+        kind: "ollama",
+        label: "Ollama",
+        base_url: "http://localhost:11434/v1",
+        default_id: "ollama-local",
+        key_required: false,
+        codex_engine: false,
+        aliases: &[],
+    },
+    ApiPreset {
+        kind: "lmstudio",
+        label: "LM Studio",
+        base_url: "http://localhost:1234/v1",
+        default_id: "lmstudio-local",
+        key_required: false,
+        codex_engine: false,
+        aliases: &["lm-studio"],
+    },
+];
+
+/// The preset `name` names (its kind or an alias, any case).
+pub fn api_preset(name: &str) -> Option<&'static ApiPreset> {
+    let name = name.trim().to_ascii_lowercase();
+    API_PRESETS
+        .iter()
+        .find(|preset| preset.kind == name || preset.aliases.contains(&name.as_str()))
+}
+
+/// Model ids that are not chat models (embeddings, speech, images,
+/// moderation, …): a coding agent cannot use them, so discovery skips them.
+const NON_CHAT_MODEL_MARKERS: &[&str] = &[
+    "embed",
+    "whisper",
+    "tts",
+    "dall-e",
+    "moderation",
+    "transcribe",
+    "rerank",
+    "gpt-image",
+    "imagen",
+    "davinci",
+    "babbage",
+    "realtime",
+    "sora",
+];
+
+/// Whether a discovered model id looks like a chat model.
+pub fn is_chat_model_id(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    !NON_CHAT_MODEL_MARKERS
+        .iter()
+        .any(|marker| id.contains(marker))
+}
+
+/// Whether `id` matches a user's filter: every whitespace-separated term
+/// appears in it, ignoring case. An empty filter matches everything.
+pub fn model_matches_filter(id: &str, filter: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    filter
+        .split_whitespace()
+        .all(|term| id.contains(&term.to_ascii_lowercase()))
+}
+
 /// Context window assumed for a model whose server declares none: small
 /// enough that compaction runs before a typical local deployment overflows.
 pub const DEFAULT_SELF_HOSTED_CONTEXT_WINDOW: i64 = 32_768;
@@ -49,11 +210,16 @@ const RESERVED_IDS: &[&str] = &[
     "amazon-bedrock-runtime",
 ];
 
-/// One self-hosted model server.
+/// One connected model API (a preset provider or a self-hosted server).
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct SelfHostedProvider {
     /// The provider id: lower-case letters, digits, `-` and `_`.
     pub id: String,
+    /// The [`ApiPreset`] kind it was connected as (`"openrouter"`), or
+    /// [`CUSTOM_KIND`]. Absent in files written before presets existed:
+    /// those are custom servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// What the UI calls it; the id when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -79,6 +245,7 @@ impl fmt::Debug for SelfHostedProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SelfHostedProvider")
             .field("id", &self.id)
+            .field("kind", &self.kind)
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
@@ -111,6 +278,28 @@ struct SelfHostedStore {
 impl SelfHostedProvider {
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id)
+    }
+
+    /// The preset it was connected as; none for a custom server.
+    pub fn preset(&self) -> Option<&'static ApiPreset> {
+        self.kind.as_deref().and_then(api_preset)
+    }
+
+    /// How the /model picker and status output label this provider's
+    /// models: the preset's name ("OpenRouter", with the provider id when
+    /// it is not the default one), else `Self-hosted: <name>`.
+    pub fn label(&self) -> String {
+        match self.preset() {
+            Some(preset) if self.id == preset.default_id => preset.label.to_string(),
+            Some(preset) => format!("{} ({})", preset.label, self.id),
+            None => format!("Self-hosted: {}", self.display_name()),
+        }
+    }
+
+    /// Whether the codex engine can use it: only APIs that serve the
+    /// Responses API (OpenAI). The rest speak chat completions, uac only.
+    pub fn runs_on_codex_engine(&self) -> bool {
+        self.preset().is_some_and(|preset| preset.codex_engine)
     }
 
     /// The key to send: the stored one, else the named environment variable.
@@ -155,8 +344,8 @@ impl SelfHostedProvider {
             experimental_bearer_token: self.api_key.clone().map(Into::into),
             wire_api: WireApi::Responses,
             // As for the UnieAI gateway: open-model servers reject the
-            // OpenAI-only namespace tool type.
-            namespace_tools: Some(false),
+            // OpenAI-only namespace tool type. OpenAI itself takes it.
+            namespace_tools: (!self.runs_on_codex_engine()).then_some(false),
             requires_openai_auth: false,
             ..Default::default()
         }
@@ -328,6 +517,16 @@ pub fn validate_provider_id(id: &str) -> Result<(), SelfHostedError> {
     Ok(())
 }
 
+/// The provider id for a preset when the user names none: the preset's
+/// default, made unique among `existing` as [`default_provider_id`] does.
+pub fn default_preset_provider_id(
+    preset: &ApiPreset,
+    base_url: &str,
+    existing: &[SelfHostedProvider],
+) -> String {
+    unique_provider_id(preset.default_id.to_string(), base_url, existing)
+}
+
 /// A provider id for `base_url` when the user names none: the host's first
 /// label (`local` for loopback), made unique among `existing` unless the
 /// server there already has the same URL (then it is replaced).
@@ -366,6 +565,11 @@ pub fn default_provider_id(base_url: &str, existing: &[SelfHostedProvider]) -> S
     } else {
         base
     };
+    unique_provider_id(base, base_url, existing)
+}
+
+/// `base`, or `base-2`, `base-3`, … when a provider of another URL has it.
+fn unique_provider_id(base: String, base_url: &str, existing: &[SelfHostedProvider]) -> String {
     let free = |id: &str| {
         existing
             .iter()
@@ -404,6 +608,17 @@ pub enum SelfHostedError {
     NoModels {
         url: String,
     },
+    /// The filter left none of the listed models.
+    NoMatchingModels {
+        filter: String,
+        found: usize,
+    },
+    /// `--api <name>` names neither a preset nor a URL.
+    UnknownPreset(String),
+    /// A cloud API was given no key.
+    KeyRequired {
+        label: String,
+    },
     Io(io::Error),
 }
 
@@ -428,6 +643,23 @@ impl fmt::Display for SelfHostedError {
                 f,
                 "{url} lists no models. Load or pull a model on the server, or name one with --model."
             ),
+            Self::NoMatchingModels { filter, found } => write!(
+                f,
+                "none of the {found} models matches \"{filter}\"; try another filter"
+            ),
+            Self::UnknownPreset(name) => write!(
+                f,
+                "unknown API \"{name}\": use one of {} or a URL",
+                API_PRESETS
+                    .iter()
+                    .map(|preset| preset.kind)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::KeyRequired { label } => write!(
+                f,
+                "{label} needs an API key: pipe it to --with-api-key, or name its variable with --api-key-env."
+            ),
             Self::Io(err) => write!(f, "{err}"),
         }
     }
@@ -446,11 +678,16 @@ impl From<io::Error> for SelfHostedError {
 pub struct DiscoveredModel {
     pub id: String,
     pub context_window: Option<i64>,
+    /// The listing says it takes images (OpenRouter's
+    /// `architecture.input_modalities`).
+    pub vision: bool,
 }
 
 /// The model list of an OpenAI-style `/models` body. Servers that report a
 /// context length (vLLM's `max_model_len`, llama.cpp's `meta.n_ctx_train`,
-/// LM Studio's `max_context_length`) have it kept.
+/// LM Studio's `max_context_length`, OpenRouter's `context_length`) have it
+/// kept, and listings that declare input modalities (OpenRouter) say which
+/// models take images.
 pub fn parse_models_response(body: &serde_json::Value) -> Option<Vec<DiscoveredModel>> {
     let entries = body
         .get("data")
@@ -473,6 +710,14 @@ pub fn parse_models_response(body: &serde_json::Value) -> Option<Vec<DiscoveredM
         })
         .filter(|window| *window > 0)
     };
+    let vision_of = |entry: &serde_json::Value| {
+        entry
+            .get("architecture")
+            .and_then(|arch| arch.get("input_modalities"))
+            .or_else(|| entry.get("input_modalities"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|modalities| modalities.iter().any(|m| m.as_str() == Some("image")))
+    };
     Some(
         entries
             .iter()
@@ -485,6 +730,7 @@ pub fn parse_models_response(body: &serde_json::Value) -> Option<Vec<DiscoveredM
                 Some(DiscoveredModel {
                     id: id.to_string(),
                     context_window: context_of(entry),
+                    vision: vision_of(entry),
                 })
             })
             .collect(),
@@ -520,6 +766,14 @@ pub async fn probe_models(
         });
     }
     if !status.is_success() {
+        // Gemini answers a bad key with 400 "Please pass a valid API key".
+        let body = response.text().await.unwrap_or_default();
+        if status.as_u16() == 400 && body.to_ascii_lowercase().contains("api key") {
+            return Err(SelfHostedError::Unauthorized {
+                url,
+                status: status.as_u16(),
+            });
+        }
         return Err(SelfHostedError::BadResponse {
             url,
             reason: format!("HTTP {status}"),
@@ -543,57 +797,135 @@ pub async fn probe_models(
     })
 }
 
-/// A server to add, as the CLI or onboarding collected it.
+/// A model API to add, as the CLI or onboarding collected it.
 #[derive(Default)]
 pub struct SelfHostedRequest {
+    /// The base URL; may be empty when `kind` is a preset (its URL is used).
     pub base_url: String,
-    /// The provider id; derived from the host when absent.
+    /// The preset (`"openrouter"`, an alias, or [`CUSTOM_KIND`]); a custom
+    /// server when absent.
+    pub kind: Option<String>,
+    /// The provider id; from the preset, else from the host, when absent.
     pub name: Option<String>,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     /// Models to use instead of the discovered list.
     pub models: Vec<String>,
+    /// Keep only discovered models matching this (see [`model_matches_filter`]).
+    pub model_filter: Option<String>,
     /// Context window for every model (overrides what the server reports).
     pub context_window: Option<i64>,
     /// Mark every model as accepting images.
     pub vision: bool,
 }
 
-/// Probes the server, then saves it. The server must answer `/models` (with
-/// the key, if one is given); manual models replace the discovered list.
-pub async fn add_self_hosted_provider(
-    codex_home: &Path,
-    request: SelfHostedRequest,
-) -> Result<SelfHostedProvider, SelfHostedError> {
-    let base_url = normalize_base_url(&request.base_url)?;
-    let existing = read_self_hosted_providers(codex_home)?;
-    let id = match request.name {
-        Some(name) => {
-            let name = name.trim().to_string();
-            validate_provider_id(&name)?;
-            name
-        }
-        None => default_provider_id(&base_url, &existing),
-    };
-    let api_key = request
-        .api_key
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty());
-    let api_key_env = request
-        .api_key_env
-        .map(|var| var.trim().to_string())
-        .filter(|var| !var.is_empty());
-    let key_for_probe = api_key.clone().or_else(|| {
+/// What `GET /models` of a requested API answered.
+#[derive(Debug, Clone)]
+pub struct ProbedApi {
+    pub base_url: String,
+    /// The chat models listed, in the server's order (empty when the
+    /// server lists none and models were given by hand).
+    pub discovered: Vec<DiscoveredModel>,
+}
+
+/// A model API just saved.
+#[derive(Debug, Clone)]
+pub struct AddedApi {
+    pub provider: SelfHostedProvider,
+    /// How many chat models the server listed (before filter and cap).
+    pub found: usize,
+}
+
+fn request_preset(
+    request: &SelfHostedRequest,
+) -> Result<Option<&'static ApiPreset>, SelfHostedError> {
+    match request.kind.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(kind) if kind.eq_ignore_ascii_case(CUSTOM_KIND) => Ok(None),
+        Some(kind) => api_preset(kind)
+            .map(Some)
+            .ok_or_else(|| SelfHostedError::UnknownPreset(kind.to_string())),
+    }
+}
+
+fn request_base_url(
+    request: &SelfHostedRequest,
+    preset: Option<&ApiPreset>,
+) -> Result<String, SelfHostedError> {
+    match preset {
+        Some(preset) if request.base_url.trim().is_empty() => Ok(preset.base_url.to_string()),
+        _ => normalize_base_url(&request.base_url),
+    }
+}
+
+fn trimmed(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Asks the API for its models (with the key, if one is given), keeping the
+/// chat models. A preset that needs a key fails here without one.
+pub async fn probe_api(request: &SelfHostedRequest) -> Result<ProbedApi, SelfHostedError> {
+    let preset = request_preset(request)?;
+    let base_url = request_base_url(request, preset)?;
+    let api_key = trimmed(&request.api_key);
+    let api_key_env = trimmed(&request.api_key_env);
+    if let Some(preset) = preset
+        && preset.key_required
+        && api_key.is_none()
+        && api_key_env.is_none()
+    {
+        return Err(SelfHostedError::KeyRequired {
+            label: preset.label.to_string(),
+        });
+    }
+    let key_for_probe = api_key.or_else(|| {
         api_key_env
             .as_deref()
             .and_then(|var| std::env::var(var).ok())
     });
     let discovered = match probe_models(&base_url, key_for_probe.as_deref()).await {
-        Ok(models) => models,
+        Ok(models) => models
+            .into_iter()
+            .filter(|model| is_chat_model_id(&model.id))
+            .collect(),
         // A server that cannot list models can still be used by name.
         Err(SelfHostedError::BadResponse { .. }) if !request.models.is_empty() => Vec::new(),
         Err(err) => return Err(err),
     };
+    Ok(ProbedApi {
+        base_url,
+        discovered,
+    })
+}
+
+/// Saves the API `probe` found: the models given by hand, else the
+/// discovered ones matching the filter, at most [`MAX_STORED_MODELS`].
+pub fn save_probed_api(
+    codex_home: &Path,
+    request: &SelfHostedRequest,
+    probe: ProbedApi,
+) -> Result<AddedApi, SelfHostedError> {
+    let preset = request_preset(request)?;
+    let ProbedApi {
+        base_url,
+        discovered,
+    } = probe;
+    let existing = read_self_hosted_providers(codex_home)?;
+    let id = match trimmed(&request.name) {
+        Some(name) => {
+            validate_provider_id(&name)?;
+            name
+        }
+        None => match preset {
+            Some(preset) => default_preset_provider_id(preset, &base_url, &existing),
+            None => default_provider_id(&base_url, &existing),
+        },
+    };
+    let found = discovered.len();
     let manual_models = !request.models.is_empty();
     let models: Vec<SelfHostedModel> = if manual_models {
         request
@@ -601,24 +933,31 @@ pub async fn add_self_hosted_provider(
             .iter()
             .map(|id| id.trim())
             .filter(|id| !id.is_empty())
-            .map(|id| SelfHostedModel {
-                id: id.to_string(),
-                context_window: discovered
-                    .iter()
-                    .find(|d| d.id == id)
-                    .and_then(|d| d.context_window),
-                vision: false,
+            .map(|id| {
+                let listed = discovered.iter().find(|d| d.id == id);
+                SelfHostedModel {
+                    id: id.to_string(),
+                    context_window: listed.and_then(|d| d.context_window),
+                    vision: listed.is_some_and(|d| d.vision),
+                }
             })
             .collect()
     } else {
-        discovered
+        let filter = trimmed(&request.model_filter).unwrap_or_default();
+        let matching: Vec<SelfHostedModel> = discovered
             .into_iter()
+            .filter(|d| model_matches_filter(&d.id, &filter))
+            .take(MAX_STORED_MODELS)
             .map(|d| SelfHostedModel {
                 id: d.id,
                 context_window: d.context_window,
-                vision: false,
+                vision: d.vision,
             })
-            .collect()
+            .collect();
+        if matching.is_empty() && found > 0 {
+            return Err(SelfHostedError::NoMatchingModels { filter, found });
+        }
+        matching
     };
     if models.is_empty() {
         return Err(SelfHostedError::NoModels {
@@ -636,17 +975,43 @@ pub async fn add_self_hosted_provider(
             ..model
         })
         .collect();
+    let kind = match preset {
+        Some(preset) => Some(preset.kind.to_string()),
+        None if request.kind.is_some() => Some(CUSTOM_KIND.to_string()),
+        None => None,
+    };
     let provider = SelfHostedProvider {
         id,
+        kind,
         name: None,
         base_url,
-        api_key,
-        api_key_env,
+        api_key: trimmed(&request.api_key),
+        api_key_env: trimmed(&request.api_key_env),
         models,
         manual_models,
     };
     upsert_self_hosted_provider(codex_home, provider.clone())?;
-    Ok(provider)
+    Ok(AddedApi { provider, found })
+}
+
+/// Probes the API, then saves it (see [`probe_api`], [`save_probed_api`]).
+pub async fn add_api_provider(
+    codex_home: &Path,
+    request: SelfHostedRequest,
+) -> Result<AddedApi, SelfHostedError> {
+    let probe = probe_api(&request).await?;
+    save_probed_api(codex_home, &request, probe)
+}
+
+/// Probes the server, then saves it. The server must answer `/models` (with
+/// the key, if one is given); manual models replace the discovered list.
+pub async fn add_self_hosted_provider(
+    codex_home: &Path,
+    request: SelfHostedRequest,
+) -> Result<SelfHostedProvider, SelfHostedError> {
+    add_api_provider(codex_home, request)
+        .await
+        .map(|added| added.provider)
 }
 
 #[cfg(test)]

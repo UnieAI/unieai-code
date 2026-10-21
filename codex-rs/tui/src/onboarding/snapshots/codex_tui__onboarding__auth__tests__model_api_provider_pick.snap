@@ -1,0 +1,22 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 22)"
+---
+> Connect a model API
+
+  Pick the provider. Its URL is filled in; you bring the API key.
+  No UnieAI account is needed.
+
+   1. OpenAI                               api.openai.com
+>  2. OpenRouter                           openrouter.ai
+   3. DeepSeek                             api.deepseek.com
+   4. Groq                                 api.groq.com
+   5. Together                             api.together.xyz
+   6. Mistral                              api.mistral.ai
+   7. Google Gemini (OpenAI-compatible)    generativelanguage.googleapis.com
+   8. Ollama (local)                       localhost:11434
+   9. LM Studio (local)                    localhost:1234
+  10. Custom URL (vLLM, SGLang, llama.cpp, your own server…)
+
+  Press enter to continue
+  Press esc to go back

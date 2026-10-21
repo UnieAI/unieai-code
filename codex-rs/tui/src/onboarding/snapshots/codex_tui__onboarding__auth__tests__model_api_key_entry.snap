@@ -1,0 +1,16 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 16)"
+---
+> Connect a model API
+
+  OpenRouter · https://openrouter.ai/api/v1
+
+  Paste your OpenRouter API key.
+  The key is stored owner-only in your UnieAI home.
+
+╭API key───────────────────────────────────────────────────────────────────────╮
+│Paste your API key                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  Press enter to connect
+  Press esc to go back

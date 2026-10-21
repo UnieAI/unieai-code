@@ -1,0 +1,22 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 22)"
+---
+> Connect a model API
+
+  OpenRouter · https://openrouter.ai/api/v1
+  Found 120 models. Up to 50 are kept; type to narrow the list.
+
+╭Filter (optional)─────────────────────────────────────────────────────────────╮
+│Type part of a model name, e.g. claude or qwen                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  · anthropic/model-0  (200k, vision)
+  · openai/model-1  (200k)
+  · qwen/model-2  (200k, vision)
+  · anthropic/model-3  (200k)
+  · openai/model-4  (200k, vision)
+  · qwen/model-5  (200k)
+    … and 114 more
+
+  Press enter to save the first 50 of 120 matching models
+  Press esc to go back

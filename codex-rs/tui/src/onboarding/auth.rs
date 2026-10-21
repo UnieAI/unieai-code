@@ -108,7 +108,7 @@ pub(crate) enum SignInOption {
     UnieAI,
     UnieAICompany,
     UnieAIRabi,
-    SelfHosted,
+    ModelApi,
     // No longer listed by the onboarding picker; the flows stay for tests and
     // potential re-enablement (`unieai login --chatgpt` covers the CLI path).
     #[allow(dead_code)]
@@ -411,14 +411,16 @@ impl AuthModeWidget {
     /// Returns whether printable quit shortcuts must be treated as text input.
     ///
     /// OpenAI API-key entry keeps its existing empty-field quit behavior, while
-    /// Bedrock fields accept printable input from their first character.
+    /// Bedrock fields, and the model API flow's fields (a model filter may
+    /// well start with `q`), accept printable input from their first
+    /// character.
     pub(crate) fn should_suppress_printable_quit(&self) -> bool {
         self.sign_in_state.read().is_ok_and(|guard| match &*guard {
             SignInState::ApiKeyEntry(state) => !state.value.is_empty(),
             SignInState::Bedrock(state) => state.is_text_entry_active(),
             SignInState::UnieAIStudioUrlEntry(state) => !state.value.is_empty(),
             SignInState::UnieAIGatewayUrlEntry(state) => !state.value.is_empty(),
-            SignInState::SelfHosted(state) => state.has_text(),
+            SignInState::SelfHosted(state) => state.is_text_entry(),
             _ => false,
         })
     }
@@ -445,10 +447,10 @@ impl AuthModeWidget {
     // ChatGPT/OpenAI machinery stays reachable via `unieai login --chatgpt`.
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
         vec![
+            SignInOption::UnieAIRabi,
             SignInOption::UnieAI,
             SignInOption::UnieAICompany,
-            SignInOption::UnieAIRabi,
-            SignInOption::SelfHosted,
+            SignInOption::ModelApi,
         ]
     }
 
@@ -489,7 +491,7 @@ impl AuthModeWidget {
             SignInOption::UnieAIRabi => {
                 self.start_unieai_rabi_login();
             }
-            SignInOption::SelfHosted => {
+            SignInOption::ModelApi => {
                 self.start_self_hosted_entry();
             }
             SignInOption::ChatGpt => {
@@ -796,9 +798,8 @@ impl AuthModeWidget {
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
                 "  ".into(),
-                "Sign in to UnieAI Studio to use UnieAI Code with your".into(),
+                "Sign in with UnieAI, or connect a model API, to use UnieAI Code".into(),
             ]),
-            Line::from(vec!["  ".into(), "organization's models".into()]),
             "".into(),
         ];
 
@@ -864,12 +865,12 @@ impl AuthModeWidget {
                         "Use your Rabi account (agent.unieai.com)",
                     ));
                 }
-                SignInOption::SelfHosted => {
+                SignInOption::ModelApi => {
                     lines.extend(create_mode_item(
                         idx,
                         option,
-                        "Use a self-hosted model server (vLLM, Ollama, LM Studio, …)",
-                        "Connect an OpenAI-compatible server you run; no account needed",
+                        "Connect a model API (OpenAI, OpenRouter, DeepSeek, Ollama, your server…)",
+                        "Bring your own API key or server; no UnieAI account needed",
                     ));
                 }
                 SignInOption::ChatGpt => {
@@ -1983,18 +1984,18 @@ mod tests {
         ));
     }
 
-    // The fork's picker offers only the UnieAI flows (Studio, company Studio,
-    // Rabi, a self-hosted server); the
+    // The fork's picker offers only the UnieAI flows (Rabi first, Studio,
+    // company Studio, then connecting a model API); the
     // Bedrock feature flag and forced login method must not bring back the
     // upstream ChatGPT/API key/Bedrock options.
     #[tokio::test]
     async fn sign_in_picker_offers_only_unieai_flows_regardless_of_bedrock_or_forced_login() {
         let (mut widget, _tmp) = widget_forced_chatgpt().await;
         let unieai_only = vec![
+            SignInOption::UnieAIRabi,
             SignInOption::UnieAI,
             SignInOption::UnieAICompany,
-            SignInOption::UnieAIRabi,
-            SignInOption::SelfHosted,
+            SignInOption::ModelApi,
         ];
         widget.auth_config.forced_login_method = None;
         assert_eq!(widget.displayed_sign_in_options(), unieai_only);
@@ -2329,35 +2330,118 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn self_hosted_screens_snapshots() {
+    async fn sign_in_list_puts_rabi_first_and_one_model_api_option_last() {
         let (mut widget, _tmp) = widget_forced_chatgpt().await;
         widget.auth_config.forced_login_method = None;
-        widget.highlighted_mode = SignInOption::SelfHosted;
-        insta::assert_snapshot!("self_hosted_pick_mode", render_widget(&widget, 80, 18));
+        widget.highlighted_mode = SignInOption::UnieAIRabi;
+        insta::assert_snapshot!("sign_in_pick_mode", render_widget(&widget, 80, 17));
 
+        // The fourth option starts the model API flow at the provider list.
+        type_text(&mut widget, "4");
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::ProviderPick { highlighted: 0 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_api_screens_snapshots() {
+        let (mut widget, _tmp) = widget_forced_chatgpt().await;
+        widget.auth_config.forced_login_method = None;
+        widget.handle_sign_in_option(SignInOption::ModelApi);
+        press(&mut widget, KeyCode::Down);
+        insta::assert_snapshot!("model_api_provider_pick", render_widget(&widget, 80, 22));
+
+        // OpenRouter: its URL is filled in and a key is required.
         press(&mut widget, KeyCode::Enter);
-        insta::assert_snapshot!("self_hosted_url_entry", render_widget(&widget, 80, 16));
+        insta::assert_snapshot!("model_api_key_entry", render_widget(&widget, 80, 16));
+        press(&mut widget, KeyCode::Enter);
+        assert_eq!(
+            widget.error_message().as_deref(),
+            Some("OpenRouter needs an API key; paste it to continue")
+        );
+        type_text(&mut widget, "sk-or-secret");
+        let key_entry = render_widget(&widget, 80, 16);
+        assert!(!key_entry.contains("sk-or-secret"), "{key_entry}");
 
+        // Esc goes back to the list with OpenRouter still highlighted.
+        press(&mut widget, KeyCode::Esc);
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::ProviderPick { highlighted: 1 })
+        ));
+
+        // The last entry is a custom URL, as the self-hosted flow was.
+        press(&mut widget, KeyCode::Up);
+        press(&mut widget, KeyCode::Up);
+        press(&mut widget, KeyCode::Enter);
+        insta::assert_snapshot!("model_api_url_entry", render_widget(&widget, 80, 16));
         press(&mut widget, KeyCode::Enter);
         assert_eq!(
             widget.error_message().as_deref(),
             Some("Server URL cannot be empty")
         );
-        type_text(&mut widget, "localhost:11434");
+        type_text(&mut widget, "localhost:8000");
         press(&mut widget, KeyCode::Enter);
-        type_text(&mut widget, "sk-secret");
-        let key_entry = render_widget(&widget, 80, 16);
-        assert!(!key_entry.contains("sk-secret"), "{key_entry}");
-        insta::assert_snapshot!("self_hosted_key_entry", key_entry);
+        insta::assert_snapshot!("model_api_custom_key_entry", render_widget(&widget, 80, 16));
 
         *widget.sign_in_state.write().unwrap() =
             SignInState::SelfHosted(SelfHostedState::Connected {
-                id: "local".to_string(),
-                base_url: "http://localhost:11434/v1".to_string(),
-                models: (1..=7).map(|n| format!("model-{n}")).collect(),
+                id: "openrouter".to_string(),
+                label: "OpenRouter".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                models: (1..=50).map(|n| format!("qwen/q-{n}")).collect(),
+                found: 468,
+                codex_engine: false,
             });
-        insta::assert_snapshot!("self_hosted_connected", render_widget(&widget, 80, 12));
+        insta::assert_snapshot!("model_api_connected", render_widget(&widget, 80, 12));
         assert_eq!(widget.get_step_state(), StepState::Complete);
+    }
+
+    #[tokio::test]
+    async fn a_huge_model_list_can_be_filtered_before_saving() {
+        let (mut widget, tmp) = widget_forced_chatgpt().await;
+        widget.auth_config.forced_login_method = None;
+        let models = (0..120)
+            .map(|n| codex_login::unieai_self_hosted::DiscoveredModel {
+                id: format!("{}/model-{n}", ["anthropic", "openai", "qwen"][n % 3]),
+                context_window: Some(200_000),
+                vision: n % 2 == 0,
+            })
+            .collect();
+        *widget.sign_in_state.write().unwrap() = SignInState::SelfHosted(
+            unieai_self_hosted::test_support::models_found("openrouter", models),
+        );
+        assert!(widget.is_text_entry_active());
+        // "qwen" must filter, not quit, even as the first key.
+        assert!(widget.should_suppress_printable_quit());
+        insta::assert_snapshot!("model_api_models_found", render_widget(&widget, 80, 22));
+
+        type_text(&mut widget, "nothing");
+        press(&mut widget, KeyCode::Enter);
+        assert_eq!(
+            widget.error_message().as_deref(),
+            Some("No model matches \"nothing\"; change the filter")
+        );
+        for _ in 0.."nothing".len() {
+            press(&mut widget, KeyCode::Backspace);
+        }
+        type_text(&mut widget, "qwen");
+        insta::assert_snapshot!("model_api_models_filtered", render_widget(&widget, 80, 22));
+        press(&mut widget, KeyCode::Enter);
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::Connected { found: 120, .. })
+        ));
+        let saved = codex_login::unieai_self_hosted::load_self_hosted_providers(tmp.path());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, "openrouter");
+        assert_eq!(saved[0].kind.as_deref(), Some("openrouter"));
+        assert_eq!(saved[0].base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(saved[0].api_key.as_deref(), Some("sk-test"));
+        assert_eq!(saved[0].models.len(), 40);
+        assert!(saved[0].models.iter().all(|m| m.id.starts_with("qwen/")));
+        assert_eq!(saved[0].models[0].context_window, Some(200_000));
     }
 
     async fn wait_for_probe(widget: &AuthModeWidget) {
@@ -2373,8 +2457,17 @@ mod tests {
         panic!("the probe did not finish");
     }
 
+    /// From the sign-in list to the custom URL's key step.
+    fn enter_custom_url(widget: &mut AuthModeWidget, url: &str) {
+        widget.handle_sign_in_option(SignInOption::ModelApi);
+        press(widget, KeyCode::Up);
+        press(widget, KeyCode::Enter);
+        type_text(widget, url);
+        press(widget, KeyCode::Enter);
+    }
+
     #[tokio::test]
-    async fn self_hosted_flow_saves_the_server_or_says_why_not() {
+    async fn a_custom_server_is_probed_then_saved_or_says_why_not() {
         use wiremock::Mock;
         use wiremock::MockServer;
         use wiremock::ResponseTemplate;
@@ -2387,7 +2480,7 @@ mod tests {
             .and(path("/v1/models"))
             .and(header("authorization", "Bearer sk-right"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": [{"id": "qwen2.5:0.5b"}]
+                "data": [{"id": "qwen2.5:0.5b"}, {"id": "nomic-embed-text"}]
             })))
             .mount(&server)
             .await;
@@ -2399,9 +2492,7 @@ mod tests {
 
         let (mut widget, tmp) = widget_forced_chatgpt().await;
         widget.auth_config.forced_login_method = None;
-        widget.handle_sign_in_option(SignInOption::SelfHosted);
-        type_text(&mut widget, &server.uri());
-        press(&mut widget, KeyCode::Enter);
+        enter_custom_url(&mut widget, &server.uri());
 
         // No key: the server refuses, and the flow asks for one again.
         press(&mut widget, KeyCode::Enter);
@@ -2419,6 +2510,15 @@ mod tests {
         type_text(&mut widget, "sk-right");
         press(&mut widget, KeyCode::Enter);
         wait_for_probe(&widget).await;
+        // The embedding model is not offered.
+        match &*widget.sign_in_state.read().unwrap() {
+            SignInState::SelfHosted(SelfHostedState::ModelsFound { models, .. }) => {
+                let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+                assert_eq!(ids, ["qwen2.5:0.5b"]);
+            }
+            _ => panic!("expected the models step"),
+        }
+        press(&mut widget, KeyCode::Enter);
         assert!(matches!(
             &*widget.sign_in_state.read().unwrap(),
             SignInState::SelfHosted(SelfHostedState::Connected { .. })
@@ -2426,17 +2526,17 @@ mod tests {
         let saved = codex_login::unieai_self_hosted::load_self_hosted_providers(tmp.path());
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].id, "local");
+        assert_eq!(saved[0].kind.as_deref(), Some("custom"));
+        assert_eq!(saved[0].label(), "Self-hosted: local");
         assert_eq!(saved[0].api_key.as_deref(), Some("sk-right"));
         assert_eq!(saved[0].models[0].id, "qwen2.5:0.5b");
 
         // An unreachable server goes back to the URL with the reason.
-        widget.handle_sign_in_option(SignInOption::SelfHosted);
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
             .expect("port")
             .port();
-        type_text(&mut widget, &format!("http://127.0.0.1:{port}"));
-        press(&mut widget, KeyCode::Enter);
+        enter_custom_url(&mut widget, &format!("http://127.0.0.1:{port}"));
         press(&mut widget, KeyCode::Enter);
         wait_for_probe(&widget).await;
         assert!(matches!(

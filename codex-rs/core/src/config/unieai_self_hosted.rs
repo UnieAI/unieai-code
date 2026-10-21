@@ -1,8 +1,9 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
-//! Self-hosted model servers (`unieai login --self-hosted`) in the config:
-//! each is a model provider of its own id, and its models join the UnieAI
-//! model catalog as `<provider id>/<model id>` so the /model picker lists
-//! them beside the Studio account's, labelled with the server they run on.
+//! Connected model APIs (`unieai login --api`, self-hosted servers
+//! included) in the config: each is a model provider of its own id, and its
+//! models join the UnieAI model catalog as `<provider id>/<model id>` so the
+//! /model picker lists them beside the Studio account's, labelled with the
+//! API they run on ("OpenRouter", "Self-hosted: gpu").
 
 use std::collections::HashMap;
 
@@ -55,7 +56,8 @@ pub(crate) fn self_hosted_catalog_models(
                     ),
                     Some(&modalities),
                 );
-                info.description = Some(format!("Self-hosted: {}", server.display_name()));
+                // "OpenAI", "OpenRouter", …, or "Self-hosted: <name>".
+                info.description = Some(server.label());
                 info
             })
         })
@@ -97,6 +99,7 @@ mod tests {
                 },
             ],
             manual_models: false,
+            kind: None,
         }
     }
 
@@ -121,6 +124,36 @@ mod tests {
 
         let bare = self_hosted_catalog_models(&[server()], /*qualified*/ false);
         assert_eq!(bare[1].slug, "llava");
+    }
+
+    #[test]
+    fn preset_providers_are_labelled_by_their_kind() {
+        let openrouter = SelfHostedProvider {
+            id: "openrouter".to_string(),
+            kind: Some("openrouter".to_string()),
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            ..server()
+        };
+        let openai = SelfHostedProvider {
+            id: "openai-api".to_string(),
+            kind: Some("openai".to_string()),
+            base_url: "https://api.openai.com/v1".to_string(),
+            ..server()
+        };
+        let models = self_hosted_catalog_models(&[openrouter, openai], /*qualified*/ true);
+        let labels: Vec<_> = models
+            .iter()
+            .map(|m| (m.slug.as_str(), m.description.as_deref()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("openrouter/Qwen/Qwen3-8B", Some("OpenRouter")),
+                ("openrouter/llava", Some("OpenRouter")),
+                ("openai-api/Qwen/Qwen3-8B", Some("OpenAI")),
+                ("openai-api/llava", Some("OpenAI")),
+            ]
+        );
     }
 
     #[test]

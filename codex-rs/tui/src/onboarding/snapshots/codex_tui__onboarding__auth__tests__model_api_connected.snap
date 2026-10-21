@@ -1,0 +1,11 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 12)"
+---
+✓ Connected OpenRouter
+
+  Name:    openrouter · https://openrouter.ai/api/v1
+  Models:  50 of 468 saved: qwen/q-1, qwen/q-2, qwen/q-3 (+47 more)
+
+  Pick one with /model (listed as openrouter/<model>, labelled OpenRouter).
+  They run on the uac engine (unieai-agent-core).

@@ -229,6 +229,7 @@ fn write_self_hosted(home: &std::path::Path) {
             vision: false,
         }],
         manual_models: false,
+        kind: None,
     };
     codex_login::unieai_self_hosted::save_self_hosted_providers(home, &[server]).expect("save");
 }
@@ -274,6 +275,98 @@ fn a_self_hosted_server_is_enough_to_start_and_runs_on_uac() {
     assert_eq!(
         engine_unavailable_reason(home.path(), EngineKind::Codex),
         None
+    );
+
+    match saved {
+        Some(value) => unsafe { std::env::set_var("UNIEAI_API_KEY", value) },
+        None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
+    }
+}
+
+fn write_api(home: &std::path::Path, kind: &str, id: &str, model: &str) {
+    let server = codex_login::unieai_self_hosted::SelfHostedProvider {
+        id: id.to_string(),
+        kind: Some(kind.to_string()),
+        name: None,
+        base_url: "https://api.example.test/v1".to_string(),
+        api_key: Some("sk-test".to_string()),
+        api_key_env: None,
+        models: vec![codex_login::unieai_self_hosted::SelfHostedModel {
+            id: model.to_string(),
+            context_window: None,
+            vision: false,
+        }],
+        manual_models: false,
+    };
+    codex_login::unieai_self_hosted::upsert_self_hosted_provider(home, server).expect("save");
+}
+
+#[test]
+#[serial_test::serial(unieai_api_key)]
+fn only_the_openai_preset_also_runs_on_codex() {
+    let home = tempfile::tempdir().expect("tempdir");
+    // SAFETY: serialized with the other tests that touch UNIEAI_API_KEY.
+    let saved = std::env::var_os("UNIEAI_API_KEY");
+    unsafe { std::env::remove_var("UNIEAI_API_KEY") };
+
+    // OpenRouter alone: uac only, with the existing message.
+    write_api(home.path(), "openrouter", "openrouter", "openai/gpt-4o");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(
+        reason.contains("self-hosted servers or model APIs alone"),
+        "{reason}"
+    );
+    assert!(!reason.contains("model_provider"), "{reason}");
+
+    // OpenAI beside it: the message says how codex can use it...
+    write_api(home.path(), "openai", "openai-api", "gpt-5");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(
+        reason.contains(
+            "OpenAI also runs on codex with `model_provider = \"openai-api\"` and `model = \"gpt-5\"`"
+        ),
+        "{reason}"
+    );
+    // ...and with it as the provider, codex is available.
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model_provider = \"openai-api\"\nmodel = \"gpt-5\"\n",
+    )
+    .expect("write config");
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Codex),
+        None
+    );
+    // An OpenRouter provider is not enough for codex.
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model_provider = \"openrouter\"\n",
+    )
+    .expect("write config");
+    assert!(engine_unavailable_reason(home.path(), EngineKind::Codex).is_some());
+
+    // With a Studio account, a selected preset model is named by its label.
+    write_account(home.path(), "studio");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"openrouter/openai/gpt-4o\"\n",
+    )
+    .expect("write config");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(
+        reason.contains("while the OpenRouter model (openrouter/openai/gpt-4o) is selected"),
+        "{reason}"
+    );
+    assert!(!reason.contains("model_provider"), "{reason}");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"openai-api/gpt-5\"\n",
+    )
+    .expect("write config");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(
+        reason.contains("model_provider = \"openai-api\""),
+        "{reason}"
     );
 
     match saved {

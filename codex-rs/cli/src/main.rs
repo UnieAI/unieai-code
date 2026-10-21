@@ -583,42 +583,41 @@ struct LoginCommand {
     #[arg(long = "rabi-url", value_name = "URL", requires = "use_rabi")]
     rabi_url: Option<String>,
 
-    /// Add a self-hosted OpenAI-compatible model server (vLLM, SGLang, TGI,
-    /// llama.cpp, Ollama, LM Studio, …); no UnieAI account needed. Runs on the uac engine.
+    /// Connect a model API: a preset (openai, openrouter, deepseek, groq,
+    /// together, mistral, gemini, ollama, lmstudio) or the OpenAI-compatible
+    /// URL of any server (vLLM, SGLang, llama.cpp, your own…). No UnieAI
+    /// account needed. `--self-hosted` is the same flag.
     #[arg(
-        long = "self-hosted",
-        value_name = "URL",
+        long = "api",
+        alias = "self-hosted",
+        value_name = "PRESET|URL",
         conflicts_with_all = ["use_chatgpt", "use_rabi", "studio_url", "gateway_url", "use_device_code", "with_access_token"]
     )]
-    self_hosted: Option<String>,
+    api: Option<String>,
 
-    /// Name for the self-hosted server (default: from its host, e.g. `local`).
-    #[arg(long = "name", value_name = "NAME", requires = "self_hosted")]
+    /// Name for the API (default: from the preset, e.g. `openrouter`, or the host, e.g. `local`).
+    #[arg(long = "name", value_name = "NAME", requires = "api")]
     self_hosted_name: Option<String>,
 
-    /// Environment variable that holds the self-hosted server's API key (read on each use, not stored).
+    /// Environment variable that holds the API key (read on each use, not stored).
     #[arg(
         long = "api-key-env",
         value_name = "VAR",
-        requires = "self_hosted",
+        requires = "api",
         conflicts_with = "with_api_key"
     )]
     self_hosted_api_key_env: Option<String>,
 
-    /// Model to use instead of the server's `/models` list; repeat for several.
-    #[arg(long = "model", value_name = "MODEL", requires = "self_hosted")]
+    /// Model to use instead of the API's `/models` list; repeat to pin several.
+    #[arg(long = "model", value_name = "MODEL", requires = "api")]
     self_hosted_models: Vec<String>,
 
     /// Context window (tokens) of the server's models, when it does not report one.
-    #[arg(
-        long = "context-window",
-        value_name = "TOKENS",
-        requires = "self_hosted"
-    )]
+    #[arg(long = "context-window", value_name = "TOKENS", requires = "api")]
     self_hosted_context_window: Option<i64>,
 
     /// The server's models accept images.
-    #[arg(long = "vision", requires = "self_hosted")]
+    #[arg(long = "vision", requires = "api")]
     self_hosted_vision: bool,
 
     /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
@@ -640,8 +639,8 @@ enum LoginSubcommand {
     Status,
     /// Sync the UnieAI model list (and Studio gateway key) from your account.
     Sync,
-    /// List or remove self-hosted model servers (add one with `--self-hosted <URL>`).
-    #[command(name = "self-hosted")]
+    /// List or remove connected model APIs (add one with `--api <PRESET|URL>`).
+    #[command(name = "api", alias = "self-hosted")]
     SelfHosted {
         #[command(subcommand)]
         action: SelfHostedSubcommand,
@@ -650,11 +649,11 @@ enum LoginSubcommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum SelfHostedSubcommand {
-    /// List the configured self-hosted model servers and their models.
+    /// List the connected model APIs and their models.
     List,
-    /// Remove a self-hosted model server.
+    /// Remove a connected model API.
     Remove {
-        /// The server's name, as `list` shows it.
+        /// Its name, as `list` shows it.
         name: String,
     },
 }
@@ -1850,9 +1849,9 @@ async fn cli_main(
                     }
                 },
                 None => {
-                    if let Some(base_url) = login_cli.self_hosted {
+                    if let Some(target) = login_cli.api {
                         let args = codex_cli::unieai_self_hosted_login::SelfHostedLoginArgs {
-                            base_url,
+                            target,
                             name: login_cli.self_hosted_name,
                             api_key_env: login_cli.self_hosted_api_key_env,
                             key_from_stdin: login_cli.with_api_key,
@@ -3260,6 +3259,65 @@ enabled = true
             error.to_string(),
             "remote exec-server API-key authentication is restricted to HTTPS openai.com and openai.org hosts and subdomains or loopback hosts"
         );
+    }
+
+    fn parse_login(args: &[&str]) -> Result<LoginCommand, clap::Error> {
+        let mut argv = vec!["unieai", "login"];
+        argv.extend_from_slice(args);
+        match MultitoolCli::try_parse_from(argv)?.subcommand {
+            Some(Subcommand::Login(login)) => Ok(login),
+            _ => unreachable!("login parses as login"),
+        }
+    }
+
+    #[test]
+    fn login_api_takes_a_preset_or_url_and_self_hosted_is_an_alias() {
+        let login = parse_login(&[
+            "--api",
+            "openrouter",
+            "--name",
+            "or",
+            "--with-api-key",
+            "--model",
+            "a/b",
+            "--model",
+            "c",
+        ])
+        .expect("--api");
+        assert_eq!(login.api.as_deref(), Some("openrouter"));
+        assert_eq!(login.self_hosted_name.as_deref(), Some("or"));
+        assert!(login.with_api_key);
+        assert_eq!(login.self_hosted_models, ["a/b", "c"]);
+
+        let login = parse_login(&["--self-hosted", "http://gpu:8000/v1", "--api-key-env", "K"])
+            .expect("--self-hosted");
+        assert_eq!(login.api.as_deref(), Some("http://gpu:8000/v1"));
+        assert_eq!(login.self_hosted_api_key_env.as_deref(), Some("K"));
+
+        // The API options need --api, and one key source at a time.
+        assert!(parse_login(&["--model", "x"]).is_err());
+        assert!(parse_login(&["--api", "groq", "--with-api-key", "--api-key-env", "K"]).is_err());
+        assert!(parse_login(&["--api", "groq", "--rabi"]).is_err());
+    }
+
+    #[test]
+    fn login_api_list_and_remove_accept_the_self_hosted_alias() {
+        for word in ["api", "self-hosted"] {
+            let login = parse_login(&[word, "list"]).expect("list");
+            assert!(matches!(
+                login.action,
+                Some(LoginSubcommand::SelfHosted {
+                    action: SelfHostedSubcommand::List
+                })
+            ));
+            let login = parse_login(&[word, "remove", "openrouter"]).expect("remove");
+            match login.action {
+                Some(LoginSubcommand::SelfHosted {
+                    action: SelfHostedSubcommand::Remove { name },
+                }) => assert_eq!(name, "openrouter"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     fn finalize_resume_from_args(args: &[&str]) -> TuiCli {

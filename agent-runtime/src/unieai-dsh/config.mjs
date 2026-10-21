@@ -6,8 +6,8 @@
  * private one under `$CODEX_HOME/uac/dsh-home` and writes a `settings.yaml`
  * there that declares the signed-in gateway as an OpenAI-compatible provider,
  * so dsh uses the same account and models as the rest of UnieAI Code without
- * touching the user's own `~/.dsh`. Self-hosted model servers
- * (`unieai login --self-hosted`) are declared beside it, or alone when there
+ * touching the user's own `~/.dsh`. Connected model APIs (self-hosted servers
+ * and presets, `unieai login --api`) are declared beside it, or alone when there
  * is no UnieAI sign-in.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -148,12 +148,37 @@ export async function fetchLocalModels(baseUrl, { fetchImpl = globalThis.fetch, 
 }
 
 /**
- * Self-hosted model servers, as `unieai login --self-hosted` saved them in
+ * Connected model APIs (self-hosted servers and provider presets), as
+ * `unieai login --api` (alias `--self-hosted`) saved them in
  * `$CODEX_HOME/unieai-self-hosted.json`. The keys stay there: settings.yaml
  * names each server's key by its own env var (selfHostedKeyEnv), and the
  * value goes to dsh's owner-only credential store, as the gateway key does.
  */
 export const SELF_HOSTED_FILE = "unieai-self-hosted.json";
+
+/**
+ * The presets' `kind` -> label and default provider id, as
+ * codex_login::unieai_self_hosted::API_PRESETS has them. A provider without
+ * a known kind (older files, `"custom"`) is a self-hosted server.
+ */
+export const API_PRESET_LABELS = Object.freeze({
+  openai: { label: "OpenAI", defaultId: "openai-api" },
+  openrouter: { label: "OpenRouter", defaultId: "openrouter" },
+  deepseek: { label: "DeepSeek", defaultId: "deepseek" },
+  groq: { label: "Groq", defaultId: "groq" },
+  together: { label: "Together", defaultId: "together" },
+  mistral: { label: "Mistral", defaultId: "mistral" },
+  gemini: { label: "Google Gemini", defaultId: "gemini" },
+  ollama: { label: "Ollama", defaultId: "ollama-local" },
+  lmstudio: { label: "LM Studio", defaultId: "lmstudio-local" },
+});
+
+/** What dsh calls a connected API: "OpenRouter", "OpenRouter (work)", "gpu (self-hosted)". */
+export function apiProviderLabel(server) {
+  const preset = server.kind ? API_PRESET_LABELS[server.kind] : null;
+  if (!preset) return `${server.displayName} (self-hosted)`;
+  return server.id === preset.defaultId ? preset.label : `${preset.label} (${server.id})`;
+}
 
 /** Context window assumed for a self-hosted model that declares none. */
 export const SELF_HOSTED_CONTEXT_WINDOW = 32_768;
@@ -169,6 +194,7 @@ export function loadSelfHostedProviders(home = unieaiHome()) {
     .filter((p) => p?.id && p?.base_url)
     .map((p) => ({
       id: String(p.id),
+      kind: p.kind ? String(p.kind) : null,
       displayName: p.name || String(p.id),
       baseUrl: String(p.base_url).replace(/\/+$/, ""),
       apiKey: p.api_key || null,
@@ -208,7 +234,7 @@ export function routeModel(slug, selfHosted = []) {
 export function selfHostedProviderSpec(server) {
   return {
     id: server.id,
-    displayName: `${server.displayName} (self-hosted)`,
+    displayName: apiProviderLabel(server),
     baseUrl: server.baseUrl,
     keyEnv: selfHostedKeyEnv(server.id),
     defaultContextWindow: SELF_HOSTED_CONTEXT_WINDOW,
@@ -658,7 +684,7 @@ export function writeDshAccount({ env = process.env, localProviders = [], provid
   const gateway = credentials.signedIn && credentials.gatewayBaseUrl ? credentials : null;
   const selfHosted = loadSelfHostedProviders(unieai);
   if (!gateway && selfHosted.length === 0) {
-    throw new Error("unieai-agent-core needs a UnieAI sign-in or a self-hosted model server; run `unieai login` (or `unieai login --self-hosted <URL>`) first");
+    throw new Error("unieai-agent-core needs a UnieAI sign-in or a self-hosted model server; run `unieai login` (or `unieai login --api <PRESET|URL>`) first");
   }
   const home = dshHome(env);
   mkdirSync(home, { recursive: true, mode: 0o700 });
