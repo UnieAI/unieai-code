@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- Copyright (c) 2026 UnieAI. All rights reserved. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>UnieAI Remote</title>
+<script type="importmap">
+{
+  "imports": {
+    "@noble/curves/": "/vendor/@noble/curves/",
+    "@noble/ciphers/": "/vendor/@noble/ciphers/",
+    "@noble/hashes/": "/vendor/@noble/hashes/"
+  }
+}
+</script>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e3de;
+    --accent: #2f6fdf; --ok: #1f8a4c; --bad: #c0392b; --code: #f0f0ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a94; --line: #33332f;
+      --accent: #6c9cf0; --ok: #46b97a; --bad: #e0695c; --code: #2a2a27; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, sans-serif; }
+  header { position: sticky; top: 0; display: flex; gap: 8px; align-items: center; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line); z-index: 2; }
+  header h1 { font-size: 15px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #state { font-size: 12px; color: var(--muted); }
+  main { max-width: 860px; margin: 0 auto; padding: 12px 16px 140px; }
+  .notice { padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #threads button { display: block; width: 100%; text-align: left; margin: 0 0 8px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+  #threads small { color: var(--muted); display: block; }
+  .item { margin: 10px 0; padding: 10px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line);
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  .item.user { border-left: 3px solid var(--accent); }
+  .item.tool { font: 13px/1.4 ui-monospace, monospace; background: var(--code); }
+  .item .label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; font-family: system-ui, sans-serif; }
+  .ask { border: 2px solid var(--accent); }
+  .ask .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  button.act { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+  button.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 16px; }
+  footer form { max-width: 860px; margin: 0 auto; display: flex; gap: 8px; }
+  textarea { flex: 1; min-width: 0; resize: none; height: 44px; padding: 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit; }
+  input[type=text] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <button class="act" id="back" hidden>&larr;</button>
+  <h1 id="title">UnieAI Remote</h1>
+  <span id="state">offline</span>
+  <button class="act" id="stop" hidden>Stop</button>
+</header>
+<main>
+  <div id="intro" class="notice">Run <code>/remote-control</code> in UnieAI Code and open the link it shows (or scan its QR code) to pair this browser.</div>
+  <div id="threads" hidden></div>
+  <div id="transcript" hidden></div>
+</main>
+<footer id="composer" hidden>
+  <form id="send">
+    <textarea id="input" placeholder="Message the session…" aria-label="Message"></textarea>
+    <button class="act ok" type="submit">Send</button>
+  </form>
+</footer>
+<script type="module" src="/app/app.mjs"></script>
+</body>
+</html>

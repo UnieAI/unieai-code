@@ -77,6 +77,9 @@ mod mcp_login;
 mod migrate_rollouts;
 mod plugin_cmd;
 mod queue_cmd;
+// Upstream's ChatGPT-only remote control; `unieai remote-control` is
+// UnieAI's (codex_cli::unieai_remote_control). Kept for upstream merges.
+#[allow(dead_code)]
 mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
@@ -90,7 +93,7 @@ use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::queue_cmd::QueueCommand;
-use crate::remote_control_cmd::RemoteControlCommand;
+use codex_cli::unieai_remote_control::RemoteControlCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -180,7 +183,7 @@ enum Subcommand {
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
-    /// [experimental] Manage the app-server daemon with remote control enabled.
+    /// Watch, steer and approve sessions from a phone or browser (uac engine).
     RemoteControl(RemoteControlCommand),
 
     /// Launch the Desktop app (opens the app installer if missing).
@@ -1680,20 +1683,14 @@ async fn cli_main(
                 }
             }
         }
-        Some(Subcommand::RemoteControl(mut remote_control_cli)) => {
-            remote_control_cli.no_daemon |= interactive.no_daemon;
+        Some(Subcommand::RemoteControl(remote_control_cli)) => {
             let subcommand_name = remote_control_cli.subcommand_name();
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
                 subcommand_name,
             )?;
-            remote_control_cmd::run(
-                remote_control_cli,
-                arg0_paths.clone(),
-                root_config_overrides,
-            )
-            .await?;
+            codex_cli::unieai_remote_control::run(remote_control_cli).await?;
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(app_cli)) => {
@@ -4758,12 +4755,37 @@ enabled = true
     }
 
     #[test]
-    fn remote_control_pair_parses() {
-        let cli = MultitoolCli::try_parse_from(["codex", "remote-control", "pair"]).expect("parse");
-        let Some(Subcommand::RemoteControl(remote_control)) = &cli.subcommand else {
-            panic!("expected remote-control subcommand");
-        };
-        assert_eq!(remote_control.subcommand_name(), "remote-control pair");
+    fn remote_control_subcommands_parse() {
+        for (args, name) in [
+            (
+                vec![
+                    "remote-control",
+                    "start",
+                    "--relay",
+                    "https://ava.example/api/remote",
+                ],
+                "remote-control start",
+            ),
+            (vec!["remote-control", "stop"], "remote-control stop"),
+            (vec!["remote-control", "devices"], "remote-control devices"),
+            (
+                vec!["remote-control", "revoke", "d_abc"],
+                "remote-control revoke",
+            ),
+            (
+                vec!["remote-control", "revoke", "--all"],
+                "remote-control revoke",
+            ),
+        ] {
+            let cli =
+                MultitoolCli::try_parse_from(std::iter::once("codex").chain(args)).expect("parse");
+            let Some(Subcommand::RemoteControl(remote_control)) = &cli.subcommand else {
+                panic!("expected remote-control subcommand");
+            };
+            assert_eq!(remote_control.subcommand_name(), name);
+        }
+        // Revoking needs a device or --all.
+        assert!(MultitoolCli::try_parse_from(["codex", "remote-control", "revoke"]).is_err());
     }
 
     #[test]

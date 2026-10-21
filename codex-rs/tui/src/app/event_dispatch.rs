@@ -1763,6 +1763,27 @@ impl App {
                     }
                 }
             }
+            AppEvent::StartRemoteControl => {
+                let request_handle = app_server.request_handle();
+                let app_event_tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let result = crate::unieai_remote::start(request_handle).await;
+                    app_event_tx.send(AppEvent::RemoteControlStarted { result });
+                });
+            }
+            AppEvent::RemoteControlStarted { result } => match result {
+                Ok(info) => {
+                    crate::unieai_remote::record_status(Some(&info));
+                    self.chat_widget
+                        .add_plain_history_lines(crate::unieai_remote::remote_control_lines(&info));
+                    self.chat_widget.refresh_status_line();
+                    self.watch_remote_viewers(app_server);
+                }
+                Err(err) => self
+                    .chat_widget
+                    .add_error_message(format!("/remote-control failed: {err}")),
+            },
+            AppEvent::RemoteViewersChanged => self.chat_widget.refresh_status_line(),
             AppEvent::FetchMcpInventory { detail, thread_id } => {
                 self.fetch_mcp_inventory(app_server, detail, thread_id);
             }

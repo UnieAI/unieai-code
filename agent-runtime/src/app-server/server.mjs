@@ -23,6 +23,8 @@ import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
+import { createThreadClients } from "./unieai-thread-clients.mjs";
+import { createRemoteBridge } from "./unieai-remote-bridge.mjs";
 
 /** Methods this server answers itself. Everything else is forwarded. */
 export const ENGINE_METHODS = [
@@ -345,8 +347,9 @@ export function createHandlers({
 
   const newThread = ({ cwd, model, modelProvider, ephemeral = false, ...rest }) => {
     const epoch = epochNow();
+    const id = rest.id ?? randomUUID();
     return {
-      id: randomUUID(),
+      id,
       cwd,
       model: model || defaultModel,
       modelProvider: modelProvider || defaultProvider,
@@ -363,6 +366,10 @@ export function createHandlers({
       createdAtEpoch: epoch,
       updatedAtEpoch: epoch,
       ...rest,
+      // Who the thread talks to: its driver and subscribers, never stored
+      // (unieai-thread-clients.mjs). Emitting and asking through it reaches
+      // every client watching the thread.
+      connection: createThreadClients({ threadId: id }),
     };
   };
 
@@ -376,7 +383,10 @@ export function createHandlers({
    * through. Returns `finish({ error, status })`, which closes it. Used for
    * the client's own turns and for turns the engine starts itself.
    */
-  const beginTurn = (thread, ctx, { userText = null, clientId = null } = {}) => {
+  const beginTurn = (thread, { userText = null, clientId = null } = {}) => {
+    // Every client watching the thread sees the turn, not only the one that
+    // started it.
+    const ctx = thread.connection;
     const turnId = randomUUID();
     const startedAt = epochNow();
     thread.activeTurn = { id: turnId, abort: new AbortController(), status: "inProgress", error: null, startedAt, completedAt: null, durationMs: null, finish: null };
@@ -518,7 +528,7 @@ export function createHandlers({
       }
       // Messages the running turn could not take go in a turn of their own,
       // rather than waiting in the client for a delivery that never comes.
-      if (thread.queuedInput?.length) setImmediate(() => sendQueuedInput(thread, ctx));
+      if (thread.queuedInput?.length) setImmediate(() => sendQueuedInput(thread));
     };
     // So an interrupt can end the turn even when the engine will not: see
     // turn/interrupt.
@@ -530,13 +540,13 @@ export function createHandlers({
    * Start a turn with the messages a running turn refused (see turn/steer).
    * Their client ids are kept, so each one stops being pending in the client.
    */
-  const sendQueuedInput = (thread, ctx) => {
+  const sendQueuedInput = (thread) => {
     const queued = thread.queuedInput ?? [];
     thread.queuedInput = [];
     if (!queued.length || thread.activeTurn) return;
     const text = queued.map((entry) => entry.text).join("\n\n");
     const images = queued.flatMap((entry) => entry.images ?? []);
-    const turn = beginTurn(thread, ctx);
+    const turn = beginTurn(thread);
     for (const entry of queued) emitUserMessage(thread, entry.text, entry.clientId);
     runSend(thread, turn, { text, shown: text, images });
   };
@@ -583,7 +593,7 @@ export function createHandlers({
       thread.engineTurnWaiting = { anchor };
       return;
     }
-    const turn = beginTurn(thread, thread.connection);
+    const turn = beginTurn(thread);
     thread.engineTurn = turn;
     if (typeof anchor === "number") setTurnMeta(thread, turn.turnId, anchoredTurnMeta(anchor));
     // A scheduled turn's prompt can arrive before the turn is shown.
@@ -621,7 +631,10 @@ export function createHandlers({
   // The engine is built once per thread but items belong to a turn, so it
   // emits through a stable indirection that picks up the current turn.
   const ensureEngine = (thread, ctx) => {
-    thread.connection = ctx ?? thread.connection;
+    // The caller watches the thread from now on; it drives it only when no
+    // live client does (see unieai-thread-clients.mjs: the last caller used
+    // to take the thread, approvals and client tools included).
+    if (ctx) thread.connection.attach(ctx, { drive: true });
     if (thread.engine) return thread.engine;
     thread.engine = createEngineFor({
       cwd: thread.cwd,
@@ -655,14 +668,17 @@ export function createHandlers({
           emitItem?.("item/started", { item, startedAtMs: Date.now() });
           emitItem?.("item/completed", { item, completedAtMs: Date.now() });
         }
-        const response = await thread.connection.request("item/tool/requestUserInput", {
-          threadId: thread.id,
-          turnId: thread.activeTurn?.id ?? thread.turnIds?.at(-1) ?? "",
-          itemId: newItemId(),
-          questions: protocolQuestions(questions),
-          isBlocking: true,
-          autoResolutionMs: null,
-        });
+        // Nobody left to answer is no answer, as from a client that cancels.
+        const response = await thread.connection
+          .request("item/tool/requestUserInput", {
+            threadId: thread.id,
+            turnId: thread.activeTurn?.id ?? thread.turnIds?.at(-1) ?? "",
+            itemId: newItemId(),
+            questions: protocolQuestions(questions),
+            isBlocking: true,
+            autoResolutionMs: null,
+          })
+          .catch(() => null);
         return { answers: dshAnswers(questions, response) };
       },
       // dsh compacts on its own when the context fills: the client shows
@@ -869,7 +885,9 @@ export function createHandlers({
         ephemeral: params?.ephemeral ?? false,
         mode: threadMode(),
       });
-      thread.connection = ctx;
+      // The client that starts a thread drives it: it hosts the thread's
+      // client tools (dynamicTools below).
+      thread.connection.attach(ctx, { drive: "claim" });
       // A hidden, read-only ephemeral thread (the client's title generation
       // and other structured one-shots): answered by a single model call
       // with no tools, so "read-only" is true rather than a label.
@@ -920,8 +938,8 @@ export function createHandlers({
       const thread = getThread(params?.threadId);
       const command = String(params?.command ?? "").trim();
       if (!command) throw new RpcError(RPC.INVALID_PARAMS, "thread/shellCommand needs a command");
-      thread.connection = ctx ?? thread.connection;
-      const own = thread.activeTurn ? null : beginTurn(thread, ctx);
+      thread.connection.attach(ctx, { drive: true });
+      const own = thread.activeTurn ? null : beginTurn(thread);
       // A turn of its own has nothing in the engine's history.
       if (own && ensureEngine(thread, ctx).turnAnchors === true) setTurnMeta(thread, own.turnId, localTurnMeta());
       const emitItem = thread.pendingAnswer?.emitItem;
@@ -964,7 +982,7 @@ export function createHandlers({
       ensureEngine(thread, ctx);
       // Every turn/start carries the client's current model and permissions.
       await applySettings(thread, params);
-      const turn = beginTurn(thread, ctx, { userText: text, clientId: params?.clientUserMessageId ?? null });
+      const turn = beginTurn(thread, { userText: text, clientId: params?.clientUserMessageId ?? null });
       // The user's `!` commands since the last turn go to the model with it.
       const notes = thread.shellNotes ?? [];
       thread.shellNotes = [];
@@ -992,7 +1010,7 @@ export function createHandlers({
         // the engine may not exist yet; turn/start would have made it here.
         ensureEngine(thread, ctx);
         thread.queuedInput = [...(thread.queuedInput ?? []), { text, clientId, images }];
-        sendQueuedInput(thread, ctx ?? thread.connection);
+        sendQueuedInput(thread);
         return { turnId: thread.activeTurn?.id ?? thread.turnIds.at(-1) ?? "" };
       }
       if (params?.expectedTurnId && params.expectedTurnId !== turn.id) {
@@ -1038,9 +1056,11 @@ export function createHandlers({
         thread.turnIds.push(turnId);
         setTurnMeta(thread, turnId, localTurnMeta({ compaction: true }));
       }
-      ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
-      ctx?.emit?.("turn/started", { ...stamp, turn: turnShape(thread.activeTurn) });
-      ctx?.emit?.("item/started", { ...stamp, item: { type: "contextCompaction", id: itemId }, startedAtMs: Date.now() });
+      // Every client watching the thread sees the compaction.
+      const out = thread.connection;
+      out.emit("thread/status/changed", { threadId: thread.id, status: { type: "active", activeFlags: [] } });
+      out.emit("turn/started", { ...stamp, turn: turnShape(thread.activeTurn) });
+      out.emit("item/started", { ...stamp, item: { type: "contextCompaction", id: itemId }, startedAtMs: Date.now() });
       thread.compacting = true;
       Promise.resolve()
         .then(() => engine.compact())
@@ -1051,14 +1071,14 @@ export function createHandlers({
         .then(({ status, error }) => {
           thread.compacting = false;
           thread.activeTurn = null;
-          ctx?.emit?.("item/completed", { ...stamp, item: { type: "contextCompaction", id: itemId }, completedAtMs: Date.now() });
-          if (error) ctx?.emit?.("error", { error, willRetry: false, ...stamp });
+          out.emit("item/completed", { ...stamp, item: { type: "contextCompaction", id: itemId }, completedAtMs: Date.now() });
+          if (error) out.emit("error", { error, willRetry: false, ...stamp });
           const completedAt = epochNow();
-          ctx?.emit?.("turn/completed", {
+          out.emit("turn/completed", {
             threadId: thread.id,
             turn: turnShape({ id: turnId, status, error, startedAt, completedAt, durationMs: (completedAt - startedAt) * 1000 }),
           });
-          ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
+          out.emit("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
         });
       return {};
     },
@@ -1155,7 +1175,7 @@ export function createHandlers({
         turnIds: source.turnIds.slice(0, keptTurns),
         turnMeta: keepMeta(source.turnMeta, source.turnIds.slice(0, keptTurns)),
       });
-      thread.connection = ctx;
+      thread.connection.attach(ctx, { drive: "claim" });
       threads.set(thread.id, thread);
       persist(thread);
       const turns = params?.excludeTurns ? [] : await historyTurns(thread);
@@ -1263,6 +1283,24 @@ export function createHandlers({
 
     /** Exposed for tests and for the CLI's `/threads`-style introspection. */
     _threads: threads,
+
+    /**
+     * Watch a thread without acting on it: its notifications and approval
+     * requests reach `ctx` from now on. For in-process clients (the remote
+     * bridge), which never drive a thread.
+     */
+    _attach(threadId, ctx) {
+      const thread = getThread(threadId);
+      thread.connection.attach(ctx);
+      return thread;
+    },
+
+    /** Stop sending `threadId` (or, without one, every thread) to `ctx`. */
+    _detach(ctx, threadId = null) {
+      for (const thread of threads.values()) {
+        if (threadId === null || thread.id === threadId) thread.connection.detach(ctx);
+      }
+    },
   };
 
   if (!threadStore) {
@@ -1347,11 +1385,13 @@ export function createHandlers({
       return {};
     },
 
-    async "thread/unsubscribe"(params) {
+    async "thread/unsubscribe"(params, ctx) {
       const thread = threads.get(params?.threadId);
+      if (ctx) thread?.connection.detach(ctx);
       if (!thread?.engine) return { status: "notLoaded" };
-      // A running turn keeps its engine; an idle one is reopened on demand.
-      if (!thread.activeTurn) {
+      // A running turn keeps its engine; an idle one is reopened on demand,
+      // unless another client is still watching it.
+      if (!thread.activeTurn && thread.connection.subscribers().length === 0) {
         await thread.engine.close?.();
         thread.engine = null;
       }
@@ -1413,8 +1453,20 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
         return forward(method, params, ...context);
       }
     : null;
-  const dispatch = createDispatcher({ handlers, fallback: forwardPlatform, onError });
   const trace = typeof onTrace === "function" ? onTrace : () => {};
+  // Remote Control (unieai-remote-bridge.mjs): browsers become clients of
+  // these handlers through a relay. Started when a local client asks; these
+  // methods are local only, a browser can call none of them.
+  let remote = null;
+  const remoteBridge = () => (remote ??= createRemoteBridge({ handlers, codexHome, version, log: trace }));
+  Object.assign(handlers, {
+    "unieai/remote/start": (params) => remoteBridge().start(params ?? {}),
+    "unieai/remote/stop": async () => (remote ? remote.stop() : { running: false }),
+    "unieai/remote/status": async () => remoteBridge().status(),
+    "unieai/remote/devices": async () => remoteBridge().devices(),
+    "unieai/remote/revoke": async (params) => remoteBridge().revoke(params ?? {}),
+  });
+  const dispatch = createDispatcher({ handlers, fallback: forwardPlatform, onError });
   // Full payloads are large; opt in when a client renders something wrong.
   const tracePayloads = Boolean(process.env.UNIEAI_TRACE_PAYLOADS);
   let connections = 0;
@@ -1446,9 +1498,16 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
           trace(`connection ${connId} ← ${method}${on}${tracePayloads ? ` ${JSON.stringify(params)}` : ""}`);
           return conn.send({ method, params });
         },
-        request: (method, params, { timeoutMs = 0 } = {}) =>
+        // Set when the connection goes: a thread stops sending to it, and
+        // stops counting it as someone who could answer.
+        closed: false,
+        // `signal` withdraws the question (another client answered it first,
+        // see unieai-thread-clients.mjs); `onId` learns the id it went out
+        // under, which `serverRequest/resolved` names.
+        request: (method, params, { timeoutMs = 0, signal = null, onId = null } = {}) =>
           new Promise((resolve, reject) => {
             const id = nextRequestId--;
+            if (ctx.closed) return reject(new Error("the client is gone"));
             // v2 has no `timedOut` decision, and it does not need one: a user
             // who never answered has not approved anything.
             const timer = timeoutMs > 0
@@ -1456,6 +1515,12 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
               : null;
             timer?.unref?.();
             pending.set(id, { resolve, reject, timer });
+            signal?.addEventListener("abort", () => {
+              if (!pending.delete(id)) return;
+              if (timer) clearTimeout(timer);
+              reject(new Error("answered by another client"));
+            }, { once: true });
+            onId?.(id);
             if (!conn.send({ id, method, params })) {
               pending.delete(id);
               if (timer) clearTimeout(timer);
@@ -1497,9 +1562,16 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
         // The client this server was started for is gone: whoever owns the
         // process decides whether it stays (see onIdle).
         if (live.size === 0) onIdle?.();
-        for (const { resolve, timer } of pending.values()) {
+        ctx.closed = true;
+        // The threads it watched stop counting it; one it drove waits for
+        // the next client to resume it.
+        handlers._detach(ctx);
+        // A client that left answered nothing: another client watching the
+        // thread may still answer, and with nobody left the request fails
+        // closed (unieai-thread-clients.mjs).
+        for (const { reject, timer } of pending.values()) {
           if (timer) clearTimeout(timer);
-          resolve({ decision: "cancel" }); // the client is gone; cancel, not "maybe"
+          reject(new Error("the client disconnected"));
         }
         pending.clear();
       });
@@ -1511,6 +1583,9 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
     /** How many clients are connected right now. */
     connections: () => live.size,
     ...transport,
+    // Not part of close(): a server handing its socket over keeps serving
+    // its clients, remote ones included, until they leave.
+    stopRemote: async () => remote?.close(),
     handlers,
     socketPath,
     /** Push a server-originated notification to every connected client. */

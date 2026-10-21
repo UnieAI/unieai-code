@@ -208,6 +208,7 @@ pub(crate) mod agents_overview_discovery;
 mod agents_overview_threads;
 mod agents_overview_usage;
 mod agents_overview_view;
+mod unieai_remote_viewers;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod activity_groups;
 mod app_server_event_targets;

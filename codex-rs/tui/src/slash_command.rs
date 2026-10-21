@@ -41,6 +41,8 @@ pub enum SlashCommand {
     Compact,
     /// What is using the context window (uac engine).
     Context,
+    /// Watch, steer and approve this session from a phone or browser (uac).
+    RemoteControl,
     Config,
     Recap,
     Plan,
@@ -140,6 +142,9 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Plugins
             | SlashCommand::AutoReview => context.uac_engine,
+            // Served by uac itself; on the codex engine dispatch says to
+            // switch with /engine, which is not "coming soon".
+            SlashCommand::RemoteControl => false,
             _ => false,
         }
     }
@@ -158,6 +163,9 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for UnieAI Code",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Context => "show what is using the context window",
+            SlashCommand::RemoteControl => {
+                "watch, steer and approve this session from a phone or browser"
+            }
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
@@ -357,6 +365,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Context
+            | SlashCommand::RemoteControl
             | SlashCommand::Daemon
             | SlashCommand::Warnings
             | SlashCommand::Pwd
@@ -498,6 +507,21 @@ mod tests {
                 "apps", "plugins",
             ]
         );
+    }
+
+    #[test]
+    fn remote_control_is_never_coming_soon() {
+        for uac_engine in [false, true] {
+            for no_openai_services in [false, true] {
+                for feedback_to_openai in [false, true] {
+                    assert!(!SlashCommand::RemoteControl.coming_soon(ComingSoonContext {
+                        uac_engine,
+                        no_openai_services,
+                        feedback_to_openai,
+                    }));
+                }
+            }
+        }
     }
 
     #[test]
