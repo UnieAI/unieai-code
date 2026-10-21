@@ -13,6 +13,7 @@ fn agent(tail: &str, label: &str) -> AgentRow {
         activity: None,
         is_running: true,
         is_active: false,
+        is_failed: false,
         elapsed: None,
         tokens: None,
         model: None,
@@ -213,6 +214,7 @@ fn the_panel_renders_the_specified_layout() {
         AgentRow {
             is_running: false,
             is_active: true,
+            is_failed: false,
             ..agent("5a6b0c0d0e0f", "main")
         },
         AgentRow {
@@ -260,6 +262,7 @@ fn the_row_shows_time_tokens_and_how_much_context_is_left() {
         activity: None,
         is_running: true,
         is_active: true,
+        is_failed: false,
         elapsed: Some("1m02s".to_string()),
         tokens: Some(35_400),
         model: None,
@@ -315,6 +318,7 @@ fn exec_session(tail: &str, process_id: &str, command: &str) -> AgentRow {
         activity: None,
         is_running: true,
         is_active: false,
+        is_failed: false,
         elapsed: Some("12s".to_string()),
         tokens: None,
         model: None,
@@ -329,6 +333,7 @@ fn the_tree_shows_each_agents_model_and_the_commands_left_running() {
         AgentRow {
             is_running: false,
             is_active: true,
+            is_failed: false,
             model: Some("Qwen3.6-35B-A3B".to_string()),
             ..agent("5a6b0c0d0e0f", "main")
         },
@@ -357,4 +362,81 @@ fn the_tree_shows_each_agents_model_and_the_commands_left_running() {
         tree.selected_row().map(|row| row.label.as_str()),
         Some("sleep 120")
     );
+}
+
+#[test]
+fn a_running_agent_is_shown() {
+    let mut tree = AgentTree::default();
+    tree.set_agents(vec![AgentRow {
+        activity: Some("Running date".to_string()),
+        elapsed: Some("4s".to_string()),
+        tokens: Some(1_200),
+        model: Some("Qwen3.6-35B-A3B".to_string()),
+        ..agent("5a6b9a8b7c6d", "date_check")
+    }]);
+
+    insta::assert_snapshot!(rendered(&tree).join("\n"));
+}
+
+#[test]
+fn a_failed_agent_is_marked_until_it_is_seen() {
+    let mut tree = AgentTree::default();
+    tree.set_agents(vec![AgentRow {
+        activity: Some("failed".to_string()),
+        is_running: false,
+        is_failed: true,
+        elapsed: Some("12s".to_string()),
+        tokens: Some(3_400),
+        ..agent("5a6b9a8b7c6d", "flaky_worker")
+    }]);
+
+    insta::assert_snapshot!(rendered(&tree).join("\n"));
+}
+
+#[test]
+fn finished_work_leaves_a_hint_pointing_at_tasks() {
+    let mut tree = AgentTree::default();
+    tree.set_todos(vec![TodoRow {
+        text: "check the date".to_string(),
+        status: TodoStatus::InProgress,
+    }]);
+    tree.set_agents(vec![AgentRow {
+        elapsed: Some("30s".to_string()),
+        ..agent("5a6b9a8b7c6d", "still_working")
+    }]);
+    assert!(tree.set_hidden_done(2));
+    assert!(!tree.set_hidden_done(2), "no change, no redraw");
+
+    insta::assert_snapshot!(rendered(&tree).join("\n"));
+}
+
+#[test]
+fn the_hint_alone_keeps_the_panel_to_one_line() {
+    let mut tree = AgentTree::default();
+    tree.set_hidden_done(1);
+
+    assert!(!tree.is_empty());
+    assert_eq!(rendered(&tree), vec!["  1 done · /tasks".to_string()]);
+    // The hint is not a row: there is nothing to move a cursor to.
+    assert!(!tree.focus_tree());
+}
+
+#[test]
+fn the_panel_collapses_to_the_todos_then_disappears() {
+    let mut tree = AgentTree::default();
+    tree.set_todos(vec![TodoRow {
+        text: "write it".to_string(),
+        status: TodoStatus::Pending,
+    }]);
+    tree.set_agents(vec![agent("5a6b9a8b7c6d", "worker")]);
+    tree.set_hidden_done(1);
+
+    // The worker finished and the user opened /tasks.
+    tree.set_agents(Vec::new());
+    tree.set_hidden_done(0);
+    assert_eq!(rendered(&tree), vec!["  ☐ write it".to_string()]);
+
+    tree.set_todos(Vec::new());
+    assert!(tree.is_empty());
+    assert_eq!(tree.desired_height(80), 0);
 }

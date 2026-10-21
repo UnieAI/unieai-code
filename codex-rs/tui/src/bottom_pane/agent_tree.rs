@@ -8,6 +8,14 @@
 //!
 //! Navigation is the reason this is a widget rather than a popup: reaching a
 //! running agent should not require opening anything.
+//!
+//! Only live work, or work that needs the user, stays on the panel: a subagent
+//! that is running or waiting on an approval, one whose turn failed and that
+//! the user has not looked at, and commands still running. A subagent that
+//! finishes cleanly leaves after a short grace period; finished work lives on
+//! in `/tasks`, and a dim "N done · /tasks" line says so until the user opens
+//! it. The app decides which rows qualify (see `App::refresh_agent_tree`);
+//! this widget only draws them.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -69,6 +77,8 @@ pub(crate) struct AgentRow {
     pub(crate) activity: Option<String>,
     pub(crate) is_running: bool,
     pub(crate) is_active: bool,
+    /// The agent's last turn failed and the user has not looked at it yet.
+    pub(crate) is_failed: bool,
     /// Rendered elapsed time, for example `5m49s`.
     pub(crate) elapsed: Option<String>,
     pub(crate) tokens: Option<u64>,
@@ -97,6 +107,9 @@ pub(crate) enum PaneFocus {
 pub(crate) struct AgentTree {
     todos: Vec<TodoRow>,
     agents: Vec<AgentRow>,
+    /// Finished work taken off the panel that the user has not looked up in
+    /// `/tasks` yet: the panel says how much, and where it went.
+    hidden_done: usize,
     focus: PaneFocus,
     selected: usize,
 }
@@ -153,8 +166,18 @@ impl AgentTree {
         true
     }
 
+    /// Sets how many finished tasks left the panel unseen. Returns whether
+    /// anything changed.
+    pub(crate) fn set_hidden_done(&mut self, hidden_done: usize) -> bool {
+        if self.hidden_done == hidden_done {
+            return false;
+        }
+        self.hidden_done = hidden_done;
+        true
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.todos.is_empty() && self.agents.is_empty()
+        self.todos.is_empty() && self.agents.is_empty() && self.hidden_done == 0
     }
 
     pub(crate) fn focus(&self) -> PaneFocus {
@@ -228,6 +251,7 @@ impl AgentTree {
             spans.push(match agent.target {
                 // A command sits under the agent that left it running.
                 TreeTarget::ExecSession { .. } => "  $ ".dim(),
+                TreeTarget::Thread(_) if agent.is_failed => "✗ ".red(),
                 TreeTarget::Thread(_) if agent.is_running => "◉ ".green(),
                 TreeTarget::Thread(_) if agent.is_active => "● ".cyan(),
                 TreeTarget::Thread(_) => "◯ ".dim(),
@@ -267,6 +291,14 @@ impl AgentTree {
             lines.push(Line::from(spans));
         }
 
+        if self.hidden_done > 0 {
+            // One dim line, not a row: it is not navigable, and it goes once
+            // the user has looked.
+            lines.push(Line::from(
+                format!("  {} done · /tasks", self.hidden_done).dim(),
+            ));
+        }
+
         if self.focus == PaneFocus::AgentTree {
             lines.push(Line::from(vec![
                 "    ".into(),
@@ -275,6 +307,23 @@ impl AgentTree {
         }
 
         lines
+    }
+}
+
+#[cfg(test)]
+impl AgentTree {
+    pub(crate) fn text_lines(&self, width: u16) -> Vec<String> {
+        self.lines(width)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
     }
 }
 

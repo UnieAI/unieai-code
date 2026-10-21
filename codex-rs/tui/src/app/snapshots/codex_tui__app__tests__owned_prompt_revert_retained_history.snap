@@ -2,6 +2,7 @@
 source: tui/src/app/tests.rs
 expression: transcript
 ---
+  /permissions - choose what UnieAI Code is allowed to do
   /model - choose what model and reasoning effort to use
   /review - review any changes and find issues
 

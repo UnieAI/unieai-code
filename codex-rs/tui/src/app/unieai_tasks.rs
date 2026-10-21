@@ -15,12 +15,21 @@
 //! `thread/backgroundTerminals/terminate` for a command. Opening a command
 //! pages its recent output: uac answers `unieai/exec/output`; on the codex
 //! engine the footer's last lines for that process stand in.
+//!
+//! Finished work is kept too. The resident tree shows only what is live or
+//! needs the user, so a subagent that finished and a command that exited
+//! leave it; [`TaskMonitor`] remembers them, with how long they took and
+//! whether they failed, so `/tasks` can still list and open them, and so the
+//! tree can say how many left unseen until the user opens `/tasks`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
 use std::time::Instant;
 
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
@@ -57,11 +66,48 @@ pub(crate) struct ExecSessionEntry {
     pub(crate) started_at: Instant,
 }
 
-/// What the notifications say is running, beyond the threads themselves.
+/// How long a subagent that finished cleanly stays on the resident tree.
+///
+/// Long enough to see it finish rather than blink out, and to absorb a parent
+/// that hands it more work straight away (its row would otherwise leave and
+/// come back); short enough that the panel is back to "who is working" by the
+/// time the user looks for it.
+pub(crate) const FINISHED_GRACE: Duration = Duration::from_secs(3);
+
+/// The most exited commands `/tasks` remembers; the oldest go first.
+const FINISHED_COMMANDS_KEPT: usize = 100;
+
+/// A subagent whose last turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FinishedAgent {
+    pub(crate) finished_at: Instant,
+    /// How long the turn ran.
+    pub(crate) elapsed: Duration,
+    pub(crate) failed: bool,
+    /// The user has seen it: opened `/tasks`, or looked at its thread.
+    pub(crate) acknowledged: bool,
+}
+
+/// A command an agent left running that has since exited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FinishedCommand {
+    pub(crate) entry: ExecSessionEntry,
+    pub(crate) elapsed: Duration,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) failed: bool,
+    pub(crate) acknowledged: bool,
+}
+
+/// What the notifications say is running, beyond the threads themselves, and
+/// what has finished since.
 #[derive(Debug, Default)]
 pub(crate) struct TaskMonitor {
     exec_sessions: Vec<ExecSessionEntry>,
     models: HashMap<ThreadId, String>,
+    finished_agents: HashMap<ThreadId, FinishedAgent>,
+    finished_commands: Vec<FinishedCommand>,
+    /// Threads with an approval or question waiting on the user.
+    waiting: HashSet<ThreadId>,
 }
 
 impl TaskMonitor {
@@ -91,7 +137,23 @@ impl TaskMonitor {
                 let Some((process_id, _)) = background_command(&completed.item) else {
                     return false;
                 };
-                self.forget_exec_session(thread_id, process_id)
+                let (exit_code, failed) = match &completed.item {
+                    ThreadItem::CommandExecution {
+                        exit_code, status, ..
+                    } => (
+                        *exit_code,
+                        matches!(status, CommandExecutionStatus::Failed)
+                            || exit_code.is_some_and(|code| code != 0),
+                    ),
+                    _ => (None, false),
+                };
+                self.finish_exec_session(
+                    thread_id,
+                    process_id,
+                    exit_code,
+                    failed,
+                    /*acknowledged*/ false,
+                )
             }
             ServerNotification::ThreadStarted(started) => match started.thread.model.as_ref() {
                 Some(model) if !model.is_empty() => self.set_model(thread_id, model),
@@ -131,12 +193,168 @@ impl TaskMonitor {
             .find(|entry| entry.thread_id == thread_id && entry.process_id == process_id)
     }
 
-    /// Drops a command that ended. True when it was listed.
-    pub(crate) fn forget_exec_session(&mut self, thread_id: ThreadId, process_id: &str) -> bool {
-        let before = self.exec_sessions.len();
-        self.exec_sessions
-            .retain(|entry| !(entry.thread_id == thread_id && entry.process_id == process_id));
-        self.exec_sessions.len() != before
+    /// Moves a command that ended from the running list to the finished one.
+    /// True when it was listed as running.
+    ///
+    /// `acknowledged` is for a command the user stopped themselves: there is
+    /// nothing to tell them about it.
+    pub(crate) fn finish_exec_session(
+        &mut self,
+        thread_id: ThreadId,
+        process_id: &str,
+        exit_code: Option<i32>,
+        failed: bool,
+        acknowledged: bool,
+    ) -> bool {
+        let Some(index) = self
+            .exec_sessions
+            .iter()
+            .position(|entry| entry.thread_id == thread_id && entry.process_id == process_id)
+        else {
+            return false;
+        };
+        let entry = self.exec_sessions.remove(index);
+        if self.finished_commands.len() >= FINISHED_COMMANDS_KEPT {
+            self.finished_commands.remove(0);
+        }
+        self.finished_commands.push(FinishedCommand {
+            elapsed: entry.started_at.elapsed(),
+            entry,
+            exit_code,
+            failed,
+            acknowledged,
+        });
+        true
+    }
+
+    pub(crate) fn finished_commands(&self) -> &[FinishedCommand] {
+        &self.finished_commands
+    }
+
+    pub(crate) fn finished_command(
+        &self,
+        thread_id: ThreadId,
+        process_id: &str,
+    ) -> Option<&FinishedCommand> {
+        self.finished_commands.iter().rev().find(|finished| {
+            finished.entry.thread_id == thread_id && finished.entry.process_id == process_id
+        })
+    }
+
+    /// A thread began a turn: it is working again, not finished.
+    pub(crate) fn agent_started(&mut self, thread_id: ThreadId) -> bool {
+        self.finished_agents.remove(&thread_id).is_some()
+    }
+
+    /// A thread's turn ended. True when the tree should redraw.
+    ///
+    /// Several notifications report the same ending (turn completed, status
+    /// idle, thread closed), so a second report only adds a failure the
+    /// first did not carry; a failure is news again even if the clean
+    /// ending was already seen.
+    pub(crate) fn agent_finished(
+        &mut self,
+        thread_id: ThreadId,
+        elapsed: Duration,
+        failed: bool,
+    ) -> bool {
+        match self.finished_agents.get_mut(&thread_id) {
+            Some(existing) => {
+                if failed && !existing.failed {
+                    existing.failed = true;
+                    existing.acknowledged = false;
+                    return true;
+                }
+                false
+            }
+            None => {
+                self.finished_agents.insert(
+                    thread_id,
+                    FinishedAgent {
+                        finished_at: Instant::now(),
+                        elapsed,
+                        failed,
+                        acknowledged: false,
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    pub(crate) fn finished_agent(&self, thread_id: ThreadId) -> Option<&FinishedAgent> {
+        self.finished_agents.get(&thread_id)
+    }
+
+    /// The user looked at this thread. True when that changed anything.
+    pub(crate) fn acknowledge_agent(&mut self, thread_id: ThreadId) -> bool {
+        match self.finished_agents.get_mut(&thread_id) {
+            Some(finished) if !finished.acknowledged => {
+                finished.acknowledged = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The user opened `/tasks`: everything finished so far has been seen.
+    pub(crate) fn acknowledge_all(&mut self) -> bool {
+        let mut changed = false;
+        for finished in self.finished_agents.values_mut() {
+            changed |= !finished.acknowledged;
+            finished.acknowledged = true;
+        }
+        for finished in &mut self.finished_commands {
+            changed |= !finished.acknowledged;
+            finished.acknowledged = true;
+        }
+        changed
+    }
+
+    /// Replaces the threads waiting on the user. True when it changed.
+    pub(crate) fn set_waiting(&mut self, waiting: HashSet<ThreadId>) -> bool {
+        if self.waiting == waiting {
+            return false;
+        }
+        self.waiting = waiting;
+        true
+    }
+
+    pub(crate) fn is_waiting(&self, thread_id: ThreadId) -> bool {
+        self.waiting.contains(&thread_id)
+    }
+
+    /// Moves every finish back in time, as if the grace period had passed.
+    #[cfg(test)]
+    pub(crate) fn age_finished_agents(&mut self, by: Duration) {
+        for finished in self.finished_agents.values_mut() {
+            finished.finished_at = finished
+                .finished_at
+                .checked_sub(by)
+                .unwrap_or(finished.finished_at);
+        }
+    }
+
+    /// Finished work the tree no longer shows and the user has not seen:
+    /// subagents that ended cleanly (past their grace period) and commands
+    /// that exited. A failed subagent is not counted — the tree still shows
+    /// it.
+    pub(crate) fn hidden_done(&self) -> usize {
+        let agents = self
+            .finished_agents
+            .values()
+            .filter(|finished| {
+                !finished.acknowledged
+                    && !finished.failed
+                    && finished.finished_at.elapsed() >= FINISHED_GRACE
+            })
+            .count();
+        let commands = self
+            .finished_commands
+            .iter()
+            .filter(|finished| !finished.acknowledged)
+            .count();
+        agents + commands
     }
 }
 
@@ -292,6 +510,7 @@ impl App {
                 activity: None,
                 is_running: true,
                 is_active: false,
+                is_failed: false,
                 elapsed: Some(crate::bottom_pane::format_elapsed(
                     entry.started_at.elapsed(),
                 )),
@@ -302,8 +521,22 @@ impl App {
             .collect()
     }
 
-    /// The `/tasks` table: subagents (every thread but the main one) and the
-    /// commands any thread left running.
+    /// Who started a command, as `/tasks` names them.
+    fn command_owner(&self, thread_id: ThreadId) -> String {
+        self.agent_navigation
+            .get(&thread_id)
+            .map(|navigation| self.agent_label(thread_id, navigation))
+            .unwrap_or_else(|| {
+                if Some(thread_id) == self.primary_thread_id {
+                    "main".to_string()
+                } else {
+                    crate::multi_agents::short_thread_label(thread_id)
+                }
+            })
+    }
+
+    /// The `/tasks` table: subagents (every thread but the main one), the
+    /// commands any thread left running, and the ones that have exited.
     pub(super) fn task_rows(&mut self) -> Vec<TaskRow> {
         let threads: Vec<(ThreadId, AgentPickerThreadEntry)> = self
             .agent_navigation
@@ -318,37 +551,33 @@ impl App {
                 .agent_started_at
                 .entry(thread_id)
                 .or_insert_with(Instant::now);
+            let finished = self.tasks.finished_agent(thread_id).copied();
             let status = if entry.is_running {
                 TaskStatus::Running
-            } else if entry.is_closed {
+            } else if finished.is_some_and(|finished| finished.failed) {
+                TaskStatus::Failed
+            } else if entry.is_closed || finished.is_some() {
                 TaskStatus::Done
             } else {
                 TaskStatus::Idle
+            };
+            // A running turn's clock, or how long the finished one took.
+            let elapsed = if entry.is_running {
+                Some(started_at.elapsed())
+            } else {
+                finished.map(|finished| finished.elapsed)
             };
             rows.push(TaskRow {
                 target: TreeTarget::Thread(thread_id),
                 label: self.agent_label(thread_id, &entry),
                 status,
-                elapsed: entry
-                    .is_running
-                    .then(|| crate::bottom_pane::format_elapsed(started_at.elapsed())),
+                elapsed: elapsed.map(crate::bottom_pane::format_elapsed),
                 tokens: self.agent_tokens.get(&thread_id).copied(),
                 model: self.agent_model(thread_id),
                 detail: self.agent_activity.get(&thread_id).cloned(),
             });
         }
         for entry in self.tasks.exec_sessions() {
-            let owner = self
-                .agent_navigation
-                .get(&entry.thread_id)
-                .map(|navigation| self.agent_label(entry.thread_id, navigation))
-                .unwrap_or_else(|| {
-                    if Some(entry.thread_id) == self.primary_thread_id {
-                        "main".to_string()
-                    } else {
-                        crate::multi_agents::short_thread_label(entry.thread_id)
-                    }
-                });
             rows.push(TaskRow {
                 target: TreeTarget::ExecSession {
                     thread: entry.thread_id,
@@ -361,7 +590,31 @@ impl App {
                 )),
                 tokens: None,
                 model: None,
-                detail: Some(format!("started by {owner}")),
+                detail: Some(format!("started by {}", self.command_owner(entry.thread_id))),
+            });
+        }
+        // Exited commands after the running ones, newest first.
+        for finished in self.tasks.finished_commands().iter().rev() {
+            let entry = &finished.entry;
+            let owner = self.command_owner(entry.thread_id);
+            rows.push(TaskRow {
+                target: TreeTarget::ExecSession {
+                    thread: entry.thread_id,
+                    process_id: entry.process_id.clone(),
+                },
+                label: command_label(&entry.command),
+                status: if finished.failed {
+                    TaskStatus::Failed
+                } else {
+                    TaskStatus::Done
+                },
+                elapsed: Some(crate::bottom_pane::format_elapsed(finished.elapsed)),
+                tokens: None,
+                model: None,
+                detail: Some(match finished.exit_code {
+                    Some(code) => format!("started by {owner} · exit {code}"),
+                    None => format!("started by {owner}"),
+                }),
             });
         }
         rows
@@ -370,6 +623,12 @@ impl App {
     pub(super) fn open_tasks(&mut self) {
         let rows = self.task_rows();
         self.chat_widget.show_tasks(rows);
+        // Everything finished is in front of the user now: the tree's
+        // "N done · /tasks" line has done its job, and a failed subagent
+        // has been seen.
+        if self.tasks.acknowledge_all() {
+            self.refresh_agent_tree();
+        }
     }
 
     /// Asks before stopping: an interrupted agent or a killed command cannot
@@ -421,8 +680,15 @@ impl App {
                     }
                 }
                 // Gone either way; its completion may never arrive if it
-                // had already ended.
-                if self.tasks.forget_exec_session(thread, &process_id) {
+                // had already ended. The user stopped it, so there is
+                // nothing to tell them about it.
+                if self.tasks.finish_exec_session(
+                    thread,
+                    &process_id,
+                    /*exit_code*/ None,
+                    /*failed*/ false,
+                    /*acknowledged*/ true,
+                ) {
                     self.refresh_agent_tree();
                 }
             }
@@ -442,6 +708,11 @@ impl App {
                 let title = self
                     .tasks
                     .exec_session(thread, &process_id)
+                    .or_else(|| {
+                        self.tasks
+                            .finished_command(thread, &process_id)
+                            .map(|finished| &finished.entry)
+                    })
                     .map(|entry| format!("$ {}", command_label(&entry.command)))
                     .unwrap_or_else(|| format!("process {process_id}"));
                 // The codex engine keeps no output to page; the footer's last

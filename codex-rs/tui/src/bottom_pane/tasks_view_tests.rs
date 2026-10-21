@@ -158,6 +158,71 @@ fn open_switches_to_the_selected_task() {
     ));
 }
 
+/// What the resident tree let go of: a subagent that finished, one that
+/// failed, and commands that exited, each with the time it took.
+fn finished_rows() -> Vec<TaskRow> {
+    vec![
+        TaskRow {
+            elapsed: Some("2m 10s".to_string()),
+            tokens: Some(8_800),
+            detail: Some("Running cargo test".to_string()),
+            ..subagent("5a6b9a8b7c6d", "still_working", TaskStatus::Running)
+        },
+        TaskRow {
+            elapsed: Some("6s".to_string()),
+            tokens: Some(1_900),
+            ..subagent("5a6b4455667f", "date_check", TaskStatus::Done)
+        },
+        TaskRow {
+            elapsed: Some("41s".to_string()),
+            tokens: Some(5_300),
+            ..subagent("5a6b11223344", "flaky_worker", TaskStatus::Failed)
+        },
+        TaskRow {
+            status: TaskStatus::Done,
+            elapsed: Some("3s".to_string()),
+            detail: Some("started by main · exit 0".to_string()),
+            ..command("5a6b0c0d0e0f", "1001", "npm run build")
+        },
+        TaskRow {
+            status: TaskStatus::Failed,
+            elapsed: Some("9s".to_string()),
+            detail: Some("started by date_check · exit 2".to_string()),
+            ..command("5a6b4455667f", "1002", "make lint")
+        },
+    ]
+}
+
+#[test]
+fn tasks_keeps_finished_and_failed_work_with_time_and_tokens() {
+    let (view, _rx) = tasks_view(finished_rows());
+    insta::assert_snapshot!(rendered(&view, /*width*/ 110));
+}
+
+#[test]
+fn a_finished_subagent_still_opens_to_its_transcript() {
+    let (mut view, mut rx) = tasks_view(finished_rows());
+    press(&mut view, KeyCode::Down);
+    press(&mut view, KeyCode::Enter);
+    match rx.try_recv() {
+        Ok(AppEvent::OpenTask(target)) => {
+            assert_eq!(target, TreeTarget::Thread(thread_id("5a6b4455667f")));
+        }
+        other => panic!("expected an open, got {other:?}"),
+    }
+
+    // Nothing to stop once it is done, or once it failed.
+    for down in [1, 2] {
+        let (mut view, mut rx) = tasks_view(finished_rows());
+        for _ in 0..down {
+            press(&mut view, KeyCode::Down);
+        }
+        press(&mut view, KeyCode::Char('x'));
+        assert!(rx.try_recv().is_err());
+        assert!(!view.is_complete());
+    }
+}
+
 #[test]
 fn escape_closes_without_acting() {
     let (mut view, mut rx) = tasks_view(sample_rows());

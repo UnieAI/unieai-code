@@ -1242,6 +1242,10 @@ pub(crate) enum AppEvent {
     /// Open `/tasks`: this session's subagents and the commands left running.
     OpenTasks,
 
+    /// Rebuild the resident agent tree: a finished subagent's grace period
+    /// is over.
+    RefreshAgentTree,
+
     /// Ask before stopping a task. `reopen_tasks` returns to `/tasks` after.
     ConfirmStopTask {
         target: crate::bottom_pane::TreeTarget,

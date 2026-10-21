@@ -117,7 +117,7 @@ fn ordinary_commands_are_not_background_tasks() {
 }
 
 #[test]
-fn a_command_is_only_forgotten_in_its_own_thread() {
+fn a_command_only_finishes_in_its_own_thread() {
     let mut monitor = TaskMonitor::default();
     let first = thread_id("5a6b0c0d0e0f");
     let second = thread_id("5a6b9a8b7c6d");
@@ -127,9 +127,9 @@ fn a_command_is_only_forgotten_in_its_own_thread() {
         CommandExecutionStatus::InProgress,
     );
     monitor.observe(first, &started(first, running));
-    assert!(!monitor.forget_exec_session(second, "1000"));
+    assert!(!monitor.finish_exec_session(second, "1000", None, false, true));
     assert!(monitor.exec_session(first, "1000").is_some());
-    assert!(monitor.forget_exec_session(first, "1000"));
+    assert!(monitor.finish_exec_session(first, "1000", None, false, true));
 }
 
 #[test]
@@ -236,4 +236,77 @@ fn stopping_an_agent_asks_first() {
         keymap.list,
     );
     insta::assert_snapshot!(render(&view, /*width*/ 72));
+}
+
+#[test]
+fn an_exited_command_is_kept_as_finished_and_counted_until_seen() {
+    let thread = thread_id("5a6b0c0d0e0f");
+    let mut monitor = TaskMonitor::default();
+    monitor.observe(
+        thread,
+        &started(
+            thread,
+            command_item(
+                Some("1000"),
+                CommandExecutionSource::UnifiedExecStartup,
+                CommandExecutionStatus::InProgress,
+            ),
+        ),
+    );
+    assert_eq!(monitor.hidden_done(), 0, "still running");
+
+    monitor.observe(
+        thread,
+        &completed(
+            thread,
+            command_item(
+                Some("1000"),
+                CommandExecutionSource::UnifiedExecStartup,
+                CommandExecutionStatus::Failed,
+            ),
+        ),
+    );
+    assert!(monitor.exec_sessions().is_empty());
+    let finished = monitor
+        .finished_command(thread, "1000")
+        .expect("kept for /tasks");
+    assert!(finished.failed);
+    assert_eq!(monitor.hidden_done(), 1);
+
+    assert!(monitor.acknowledge_all());
+    assert_eq!(monitor.hidden_done(), 0);
+    assert!(!monitor.acknowledge_all(), "nothing new to see");
+}
+
+#[test]
+fn a_finished_agent_is_hidden_after_its_grace_and_a_failure_is_news() {
+    let thread = thread_id("5a6b9a8b7c6d");
+    let mut monitor = TaskMonitor::default();
+
+    assert!(monitor.agent_finished(thread, Duration::from_secs(6), /*failed*/ false));
+    assert!(
+        !monitor.agent_finished(thread, Duration::from_secs(6), /*failed*/ false),
+        "idle and closed after the turn completed report the same ending"
+    );
+    assert_eq!(monitor.hidden_done(), 0, "still inside its grace period");
+    monitor.age_finished_agents(FINISHED_GRACE);
+    assert_eq!(monitor.hidden_done(), 1);
+
+    // Looking at the thread is seeing it.
+    assert!(monitor.acknowledge_agent(thread));
+    assert_eq!(monitor.hidden_done(), 0);
+
+    // A failure reported after the clean ending is news again.
+    assert!(monitor.agent_finished(thread, Duration::from_secs(6), /*failed*/ true));
+    let finished = monitor.finished_agent(thread).copied().expect("recorded");
+    assert!(finished.failed && !finished.acknowledged);
+    assert_eq!(
+        monitor.hidden_done(),
+        0,
+        "a failure stays on the tree, so it is not counted as hidden"
+    );
+
+    // A new turn: working again.
+    assert!(monitor.agent_started(thread));
+    assert!(monitor.finished_agent(thread).is_none());
 }
