@@ -2,6 +2,7 @@ pub mod debug_peers;
 pub(crate) mod debug_sandbox;
 mod exit_status;
 pub(crate) mod login;
+pub mod unieai_artifact;
 pub mod unieai_peers;
 
 use clap::Args;
