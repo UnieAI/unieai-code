@@ -395,7 +395,6 @@ pub(crate) async fn run_turn(
     {
         return Ok(None);
     }
-
     // Only speculate after hooks accept the turn, using its finalized tools and permissions.
     {
         let mut state = sess.state.lock().await;
@@ -1743,7 +1742,14 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    record_registration_metrics(&step_context.tool_router, &step_context.session_telemetry);
+    let incremental_tools = sess
+        .current_window_uses_incremental_tools(&step_context)
+        .await;
+    record_registration_metrics(
+        &step_context.tool_router,
+        &step_context.session_telemetry,
+        incremental_tools,
+    );
     let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1766,8 +1772,7 @@ async fn run_sampling_request(
             prompt_input,
             step_context.as_ref(),
             base_instructions.clone(),
-            sess.current_window_uses_incremental_tools(&step_context)
-                .await,
+            incremental_tools,
         );
         let responses_metadata = sess
             .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)

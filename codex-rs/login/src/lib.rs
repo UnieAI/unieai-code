@@ -39,6 +39,7 @@ pub use success_page::LoginSuccessPageBrand;
 
 pub use auth::AccountOAuthGrant;
 pub use auth::AccountOAuthGrantLease;
+pub use auth::AccountOAuthGrantRevision;
 pub use auth::AgentIdentityAuthPolicy;
 pub use auth::AuthChangeState;
 pub use auth::AuthConfig;
