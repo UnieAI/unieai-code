@@ -49,6 +49,9 @@ pub enum SlashCommand {
     /// Repeat a prompt on an interval, or let the model pace it (uac only).
     Loop,
     Agents,
+    /// This session's subagents and the commands left running; `/ps` too.
+    #[strum(to_string = "tasks", serialize = "ps")]
+    Tasks,
     Side,
     Btw,
     Copy,
@@ -80,7 +83,6 @@ pub enum SlashCommand {
     Exit,
     Feedback,
     Rollout,
-    Ps,
     #[strum(to_string = "stop", serialize = "clean")]
     Stop,
     Clear,
@@ -190,7 +192,7 @@ impl SlashCommand {
             SlashCommand::Statusline => "configure which items appear in the status line",
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Pets => "choose or hide the terminal pet",
-            SlashCommand::Ps => "list background terminals",
+            SlashCommand::Tasks => "list subagents and background commands; open or stop them",
             SlashCommand::Stop => "stop all background terminals",
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
@@ -362,7 +364,7 @@ impl SlashCommand {
             | SlashCommand::Pwd
             | SlashCommand::Usage
             | SlashCommand::DebugConfig
-            | SlashCommand::Ps
+            | SlashCommand::Tasks
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
@@ -420,6 +422,18 @@ mod tests {
     #[test]
     fn stop_command_is_canonical_name() {
         assert_eq!(SlashCommand::Stop.command(), "stop");
+    }
+
+    #[test]
+    fn ps_is_an_alias_of_tasks() {
+        assert_eq!(SlashCommand::Tasks.command(), "tasks");
+        assert_eq!(SlashCommand::from_str("ps"), Ok(SlashCommand::Tasks));
+        assert_eq!(SlashCommand::from_str("tasks"), Ok(SlashCommand::Tasks));
+        assert!(!SlashCommand::Tasks.coming_soon(ComingSoonContext {
+            uac_engine: true,
+            no_openai_services: true,
+            feedback_to_openai: true,
+        }));
     }
 
     #[test]

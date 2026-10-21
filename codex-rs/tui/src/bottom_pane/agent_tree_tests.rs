@@ -15,6 +15,7 @@ fn agent(tail: &str, label: &str) -> AgentRow {
         is_active: false,
         elapsed: None,
         tokens: None,
+        model: None,
         context_left_percent: None,
     }
 }
@@ -261,6 +262,7 @@ fn the_row_shows_time_tokens_and_how_much_context_is_left() {
         is_active: true,
         elapsed: Some("1m02s".to_string()),
         tokens: Some(35_400),
+        model: None,
         context_left_percent: Some(87),
     }]);
     let rendered = tree
@@ -301,4 +303,58 @@ fn a_finished_plan_leaves_the_panel_at_once_but_an_unfinished_one_stays() {
     ]);
     assert!(!tree.retire_finished_todos());
     assert!(!tree.is_empty(), "what is left is worth keeping on screen");
+}
+
+fn exec_session(tail: &str, process_id: &str, command: &str) -> AgentRow {
+    AgentRow {
+        target: TreeTarget::ExecSession {
+            thread: thread_id(tail),
+            process_id: process_id.to_string(),
+        },
+        label: command.to_string(),
+        activity: None,
+        is_running: true,
+        is_active: false,
+        elapsed: Some("12s".to_string()),
+        tokens: None,
+        model: None,
+        context_left_percent: None,
+    }
+}
+
+#[test]
+fn the_tree_shows_each_agents_model_and_the_commands_left_running() {
+    let mut tree = AgentTree::default();
+    tree.set_agents(vec![
+        AgentRow {
+            is_running: false,
+            is_active: true,
+            model: Some("Qwen3.6-35B-A3B".to_string()),
+            ..agent("5a6b0c0d0e0f", "main")
+        },
+        exec_session("5a6b0c0d0e0f", "1000", "sleep 120"),
+        AgentRow {
+            activity: Some("Running cargo test".to_string()),
+            elapsed: Some("1m 05s".to_string()),
+            tokens: Some(12_300),
+            model: Some("Qwen3.6-35B-A3B".to_string()),
+            ..agent("5a6b9a8b7c6d", "count_lines")
+        },
+        exec_session("5a6b9a8b7c6d", "1001", "npm run dev"),
+    ]);
+    tree.focus_tree();
+    tree.select_next();
+
+    insta::assert_snapshot!(rendered(&tree).join("\n"));
+    assert_eq!(
+        tree.selected_target(),
+        Some(&TreeTarget::ExecSession {
+            thread: thread_id("5a6b0c0d0e0f"),
+            process_id: "1000".to_string(),
+        })
+    );
+    assert_eq!(
+        tree.selected_row().map(|row| row.label.as_str()),
+        Some("sleep 120")
+    );
 }

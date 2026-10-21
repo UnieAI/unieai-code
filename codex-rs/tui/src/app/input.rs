@@ -694,6 +694,13 @@ impl App {
             self.chat_widget.open_warnings(&self.transcript_cells);
             return true;
         }
+        // The agent tree without walking down out of history first; a no-op
+        // (and the key passes on) when there is no row or a popup is open.
+        if self.keymap.app.focus_agent_tree.is_pressed(key_event)
+            && self.chat_widget.focus_agent_tree()
+        {
+            return true;
+        }
         let side_toggle_bindings = &self.keymap.app.toggle_side_conversation;
         if side_toggle_bindings.is_pressed(key_event)
             || side_toggle_bindings.contains(&crate::key_hint::ctrl(KeyCode::Char('/')))

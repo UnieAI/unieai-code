@@ -45,12 +45,19 @@ impl TodoStatus {
 
 /// What a navigable row points at.
 ///
-/// Only threads in this process. Peers were deliberately left out: this panel
-/// answers "what is my session doing", and another user's session has no place
-/// in that answer — it has its own surfaces.
+/// Only threads in this process, and the commands they left running. Peers
+/// were deliberately left out: this panel answers "what is my session doing",
+/// and another user's session has no place in that answer — it has its own
+/// surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TreeTarget {
     Thread(codex_protocol::ThreadId),
+    /// A command an agent left running: codex's unified exec process, or a
+    /// uac exec session, addressed as the background terminal it is.
+    ExecSession {
+        thread: codex_protocol::ThreadId,
+        process_id: String,
+    },
 }
 
 /// One navigable row.
@@ -65,6 +72,8 @@ pub(crate) struct AgentRow {
     /// Rendered elapsed time, for example `5m49s`.
     pub(crate) elapsed: Option<String>,
     pub(crate) tokens: Option<u64>,
+    /// The model the agent runs on, when known.
+    pub(crate) model: Option<String>,
     /// Percent of the context window left, for the thread being shown: the
     /// composer's own footer is hidden whenever a status line is configured.
     pub(crate) context_left_percent: Option<i64>,
@@ -156,6 +165,10 @@ impl AgentTree {
         self.agents.get(self.selected).map(|row| &row.target)
     }
 
+    pub(crate) fn selected_row(&self) -> Option<&AgentRow> {
+        self.agents.get(self.selected)
+    }
+
     /// Tries to move focus into the tree.
     ///
     /// Refuses when there is nothing to select, so a stray arrow key in an
@@ -212,12 +225,12 @@ impl AgentTree {
             let focused = self.focus == PaneFocus::AgentTree && index == self.selected;
             let mut spans: Vec<Span<'static>> =
                 vec![if focused { "› ".cyan() } else { "  ".into() }];
-            spans.push(if agent.is_running {
-                "◉ ".green()
-            } else if agent.is_active {
-                "● ".cyan()
-            } else {
-                "◯ ".dim()
+            spans.push(match agent.target {
+                // A command sits under the agent that left it running.
+                TreeTarget::ExecSession { .. } => "  $ ".dim(),
+                TreeTarget::Thread(_) if agent.is_running => "◉ ".green(),
+                TreeTarget::Thread(_) if agent.is_active => "● ".cyan(),
+                TreeTarget::Thread(_) => "◯ ".dim(),
             });
             spans.push(if focused {
                 agent.label.clone().bold()
@@ -230,6 +243,7 @@ impl AgentTree {
             }
 
             let parts = [
+                agent.model.clone(),
                 agent.elapsed.clone(),
                 agent.tokens.map(format_tokens),
                 agent
@@ -256,7 +270,7 @@ impl AgentTree {
         if self.focus == PaneFocus::AgentTree {
             lines.push(Line::from(vec![
                 "    ".into(),
-                "↑↓ select · enter open · esc back to input".dim(),
+                "↑↓ select · enter open · x stop · esc back to input".dim(),
             ]));
         }
 
@@ -266,7 +280,7 @@ impl AgentTree {
 
 /// Renders a token count the way a status line should: short, and never
 /// pretending to more precision than matters.
-fn format_tokens(tokens: u64) -> String {
+pub(crate) fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("↓ {:.1}M tokens", tokens as f64 / 1_000_000.0)
     } else if tokens >= 1_000 {

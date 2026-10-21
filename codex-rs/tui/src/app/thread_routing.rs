@@ -1080,6 +1080,11 @@ impl App {
             self.agent_activity.insert(thread_id, summary);
             self.refresh_agent_tree();
         }
+        // Commands left running (a process id on a unified exec item) and the
+        // model each thread runs on, for the tree and `/tasks`.
+        if self.tasks.observe(thread_id, &notification) {
+            self.refresh_agent_tree();
+        }
         let inferred_session = if let ServerNotification::ThreadStarted(started) = &notification
             && self.primary_session_configured.is_some()
         {

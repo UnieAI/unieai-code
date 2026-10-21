@@ -1,0 +1,14 @@
+---
+source: tui/src/bottom_pane/tasks_view_tests.rs
+expression: "rendered(&view, 110)"
+---
+Tasks  subagents and background commands
+
+  Subagents
+› ◉ count_lines  running 1m 05s · ↓ 12.3k tokens · Qwen3.6-35B-A3B  Running wc -l calc.py
+  ◯ planner      done    ↓ 4.1k tokens · Qwen3.6-35B-A3B  Answered
+
+  Background commands
+  $ sleep 120    running 12s  started by main
+
+  ↑↓ select · enter/o open · x stop · esc close

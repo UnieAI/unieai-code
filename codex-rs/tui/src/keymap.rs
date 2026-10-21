@@ -106,6 +106,8 @@ pub(crate) struct AppKeymap {
     pub(crate) focus_activity: Vec<KeyBinding>,
     /// Open retained warnings without replacing the composer.
     pub(crate) open_warnings: Vec<KeyBinding>,
+    /// Move focus into the resident agent tree under the composer.
+    pub(crate) focus_agent_tree: Vec<KeyBinding>,
     /// Open external editor for the current draft.
     pub(crate) open_external_editor: Vec<KeyBinding>,
     /// Copy the last agent response to the clipboard.
@@ -707,6 +709,20 @@ impl RuntimeKeymap {
             })
             .collect();
 
+        // Same rule for the agent tree's focus key.
+        let focus_agent_tree_defaults: Vec<_> = defaults
+            .app
+            .focus_agent_tree
+            .iter()
+            .copied()
+            .filter(|binding| {
+                !configured_context_binding_is_used(keymap, *binding)
+                    && !chords.bindings.iter().any(|chord| {
+                        chord.chord.prefix.normalized_parts() == binding.normalized_parts()
+                    })
+            })
+            .collect();
+
         let app = AppKeymap {
             open_agents: resolve_bindings(
                 keymap.global.open_agents.as_ref(),
@@ -729,6 +745,7 @@ impl RuntimeKeymap {
                 "tui.keymap.global.focus_activity",
             )?,
             open_warnings: open_warnings_defaults,
+            focus_agent_tree: focus_agent_tree_defaults,
             open_external_editor: resolve_bindings(
                 keymap.global.open_external_editor.as_ref(),
                 &defaults.app.open_external_editor,
@@ -1678,6 +1695,7 @@ impl RuntimeKeymap {
                 find_transcript: default_bindings![plain(KeyCode::F(3))],
                 focus_activity: default_bindings![plain(KeyCode::F(4))],
                 open_warnings: default_bindings![plain(KeyCode::F(2))],
+                focus_agent_tree: default_bindings![plain(KeyCode::F(6))],
                 open_external_editor: default_bindings![ctrl(KeyCode::Char('g'))],
                 copy: default_bindings![ctrl(KeyCode::Char('o'))],
                 clear_terminal: default_bindings![ctrl(KeyCode::Char('l'))],
@@ -2054,6 +2072,7 @@ impl RuntimeKeymap {
             ("find_transcript", self.app.find_transcript.as_slice()),
             ("focus_activity", self.app.focus_activity.as_slice()),
             ("open_warnings", self.app.open_warnings.as_slice()),
+            ("focus_agent_tree", self.app.focus_agent_tree.as_slice()),
             (
                 "open_external_editor",
                 self.app.open_external_editor.as_slice(),
@@ -2161,6 +2180,7 @@ impl RuntimeKeymap {
                 ("find_transcript", self.app.find_transcript.as_slice()),
                 ("focus_activity", self.app.focus_activity.as_slice()),
                 ("open_warnings", self.app.open_warnings.as_slice()),
+                ("focus_agent_tree", self.app.focus_agent_tree.as_slice()),
                 (
                     "open_external_editor",
                     self.app.open_external_editor.as_slice(),
@@ -2220,6 +2240,7 @@ impl RuntimeKeymap {
                 ("find_transcript", self.app.find_transcript.as_slice()),
                 ("focus_activity", self.app.focus_activity.as_slice()),
                 ("open_warnings", self.app.open_warnings.as_slice()),
+                ("focus_agent_tree", self.app.focus_agent_tree.as_slice()),
                 (
                     "open_external_editor",
                     self.app.open_external_editor.as_slice(),

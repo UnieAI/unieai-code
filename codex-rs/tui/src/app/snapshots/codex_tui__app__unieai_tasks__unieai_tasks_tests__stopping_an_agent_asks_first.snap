@@ -1,0 +1,11 @@
+---
+source: tui/src/app/unieai_tasks_tests.rs
+expression: "render(&view, 72)"
+---
+
+  Stop count_lines?
+
+
+  1. Yes, stop the agent  Interrupt its current turn; the agent that
+                          started it is told
+› 2. No, keep it running

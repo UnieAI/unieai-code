@@ -1763,6 +1763,20 @@ impl App {
                     }
                 }
             }
+            AppEvent::OpenTasks => self.open_tasks(),
+            AppEvent::ConfirmStopTask {
+                target,
+                label,
+                reopen_tasks,
+            } => self.confirm_stop_task(target, label, reopen_tasks),
+            AppEvent::StopTask {
+                target,
+                reopen_tasks,
+            } => self.stop_task(app_server, target, reopen_tasks).await,
+            AppEvent::OpenTask(target) => self.open_task(app_server, target),
+            AppEvent::TaskOutputLoaded { title, result } => {
+                self.show_task_output(tui, title, result);
+            }
             AppEvent::FetchMcpInventory { detail, thread_id } => {
                 self.fetch_mcp_inventory(app_server, detail, thread_id);
             }

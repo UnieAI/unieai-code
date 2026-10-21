@@ -651,8 +651,8 @@ impl ChatWidget {
             SlashCommand::Pets => {
                 self.open_pets_picker();
             }
-            SlashCommand::Ps => {
-                self.add_ps_output();
+            SlashCommand::Tasks => {
+                self.app_event_tx.send(AppEvent::OpenTasks);
             }
             SlashCommand::Stop => {
                 self.clean_background_terminals();
@@ -1388,7 +1388,6 @@ impl ChatWidget {
             | SlashCommand::Pwd
             | SlashCommand::Usage
             | SlashCommand::DebugConfig
-            | SlashCommand::Ps
             | SlashCommand::Stop
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate
@@ -1438,6 +1437,7 @@ impl ChatWidget {
             | SlashCommand::Btw
             | SlashCommand::Keymap
             | SlashCommand::Agents
+            | SlashCommand::Tasks
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox

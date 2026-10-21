@@ -283,6 +283,7 @@ define_runtime_action_bindings! {
         find_transcript,
         focus_activity,
         open_warnings => runtime_only,
+        focus_agent_tree => runtime_only,
         open_external_editor,
         copy,
         clear_terminal,

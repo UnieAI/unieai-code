@@ -95,6 +95,7 @@ mod request_user_input;
 mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
+mod tasks_view;
 mod title_setup;
 pub(crate) mod user_verification;
 mod voice_strip;
@@ -890,11 +891,34 @@ impl BottomPane {
                     }
                     KeyCode::Down => self.agent_tree.select_next(),
                     KeyCode::Esc => self.agent_tree.focus_composer(),
-                    KeyCode::Enter => {
+                    // Enter (or the agents overview's open key) opens the row:
+                    // a thread switches to it, a command pages its output.
+                    _ if key_event.code == KeyCode::Enter
+                        || self.keymap.agents.resume.is_pressed(key_event) =>
+                    {
                         if let Some(target) = self.agent_tree.selected_target().cloned() {
-                            let agent_tree::TreeTarget::Thread(thread_id) = target;
-                            self.app_event_tx
-                                .send(AppEvent::SelectAgentThread(thread_id));
+                            self.app_event_tx.send(match target {
+                                agent_tree::TreeTarget::Thread(thread_id) => {
+                                    AppEvent::SelectAgentThread(thread_id)
+                                }
+                                target @ agent_tree::TreeTarget::ExecSession { .. } => {
+                                    AppEvent::OpenTask(target)
+                                }
+                            });
+                        }
+                        self.agent_tree.focus_composer();
+                    }
+                    // The overview's stop key: interrupt the agent, or kill
+                    // the command, once the user confirms.
+                    _ if self.keymap.agents.stop.is_pressed(key_event) => {
+                        if let Some(row) = self.agent_tree.selected_row()
+                            && row.is_running
+                        {
+                            self.app_event_tx.send(AppEvent::ConfirmStopTask {
+                                target: row.target.clone(),
+                                label: row.label.clone(),
+                                reopen_tasks: false,
+                            });
                         }
                         self.agent_tree.focus_composer();
                     }
@@ -910,6 +934,27 @@ impl BottomPane {
                 Some(InputResult::None)
             }
         }
+    }
+
+    /// Moves focus into the resident tree (its keybinding), when there is a
+    /// row to select and nothing else is open over the composer.
+    pub(crate) fn focus_agent_tree(&mut self) -> bool {
+        if !self.view_stack.is_empty() || !self.agent_tree.focus_tree() {
+            return false;
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// Opens `/tasks` over the composer with `rows`.
+    pub(crate) fn show_tasks(&mut self, rows: Vec<TaskRow>) {
+        let view = tasks_view::TasksView::new(
+            rows,
+            self.app_event_tx.clone(),
+            self.keymap.list.clone(),
+            self.keymap.agents.clone(),
+        );
+        self.push_view(Box::new(view));
     }
 
     /// Replaces the resident todo list.
@@ -2766,6 +2811,8 @@ impl BottomPane {
 
 pub(crate) use agent_tree::AgentRow;
 pub(crate) use agent_tree::TreeTarget;
+pub(crate) use tasks_view::TaskRow;
+pub(crate) use tasks_view::TaskStatus;
 
 /// Renders a duration the way a status line should: two units at most, so the
 /// column stays a stable width as agents run.
