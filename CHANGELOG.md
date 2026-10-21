@@ -33,6 +33,98 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.38 — 2026-10-21
+
+- Merged upstream Codex twice: through
+  [`66d0de9983`](https://github.com/openai/codex/commit/66d0de9983) (2026-10-20,
+  106 commits) and through
+  [`067249a283`](https://github.com/openai/codex/commit/067249a283) (2026-10-21,
+  35 commits). Notable: `$` mentions rank by what you picked recently, async
+  question prompts render as Markdown, Up recalls the prompt given on the
+  command line, `/permissions` holds queued prompts until its menu is open,
+  the model list is kept when a refresh fails, and a thread keeps its model
+  settings when resumed. The Rust toolchain is now 1.99.1.
+
+### New
+
+- **`/usage` for UnieAI Studio plans.** Without a ChatGPT login, `/usage`
+  shows your Studio plan: the 5-hour and weekly windows (% used and when they
+  reset), extra usage with a switch that asks before it bills API credits,
+  credit grants and when they expire, and your wallet with its monthly limit,
+  plus Manage plan and Top up credits links. Plan usage also feeds `/status`,
+  the composer's usage notice and the 5-hour / weekly status-line items, on
+  both engines. Studio spends grants first, then the plan windows, then (with
+  extra usage on) the wallet.
+- **`/tasks`** (also `/ps`) lists subagents and commands left running in the
+  background, with status, run time, tokens, model and last action. Open one
+  to see its transcript or recent output, or stop it.
+- **Remote Control (uac, preview).** `/remote-control` and
+  `unieai remote-control [start|stop|devices|revoke]` show a pairing link and
+  QR code so a browser can follow a session, send prompts, answer approvals
+  and questions, and interrupt. The connection is end-to-end encrypted: the
+  relay only passes ciphertext. While it runs, the status line shows
+  "Remote: N viewers". UnieAI's hosted relay is not live yet; until it is,
+  Remote Control needs a relay you run yourself
+  (`unieai remote-control start --relay <URL>`).
+- **Artifacts (uac, preview).** The agent can publish a web page to your
+  UnieAI Rabi gallery with `publish_artifact`, and update the same page in
+  place when it publishes from the same path again. A bundled artifact skill
+  tells it how. `unieai artifact list | open | delete | publish | set` does
+  the same from the shell. Artifacts need a Rabi sign-in, and depend on
+  Rabi's Artifacts service, which is still rolling out.
+
+### Improved
+
+- The agent tree under the composer shows only live work: running
+  subagents, ones waiting on you, failed ones you have not seen, and commands
+  still running. Finished work moves to `/tasks`, and a dim
+  "N done · /tasks" line counts it. `[tui] agent_tree_show_finished = true`
+  brings back the old panel.
+- In the agent tree, `o`/Enter opens a subagent or background command, `x`
+  stops it after asking, and F6 focuses the tree. Rows show each agent's
+  model.
+- Commands UnieAI Code cannot serve yet now say "coming soon" instead of
+  failing or disappearing: `/app`, `/voice` and `/apps` (unless the provider
+  is OpenAI's), `/feedback` without a `[feedback] webhook_url`; and on uac
+  `/review`, `/side`, `/btw`, `/memories`, `/plan`, `/hooks`, `/plugins` and
+  `/approve`. They are marked "(coming soon)" in the `/` popup.
+- `/status` shows a Studio wallet as available credits.
+
+### Fixed
+
+- uac no longer fails every turn with "ACP agent closed the connection" on
+  Node 23, Node 22 before 22.18 or Node 24 before 24.2. The engine now starts
+  on those versions.
+- When the uac engine dies at startup, the error now says how (exit code or
+  signal). On macOS, a kill at startup comes with the `xattr` command that
+  clears the download quarantine.
+- Plan-limit and billing refusals from the UnieAI gateway (out of balance,
+  wallet monthly limit, plan window used up) now say what to do (top up,
+  raise the limit, or turn on extra usage in `/usage`, with the reset time)
+  and are no longer retried. This applies on both engines.
+
+### uac engine
+
+- Several clients can watch one thread: every client gets its updates,
+  approvals and questions go to all of them with the first answer winning,
+  and a second TUI on the same thread no longer takes over the first one's
+  approvals and tools.
+- Subagents can be stopped. Commands left running are reported as
+  background terminals that can be listed, read and stopped. Each subagent
+  reports its own token usage.
+
+### Login & models
+
+- The sign-in screen lists **UnieAI Rabi first**, then UnieAI Studio, your
+  company's Studio, and **Connect a model API**.
+- **Connect a model API** works without a UnieAI account. Pick OpenAI,
+  OpenRouter, DeepSeek, Groq, Together, Mistral, Gemini, a local Ollama or
+  LM Studio, or a custom URL (vLLM and other OpenAI-compatible servers).
+  Enter the key (cloud presets need one), then filter the models the
+  server lists and save. `/model` labels them by provider. From the shell:
+  `unieai login --api <PRESET|URL>`, `unieai login api list|remove`. These
+  models run on uac; the OpenAI preset also runs on codex.
+
 ## 0.0.37 — 2026-10-20
 
 ### Improved

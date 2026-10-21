@@ -32,16 +32,20 @@ also used by UnieAI Studio.
 
 ## What's new
 
-**0.0.37** (2026-10-20) — highlights of the last two releases:
+**0.0.38** (2026-10-21) — highlights:
 
-- **Rewind with files** — Esc Esc back to an earlier message can restore the files the
-  later turns changed, not just the conversation (uac).
-- **`/context`** — see what is filling the context window, and how close compaction is.
-- **`/loop` and scheduled turns** — repeat a prompt on an interval; `/loop stop` ends it.
-- **Custom subagents and auto approval** — define subagents in `.unieai/agents/*.md`;
-  "Approve for me" in `/permissions` lets a reviewer model handle routine approvals.
-- **Worktrees on uac** — `create_worktree`, with tools and rewind following the session
-  into the new directory; plus the new UnieAI welcome logo.
+- **Connect a model API** — sign in with UnieAI Rabi (now first), UnieAI Studio, or no
+  UnieAI account at all: OpenAI, OpenRouter, DeepSeek, Groq, Together, Mistral, Gemini,
+  Ollama, LM Studio or any OpenAI-compatible URL (`unieai login --api <PRESET|URL>`).
+- **`/usage` for Studio plans** — 5-hour and weekly windows, extra usage and your wallet;
+  billing refusals now say what to do and are not retried.
+- **`/tasks`** — subagents and background commands, to open or stop; the agent tree
+  under the composer now shows only live work.
+- **Fixed on Node 23** — uac turns no longer fail with "ACP agent closed the connection"
+  on Node 23 (or 22 before 22.18, 24 before 24.2).
+- **Previews** — Remote Control (`/remote-control`, end-to-end encrypted; the hosted
+  relay is not live yet) and Artifacts (`publish_artifact`, `unieai artifact`; needs
+  a Rabi sign-in).
 
 Every release, newest first: [CHANGELOG.md](CHANGELOG.md).
 
