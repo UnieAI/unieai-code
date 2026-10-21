@@ -530,10 +530,15 @@ export function createDshEngine({
   // The client's sandbox and approval for this thread ({ sandbox, approval,
   // reviewer } in dsh's terms), applied to the dsh session whenever it is opened.
   permissions = () => null,
-  // The dsh provider the model belongs to (a local server for --oss), and
-  // work to finish before the first session (declaring that provider).
+  // The dsh provider the model belongs to (a local server for --oss, a
+  // self-hosted server), and work to finish before the first session
+  // (declaring that provider).
   provider = DSH_PROVIDER_ID,
   prepare = null,
+  // (model) => { provider, model }: where a model the client switches to
+  // runs (`<server>/<model>` is a self-hosted server's). Without it a switch
+  // stays on `provider`.
+  routeModel = null,
   // Called with { total, last, modelContextWindow } as the session's token usage grows.
   onUsage = () => {},
   // Called with { clientId, text } when a steered message reaches the model.
@@ -1032,9 +1037,12 @@ export function createDshEngine({
      * and effort take effect on the open session now, or when it opens.
      */
     async configure({ model: nextModel = null, effort: nextEffort = null, permissions: nextPermissions = false } = {}) {
-      const modelChanged = Boolean(nextModel) && nextModel !== model;
+      const routed = nextModel && routeModel ? routeModel(nextModel) : null;
+      if (routed) nextModel = routed.model;
+      const modelChanged = Boolean(nextModel) && (nextModel !== model || (routed && routed.provider !== provider));
       const effortChanged = Boolean(nextEffort) && nextEffort !== effort;
       if (modelChanged) model = nextModel;
+      if (modelChanged && routed) provider = routed.provider;
       if (effortChanged) effort = nextEffort;
       if (!sessionId || !sessionAgent) return;
       if (modelChanged) await selectModel(sessionAgent);

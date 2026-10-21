@@ -1,0 +1,16 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 16)"
+---
+> Use a self-hosted model server
+
+  Connect an OpenAI-compatible server you run yourself: vLLM, SGLang, TGI,
+  llama.cpp, Ollama, LM Studio, … No UnieAI account is needed.
+
+  Enter its URL (e.g. localhost:11434 or http://gpu-box:8000/v1).
+
+╭Server URL────────────────────────────────────────────────────────────────────╮
+│Paste or type the server URL                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  Press enter to continue
+  Press esc to go back

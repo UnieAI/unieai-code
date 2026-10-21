@@ -84,7 +84,8 @@ impl ChatWidget {
             self.open_luna_reserve_model_popup(presets, MODEL_SELECTION_VIEW_ID);
             return;
         }
-        let presets: Vec<ModelPreset> = presets
+        let presets: Vec<ModelPreset> = self
+            .without_unservable_models(presets)
             .into_iter()
             .filter(|preset| preset.show_in_picker)
             .collect();
@@ -219,13 +220,33 @@ impl ChatWidget {
             return;
         }
         let presets = self
-            .model_catalog
-            .try_list_models()
-            .unwrap_or_default()
+            .without_unservable_models(self.model_catalog.try_list_models().unwrap_or_default())
             .into_iter()
             .filter(|preset| preset.show_in_picker && !Self::is_auto_model(&preset.model))
             .collect();
         self.open_all_models_popup_with_view_id(presets, ALL_MODELS_SELECTION_VIEW_ID);
+    }
+
+    /// Self-hosted servers' models (`<server>/<model>`) speak chat
+    /// completions, which only the uac engine does: a codex session leaves
+    /// them out rather than send them to the UnieAI gateway.
+    fn without_unservable_models(&self, presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        if crate::unieai_engine::session_is_uac() {
+            return presets;
+        }
+        let servers = codex_login::unieai_self_hosted::load_self_hosted_providers(
+            self.config.codex_home.as_path(),
+        );
+        if servers.is_empty() {
+            return presets;
+        }
+        presets
+            .into_iter()
+            .filter(|preset| {
+                codex_login::unieai_self_hosted::find_self_hosted_model(&servers, &preset.model)
+                    .is_none()
+            })
+            .collect()
     }
 
     fn open_all_models_popup_with_view_id(

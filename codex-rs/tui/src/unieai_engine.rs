@@ -220,12 +220,26 @@ pub(crate) fn session_takes_any_image() -> bool {
 }
 
 /// Whether UnieAI's provider is active with nothing to authenticate it: no
-/// UnieAI sign-in and no `UNIEAI_API_KEY`. The provider does not use OpenAI
-/// auth, so the regular login check never fires for it.
+/// UnieAI sign-in, no `UNIEAI_API_KEY` and no self-hosted model server. The
+/// provider does not use OpenAI auth, so the regular login check never fires
+/// for it.
 pub(crate) fn needs_unieai_sign_in(provider_id: &str, codex_home: &Path) -> bool {
     provider_id == codex_model_provider_info::UNIEAI_PROVIDER_ID
-        && std::env::var("UNIEAI_API_KEY").map_or(true, |key| key.trim().is_empty())
-        && codex_login::unieai::load_unieai_credentials(codex_home).is_none()
+        && !has_unieai_account(codex_home)
+        && codex_login::unieai_self_hosted::load_self_hosted_providers(codex_home).is_empty()
+}
+
+/// A UnieAI sign-in, or `UNIEAI_API_KEY` for the gateway.
+fn has_unieai_account(codex_home: &Path) -> bool {
+    std::env::var("UNIEAI_API_KEY").is_ok_and(|key| !key.trim().is_empty())
+        || codex_login::unieai::load_unieai_credentials(codex_home).is_some()
+}
+
+/// The top-level `model` of `$CODEX_HOME/config.toml`, if set.
+fn configured_model(codex_home: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(codex_home.join("config.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    value.get("model")?.as_str().map(str::to_string)
 }
 
 /// The engine configured for new sessions, ignoring the environment override.
@@ -274,14 +288,37 @@ pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error)
 }
 
 /// Why the signed-in account cannot run `engine`, if it cannot. A UnieAI
-/// Rabi account's relay serves chat completions only, which the codex engine
-/// (Responses API) cannot use.
+/// Rabi account's relay and self-hosted model servers serve chat completions
+/// only, which the codex engine (Responses API) cannot use.
 pub(crate) fn engine_unavailable_reason(codex_home: &Path, engine: EngineKind) -> Option<String> {
-    let account = codex_login::unieai::load_unieai_credentials(codex_home)?.account;
-    (engine == EngineKind::Codex && !account.supports_codex_engine()).then(|| {
-        format!(
+    if engine != EngineKind::Codex {
+        return None;
+    }
+    if let Some(account) =
+        codex_login::unieai::load_unieai_credentials(codex_home).map(|c| c.account)
+        && !account.supports_codex_engine()
+    {
+        return Some(format!(
             "Not available with a {} account; it runs on {}.",
             account.display_name(),
+            EngineKind::Uac.display_name()
+        ));
+    }
+    let self_hosted = codex_login::unieai_self_hosted::load_self_hosted_providers(codex_home);
+    if self_hosted.is_empty() {
+        return None;
+    }
+    if !has_unieai_account(codex_home) {
+        return Some(format!(
+            "Not available with self-hosted model servers alone; they run on {}.",
+            EngineKind::Uac.display_name()
+        ));
+    }
+    let model = configured_model(codex_home)?;
+    codex_login::unieai_self_hosted::find_self_hosted_model(&self_hosted, &model).map(|_| {
+        format!(
+            "Not available while a self-hosted model ({model}) is selected; it runs on {}. \
+             Pick a UnieAI Studio model with /model first.",
             EngineKind::Uac.display_name()
         )
     })

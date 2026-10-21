@@ -43,11 +43,17 @@ export function oneShotMessages(prompt, outputSchema) {
 
 /**
  * The model call, reading the signed-in account on each use (a Studio sync
- * may have rotated the key).
+ * may have rotated the key). `route(model)` returns `{ baseUrl, apiKey, model }`
+ * for a model the gateway does not serve (a self-hosted server's), so a
+ * thread on such a model needs no UnieAI sign-in for its title either.
  */
-export function createOneShotModel({ fetchImpl = globalThis.fetch, credentials = loadCredentials, timeoutMs = 60_000 } = {}) {
+export function createOneShotModel({ fetchImpl = globalThis.fetch, credentials = loadCredentials, route = () => null, timeoutMs = 60_000 } = {}) {
   return async function oneShot({ model, prompt, outputSchema = null, signal } = {}) {
-    const account = credentials();
+    const routed = route(model);
+    const account = routed
+      ? { gatewayBaseUrl: routed.baseUrl, gatewayApiKey: routed.apiKey || "none" }
+      : credentials();
+    if (routed) model = routed.model;
     if (!account?.gatewayBaseUrl || !account?.gatewayApiKey) throw new Error("not signed in to UnieAI");
     // Thinking off: a title needs no deliberation, and a thinking model
     // otherwise spends the whole budget reasoning and returns empty content

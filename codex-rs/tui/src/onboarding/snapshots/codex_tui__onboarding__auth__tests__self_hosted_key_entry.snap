@@ -1,0 +1,16 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: key_entry
+---
+> Use a self-hosted model server
+
+  Server: http://localhost:11434/v1
+
+  Enter the server's API key, or leave it empty if it needs none.
+  The key is stored owner-only in your UnieAI home.
+
+╭API key (optional)────────────────────────────────────────────────────────────╮
+│•••••••••                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  Press enter to connect
+  Press esc to go back

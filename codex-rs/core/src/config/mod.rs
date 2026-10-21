@@ -179,6 +179,7 @@ pub(crate) use runtime_refresh::RuntimeConfigRefresh;
 #[cfg(test)]
 mod schema;
 mod token_budget_startup;
+mod unieai_self_hosted;
 mod windows_sandbox_config;
 pub use auth_keyring::bootstrap_auth_config;
 pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
@@ -4038,6 +4039,14 @@ impl Config {
             provider.env_key = None;
             provider.env_key_instructions = None;
         }
+        // Self-hosted servers (`unieai login --self-hosted`) need no UnieAI
+        // account: each is a provider, and its models join the catalog below.
+        let self_hosted_servers =
+            codex_login::unieai_self_hosted::load_self_hosted_providers(&codex_home);
+        unieai_self_hosted::add_self_hosted_model_providers(
+            &mut model_providers,
+            &self_hosted_servers,
+        );
         let model_providers = model_providers;
 
         let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
@@ -4328,10 +4337,24 @@ impl Config {
             std::collections::HashMap::new()
         };
         let model_catalog = model_catalog.or_else(|| {
+            if let Some(server) =
+                unieai_self_hosted::self_hosted_server(&self_hosted_servers, &model_provider_id)
+            {
+                return Some(ModelsResponse {
+                    models: unieai_self_hosted::self_hosted_catalog_models(
+                        std::slice::from_ref(server),
+                        /*qualified*/ false,
+                    ),
+                });
+            }
             if model_provider_id != codex_model_provider_info::UNIEAI_PROVIDER_ID {
                 return None;
             }
-            let models: Vec<_> = unieai_credentials
+            let account_label = unieai_credentials
+                .as_ref()
+                .filter(|_| !self_hosted_servers.is_empty())
+                .map(|credentials| credentials.account.display_name());
+            let mut models: Vec<_> = unieai_credentials
                 .as_ref()
                 .map(codex_login::unieai::UnieAICredentials::models)
                 .unwrap_or_default()
@@ -4348,8 +4371,20 @@ impl Config {
                         model.input_modalities.as_deref(),
                     )
                 })
+                // Beside self-hosted models, say which ones are the account's.
+                .map(|mut info| {
+                    if let Some(label) = account_label {
+                        info.description.get_or_insert_with(|| label.to_string());
+                    }
+                    info
+                })
                 .collect();
-            if models.is_empty() && unieai_credentials.is_some() {
+            let account_has_no_models = models.is_empty();
+            models.extend(unieai_self_hosted::self_hosted_catalog_models(
+                &self_hosted_servers,
+                /*qualified*/ true,
+            ));
+            if account_has_no_models && unieai_credentials.is_some() {
                 let studio_url = unieai_credentials
                     .as_ref()
                     .map(|credentials| credentials.studio_url.clone())

@@ -81,6 +81,7 @@ fn write_account(home: &std::path::Path, account: &str) {
 }
 
 #[test]
+#[serial_test::serial(unieai_api_key)]
 fn rabi_accounts_cannot_run_the_codex_engine() {
     let home = tempfile::tempdir().expect("tempdir");
     assert_eq!(
@@ -125,6 +126,7 @@ fn a_uac_start_failure_names_the_reason_and_the_log() {
 }
 
 #[test]
+#[serial_test::serial(unieai_api_key)]
 fn unieai_provider_without_a_sign_in_needs_one() {
     let home = tempfile::tempdir().expect("tempdir");
     // SAFETY: tests in this module do not read UNIEAI_API_KEY concurrently.
@@ -212,4 +214,70 @@ fn the_stamp_is_read_from_beside_the_socket() {
         (stamp.pid, stamp.cli_version.as_deref()),
         (Some(4321), Some("0.0.29"))
     );
+}
+
+fn write_self_hosted(home: &std::path::Path) {
+    let server = codex_login::unieai_self_hosted::SelfHostedProvider {
+        id: "local".to_string(),
+        name: None,
+        base_url: "http://localhost:11434/v1".to_string(),
+        api_key: None,
+        api_key_env: None,
+        models: vec![codex_login::unieai_self_hosted::SelfHostedModel {
+            id: "qwen2.5:0.5b".to_string(),
+            context_window: None,
+            vision: false,
+        }],
+        manual_models: false,
+    };
+    codex_login::unieai_self_hosted::save_self_hosted_providers(home, &[server]).expect("save");
+}
+
+#[test]
+#[serial_test::serial(unieai_api_key)]
+fn a_self_hosted_server_is_enough_to_start_and_runs_on_uac() {
+    let home = tempfile::tempdir().expect("tempdir");
+    // SAFETY: serialized with the other tests that touch UNIEAI_API_KEY.
+    let saved = std::env::var_os("UNIEAI_API_KEY");
+    unsafe { std::env::remove_var("UNIEAI_API_KEY") };
+
+    write_self_hosted(home.path());
+    assert!(!needs_unieai_sign_in("unieai", home.path()));
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(reason.contains("self-hosted"), "{reason}");
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Uac),
+        None
+    );
+    write_engine(home.path(), EngineKind::Codex).expect("write");
+    assert_eq!(resolve_engine(home.path()), EngineKind::Uac);
+
+    // With a Studio account too, codex stays available until a self-hosted
+    // model is the configured one.
+    write_account(home.path(), "studio");
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Codex),
+        None
+    );
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"local/qwen2.5:0.5b\"\n[tui]\nmodel = \"x\"\n",
+    )
+    .expect("write config");
+    let reason = engine_unavailable_reason(home.path(), EngineKind::Codex).expect("reason");
+    assert!(reason.contains("local/qwen2.5:0.5b"), "{reason}");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"DeepSeek-V4-Flash\"\n",
+    )
+    .expect("write config");
+    assert_eq!(
+        engine_unavailable_reason(home.path(), EngineKind::Codex),
+        None
+    );
+
+    match saved {
+        Some(value) => unsafe { std::env::set_var("UNIEAI_API_KEY", value) },
+        None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
+    }
 }

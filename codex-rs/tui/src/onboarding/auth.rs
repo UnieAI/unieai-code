@@ -79,6 +79,9 @@ pub(crate) fn mark_underlined_hyperlink(buf: &mut Buffer, area: Rect, url: &str)
 use super::onboarding_screen::StepState;
 
 mod headless_chatgpt_login;
+mod unieai_self_hosted;
+
+use unieai_self_hosted::SelfHostedState;
 
 #[derive(Clone)]
 pub(crate) enum SignInState {
@@ -87,6 +90,8 @@ pub(crate) enum SignInState {
     UnieAIGatewayUrlEntry(UnieAIGatewayInputState),
     UnieAIDeviceCode(UnieAIDeviceState),
     UnieAISuccess(UnieAISuccessState),
+    /// A self-hosted model server: URL, key, probe, connected.
+    SelfHosted(SelfHostedState),
     ChatGptContinueInBrowser(ContinueInBrowserState),
     #[allow(dead_code)]
     ChatGptDeviceCode(ContinueWithDeviceCodeState),
@@ -103,6 +108,7 @@ pub(crate) enum SignInOption {
     UnieAI,
     UnieAICompany,
     UnieAIRabi,
+    SelfHosted,
     // No longer listed by the onboarding picker; the flows stay for tests and
     // potential re-enablement (`unieai login --chatgpt` covers the CLI path).
     #[allow(dead_code)]
@@ -245,6 +251,9 @@ impl KeyboardHandler for AuthModeWidget {
         if self.handle_unieai_gateway_entry_key_event(&key_event) {
             return;
         }
+        if self.handle_self_hosted_key_event(&key_event) {
+            return;
+        }
 
         if keys::MOVE_UP.is_pressed(key_event) {
             self.move_highlight(/*delta*/ -1);
@@ -304,6 +313,10 @@ impl KeyboardHandler for AuthModeWidget {
                 drop(sign_in_state);
                 let _ = self.handle_unieai_studio_entry_paste(pasted);
             }
+            SignInState::SelfHosted(_) => {
+                drop(sign_in_state);
+                let _ = self.handle_self_hosted_paste(&pasted);
+            }
             _ => {}
         }
     }
@@ -346,7 +359,8 @@ impl AuthModeWidget {
     pub(crate) fn cancel_active_attempt(&self) {
         let mut sign_in_state = self.sign_in_state.write().unwrap();
         match &*sign_in_state {
-            SignInState::UnieAIDeviceCode(_) => {
+            SignInState::UnieAIDeviceCode(_)
+            | SignInState::SelfHosted(SelfHostedState::Probing { .. }) => {
                 if let Some(abort) = self.unieai_login_abort.write().unwrap().take() {
                     abort.abort();
                 }
@@ -389,6 +403,7 @@ impl AuthModeWidget {
             SignInState::ApiKeyEntry(_) => true,
             SignInState::Bedrock(state) => state.is_text_entry_active(),
             SignInState::UnieAIStudioUrlEntry(_) | SignInState::UnieAIGatewayUrlEntry(_) => true,
+            SignInState::SelfHosted(state) => state.is_text_entry(),
             _ => false,
         })
     }
@@ -403,6 +418,7 @@ impl AuthModeWidget {
             SignInState::Bedrock(state) => state.is_text_entry_active(),
             SignInState::UnieAIStudioUrlEntry(state) => !state.value.is_empty(),
             SignInState::UnieAIGatewayUrlEntry(state) => !state.value.is_empty(),
+            SignInState::SelfHosted(state) => state.has_text(),
             _ => false,
         })
     }
@@ -432,6 +448,7 @@ impl AuthModeWidget {
             SignInOption::UnieAI,
             SignInOption::UnieAICompany,
             SignInOption::UnieAIRabi,
+            SignInOption::SelfHosted,
         ]
     }
 
@@ -471,6 +488,9 @@ impl AuthModeWidget {
             }
             SignInOption::UnieAIRabi => {
                 self.start_unieai_rabi_login();
+            }
+            SignInOption::SelfHosted => {
+                self.start_self_hosted_entry();
             }
             SignInOption::ChatGpt => {
                 if self.is_chatgpt_login_allowed() {
@@ -842,6 +862,14 @@ impl AuthModeWidget {
                         option,
                         "Sign in with UnieAI Rabi",
                         "Use your Rabi account (agent.unieai.com)",
+                    ));
+                }
+                SignInOption::SelfHosted => {
+                    lines.extend(create_mode_item(
+                        idx,
+                        option,
+                        "Use a self-hosted model server (vLLM, Ollama, LM Studio, …)",
+                        "Connect an OpenAI-compatible server you run; no account needed",
                     ));
                 }
                 SignInOption::ChatGpt => {
@@ -1624,6 +1652,7 @@ impl StepStateProvider for AuthModeWidget {
             | SignInState::ChatGptDeviceCode(_)
             | SignInState::ChatGptSuccessMessage
             | SignInState::Bedrock(_) => StepState::InProgress,
+            SignInState::SelfHosted(state) => state.step_state(),
             SignInState::ChatGptSuccess
             | SignInState::ApiKeyConfigured
             | SignInState::UnieAISuccess(_)
@@ -1650,6 +1679,9 @@ impl WidgetRef for AuthModeWidget {
             }
             SignInState::UnieAISuccess(state) => {
                 self.render_unieai_success(area, buf, state);
+            }
+            SignInState::SelfHosted(state) => {
+                self.render_self_hosted(area, buf, state);
             }
             SignInState::ChatGptContinueInBrowser(state) => {
                 self.render_continue_in_browser(area, buf, state);
@@ -1952,7 +1984,7 @@ mod tests {
     }
 
     // The fork's picker offers only the UnieAI flows (Studio, company Studio,
-    // Rabi); the
+    // Rabi, a self-hosted server); the
     // Bedrock feature flag and forced login method must not bring back the
     // upstream ChatGPT/API key/Bedrock options.
     #[tokio::test]
@@ -1962,6 +1994,7 @@ mod tests {
             SignInOption::UnieAI,
             SignInOption::UnieAICompany,
             SignInOption::UnieAIRabi,
+            SignInOption::SelfHosted,
         ];
         widget.auth_config.forced_login_method = None;
         assert_eq!(widget.displayed_sign_in_options(), unieai_only);
@@ -2270,5 +2303,147 @@ mod tests {
             !sym.contains("\x1B]8;;\x07injected"),
             "symbol must not contain raw control chars from URL"
         );
+    }
+
+    fn render_widget(widget: &AuthModeWidget, width: u16, height: u16) -> String {
+        let area = Rect::new(/*x*/ 0, /*y*/ 0, width, height);
+        let mut terminal = crate::custom_terminal::Terminal::with_options(
+            crate::test_backend::VT100Backend::new(width, height),
+        )
+        .expect("terminal");
+        terminal.set_viewport_area(area);
+        terminal
+            .draw(|frame| widget.render_ref(area, frame.buffer_mut()))
+            .expect("draw");
+        terminal.backend().to_string()
+    }
+
+    fn type_text(widget: &mut AuthModeWidget, text: &str) {
+        for c in text.chars() {
+            widget.handle_key_event(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    fn press(widget: &mut AuthModeWidget, code: KeyCode) {
+        widget.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[tokio::test]
+    async fn self_hosted_screens_snapshots() {
+        let (mut widget, _tmp) = widget_forced_chatgpt().await;
+        widget.auth_config.forced_login_method = None;
+        widget.highlighted_mode = SignInOption::SelfHosted;
+        insta::assert_snapshot!("self_hosted_pick_mode", render_widget(&widget, 80, 18));
+
+        press(&mut widget, KeyCode::Enter);
+        insta::assert_snapshot!("self_hosted_url_entry", render_widget(&widget, 80, 16));
+
+        press(&mut widget, KeyCode::Enter);
+        assert_eq!(
+            widget.error_message().as_deref(),
+            Some("Server URL cannot be empty")
+        );
+        type_text(&mut widget, "localhost:11434");
+        press(&mut widget, KeyCode::Enter);
+        type_text(&mut widget, "sk-secret");
+        let key_entry = render_widget(&widget, 80, 16);
+        assert!(!key_entry.contains("sk-secret"), "{key_entry}");
+        insta::assert_snapshot!("self_hosted_key_entry", key_entry);
+
+        *widget.sign_in_state.write().unwrap() =
+            SignInState::SelfHosted(SelfHostedState::Connected {
+                id: "local".to_string(),
+                base_url: "http://localhost:11434/v1".to_string(),
+                models: (1..=7).map(|n| format!("model-{n}")).collect(),
+            });
+        insta::assert_snapshot!("self_hosted_connected", render_widget(&widget, 80, 12));
+        assert_eq!(widget.get_step_state(), StepState::Complete);
+    }
+
+    async fn wait_for_probe(widget: &AuthModeWidget) {
+        for _ in 0..200 {
+            if !matches!(
+                &*widget.sign_in_state.read().unwrap(),
+                SignInState::SelfHosted(SelfHostedState::Probing { .. })
+            ) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the probe did not finish");
+    }
+
+    #[tokio::test]
+    async fn self_hosted_flow_saves_the_server_or_says_why_not() {
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::header;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("authorization", "Bearer sk-right"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "qwen2.5:0.5b"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let (mut widget, tmp) = widget_forced_chatgpt().await;
+        widget.auth_config.forced_login_method = None;
+        widget.handle_sign_in_option(SignInOption::SelfHosted);
+        type_text(&mut widget, &server.uri());
+        press(&mut widget, KeyCode::Enter);
+
+        // No key: the server refuses, and the flow asks for one again.
+        press(&mut widget, KeyCode::Enter);
+        wait_for_probe(&widget).await;
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::KeyEntry { .. })
+        ));
+        let error = widget.error_message().expect("error");
+        assert!(
+            error.contains("HTTP 401") && error.contains("API key"),
+            "{error}"
+        );
+
+        type_text(&mut widget, "sk-right");
+        press(&mut widget, KeyCode::Enter);
+        wait_for_probe(&widget).await;
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::Connected { .. })
+        ));
+        let saved = codex_login::unieai_self_hosted::load_self_hosted_providers(tmp.path());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, "local");
+        assert_eq!(saved[0].api_key.as_deref(), Some("sk-right"));
+        assert_eq!(saved[0].models[0].id, "qwen2.5:0.5b");
+
+        // An unreachable server goes back to the URL with the reason.
+        widget.handle_sign_in_option(SignInOption::SelfHosted);
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("port")
+            .port();
+        type_text(&mut widget, &format!("http://127.0.0.1:{port}"));
+        press(&mut widget, KeyCode::Enter);
+        press(&mut widget, KeyCode::Enter);
+        wait_for_probe(&widget).await;
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::SelfHosted(SelfHostedState::UrlEntry { .. })
+        ));
+        let error = widget.error_message().expect("error");
+        assert!(error.contains("could not reach"), "{error}");
     }
 }

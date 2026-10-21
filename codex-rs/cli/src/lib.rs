@@ -3,6 +3,7 @@ pub(crate) mod debug_sandbox;
 mod exit_status;
 pub(crate) mod login;
 pub mod unieai_peers;
+pub mod unieai_self_hosted_login;
 
 use clap::Args;
 use clap::Parser;
