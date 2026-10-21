@@ -375,7 +375,7 @@ async fn replacement_uses_server_defaults_and_preserves_explicit_launch_settings
             › Ask UnieAI Code to do anything
 
               server-model high · <PROJECT>
-              ◯ main
+              ◯ main                                                            server-model
             ");
         }
         if explicit.starts_with("profile_summary") {

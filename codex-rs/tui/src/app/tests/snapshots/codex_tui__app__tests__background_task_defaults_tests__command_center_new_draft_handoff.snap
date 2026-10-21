@@ -14,7 +14,7 @@ attached:
 › draft during startup
 
   GPT-6.1-Sol default · /tmp/project
-  ◯ main
+  ◯ main                                                             gpt-6.1-sol
 
 owned=true
 startup:
@@ -28,4 +28,4 @@ attached:
 
   GPT-6.1-Sol default · /tmp/project
 
-  ◯ main
+  ◯ main                                                             gpt-6.1-sol
