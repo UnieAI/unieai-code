@@ -231,9 +231,14 @@ fn has_unieai_account(codex_home: &Path) -> bool {
 
 /// The top-level `model` of `$CODEX_HOME/config.toml`, if set.
 fn configured_model(codex_home: &Path) -> Option<String> {
+    configured_top_level_str(codex_home, "model")
+}
+
+/// A top-level string setting of `$CODEX_HOME/config.toml`, if set.
+fn configured_top_level_str(codex_home: &Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(codex_home.join("config.toml")).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
-    value.get("model")?.as_str().map(str::to_string)
+    value.get(key)?.as_str().map(str::to_string)
 }
 
 /// The engine configured for new sessions, ignoring the environment override.
@@ -282,8 +287,10 @@ pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error)
 }
 
 /// Why the signed-in account cannot run `engine`, if it cannot. A UnieAI
-/// Rabi account's relay and self-hosted model servers serve chat completions
-/// only, which the codex engine (Responses API) cannot use.
+/// Rabi account's relay and connected model APIs (self-hosted servers,
+/// OpenRouter, …) serve chat completions only, which the codex engine
+/// (Responses API) cannot use. OpenAI is the exception: chosen as
+/// config.toml's `model_provider`, codex talks to it directly.
 pub(crate) fn engine_unavailable_reason(codex_home: &Path, engine: EngineKind) -> Option<String> {
     if engine != EngineKind::Codex {
         return None;
@@ -302,20 +309,57 @@ pub(crate) fn engine_unavailable_reason(codex_home: &Path, engine: EngineKind) -
     if self_hosted.is_empty() {
         return None;
     }
+    // A connected API that serves the Responses API (OpenAI), chosen as the
+    // provider in config.toml, is codex's own way to use it.
+    if let Some(provider) = configured_top_level_str(codex_home, "model_provider")
+        && self_hosted
+            .iter()
+            .any(|server| server.id == provider && server.runs_on_codex_engine())
+    {
+        return None;
+    }
+    let codex_hint = |server: &codex_login::unieai_self_hosted::SelfHostedProvider, model: &str| {
+        format!(
+            " {} also runs on codex with `model_provider = \"{}\"` and `model = \"{model}\"` in config.toml.",
+            server.label(),
+            server.id
+        )
+    };
     if !has_unieai_account(codex_home) {
+        let hint = self_hosted
+            .iter()
+            .find(|server| server.runs_on_codex_engine())
+            .map(|server| {
+                codex_hint(
+                    server,
+                    server.models.first().map_or("<model>", |m| m.id.as_str()),
+                )
+            })
+            .unwrap_or_default();
         return Some(format!(
-            "Not available with self-hosted model servers alone; they run on {}.",
+            "Not available with self-hosted servers or model APIs alone; they run on {}.{hint}",
             EngineKind::Uac.display_name()
         ));
     }
     let model = configured_model(codex_home)?;
-    codex_login::unieai_self_hosted::find_self_hosted_model(&self_hosted, &model).map(|_| {
-        format!(
-            "Not available while a self-hosted model ({model}) is selected; it runs on {}. \
-             Pick a UnieAI Studio model with /model first.",
-            EngineKind::Uac.display_name()
-        )
-    })
+    codex_login::unieai_self_hosted::find_self_hosted_model(&self_hosted, &model).map(
+        |(server, served)| {
+            let what = match server.preset() {
+                Some(_) => format!("the {} model ({model})", server.label()),
+                None => format!("a self-hosted model ({model})"),
+            };
+            let hint = if server.runs_on_codex_engine() {
+                codex_hint(server, &served.id)
+            } else {
+                String::new()
+            };
+            format!(
+                "Not available while {what} is selected; it runs on {}. \
+                 Pick a UnieAI Studio model with /model first.{hint}",
+                EngineKind::Uac.display_name()
+            )
+        },
+    )
 }
 
 /// The engine a session connected to `target` runs on (it can differ from

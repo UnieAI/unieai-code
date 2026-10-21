@@ -24,6 +24,7 @@ fn provider(id: &str, base_url: &str, models: &[&str]) -> SelfHostedProvider {
             })
             .collect(),
         manual_models: false,
+        kind: None,
     }
 }
 
@@ -184,6 +185,7 @@ fn models_responses_from_common_servers_are_understood() {
         Some(vec![DiscoveredModel {
             id: "Qwen/Qwen3-8B".to_string(),
             context_window: Some(40960),
+            vision: false,
         }])
     );
     // llama.cpp server keeps it in meta.
@@ -318,4 +320,349 @@ async fn probe_failures_are_told_apart() {
 
     // Nothing was saved along the way.
     assert_eq!(load_self_hosted_providers(home.path()), Vec::new());
+}
+
+#[test]
+fn presets_have_valid_unique_default_names_and_their_documented_urls() {
+    let kinds: Vec<_> = API_PRESETS.iter().map(|preset| preset.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            "openai",
+            "openrouter",
+            "deepseek",
+            "groq",
+            "together",
+            "mistral",
+            "gemini",
+            "ollama",
+            "lmstudio"
+        ]
+    );
+    let mut ids = std::collections::HashSet::new();
+    for preset in API_PRESETS {
+        // The default names pass the same check a user-typed name does, so
+        // no preset collides with a built-in provider (`openai`, `ollama`, …).
+        validate_provider_id(preset.default_id).expect(preset.default_id);
+        assert!(ids.insert(preset.default_id), "{}", preset.default_id);
+        // Preset URLs are already in normalized form.
+        assert_eq!(
+            normalize_base_url(preset.base_url).expect(preset.base_url),
+            preset.base_url
+        );
+        assert_eq!(api_preset(preset.kind), Some(preset));
+        assert_eq!(api_preset(&preset.kind.to_uppercase()), Some(preset));
+    }
+    assert_eq!(
+        api_preset("openai").map(|p| p.default_id),
+        Some("openai-api")
+    );
+    assert_eq!(
+        api_preset("openrouter").map(|p| p.base_url),
+        Some("https://openrouter.ai/api/v1")
+    );
+    assert_eq!(api_preset("lm-studio").map(|p| p.kind), Some("lmstudio"));
+    assert_eq!(api_preset("google").map(|p| p.kind), Some("gemini"));
+    assert_eq!(api_preset("custom"), None);
+    assert_eq!(api_preset("http://localhost:8000/v1"), None);
+    // Cloud APIs need a key; local servers do not. Only OpenAI runs on codex.
+    let keyless: Vec<_> = API_PRESETS
+        .iter()
+        .filter(|preset| !preset.key_required)
+        .map(|preset| preset.kind)
+        .collect();
+    assert_eq!(keyless, ["ollama", "lmstudio"]);
+    let codex: Vec<_> = API_PRESETS
+        .iter()
+        .filter(|preset| preset.codex_engine)
+        .map(|preset| preset.kind)
+        .collect();
+    assert_eq!(codex, ["openai"]);
+}
+
+#[test]
+fn built_in_names_stay_reserved_for_users_too() {
+    for reserved in [
+        "unieai",
+        "openai",
+        "ollama",
+        "lmstudio",
+        "oss",
+        "amazon-bedrock",
+    ] {
+        let err = validate_provider_id(reserved).expect_err(reserved);
+        assert!(err.to_string().contains("built-in"), "{err}");
+    }
+    assert!(validate_provider_id("openrouter").is_ok());
+    assert!(validate_provider_id("openai-api").is_ok());
+}
+
+#[test]
+fn preset_names_are_made_unique_unless_the_url_is_the_same() {
+    let preset = api_preset("openrouter").expect("preset");
+    let url = preset.base_url;
+    assert_eq!(default_preset_provider_id(preset, url, &[]), "openrouter");
+    let same = [provider("openrouter", url, &["a"])];
+    assert_eq!(default_preset_provider_id(preset, url, &same), "openrouter");
+    let other = [provider("openrouter", "http://proxy/v1", &["a"])];
+    assert_eq!(
+        default_preset_provider_id(preset, url, &other),
+        "openrouter-2"
+    );
+}
+
+#[test]
+fn labels_come_from_the_kind() {
+    let mut openrouter = provider("openrouter", "https://openrouter.ai/api/v1", &["x"]);
+    openrouter.kind = Some("openrouter".to_string());
+    assert_eq!(openrouter.label(), "OpenRouter");
+    openrouter.id = "work".to_string();
+    assert_eq!(openrouter.label(), "OpenRouter (work)");
+    assert!(!openrouter.runs_on_codex_engine());
+    assert_eq!(
+        openrouter.model_provider_info().namespace_tools,
+        Some(false)
+    );
+
+    let mut openai = provider("openai-api", "https://api.openai.com/v1", &["gpt-5"]);
+    openai.kind = Some("openai".to_string());
+    assert_eq!(openai.label(), "OpenAI");
+    assert!(openai.runs_on_codex_engine());
+    assert_eq!(openai.model_provider_info().namespace_tools, None);
+
+    // Files from before presets, and custom URLs, stay "Self-hosted".
+    let legacy = provider("local", "http://localhost:11434/v1", &["q"]);
+    assert_eq!(legacy.label(), "Self-hosted: local");
+    let mut custom = legacy.clone();
+    custom.kind = Some(CUSTOM_KIND.to_string());
+    assert_eq!(custom.label(), "Self-hosted: local");
+    assert!(!custom.runs_on_codex_engine());
+}
+
+#[test]
+fn kind_round_trips_and_old_files_still_load() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        self_hosted_path(home.path()),
+        r#"{"version":1,"providers":[{"id":"gpu","base_url":"http://gpu:8000/v1","models":[{"id":"m"}]}]}"#,
+    )
+    .expect("write");
+    let old = read_self_hosted_providers(home.path()).expect("old file");
+    assert_eq!(old[0].kind, None);
+
+    let mut openrouter = provider("openrouter", "https://openrouter.ai/api/v1", &["x"]);
+    openrouter.kind = Some("openrouter".to_string());
+    upsert_self_hosted_provider(home.path(), openrouter.clone()).expect("save");
+    let raw = std::fs::read_to_string(self_hosted_path(home.path())).expect("read");
+    assert!(raw.contains(r#""kind": "openrouter""#), "{raw}");
+    // The legacy entry is written back without a kind.
+    assert_eq!(raw.matches("\"kind\"").count(), 1, "{raw}");
+    assert_eq!(
+        read_self_hosted_providers(home.path()).expect("read"),
+        vec![old[0].clone(), openrouter]
+    );
+}
+
+#[test]
+fn chat_models_and_filters() {
+    for id in ["gpt-5", "deepseek-chat", "qwen2.5:0.5b", "openai/gpt-4o"] {
+        assert!(is_chat_model_id(id), "{id}");
+    }
+    for id in [
+        "text-embedding-3-small",
+        "nomic-embed-text",
+        "whisper-1",
+        "tts-1-hd",
+        "dall-e-3",
+        "omni-moderation-latest",
+        "gpt-4o-mini-transcribe",
+        "gpt-image-1",
+    ] {
+        assert!(!is_chat_model_id(id), "{id}");
+    }
+    assert!(model_matches_filter("anthropic/claude-sonnet-4", ""));
+    assert!(model_matches_filter("anthropic/claude-sonnet-4", "Claude"));
+    assert!(model_matches_filter(
+        "anthropic/claude-sonnet-4",
+        "anthropic sonnet"
+    ));
+    assert!(!model_matches_filter(
+        "anthropic/claude-sonnet-4",
+        "anthropic opus"
+    ));
+}
+
+#[test]
+fn openrouter_listings_bring_context_windows_and_vision() {
+    let body = serde_json::json!({"data": [
+        {"id": "openai/gpt-4o", "context_length": 128000,
+         "architecture": {"input_modalities": ["text", "image"]}},
+        {"id": "deepseek/deepseek-chat", "context_length": 64000,
+         "architecture": {"input_modalities": ["text"]}}
+    ]});
+    assert_eq!(
+        parse_models_response(&body),
+        Some(vec![
+            DiscoveredModel {
+                id: "openai/gpt-4o".to_string(),
+                context_window: Some(128_000),
+                vision: true,
+            },
+            DiscoveredModel {
+                id: "deepseek/deepseek-chat".to_string(),
+                context_window: Some(64_000),
+                vision: false,
+            },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn a_preset_stores_its_kind_and_default_name() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models"))
+        .and(header("authorization", "Bearer sk-or"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"id": "openai/gpt-4o", "context_length": 128000},
+                {"id": "openai/text-embedding-3-small"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("tempdir");
+    // The preset's URL is overridden here only to reach the mock.
+    let added = add_api_provider(
+        home.path(),
+        SelfHostedRequest {
+            base_url: format!("{}/api/v1", server.uri()),
+            kind: Some("OpenRouter".to_string()),
+            api_key: Some("sk-or".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("added");
+    assert_eq!(added.provider.id, "openrouter");
+    assert_eq!(added.provider.kind.as_deref(), Some("openrouter"));
+    assert_eq!(added.found, 1, "the embedding model is not a chat model");
+    assert_eq!(added.provider.models[0].context_window, Some(128_000));
+    assert_eq!(added.provider.label(), "OpenRouter");
+
+    // A custom URL from the new flow says so.
+    let custom = add_api_provider(
+        home.path(),
+        SelfHostedRequest {
+            base_url: server.uri(),
+            kind: Some(CUSTOM_KIND.to_string()),
+            name: Some("box".to_string()),
+            models: vec!["m".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("custom");
+    assert_eq!(custom.provider.kind.as_deref(), Some(CUSTOM_KIND));
+}
+
+#[tokio::test]
+async fn cloud_presets_need_a_key_and_unknown_presets_are_refused() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let err = add_api_provider(
+        home.path(),
+        SelfHostedRequest {
+            kind: Some("deepseek".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("no key");
+    assert!(matches!(err, SelfHostedError::KeyRequired { .. }), "{err}");
+    assert!(
+        err.to_string().starts_with("DeepSeek needs an API key"),
+        "{err}"
+    );
+
+    let err = add_api_provider(
+        home.path(),
+        SelfHostedRequest {
+            kind: Some("nope".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("unknown");
+    assert!(matches!(err, SelfHostedError::UnknownPreset(_)), "{err}");
+    assert!(err.to_string().contains("openrouter"), "{err}");
+    assert_eq!(load_self_hosted_providers(home.path()), Vec::new());
+}
+
+#[tokio::test]
+async fn huge_lists_are_capped_filtered_or_pinned() {
+    let data: Vec<_> = (0..120)
+        .map(|n| serde_json::json!({"id": format!("vendor{}/model-{n}", n % 3)}))
+        .collect();
+    let server = models_server(200, serde_json::json!({ "data": data })).await;
+    let home = tempfile::tempdir().expect("tempdir");
+    let request = |filter: Option<&str>, models: Vec<String>| SelfHostedRequest {
+        base_url: server.uri(),
+        name: Some("big".to_string()),
+        model_filter: filter.map(str::to_string),
+        models,
+        ..Default::default()
+    };
+
+    let all = add_api_provider(home.path(), request(None, Vec::new()))
+        .await
+        .expect("all");
+    assert_eq!(all.found, 120);
+    assert_eq!(all.provider.models.len(), MAX_STORED_MODELS);
+    assert_eq!(all.provider.models[0].id, "vendor0/model-0");
+
+    let filtered = add_api_provider(home.path(), request(Some("vendor1"), Vec::new()))
+        .await
+        .expect("filtered");
+    assert_eq!(filtered.provider.models.len(), 40);
+    assert!(
+        filtered
+            .provider
+            .models
+            .iter()
+            .all(|m| m.id.starts_with("vendor1/"))
+    );
+
+    let err = add_api_provider(home.path(), request(Some("nothing"), Vec::new()))
+        .await
+        .expect_err("no match");
+    assert!(
+        matches!(err, SelfHostedError::NoMatchingModels { found: 120, .. }),
+        "{err}"
+    );
+
+    let pinned = add_api_provider(
+        home.path(),
+        request(None, vec!["vendor2/model-119".to_string()]),
+    )
+    .await
+    .expect("pinned");
+    assert!(pinned.provider.manual_models);
+    assert_eq!(pinned.provider.models.len(), 1);
+}
+
+#[tokio::test]
+async fn a_bad_key_answered_with_400_is_a_key_problem() {
+    // Gemini's OpenAI-compatible endpoint answers a wrong key with 400.
+    let server = models_server(
+        400,
+        serde_json::json!({"error": {"code": 400, "message": "Please pass a valid API key"}}),
+    )
+    .await;
+    let err = probe_models(&format!("{}/v1", server.uri()), Some("bad"))
+        .await
+        .expect_err("400");
+    assert!(
+        matches!(err, SelfHostedError::Unauthorized { status: 400, .. }),
+        "{err}"
+    );
 }

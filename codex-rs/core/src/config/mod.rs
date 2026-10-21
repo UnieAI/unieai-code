@@ -4050,7 +4050,7 @@ impl Config {
             provider.env_key = None;
             provider.env_key_instructions = None;
         }
-        // Self-hosted servers (`unieai login --self-hosted`) need no UnieAI
+        // Connected model APIs (`unieai login --api`) need no UnieAI
         // account: each is a provider, and its models join the catalog below.
         let self_hosted_servers =
             codex_login::unieai_self_hosted::load_self_hosted_providers(&codex_home);

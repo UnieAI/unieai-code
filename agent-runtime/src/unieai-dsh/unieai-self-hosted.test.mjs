@@ -93,6 +93,33 @@ test("routeModel: <server>/<model> runs on that server, anything else on the gat
   assert.equal(routeModel("local/not-served", servers).provider, "unieai");
 });
 
+test("provider presets are labelled by kind; custom and older entries stay self-hosted", () => {
+  const OPENROUTER = {
+    id: "openrouter",
+    kind: "openrouter",
+    base_url: "https://openrouter.ai/api/v1",
+    api_key: "sk-or-secret",
+    models: [{ id: "anthropic/claude-sonnet-4", context_window: 200000, vision: true }],
+  };
+  const WORK = { ...OPENROUTER, id: "work" };
+  const CUSTOM = { ...GPU, id: "box", kind: "custom" };
+  const servers = loadSelfHostedProviders(makeHome({ servers: [OPENROUTER, WORK, CUSTOM, LOCAL] }));
+  assert.deepEqual(servers.map((s) => s.kind), ["openrouter", "openrouter", "custom", null]);
+  assert.deepEqual(
+    servers.map((s) => selfHostedProviderSpec(s).displayName),
+    ["OpenRouter", "OpenRouter (work)", "box (self-hosted)", "local (self-hosted)"],
+  );
+  // OpenRouter ids carry a slash of their own: the first one names the provider.
+  assert.deepEqual(
+    (({ provider, model }) => ({ provider, model }))(routeModel("openrouter/anthropic/claude-sonnet-4", servers)),
+    { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
+  );
+  const yaml = renderSettings({ baseUrl: null, models: [], defaultModel: "anthropic/claude-sonnet-4", defaultProvider: "openrouter", providers: servers.map(selfHostedProviderSpec) });
+  assert.match(yaml, /\n {4}openrouter:\n {6}displayName: "OpenRouter"\n {6}apiKeyEnv: UNIEAI_SELF_HOSTED_OPENROUTER_API_KEY\n {6}api: openai-completions\n {6}baseURL: "https:\/\/openrouter.ai\/api\/v1"/);
+  assert.match(yaml, /- id: "anthropic\/claude-sonnet-4"\n {10}contextWindow: 200000\n {10}input: \[text, image\]/);
+  assert.doesNotMatch(yaml, /sk-or-secret/);
+});
+
 test("settings: a self-hosted-only setup declares no gateway, each server with its own key env var", () => {
   const [local, gpu] = loadSelfHostedProviders(makeHome({ servers: [LOCAL, GPU] }));
   const yaml = renderSettings({
@@ -156,7 +183,7 @@ test("writeDshAccount: with Studio too, both catalogs are declared and config.to
 
 test("writeDshAccount: neither a sign-in nor a server is an error that says how to fix it", () => {
   const home = makeHome();
-  assert.throws(() => withHome(home, () => writeDshAccount({ env: { DSH_HOME: join(home, "dsh") } })), /--self-hosted/);
+  assert.throws(() => withHome(home, () => writeDshAccount({ env: { DSH_HOME: join(home, "dsh") } })), /--api <PRESET\|URL>/);
   // A model only the (absent) gateway could serve falls back to a server's.
   const withServer = makeHome({ servers: [LOCAL], config: 'model = "DeepSeek-V4-Flash"\n' });
   const account = withHome(withServer, () => writeDshAccount({ env: { DSH_HOME: join(withServer, "dsh") } }));

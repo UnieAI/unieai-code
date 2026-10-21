@@ -1,0 +1,19 @@
+---
+source: tui/src/onboarding/auth.rs
+expression: "render_widget(&widget, 80, 17)"
+---
+  Sign in with UnieAI, or connect a model API, to use UnieAI Code
+
+> 1. Sign in with UnieAI Rabi
+     Use your Rabi account (agent.unieai.com)
+
+  2. Sign in with UnieAI Studio
+     Use your UnieAI account (studio.unieai.com)
+
+  3. Sign in with your company's UnieAI Studio
+     Enter your company or on-prem Studio URL
+
+  4. Connect a model API (OpenAI, OpenRouter, DeepSeek, Ollama, your server…)
+     Bring your own API key or server; no UnieAI account needed
+
+  Press enter to continue
