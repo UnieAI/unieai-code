@@ -60,6 +60,8 @@ const oneShotModel = async (request) => {
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
+// The installed UnieAI Code package (agent-runtime/bin/ is two levels below it).
+const INSTALL_ROOT = join(dirname(new URL(import.meta.url).pathname), "..", "..");
 
 // deepseek-harness uses Node 22 APIs (Promise.withResolvers, …); say so plainly
 // instead of failing inside dsh. The TUI falls back to codex and names this log.
@@ -148,8 +150,14 @@ function hostFor(mode = "standard") {
         });
       } catch (error) {
         const reason = agentFailureReason(stderr);
+        // macOS kills a process outright when a native addon it loads is quarantined or its
+        // signature does not check out; the process says nothing, only the signal shows.
+        const macKilled =
+          process.platform === "darwin" && /killed by SIGKILL/.test(error.message)
+            ? ` macOS stopped it, usually because files from a downloaded bundle are quarantined: run \`xattr -dr com.apple.quarantine "${INSTALL_ROOT}"\` and start again.`
+            : "";
         throw new Error(
-          `deepseek-harness (dsh, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}. ` +
+          `deepseek-harness (dsh, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}.${macKilled} ` +
             "Reinstall UnieAI Code if it persists; details are in the uac server log.",
         );
       }
