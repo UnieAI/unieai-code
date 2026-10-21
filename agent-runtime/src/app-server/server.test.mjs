@@ -378,6 +378,7 @@ test("thread-scoped methods are answered here, never forwarded", async () => {
   for (const method of [
     "turn/steer", "thread/compact/start", "thread/items/list",
     "thread/turns/list", "thread/resume", "thread/fork", "thread/revert", "thread/revert/preview", "review/start",
+    "thread/sample",
   ]) {
     await dispatch({ method, id: 1, params: { threadId: "nope" } });
   }
@@ -388,7 +389,7 @@ test("an unimplemented thread method says so rather than answering wrongly", asy
   const h = createHandlers({ createEngineFor: () => ({ send: async () => {} }), codexHome: "/h" });
   const { thread } = await h["thread/start"]({});
   await assert.rejects(() => h["thread/resume"]({ threadId: "x" }), /not supported/);
-  for (const method of ["thread/fork", "thread/revert", "thread/revert/preview", "review/start"]) {
+  for (const method of ["thread/fork", "thread/revert", "thread/revert/preview", "review/start", "thread/sample"]) {
     await assert.rejects(() => h[method]({ threadId: thread.id, beforeTurnId: "t" }), /not supported/, method);
   }
 });

@@ -5,6 +5,8 @@
 //! bursts, especially on Windows. Paste timing uses Tokio's clock so asynchronous flush deadlines
 //! and input classification share a clock, including in paused-time tests. Copy shortcuts and right
 //! clicks preserve selected draft text.
+//! Local recall retains full draft metadata for composer submissions and accepted command-line
+//! initial prompts; transcript replay seeds earlier prompts separately.
 //! When enabled, fullscreen right-click paste requires an editable composer without a selection,
 //! search, or blocking view. The app reads clipboard text asynchronously and delivers a normal
 //! paste only while the same thread, draft, and cursor remain eligible. Intervening input or focus
@@ -31,6 +33,7 @@
 //! By default, `@` lists plugins, filesystem entries, and skills. Skills are hidden when their
 //! owning plugin is listed. `$` lists individual skills and apps, but not plugins.
 //! Disabling `mentions_v2` restores file-only `@` search and adds plugins back to `$`.
+//! Confirmed `$` picker selections inform future ordering within each match tier.
 //!
 //! # Key Event Routing
 //!
@@ -350,6 +353,7 @@ use super::footer::single_line_footer_layout;
 use super::footer::status_line_right_indicator_line;
 use super::footer::toggle_shortcut_mode;
 use super::footer::uses_passive_footer_status_layout;
+use super::mention_usage::MentionUsage;
 use super::mentions_v2::MentionV2Popup;
 use super::mentions_v2::MentionV2Selection;
 use super::paste_burst::CharDecision;
@@ -372,6 +376,7 @@ use crate::onboarding::mark_underlined_hyperlink;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
+use crate::slash_command::ComingSoonContext;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
 use codex_protocol::ThreadId;
@@ -613,6 +618,7 @@ impl ChatComposerConfig {
 pub(crate) struct ChatComposer {
     draft: DraftState,
     popups: PopupState,
+    pub(super) mention_usage: MentionUsage,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
     agents_navigation_enabled: bool,
@@ -651,6 +657,7 @@ pub(crate) struct ChatComposer {
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     voice_command_enabled: bool,
+    coming_soon: ComingSoonContext,
     worktrees_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
@@ -750,6 +757,7 @@ impl ChatComposer {
         let mut this = Self {
             draft: DraftState::new(),
             popups: PopupState::default(),
+            mention_usage: MentionUsage::default(),
             app_event_tx,
             history: ChatComposerHistory::new(),
             agents_navigation_enabled: false,
@@ -831,6 +839,7 @@ impl ChatComposer {
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             voice_command_enabled: false,
+            coming_soon: ComingSoonContext::default(),
             worktrees_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
@@ -1046,6 +1055,14 @@ impl ChatComposer {
         self.update_slash_command_catalog(|composer| composer.voice_command_enabled = enabled);
     }
 
+    pub(crate) fn set_coming_soon_context(&mut self, context: ComingSoonContext) {
+        self.update_slash_command_catalog(|composer| composer.coming_soon = context);
+    }
+
+    pub(crate) fn coming_soon_context(&self) -> ComingSoonContext {
+        self.coming_soon
+    }
+
     fn update_slash_command_catalog(&mut self, update: impl FnOnce(&mut Self)) {
         self.unmark_slash_command_element();
         update(self);
@@ -1253,6 +1270,10 @@ impl ChatComposer {
         };
         self.apply_history_search_result(result);
         true
+    }
+
+    pub(crate) fn record_local_user_message_history(&mut self, entry: HistoryEntry) {
+        self.history.record_local_submission(entry);
     }
 
     pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {
@@ -2294,6 +2315,9 @@ impl ChatComposer {
                 && let Some(target) = self.current_mention_target()
             {
                 self.insert_selected_mention(target.range, &insert_text, path.as_deref());
+                if let Some(path) = path {
+                    self.mention_usage.record(&path);
+                }
             }
             self.popups.active = ActivePopup::None;
         }
@@ -4120,7 +4144,8 @@ impl ChatComposer {
                 popup.set_mentions(mentions);
             }
             _ => {
-                let mut popup = SkillPopup::new(mentions);
+                let mut popup =
+                    SkillPopup::new(mentions).with_frequencies(self.mention_usage.frequencies());
                 popup.set_query(&query);
                 self.popups.active = ActivePopup::Skill(popup);
             }
@@ -7170,6 +7195,41 @@ mod tests {
             "skill_popup_targets_unbound_mention_left_of_bound_mention",
             /*enhanced_keys_supported*/ false,
             configure_partially_bound_skill_mentions,
+        );
+    }
+
+    #[test]
+    fn skill_popup_prefers_confirmed_selections_within_match_tier() {
+        snapshot_composer_state(
+            "skill_popup_prefers_confirmed_selections_within_match_tier",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![
+                    test_skill_metadata("statsig"),
+                    test_skill_metadata("status"),
+                    test_skill_metadata("hello-statsig"),
+                ]));
+                for name in ["hello-statsig", "hello-statsig", "status"] {
+                    let text = format!("${name}");
+                    composer.set_text_content(text.clone(), Vec::new(), Vec::new());
+                    composer.set_current_cursor(text.len());
+                    composer.sync_popups();
+                    let _ = composer
+                        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+                composer.set_text_content("$stat".to_owned(), Vec::new(), Vec::new());
+                composer.set_current_cursor("$stat".len());
+                composer.sync_popups();
+                let ActivePopup::Skill(popup) = &composer.popups.active else {
+                    panic!("expected skill popup");
+                };
+                assert_eq!(
+                    popup
+                        .selected_mention()
+                        .map(|item| item.insert_text.as_str()),
+                    Some("$status")
+                );
+            },
         );
     }
 

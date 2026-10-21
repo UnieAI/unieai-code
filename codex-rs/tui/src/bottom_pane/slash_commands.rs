@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use codex_utils_fuzzy_match::fuzzy_match;
 
+use crate::slash_command::ComingSoonContext;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 
@@ -66,22 +67,33 @@ pub(crate) struct BuiltinCommandFlags {
     pub(crate) worktrees_enabled: bool,
     pub(crate) allow_elevate_sandbox: bool,
     pub(crate) side_conversation_active: bool,
+    /// Which listed commands answer "coming soon" instead of running.
+    pub(crate) coming_soon: ComingSoonContext,
 }
 
 /// Return the built-ins that should be visible/usable for the current input.
+///
+/// A coming-soon command stays listed whatever gate would hide it (no ChatGPT
+/// account for /apps, no voice runtime, no collaboration modes on uac): it is
+/// shown with its marker and dispatch answers with a notice.
 pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static str, SlashCommand)> {
+    let soon = |cmd: &SlashCommand| cmd.coming_soon(flags.coming_soon);
     built_in_slash_commands()
         .into_iter()
         .filter(|(_, cmd)| flags.allow_elevate_sandbox || *cmd != SlashCommand::ElevateSandbox)
-        .filter(|(_, cmd)| flags.collaboration_modes_enabled || *cmd != SlashCommand::Plan)
-        .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
-        .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
+        .filter(|(_, cmd)| {
+            flags.collaboration_modes_enabled || *cmd != SlashCommand::Plan || soon(cmd)
+        })
+        .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps || soon(cmd))
+        .filter(|(_, cmd)| {
+            flags.plugins_command_enabled || *cmd != SlashCommand::Plugins || soon(cmd)
+        })
         .filter(|(_, cmd)| flags.token_activity_command_enabled || *cmd != SlashCommand::Usage)
         .filter(|(_, cmd)| flags.goal_command_enabled || *cmd != SlashCommand::Goal)
         // uac's unieai-schedule serves /loop; codex has no scheduler.
         .filter(|(_, cmd)| crate::unieai_engine::session_is_uac() || *cmd != SlashCommand::Loop)
         .filter(|(_, cmd)| flags.worktrees_enabled || *cmd != SlashCommand::Worktree)
-        .filter(|(_, cmd)| flags.voice_command_enabled || *cmd != SlashCommand::Voice)
+        .filter(|(_, cmd)| flags.voice_command_enabled || *cmd != SlashCommand::Voice || soon(cmd))
         .filter(|(_, cmd)| {
             flags.daybreak_command_description.is_some() || *cmd != SlashCommand::Daybreak
         })
@@ -95,11 +107,11 @@ pub(crate) fn commands_for_input(
 ) -> Vec<SlashCommandItem> {
     let mut commands = Vec::new();
     let tiers_enabled = flags.service_tier_commands_enabled;
-    // Hidden here, but still found by name: dispatch says why uac lacks it.
-    for (_, cmd) in builtins_for_input(flags).into_iter().filter(|(_, cmd)| {
-        !crate::unieai_engine::uac_lacks_command(*cmd)
-            && !crate::unieai_engine::only_uac_serves(*cmd)
-    }) {
+    // Hidden here, but still found by name: dispatch says why codex lacks it.
+    for (_, cmd) in builtins_for_input(flags)
+        .into_iter()
+        .filter(|(_, cmd)| !crate::unieai_engine::only_uac_serves(*cmd))
+    {
         commands.push(SlashCommandItem::Builtin(cmd));
         if cmd == SlashCommand::Model && tiers_enabled {
             commands.extend(
@@ -131,9 +143,6 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
         token_activity_command_enabled: true,
         daybreak_command_description: Some(""),
         side_conversation_active: false,
-        // Off only on uac, whose dispatch explains why /plan is missing.
-        collaboration_modes_enabled: flags.collaboration_modes_enabled
-            || crate::unieai_engine::session_is_uac(),
         ..flags
     })
     .into_iter()
@@ -199,6 +208,7 @@ mod tests {
             worktrees_enabled: true,
             allow_elevate_sandbox: true,
             side_conversation_active: false,
+            coming_soon: ComingSoonContext::default(),
         }
     }
 
@@ -310,6 +320,43 @@ mod tests {
         let mut flags = all_enabled_flags();
         flags.voice_command_enabled = false;
         assert_eq!(find_builtin_command("voice", flags), None);
+    }
+
+    #[test]
+    fn coming_soon_commands_stay_listed_past_their_gates() {
+        let flags = BuiltinCommandFlags {
+            collaboration_modes_enabled: false,
+            connectors_enabled: false,
+            plugins_command_enabled: false,
+            voice_command_enabled: false,
+            coming_soon: ComingSoonContext {
+                uac_engine: true,
+                no_openai_services: true,
+                feedback_to_openai: true,
+            },
+            ..all_enabled_flags()
+        };
+        for name in ["plan", "apps", "plugins", "voice"] {
+            assert!(
+                find_builtin_command(name, flags).is_some(),
+                "/{name} should resolve so dispatch can say it is coming soon"
+            );
+        }
+        let listed = commands_for_input(flags, &[]);
+        for command in [
+            SlashCommand::Plan,
+            SlashCommand::Plugins,
+            SlashCommand::Voice,
+            SlashCommand::Review,
+            SlashCommand::Side,
+            SlashCommand::Hooks,
+        ] {
+            assert!(
+                listed.contains(&SlashCommandItem::Builtin(command)),
+                "/{} should stay in the popup",
+                command.command()
+            );
+        }
     }
 
     #[test]

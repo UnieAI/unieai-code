@@ -299,6 +299,10 @@ impl ChatWidget {
             test_codex_home: None,
         };
 
+        widget.bottom_pane.set_mention_usage_home(
+            widget.local_settings.codex_home.as_path(),
+            widget.local_settings.history.persistence,
+        );
         widget.prefetch_rate_limits();
         if let Some(keymap) = runtime_keymap {
             widget.bottom_pane.set_keymap_bindings(&keymap);
@@ -317,6 +321,7 @@ impl ChatWidget {
         widget.sync_service_tier_commands();
         widget.sync_worktrees_enabled();
         widget.sync_plugins_command_enabled();
+        widget.sync_coming_soon_context();
         widget.sync_goal_command_enabled();
         widget
             .bottom_pane

@@ -46,6 +46,7 @@ use crate::keymap::RuntimeKeymap;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
+use crate::slash_command::ComingSoonContext;
 use crate::terminal_palette::effective_stdout_color_level;
 use crate::terminal_program_status::ProgramStatusKind;
 use crate::tui::FrameRequester;
@@ -157,6 +158,8 @@ mod file_search_popup;
 mod footer;
 mod list_selection_view;
 mod memories_settings_view;
+mod mention_usage;
+pub(crate) use mention_usage::MentionUsage;
 mod mentions_v2;
 mod picker_presets;
 mod picker_rows;
@@ -361,6 +364,18 @@ pub(crate) struct BottomPaneParams {
 }
 
 impl BottomPane {
+    pub(crate) fn set_mention_usage_home(
+        &mut self,
+        codex_home: &std::path::Path,
+        persistence: codex_config::types::HistoryPersistence,
+    ) {
+        self.composer.mention_usage = MentionUsage::load(codex_home, persistence);
+    }
+
+    pub(crate) fn mention_usage_mut(&mut self) -> &mut MentionUsage {
+        &mut self.composer.mention_usage
+    }
+
     pub fn new(params: BottomPaneParams) -> Self {
         Self::new_with_composer_config(params, ChatComposerConfig::default())
     }
@@ -528,6 +543,11 @@ impl BottomPane {
         matches: Vec<crate::task_mentions::TaskMention>,
     ) {
         self.composer.on_task_search_result(query, matches);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_coming_soon_context(&mut self, context: ComingSoonContext) {
+        self.composer.set_coming_soon_context(context);
         self.request_redraw();
     }
 
@@ -2106,6 +2126,7 @@ impl BottomPane {
     pub(crate) fn open_command_palette(&mut self) {
         let view = command_palette_view::CommandPaletteView::new(
             self.composer.palette_command_items(),
+            self.composer.coming_soon_context(),
             self.app_event_tx.clone(),
         );
         self.push_view(Box::new(view));
@@ -2456,6 +2477,10 @@ impl BottomPane {
         if updated {
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn record_local_user_message_history(&mut self, entry: HistoryEntry) {
+        self.composer.record_local_user_message_history(entry);
     }
 
     pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {

@@ -71,8 +71,8 @@ pub(crate) fn resolved_tooltips(
 ) -> impl Iterator<Item = String> + '_ {
     ALL_TOOLTIPS
         .iter()
-        // A tip about a command this engine lacks (uac: /review, /side, ...)
-        // would send the user to an error.
+        // A tip about a coming-soon command (/voice, on uac /review, ...)
+        // would send the user to a notice.
         .filter(|tip| !mentions_unavailable_command(tip))
         .filter_map(move |tip| render_tooltip(tip, keymap))
 }
@@ -86,7 +86,7 @@ fn mentions_unavailable_command(tip: &str) -> bool {
             )
             .ok()
         })
-        .any(crate::unieai_engine::uac_lacks_command)
+        .any(|command| command.coming_soon(crate::unieai_engine::assumed_coming_soon_context()))
 }
 
 pub(crate) fn tooltip_templates() -> impl Iterator<Item = &'static str> {

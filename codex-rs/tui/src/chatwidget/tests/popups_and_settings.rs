@@ -4322,6 +4322,9 @@ async fn auto_model_advertising_advanced_effort_opens_reasoning_picker() {
 #[tokio::test]
 async fn feedback_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    // Without a webhook, /feedback would upload to OpenAI and is coming soon.
+    chat.config.feedback_webhook_url = Some("https://feedback.unieai.test/hook".to_string());
+    chat.sync_coming_soon_context();
 
     // Open the feedback category selection popup via slash command.
     chat.dispatch_command(SlashCommand::Feedback);

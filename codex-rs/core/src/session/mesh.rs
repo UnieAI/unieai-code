@@ -106,7 +106,7 @@ impl MeshInbound for SessionMeshService {
             let sub_id = format!("session-mesh-{}", message.message_id);
             session
                 .input_queue
-                .enqueue_mailbox_communication(communication, Default::default())
+                .enqueue_mailbox_communication(communication.into(), Default::default())
                 .await;
             crate::agent_communication::emit_agent_communication_receive(&sub_id);
             let started_turn = if trigger_turn || session.has_outstanding_durable_sleep() {

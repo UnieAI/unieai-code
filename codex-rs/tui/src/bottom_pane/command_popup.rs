@@ -14,6 +14,8 @@ use super::slash_commands::BuiltinCommandFlags;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
 use super::slash_commands::commands_for_input;
+use crate::slash_command::COMING_SOON_MARKER;
+use crate::slash_command::ComingSoonContext;
 use crate::slash_command::SlashCommand;
 
 // Hide alias commands in the default popup list so each unique action appears once.
@@ -38,6 +40,7 @@ pub(crate) struct CommandPopup {
     side_conversation_active: bool,
     state: ScrollState,
     daybreak_command_description: Option<&'static str>,
+    coming_soon: ComingSoonContext,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -53,6 +56,7 @@ pub(crate) struct CommandPopupFlags {
     pub(crate) worktrees_enabled: bool,
     pub(crate) windows_degraded_sandbox_active: bool,
     pub(crate) side_conversation_active: bool,
+    pub(crate) coming_soon: ComingSoonContext,
 }
 
 impl From<CommandPopupFlags> for BuiltinCommandFlags {
@@ -69,6 +73,7 @@ impl From<CommandPopupFlags> for BuiltinCommandFlags {
             worktrees_enabled: value.worktrees_enabled,
             allow_elevate_sandbox: value.windows_degraded_sandbox_active,
             side_conversation_active: value.side_conversation_active,
+            coming_soon: value.coming_soon,
         }
     }
 }
@@ -100,6 +105,7 @@ impl CommandPopup {
             side_conversation_active: flags.side_conversation_active,
             state: ScrollState::new(),
             daybreak_command_description: flags.daybreak_command_description,
+            coming_soon: flags.coming_soon,
         }
     }
 
@@ -235,10 +241,10 @@ impl CommandPopup {
                 let description = if matches!(item, CommandItem::Builtin(SlashCommand::Daybreak)) {
                     self.daybreak_command_description
                         .unwrap_or(item.description())
+                        .to_string()
                 } else {
-                    item.description()
-                }
-                .to_string();
+                    item.description_in(self.coming_soon)
+                };
                 let unavailable = self.is_unavailable(&item);
                 GenericDisplayRow {
                     category_tag: None,
@@ -311,6 +317,16 @@ impl CommandItem {
         match self {
             Self::Builtin(cmd) => cmd.command(),
             Self::ServiceTier(command) => &command.name,
+        }
+    }
+
+    /// The description with the coming-soon marker when it applies.
+    pub(crate) fn description_in(&self, coming_soon: ComingSoonContext) -> String {
+        match self {
+            Self::Builtin(cmd) if cmd.coming_soon(coming_soon) => {
+                format!("{}{COMING_SOON_MARKER}", cmd.description())
+            }
+            _ => self.description().to_string(),
         }
     }
 
@@ -686,6 +702,7 @@ mod tests {
                 worktrees_enabled: true,
                 windows_degraded_sandbox_active: false,
                 side_conversation_active: false,
+                coming_soon: ComingSoonContext::default(),
             },
             Vec::new(),
         );
@@ -698,6 +715,34 @@ mod tests {
             }
             other => panic!("expected plan to be selected for exact match, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn coming_soon_commands_are_marked_in_popup() {
+        let mut popup = CommandPopup::new(
+            CommandPopupFlags {
+                coming_soon: ComingSoonContext {
+                    uac_engine: true,
+                    no_openai_services: true,
+                    feedback_to_openai: true,
+                },
+                ..CommandPopupFlags::default()
+            },
+            Vec::new(),
+        );
+        popup.on_composer_text_change("/re".to_string());
+
+        let width = 80;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+
+        insta::assert_snapshot!("command_popup_coming_soon", format!("{buf:?}"));
     }
 
     #[test]

@@ -189,21 +189,15 @@ pub(crate) fn session_is_uac() -> bool {
     SESSION_ENGINE.get() == Some(&EngineKind::Uac)
 }
 
-/// Slash commands the uac engine cannot serve yet: code review mode, side
-/// conversations (they inject items into a fork), codex's memories, and plan
-/// mode (a collaboration mode uac does not apply, so the TUI would claim a
-/// mode the model is not in). Hidden from the popup, refused when typed.
-pub(crate) fn uac_lacks_command(command: crate::slash_command::SlashCommand) -> bool {
-    use crate::slash_command::SlashCommand;
-    session_is_uac()
-        && matches!(
-            command,
-            SlashCommand::Review
-                | SlashCommand::Side
-                | SlashCommand::Btw
-                | SlashCommand::Memories
-                | SlashCommand::Plan
-        )
+/// What makes a slash command "coming soon" when only the session is known,
+/// not its provider or feedback route (tooltips): assume UnieAI's services, so
+/// a tip never points at a command that would only answer with a notice.
+pub(crate) fn assumed_coming_soon_context() -> crate::slash_command::ComingSoonContext {
+    crate::slash_command::ComingSoonContext {
+        uac_engine: session_is_uac(),
+        no_openai_services: true,
+        feedback_to_openai: true,
+    }
 }
 
 /// Slash commands only the uac engine serves: `/context` (dsh measures the

@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+assertion_line: 3334
+expression: "notices.join(\"\\n\")"
+---
+• /voice is coming soon in UnieAI Code.
+
+
+• /apps is coming soon in UnieAI Code.
+
+
+• /feedback is coming soon in UnieAI Code.

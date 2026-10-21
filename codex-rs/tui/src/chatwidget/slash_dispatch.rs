@@ -190,10 +190,10 @@ impl ChatWidget {
         if cmd != SlashCommand::Copy {
             self.transcript.last_status_copy_targets = None;
         }
-        if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+        if !self.ensure_command_not_coming_soon(cmd) {
             return;
         }
-        if !self.ensure_command_available_on_engine(cmd) {
+        if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }
         if !self.ensure_side_command_allowed_outside_review(cmd) {
@@ -733,10 +733,10 @@ impl ChatWidget {
         if cmd != SlashCommand::Copy {
             self.transcript.last_status_copy_targets = None;
         }
-        if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+        if !self.ensure_command_not_coming_soon(cmd) {
             return;
         }
-        if !self.ensure_command_available_on_engine(cmd) {
+        if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }
         if !self.ensure_side_command_allowed_outside_review(cmd) {
@@ -1362,6 +1362,7 @@ impl ChatWidget {
             worktrees_enabled: self.local_worktree_operations,
             allow_elevate_sandbox,
             side_conversation_active: self.active_side_conversation,
+            coming_soon: self.coming_soon_context(),
         }
     }
 
@@ -1497,14 +1498,26 @@ impl ChatWidget {
         false
     }
 
-    fn ensure_command_available_on_engine(&mut self, cmd: SlashCommand) -> bool {
-        if !crate::unieai_engine::uac_lacks_command(cmd) {
+    /// Answers a coming-soon command with a notice instead of running it.
+    /// When only uac lacks it and this account can run codex, says so.
+    fn ensure_command_not_coming_soon(&mut self, cmd: SlashCommand) -> bool {
+        let context = self.coming_soon_context();
+        if !cmd.coming_soon(context) {
             return true;
         }
-        self.add_error_message(format!(
-            "'/{}' is not available with the uac engine yet. Switch to codex with /engine to use it.",
-            cmd.command()
-        ));
+        let on_codex = ComingSoonContext {
+            uac_engine: false,
+            ..context
+        };
+        let hint = (context.uac_engine
+            && !cmd.coming_soon(on_codex)
+            && crate::unieai_engine::engine_unavailable_reason(
+                &self.config.codex_home,
+                crate::unieai_engine::EngineKind::Codex,
+            )
+            .is_none())
+        .then(|| "It works on the codex engine today: switch with /engine.".to_string());
+        self.add_info_message(cmd.coming_soon_message(), hint);
         self.bottom_pane.drain_pending_submission_state();
         false
     }
