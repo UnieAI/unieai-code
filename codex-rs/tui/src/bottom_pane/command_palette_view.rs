@@ -43,6 +43,7 @@ use super::selection_popup_common::ColumnWidthMode;
 use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::measure_rows_height_with_col_width_mode;
 use super::selection_popup_common::render_rows_with_col_width_mode;
+use crate::slash_command::ComingSoonContext;
 
 const PALETTE_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     ColumnWidthMode::AutoAllRows,
@@ -56,6 +57,8 @@ pub(crate) struct CommandPaletteView {
     /// Pure fuzzy-ranking registry built from `items` (id = command name,
     /// title = description).
     registry: Registry,
+    /// Marks commands that answer "coming soon", as the `/` popup does.
+    coming_soon: ComingSoonContext,
     /// Current typed filter.
     query: String,
     state: ScrollState,
@@ -64,7 +67,11 @@ pub(crate) struct CommandPaletteView {
 }
 
 impl CommandPaletteView {
-    pub(crate) fn new(items: Vec<CommandItem>, app_event_tx: AppEventSender) -> Self {
+    pub(crate) fn new(
+        items: Vec<CommandItem>,
+        coming_soon: ComingSoonContext,
+        app_event_tx: AppEventSender,
+    ) -> Self {
         let mut registry = Registry::new();
         for item in &items {
             registry.push(Action::new(
@@ -75,6 +82,7 @@ impl CommandPaletteView {
         let mut view = Self {
             items,
             registry,
+            coming_soon,
             query: String::new(),
             state: ScrollState::new(),
             app_event_tx,
@@ -149,7 +157,7 @@ impl CommandPaletteView {
                 name_prefix_spans: Vec::new(),
                 match_indices: None,
                 display_shortcut: None,
-                description: Some(item.description().to_string()),
+                description: Some(item.description_in(self.coming_soon)),
                 category_tag: None,
                 wrap_indent: None,
                 is_disabled: false,
@@ -328,7 +336,11 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     ) {
         let (tx, rx) = unbounded_channel::<AppEvent>();
-        let view = CommandPaletteView::new(default_items(), AppEventSender::new(tx));
+        let view = CommandPaletteView::new(
+            default_items(),
+            ComingSoonContext::default(),
+            AppEventSender::new(tx),
+        );
         (view, rx)
     }
 

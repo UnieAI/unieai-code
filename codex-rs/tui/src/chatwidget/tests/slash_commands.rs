@@ -3291,33 +3291,60 @@ async fn slash_fork_with_name_requests_named_fork() {
     );
 }
 
+// The desktop handoff opens `codex://`, which cannot see UnieAI sessions.
 #[tokio::test]
-async fn slash_app_requests_desktop_handoff() {
+async fn slash_app_is_coming_soon_instead_of_desktop_handoff() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
-
-    chat.dispatch_command(SlashCommand::App);
-
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::OpenDesktopThread {
-            thread_id: actual_thread_id,
-        }) if actual_thread_id == thread_id
-    );
-}
-
-#[tokio::test]
-async fn slash_app_without_thread_id_shows_starting_error() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
 
     chat.dispatch_command(SlashCommand::App);
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected app startup error");
+    assert_eq!(cells.len(), 1, "expected one coming-soon notice");
     assert_chatwidget_snapshot!(
-        "slash_app_without_thread_id_shows_starting_error",
+        "slash_app_is_coming_soon",
         lines_to_single_string(&cells[0])
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::OpenDesktopThread { .. })),
+        "a coming-soon command must not run"
+    );
+}
+
+#[tokio::test]
+async fn openai_hosted_commands_are_coming_soon_on_unieai_provider() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model_provider.name = "UnieAI".to_string();
+    chat.config.model_provider.base_url = Some("https://gateway.unieai.test/v1".to_string());
+    chat.sync_coming_soon_context();
+
+    for command in [
+        SlashCommand::Voice,
+        SlashCommand::Apps,
+        SlashCommand::Feedback,
+    ] {
+        chat.dispatch_command_with_args(command, String::new(), Vec::new());
+    }
+
+    let notices = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>();
+    assert_chatwidget_snapshot!("openai_hosted_commands_are_coming_soon", notices.join("\n"));
+}
+
+#[tokio::test]
+async fn feedback_runs_when_a_webhook_routes_it() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.feedback_webhook_url = Some("https://feedback.unieai.test/hook".to_string());
+    chat.sync_coming_soon_context();
+
+    chat.dispatch_command(SlashCommand::Feedback);
+
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "feedback should open its picker, not a notice"
     );
 }
 

@@ -339,6 +339,21 @@ impl ChatWidget {
             .set_worktrees_enabled(self.local_worktree_operations);
     }
 
+    /// What makes a slash command "coming soon" in this session: the engine,
+    /// whether the provider is OpenAI's, and where /feedback would go.
+    pub(super) fn coming_soon_context(&self) -> ComingSoonContext {
+        ComingSoonContext {
+            uac_engine: crate::unieai_engine::session_is_uac(),
+            no_openai_services: !self.config.model_provider.is_openai(),
+            feedback_to_openai: self.config.feedback_webhook_url.is_none(),
+        }
+    }
+
+    pub(super) fn sync_coming_soon_context(&mut self) {
+        self.bottom_pane
+            .set_coming_soon_context(self.coming_soon_context());
+    }
+
     pub(super) fn sync_plugins_command_enabled(&mut self) {
         self.bottom_pane
             .set_plugins_command_enabled(self.config.features.enabled(Feature::Plugins));

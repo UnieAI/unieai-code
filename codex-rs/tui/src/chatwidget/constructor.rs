@@ -321,6 +321,7 @@ impl ChatWidget {
         widget.sync_service_tier_commands();
         widget.sync_worktrees_enabled();
         widget.sync_plugins_command_enabled();
+        widget.sync_coming_soon_context();
         widget.sync_goal_command_enabled();
         widget
             .bottom_pane

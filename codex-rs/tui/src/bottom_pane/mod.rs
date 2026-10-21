@@ -46,6 +46,7 @@ use crate::keymap::RuntimeKeymap;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
+use crate::slash_command::ComingSoonContext;
 use crate::terminal_palette::effective_stdout_color_level;
 use crate::terminal_program_status::ProgramStatusKind;
 use crate::tui::FrameRequester;
@@ -542,6 +543,11 @@ impl BottomPane {
         matches: Vec<crate::task_mentions::TaskMention>,
     ) {
         self.composer.on_task_search_result(query, matches);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_coming_soon_context(&mut self, context: ComingSoonContext) {
+        self.composer.set_coming_soon_context(context);
         self.request_redraw();
     }
 
@@ -2120,6 +2126,7 @@ impl BottomPane {
     pub(crate) fn open_command_palette(&mut self) {
         let view = command_palette_view::CommandPaletteView::new(
             self.composer.palette_command_items(),
+            self.composer.coming_soon_context(),
             self.app_event_tx.clone(),
         );
         self.push_view(Box::new(view));

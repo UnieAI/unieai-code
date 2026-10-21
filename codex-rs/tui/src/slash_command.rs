@@ -98,7 +98,57 @@ pub enum SlashCommand {
     MemoryUpdate,
 }
 
+/// Appended to the popup description of a command that is listed but not
+/// served yet in UnieAI Code.
+pub(crate) const COMING_SOON_MARKER: &str = " (coming soon)";
+
+/// What decides whether a command is "coming soon" in this session. The
+/// default marks nothing but `/app`, which is upstream's behavior otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComingSoonContext {
+    /// The session runs on the uac engine, which does not serve every
+    /// app-server feature the codex engine does.
+    pub(crate) uac_engine: bool,
+    /// The model provider is not OpenAI's, so OpenAI-hosted services
+    /// (Realtime voice, ChatGPT apps) have nothing to answer them.
+    pub(crate) no_openai_services: bool,
+    /// `/feedback` would upload to OpenAI's Sentry: no `[feedback]
+    /// webhook_url` routes it to UnieAI.
+    pub(crate) feedback_to_openai: bool,
+}
+
 impl SlashCommand {
+    /// Whether this command is listed, marked "(coming soon)", and answered
+    /// with a notice instead of running. The one place that decides it: the
+    /// popup, the palette, tooltips and dispatch all ask here.
+    pub(crate) fn coming_soon(self, context: ComingSoonContext) -> bool {
+        match self {
+            // Hands the session to the Codex desktop app (`codex://`), which
+            // cannot see sessions in the UnieAI home.
+            SlashCommand::App => true,
+            SlashCommand::Voice | SlashCommand::Apps => context.no_openai_services,
+            SlashCommand::Feedback => context.feedback_to_openai,
+            // uac rejects review/start, cannot inject a side conversation
+            // into a fork, keeps its own memory, and applies no collaboration
+            // mode; it runs neither codex hooks nor plugins, and its approvals
+            // produce no auto-review denials to approve.
+            SlashCommand::Review
+            | SlashCommand::Side
+            | SlashCommand::Btw
+            | SlashCommand::Memories
+            | SlashCommand::Plan
+            | SlashCommand::Hooks
+            | SlashCommand::Plugins
+            | SlashCommand::AutoReview => context.uac_engine,
+            _ => false,
+        }
+    }
+
+    /// The notice shown instead of running a coming-soon command.
+    pub(crate) fn coming_soon_message(self) -> String {
+        format!("/{} is coming soon in UnieAI Code.", self.command())
+    }
+
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
@@ -153,9 +203,7 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Voice => "start or stop voice; use /voice settings to choose a voice",
             SlashCommand::Goal => "set or view the goal for a long-running task",
-            SlashCommand::Loop => {
-                "repeat a prompt: /loop 5m <prompt>, /loop <prompt>, /loop stop"
-            }
+            SlashCommand::Loop => "repeat a prompt: /loop 5m <prompt>, /loop <prompt>, /loop stop",
             SlashCommand::Agents | SlashCommand::MultiAgents => {
                 "switch between this session's subagents"
             }
@@ -364,7 +412,9 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
 mod tests {
     use pretty_assertions::assert_eq;
     use std::str::FromStr;
+    use strum::IntoEnumIterator;
 
+    use super::ComingSoonContext;
     use super::SlashCommand;
 
     #[test]
@@ -408,6 +458,53 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
+        );
+    }
+
+    fn coming_soon_under(context: ComingSoonContext) -> Vec<&'static str> {
+        SlashCommand::iter()
+            .filter(|command| command.coming_soon(context))
+            .map(SlashCommand::command)
+            .collect()
+    }
+
+    #[test]
+    fn upstream_context_marks_only_the_desktop_handoff() {
+        assert_eq!(coming_soon_under(ComingSoonContext::default()), vec!["app"]);
+    }
+
+    #[test]
+    fn unieai_codex_session_marks_openai_hosted_commands() {
+        assert_eq!(
+            coming_soon_under(ComingSoonContext {
+                uac_engine: false,
+                no_openai_services: true,
+                feedback_to_openai: true,
+            }),
+            vec!["app", "voice", "apps", "feedback"]
+        );
+    }
+
+    #[test]
+    fn unieai_uac_session_also_marks_what_uac_does_not_serve() {
+        assert_eq!(
+            coming_soon_under(ComingSoonContext {
+                uac_engine: true,
+                no_openai_services: true,
+                feedback_to_openai: false,
+            }),
+            vec![
+                "approve", "memories", "hooks", "review", "app", "plan", "voice", "side", "btw",
+                "apps", "plugins",
+            ]
+        );
+    }
+
+    #[test]
+    fn coming_soon_message_names_the_command() {
+        assert_eq!(
+            SlashCommand::AutoReview.coming_soon_message(),
+            "/approve is coming soon in UnieAI Code."
         );
     }
 }

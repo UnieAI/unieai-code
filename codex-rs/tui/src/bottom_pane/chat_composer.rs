@@ -376,6 +376,7 @@ use crate::onboarding::mark_underlined_hyperlink;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
+use crate::slash_command::ComingSoonContext;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
 use codex_protocol::ThreadId;
@@ -656,6 +657,7 @@ pub(crate) struct ChatComposer {
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     voice_command_enabled: bool,
+    coming_soon: ComingSoonContext,
     worktrees_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
@@ -837,6 +839,7 @@ impl ChatComposer {
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             voice_command_enabled: false,
+            coming_soon: ComingSoonContext::default(),
             worktrees_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
@@ -1050,6 +1053,14 @@ impl ChatComposer {
 
     pub fn set_voice_command_enabled(&mut self, enabled: bool) {
         self.update_slash_command_catalog(|composer| composer.voice_command_enabled = enabled);
+    }
+
+    pub(crate) fn set_coming_soon_context(&mut self, context: ComingSoonContext) {
+        self.update_slash_command_catalog(|composer| composer.coming_soon = context);
+    }
+
+    pub(crate) fn coming_soon_context(&self) -> ComingSoonContext {
+        self.coming_soon
     }
 
     fn update_slash_command_catalog(&mut self, update: impl FnOnce(&mut Self)) {
