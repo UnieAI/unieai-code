@@ -20,7 +20,8 @@ name: npm-release
 # Publishing uses npm trusted publishing (OIDC), not a token: @unieai/code on
 # npmjs.com lists this repository and `npm-release.yml` as its trusted
 # publisher, with direct `npm publish` allowed. It needs npm >= 11.5.1 and
-# `id-token: write` on the publish job.
+# `id-token: write` on the publish job. An `NPM_TOKEN` secret, when set, is a
+# fallback npm uses only if the OIDC exchange fails.
 # Tag pushes always publish. workflow_dispatch publishes only when the
 # `publish` input is true; otherwise the tarballs are just uploaded as a
 # workflow artifact for inspection or manual `npm publish`.
@@ -344,6 +345,7 @@ jobs:
       - name: Publish to npm
         shell: bash
         env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.stage.outputs.version }}
         run: |
           set -euo pipefail
@@ -352,6 +354,11 @@ jobs:
             npm install -g npm@11
           fi
           echo "npm $(npm --version)"
+          # Fallback while trusted publishing is not configured: npm tries the
+          # OIDC exchange first and uses this token only when that fails.
+          if [ -n "${NPM_TOKEN}" ]; then
+            echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$HOME/.npmrc"
+          fi
 
           publish_one() {
             local tarball="$1" tag="$2"
