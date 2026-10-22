@@ -33,7 +33,7 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
-## 0.0.38 — 2026-10-21
+## 0.0.38 — 2026-10-22
 
 - Merged upstream Codex twice: through
   [`66d0de9983`](https://github.com/openai/codex/commit/66d0de9983) (2026-10-20,
@@ -63,9 +63,10 @@ the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
   QR code so a browser can follow a session, send prompts, answer approvals
   and questions, and interrupt. The connection is end-to-end encrypted: the
   relay only passes ciphertext. While it runs, the status line shows
-  "Remote: N viewers". UnieAI's hosted relay is not live yet; until it is,
-  Remote Control needs a relay you run yourself
-  (`unieai remote-control start --relay <URL>`).
+  "Remote: N viewers". UnieAI's hosted relay is not live yet, and
+  `/remote-control` says so. Until it is, Remote Control needs a relay you
+  run yourself: `unieai remote-control start --relay <URL>`, or set
+  `UNIEAI_REMOTE_RELAY_URL`.
 - **Artifacts (uac, preview).** The agent can publish a web page to your
   UnieAI Rabi gallery with `publish_artifact`, and update the same page in
   place when it publishes from the same path again. A bundled artifact skill

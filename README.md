@@ -32,7 +32,7 @@ also used by UnieAI Studio.
 
 ## What's new
 
-**0.0.38** (2026-10-21) — highlights:
+**0.0.38** (2026-10-22) — highlights:
 
 - **Connect a model API** — sign in with UnieAI Rabi (now first), UnieAI Studio, or no
   UnieAI account at all: OpenAI, OpenRouter, DeepSeek, Groq, Together, Mistral, Gemini,
