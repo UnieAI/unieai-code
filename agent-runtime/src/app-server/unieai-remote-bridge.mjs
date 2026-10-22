@@ -282,6 +282,18 @@ export function createRemoteBridge({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
+        // A 404 here means nothing serves Remote Control at that URL (UnieAI's
+        // hosted relay before it goes live, or a mistyped --relay). Retrying
+        // would leave /remote-control waiting with no link and no error.
+        if (response.status === 404) {
+          const hint = relayUrl === DEFAULT_RELAY_URL
+            ? "UnieAI's hosted relay is not available yet; use `unieai remote-control start --relay <URL>` or set UNIEAI_REMOTE_RELAY_URL to a relay you run."
+            : "check the relay URL.";
+          throw Object.assign(
+            new Error(`no Remote Control relay at ${relayUrl} (it answered 404): ${hint}`),
+            { permanent: true },
+          );
+        }
         const message = body?.error?.message || `the relay answered ${response.status}`;
         throw Object.assign(new Error(message), { permanent: response.status === 401 || response.status === 403 });
       }

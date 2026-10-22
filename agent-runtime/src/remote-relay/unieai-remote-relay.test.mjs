@@ -12,7 +12,7 @@ import { startAppServer } from "../app-server/server.mjs";
 import { createApprovalBridge } from "../app-server/approval.mjs";
 import { connectSocketClient } from "../app-server/unieai-socket-client.mjs";
 import { createRemoteClient, parsePairingLink } from "../app-server/unieai-remote-client.mjs";
-import { remoteAnswer, remoteInput, resolveRelayUrl } from "../app-server/unieai-remote-bridge.mjs";
+import { createRemoteBridge, DEFAULT_RELAY_URL, remoteAnswer, remoteInput, resolveRelayUrl } from "../app-server/unieai-remote-bridge.mjs";
 import { startRemoteRelay, stubValidator, upstreamValidator } from "./unieai-remote-relay.mjs";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -297,4 +297,32 @@ test("remote input and answers are reduced to what the spec allows", () => {
   assert.equal(resolveRelayUrl({ env: {}, settings: {} }), "https://agent.unieai.com/api/remote");
   assert.equal(resolveRelayUrl({ env: { UNIEAI_REMOTE_RELAY_URL: "https://ava.corp/api/remote/" }, settings: {} }), "https://ava.corp/api/remote");
   assert.equal(resolveRelayUrl({ requested: "http://x/api/remote", env: { UNIEAI_REMOTE_RELAY_URL: "https://y" } }), "http://x/api/remote");
+});
+
+test("a relay that answers 404 to register fails start at once, saying where the relay is", async () => {
+  const home = mkdtempSync(join(tmpdir(), "uac-remote-404-"));
+  try {
+    writeFileSync(join(home, "unieai.json"), JSON.stringify({ access_token: "at", studio_url: "https://studio.example" }));
+    let calls = 0;
+    const fetch404 = async () => {
+      calls += 1;
+      return new Response("<html>not found</html>", { status: 404, headers: { "content-type": "text/html" } });
+    };
+    const bridge = createRemoteBridge({ handlers: {}, codexHome: home, fetch: fetch404, env: {} });
+    await assert.rejects(bridge.start(), (error) => {
+      assert.match(error.message, /no Remote Control relay at https:\/\/agent\.unieai\.com\/api\/remote \(it answered 404\)/);
+      assert.match(error.message, /--relay <URL>/);
+      return true;
+    });
+    assert.equal(calls, 1, "a 404 is not retried");
+    assert.equal(bridge.status().running, false);
+
+    const custom = createRemoteBridge({ handlers: {}, codexHome: home, fetch: fetch404, env: {} });
+    await assert.rejects(custom.start({ relayUrl: "https://relay.example/api/remote" }), /relay\.example.*check the relay URL/);
+    assert.notEqual(DEFAULT_RELAY_URL, "https://relay.example/api/remote");
+    await bridge.close?.();
+    await custom.close?.();
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
