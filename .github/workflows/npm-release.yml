@@ -17,7 +17,10 @@ name: npm-release
 # internal build id (e.g. 0.0.16-dev-uc0.4.0-ac0.2.0) and is intentionally NOT
 # overwritten — it is what `unieai --version` reports.
 #
-# Secrets: NPM_TOKEN — npm automation token with publish rights on @unieai.
+# Publishing uses npm trusted publishing (OIDC), not a token: @unieai/code on
+# npmjs.com lists this repository and `npm-release.yml` as its trusted
+# publisher, with direct `npm publish` allowed. It needs npm >= 11.5.1 and
+# `id-token: write` on the publish job.
 # Tag pushes always publish. workflow_dispatch publishes only when the
 # `publish` input is true; otherwise the tarballs are just uploaded as a
 # workflow artifact for inspection or manual `npm publish`.
@@ -32,7 +35,7 @@ on:
         required: true
         type: string
       publish:
-        description: 'Publish to npm (needs NPM_TOKEN); off = artifacts only'
+        description: 'Publish to npm (trusted publishing); off = artifacts only'
         required: false
         default: false
         type: boolean
@@ -321,12 +324,16 @@ jobs:
     if: ${{ github.event_name == 'push' || inputs.publish }}
     needs: stage
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write  # npm trusted publishing
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 24
+          # No registry-url: it writes an .npmrc with a placeholder token that
+          # npm would send instead of the OIDC exchange.
 
       - name: Download npm tarballs
         uses: actions/download-artifact@v4
@@ -337,13 +344,14 @@ jobs:
       - name: Publish to npm
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.stage.outputs.version }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN secret is not set"; exit 1
+          npm_version="$(npm --version)"
+          if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -1)" != 11.5.1 ]; then
+            npm install -g npm@11
           fi
+          echo "npm $(npm --version)"
 
           publish_one() {
             local tarball="$1" tag="$2"
