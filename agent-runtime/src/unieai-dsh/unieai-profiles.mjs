@@ -12,12 +12,14 @@
  * Which profile a model gets (resolveProfile):
  *   1. `UNIEAI_HARNESS_PROFILE`: `off` (none), or the path of a YAML file,
  *      applied to every model whatever its status;
- *   2. `$UNIEAI_HOME/profiles/<model>.yaml` (a user override);
+ *   2. `$UNIEAI_HOME/profiles/<model>.yaml` (a user override), whatever its
+ *      status: the user put it there;
  *   3. a bundled profile (agent-runtime/profiles/) whose `model` is the id;
  *   4. a bundled profile whose `match:` globs match the id; the pattern with
  *      the most literal characters wins, and a tie applies none.
- * Steps 2-4 apply only `status: adopted` profiles. An invalid profile is
- * skipped with a warning; nothing here throws on a bad file.
+ * Steps 3-4 apply only `status: adopted` profiles. Model ids, file names and
+ * globs compare without regard to case. An invalid profile is skipped with a
+ * warning; nothing here throws on a bad file.
  *
  * How uac applies one (config.mjs renderPatch / prepareDsh), exactly as the
  * lab's dsh adapter does from outside (adapters/dsh.py, dsh_patch.py):
@@ -46,7 +48,7 @@
  *                    profile_sha is the lab's profile_sha(), 12 hex chars
  *        skillFiles  { "<name>/SKILL.md": text } to write under skillsDir }
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -240,8 +242,12 @@ export function loadProfileFile(path) {
 
 // ── resolution ──────────────────────────────────────────────────────────────
 
+// Model ids are compared without regard to case: gateways and Studio spell
+// the same model `Qwen3.6-…` and `qwen3.6-…`.
+const sameModel = (a, b) => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
+
 const globRegExp = (pattern) =>
-  new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
+  new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
 
 /** How specific a glob is: its literal characters. */
 export const globSpecificity = (pattern) => pattern.replace(/[*?]/g, "").length;
@@ -276,7 +282,7 @@ export function loadBundledProfiles(dir = BUNDLED_PROFILES_DIR, warn = () => {})
 
 /** Which bundled entry applies to `model`: `{ entry, source }`, `{ ambiguous: [...] }`, or null. */
 export function pickBundled(entries, model) {
-  const exact = entries.filter(({ profile }) => profile.model === model);
+  const exact = entries.filter(({ profile }) => sameModel(profile.model, model));
   if (exact.length > 1) return { ambiguous: exact.map((entry) => entry.file) };
   if (exact.length === 1) return { entry: exact[0], source: "bundled" };
   let best = -1;
@@ -288,6 +294,20 @@ export function pickBundled(entries, model) {
   }
   if (winners.length > 1) return { ambiguous: winners.map((entry) => entry.file) };
   return winners.length === 1 ? { entry: winners[0], source: "bundled-match" } : null;
+}
+
+/** `$UNIEAI_HOME/profiles/<model>.yaml` files for `model`, its name in any case. */
+function userProfileFiles(home, model) {
+  if (!fileSafe(model)) return [];
+  const dir = join(home, "profiles");
+  try {
+    return readdirSync(dir)
+      .filter((name) => sameModel(name, `${model}.yaml`))
+      .sort()
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
 }
 
 export function profileIdentity(profile, { source = "explicit", path = null } = {}) {
@@ -309,14 +329,15 @@ export function resolveProfile(model, { env = process.env, home = unieaiHome(), 
     }
     return { profile, identity: profileIdentity(profile, { source: "env", path: forced }) };
   }
-  if (fileSafe(model)) {
-    const path = join(home, "profiles", `${model}.yaml`);
-    if (existsSync(path)) {
-      const { profile, error } = loadProfileFile(path);
-      if (error) warn(`profile skipped: ${error}`);
-      else if (profile.status !== "adopted") warn(`profile skipped: ${path} is ${profile.status}, not adopted (${PROFILE_ENV}=<path> forces it)`);
-      else return { profile, identity: profileIdentity(profile, { source: "user", path }) };
-    }
+  // The user's own file applies whatever its status: they put it there.
+  const userFiles = userProfileFiles(home, model);
+  if (userFiles.length > 1) {
+    warn(`profile: ${userFiles.join(", ")} all name ${model}; none of them is applied`);
+  } else if (userFiles.length === 1) {
+    const [path] = userFiles;
+    const { profile, error } = loadProfileFile(path);
+    if (error) warn(`profile skipped: ${error}`);
+    else return { profile, identity: profileIdentity(profile, { source: "user", path }) };
   }
   const adopted = loadBundledProfiles(bundledDir, warn).filter(({ profile }) => profile.status === "adopted");
   const picked = pickBundled(adopted, model);
@@ -352,10 +373,45 @@ export function checkBundledProfiles(dir = BUNDLED_PROFILES_DIR) {
   return problems;
 }
 
-/** The server log line: `profile: <model> adopted sha=<12> (<source>)`, or `profile: none`. */
+/**
+ * The server log line: `profile: <model> adopted sha=<12> (<source>)`, a
+ * profile of another status as `profile: <model> sha=<12> (<source>,
+ * status=<status>)`, or `profile: none`.
+ */
 export function profileLogLine(identity) {
   if (!identity) return "profile: none";
-  return `profile: ${identity.model} ${identity.status} sha=${identity.profile_sha} (${identity.source})`;
+  if (identity.status === "adopted") return `profile: ${identity.model} adopted sha=${identity.profile_sha} (${identity.source})`;
+  return `profile: ${identity.model} sha=${identity.profile_sha} (${identity.source}, status=${identity.status})`;
+}
+
+/**
+ * Where the uac server records each thread's profile for the TUI's /status
+ * (codex-rs/tui/src/unieai_engine.rs, uac_thread_profile):
+ * `{ "threads": { "<thread id>": { model, status, profile_sha, source } | null } }`.
+ */
+export const threadProfilesPath = (codexHome) => join(codexHome, "uac", "profile.json");
+
+/** Record `identity` (null: none) as `threadId`'s profile, keeping the last `keep` threads. */
+export function recordThreadProfile(codexHome, threadId, identity, { keep = 64 } = {}) {
+  if (!threadId) return;
+  const path = threadProfilesPath(codexHome);
+  let threads = {};
+  try {
+    threads = JSON.parse(readFileSync(path, "utf8")).threads ?? {};
+  } catch {
+    threads = {};
+  }
+  delete threads[threadId];
+  threads[threadId] = identity
+    ? { model: identity.model, status: identity.status, profile_sha: identity.profile_sha, source: identity.source }
+    : null;
+  const ids = Object.keys(threads);
+  for (const id of ids.slice(0, Math.max(0, ids.length - keep))) delete threads[id];
+  mkdirSync(dirname(path), { recursive: true });
+  // Written whole and renamed: the TUI may read it at any moment.
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify({ threads }, null, 2)}\n`);
+  renameSync(temp, path);
 }
 
 // ── applying it ─────────────────────────────────────────────────────────────

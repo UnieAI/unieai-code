@@ -76,16 +76,21 @@ a profile.
 
 1. `UNIEAI_HARNESS_PROFILE`: `off` applies none; a path applies that file to
    every model, whatever its `status`. An unusable file applies none.
-2. `$UNIEAI_HOME/profiles/<model>.yaml`: the user's override.
+2. `$UNIEAI_HOME/profiles/<model>.yaml`: the user's override, applied
+   whatever its `status` (the user put it there). If two files name the same
+   model in different case, neither applies and the log says so.
 3. A bundled profile (`agent-runtime/profiles/`) whose `model` is the id.
 4. A bundled profile whose `match:` globs match the id. The pattern with the
    most literal characters wins; when two profiles tie, none is applied and
    the server log says so. The test suite fails on any tie between bundled
    profiles.
 
-Steps 2 to 4 apply only `status: adopted` profiles. An invalid file is skipped
-with a line in the uac server log; it never stops a start. A self-hosted
-model (`<server>/<model>`) is looked up by its bare model id.
+Steps 3 and 4 apply only `status: adopted` profiles. Model ids, file names
+and `match:` globs are compared without regard to case, so `qwen3.6-35b-a3b`
+finds `Qwen3.6-35B-A3B.yaml`, and patterns that differ only in case tie. An
+invalid file is skipped with a line in the uac server log; it never stops a
+start. A self-hosted model (`<server>/<model>`) is looked up by its bare
+model id.
 
 `UNIEAI_DSH_PATCH` (a whole patch of the user's own) replaces uac's patch, and
 with it the profile.
@@ -98,11 +103,19 @@ one per session:
 ```
 uac: dsh = ... (home ..., model Qwen3.6-35B-A3B, profile: Qwen3.6-35B-A3B adopted sha=3f2a9c0e1b7d (bundled))
 [uac] session on Qwen3.6-35B-A3B, profile: none
+[uac] session on Qwen3.6-35B-A3B, profile: Qwen3.6-35B-A3B sha=9d41c07a22e5 (user, status=candidate)
 ```
 
-`/status` in the TUI does not show it yet: the status card is built in Rust
-from the TUI's own config (`codex-rs/tui/src/status/card.rs`,
-`engine_summary`) and nothing from the uac server reaches it.
+A profile that is not adopted (a user override or a forced file) shows its
+status in parentheses.
+
+The server also records each thread's profile in `$CODEX_HOME/uac/profile.json`
+(`{"threads": {"<thread id>": {model, status, profile_sha, source} | null}}`,
+the last 64 threads), written when the thread's engine starts. `/status` in
+the TUI reads it for the current session and shows it on the Engine line:
+`unieai-agent-core (uac) · standard · profile Qwen3.6-35B-A3B 3f2a9c0e`.
+Nothing is added when the thread has no profile, or before its first turn
+has started the engine.
 
 ## How a profile gets adopted
 

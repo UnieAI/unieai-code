@@ -18,7 +18,7 @@ import { loadCredentials, sandboxBin } from "../config.mjs";
 export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
 
 /**
- * `buildEngine({ cwd, model, sandboxMode, resumeState, onState, onText,
+ * `buildEngine({ cwd, model, threadId, sandboxMode, resumeState, onState, onText,
  * onReasoning, onToolEvent, requestApproval })` returns an engine for one
  * thread. `threadStore` (see unieai-thread-store.mjs) makes threads persistent.
  * `onShutdown` runs before the process exits. `onHandOver` runs when a
@@ -84,6 +84,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         // The effective config as codex resolves it for this directory
         // (profiles, project layers): where `[mcp_servers]` comes from.
         readConfig: () => forwarder.forward("config/read", { cwd }),
+        // The thread this engine serves (what /status calls the session).
+        threadId: ids?.().threadId ?? null,
         oneShot,
         variant,
         permissions,

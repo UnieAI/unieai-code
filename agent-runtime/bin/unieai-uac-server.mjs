@@ -53,7 +53,7 @@ import { loadCredentials } from "../src/config.mjs";
 import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-dsh/unieai-mcp-servers.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
-import { profileLogLine } from "../src/unieai-dsh/unieai-profiles.mjs";
+import { profileLogLine, recordThreadProfile } from "../src/unieai-dsh/unieai-profiles.mjs";
 import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
 
 // A thread on a self-hosted model titles itself on that server: no UnieAI
@@ -311,7 +311,7 @@ await launchAppServer({
       return model;
     }
   },
-  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, ...callbacks }) => {
+  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, threadId, ...callbacks }) => {
     // The user's `[mcp_servers]` and Studio's (knowledge bases, SQL, skills),
     // read when each session opens so a config edit or new sign-in counts.
     const mcpServers = async () => {
@@ -343,6 +343,12 @@ await launchAppServer({
     const sessionModel = modelProvider && modelProvider !== "unieai" && !ownServer ? model : chosen;
     const resolved = profileFor(sessionModel);
     log(`[uac] session on ${sessionModel || "(provider default)"}, ${profileLogLine(resolved?.identity ?? null)}`);
+    // For the TUI's /status, which reads it by thread id.
+    try {
+      recordThreadProfile(codexHome, threadId, resolved?.identity ?? null);
+    } catch (error) {
+      log("[uac] could not record the thread's profile:", error.message);
+    }
     // Where a model runs: a self-hosted server's `<server>/<model>`, else the gateway.
     const route = (slug) => {
       const { provider, model: id } = routeModel(slug, loadSelfHostedProviders());

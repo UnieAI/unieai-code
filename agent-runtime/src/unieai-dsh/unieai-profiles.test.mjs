@@ -23,7 +23,9 @@ import {
   profilePluginChoice,
   profileSha,
   profileSkillFiles,
+  recordThreadProfile,
   resolveProfile,
+  threadProfilesPath,
   validateProfile,
 } from "./unieai-profiles.mjs";
 
@@ -174,12 +176,19 @@ test("resolution: env, then the user's override, then bundled exact, then bundle
     assert.equal(resolve("Other-Model"), null);
     assert.equal(resolve("Example-Model-7B"), null, "a candidate is not applied");
 
-    // The user's override: only adopted ones, else the bundled profile stands.
+    // Model ids compare without regard to case, exact and by match:.
+    assert.equal(resolve("minimal-model").source, "bundled");
+    assert.equal(resolve("FAMILY-1.5-chat").source, "bundled-match");
+
+    // The user's override applies whatever its status.
     copyFileSync(join(FIXTURES, "minimal.yaml"), join(home, "profiles", "Family-1.5-Chat.yaml"));
     assert.equal(resolve("Family-1.5-Chat").source, "user");
+    assert.equal(resolve("family-1.5-CHAT").source, "user", "its file name in any case");
     copyFileSync(join(FIXTURES, "example.yaml"), join(home, "profiles", "Minimal-Model.yaml"));
-    assert.equal(resolve("Minimal-Model").source, "bundled");
-    assert.ok(warnings.some((m) => /is candidate, not adopted/.test(m)));
+    assert.deepEqual([resolve("Minimal-Model").source, resolve("Minimal-Model").status], ["user", "candidate"]);
+    copyFileSync(join(FIXTURES, "example.yaml"), join(home, "profiles", "minimal-model.yaml"));
+    assert.equal(resolve("Minimal-Model").source, "bundled", "two override files for one model: neither applies");
+    assert.ok(warnings.some((m) => /all name Minimal-Model; none of them is applied/.test(m)));
     writeFileSync(join(home, "profiles", "Family-1.0-Base.yaml"), "schema_version: 1\nmodel: [unclosed");
     assert.equal(resolve("Family-1.0-Base").source, "bundled", "an unreadable override is skipped");
 
@@ -212,6 +221,16 @@ test("resolution: the most specific match wins; a tie applies none and is caught
     assert.equal(resolve("Fam-1-Chat"), null, "Fam-* and Fam-?* claim it equally");
     assert.ok(warnings.some((m) => /equally well/.test(m)));
     assert.ok(checkBundledProfiles(dir).some((m) => /matched equally/.test(m)));
+    // Patterns that differ only in case claim the same ids.
+    rmSync(join(dir, "Fam-Other.yaml"));
+    writeFileSync(join(dir, "Fam-Upper.yaml"), JSON.stringify({ ...fixture("family.yaml"), model: "Fam-Upper", match: ["FAM-2*"] }));
+    assert.equal(resolve("fam-2-chat"), null, "Fam-2* and FAM-2* tie");
+    assert.ok(checkBundledProfiles(dir).some((m) => /matched equally by Fam-Narrow.yaml, Fam-Upper.yaml/.test(m)));
+    rmSync(join(dir, "Fam-Upper.yaml"));
+    writeFileSync(join(dir, "FAM-WIDE.yaml"), JSON.stringify({ ...fixture("minimal.yaml"), model: "FAM-WIDE" }));
+    assert.equal(resolve("fam-wide"), null, "two profiles for one model, in different case");
+    assert.ok(checkBundledProfiles(dir).some((m) => /matched equally by FAM-WIDE.yaml, Fam-Wide.yaml/.test(m)));
+    rmSync(join(dir, "FAM-WIDE.yaml"));
     writeFileSync(join(dir, "wrong-name.yaml"), JSON.stringify(fixture("minimal.yaml")));
     writeFileSync(join(dir, "broken.yaml"), "status: [");
     const problems = checkBundledProfiles(dir);
@@ -235,6 +254,27 @@ test("profileLogLine names the profile applied", () => {
   assert.equal(profileLogLine(null), "profile: none");
   const identity = renderUacConfig({ model: "M", profile: fixture("minimal.yaml"), env: {}, home: "/h" }).profile;
   assert.equal(profileLogLine(identity), `profile: Minimal-Model adopted sha=${identity.profile_sha} (explicit)`);
+  const candidate = { ...identity, model: "Example-Model-7B", status: "candidate", source: "user" };
+  assert.equal(profileLogLine(candidate), `profile: Example-Model-7B sha=${identity.profile_sha} (user, status=candidate)`);
+});
+
+test("recordThreadProfile: what /status reads, per thread, the last ones kept", () => {
+  const home = mkdtempSync(join(tmpdir(), "uac-profiles-status-"));
+  try {
+    const identity = renderUacConfig({ model: "M", profile: fixture("minimal.yaml"), env: {}, home: "/h" }).profile;
+    recordThreadProfile(home, "thread-a", identity);
+    recordThreadProfile(home, "thread-b", null);
+    recordThreadProfile(home, null, identity); // no thread: nothing to record
+    const { threads } = JSON.parse(readFileSync(threadProfilesPath(home), "utf8"));
+    assert.deepEqual(threads, {
+      "thread-a": { model: "Minimal-Model", status: "adopted", profile_sha: identity.profile_sha, source: "explicit" },
+      "thread-b": null,
+    });
+    for (let i = 0; i < 5; i += 1) recordThreadProfile(home, `t${i}`, identity, { keep: 3 });
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(threadProfilesPath(home), "utf8")).threads), ["t2", "t3", "t4"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("prepareDsh applies the resolved profile: its own patch file, skill layer and identity", () => {
