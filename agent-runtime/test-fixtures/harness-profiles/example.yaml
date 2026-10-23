@@ -1,0 +1,36 @@
+# A test fixture, not a tuned profile: nothing here was measured.
+schema_version: 1
+model: Example-Model-7B
+status: candidate
+harness: dsh
+notes: "fixture for unieai-profiles.test.mjs; every component set"
+persona:
+  level: rigor
+  extra:
+    - Verify the result against every requirement before finishing.
+    - "  Leading and trailing spaces are stripped.  "
+    - 回答使用使用者的語言 — keep the user's language ✓
+plugins:
+  base: default
+  enable: [unieai-todo-guard]
+  disable: [unieai-web-search, unieai-rewind]
+tool_guidance:
+  - tool: exec_command
+    text: "Read stderr before retrying a failed command.\n"
+  - tool: apply_patch
+    text: Keep each hunk small; re-read the file after a failed patch.
+skills:
+  - name: verify-first
+    description: How to check work before declaring it "done" (確認)
+    body: |
+
+      1. Re-read the task.
+      2. Run the program on the given input.
+
+      3. Compare the output with what was asked.
+provenance:
+  parent: null
+  edits: []
+  lessons: []
+  run: null
+measurements: []

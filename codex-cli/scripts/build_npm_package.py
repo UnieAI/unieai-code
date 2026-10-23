@@ -23,6 +23,8 @@ AGENT_RUNTIME_FILES = [
     "src/config.mjs",
     "src/app-server",
     "src/unieai-dsh",
+    # Harness profiles (per-model settings) and their schema.
+    "profiles",
 ]
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"

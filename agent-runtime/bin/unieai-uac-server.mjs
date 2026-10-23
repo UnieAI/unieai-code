@@ -20,9 +20,12 @@
  *   DSH_HOME           dsh's home (default: $CODEX_HOME/uac/dsh-home)
  *   UNIEAI_UAC_MODE    dsh mode for new threads (default: $CODEX_HOME/uac/mode,
  *                      then standard): standard | ptc | cordis | minimal
+ *   UNIEAI_HARNESS_PROFILE  `off`, or a harness profile file applied to every
+ *                      model (default: per model, see unieai-profiles.mjs)
  *
  * Each dsh mode runs in its own dsh process, started when a thread first
- * needs it; a thread keeps the mode it started in.
+ * needs it; a thread keeps the mode it started in. So does each harness
+ * profile: a thread runs with the profile of the model it started on.
  */
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -39,6 +42,7 @@ import {
   loadSelfHostedProviders,
   localProviderBaseUrl,
   prepareDsh,
+  profileForModel,
   routeModel,
   selfHostedKey,
   selfHostedKeyEnv,
@@ -49,6 +53,7 @@ import { loadCredentials } from "../src/config.mjs";
 import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-dsh/unieai-mcp-servers.mjs";
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
+import { profileLogLine } from "../src/unieai-dsh/unieai-profiles.mjs";
 import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
 
 // A thread on a self-hosted model titles itself on that server: no UnieAI
@@ -106,8 +111,9 @@ process.once("exit", claimed.release);
 // pid keeps it this process's: a server of another release can start while
 // this one still serves its clients (see unieai-launch's drain), and a shared
 // path would hand this server's dsh control channel to the new one's dsh.
-const controlSocketFor = (mode) =>
-  appSocket.replace(/(\.sock)?$/, mode === "standard" ? `.${process.pid}.dsh.sock` : `.${process.pid}.${mode}.dsh.sock`);
+// `tag` names the dsh process: its mode, plus `-p<n>` for a harness profile.
+const controlSocketFor = (tag) =>
+  appSocket.replace(/(\.sock)?$/, tag === "standard" ? `.${process.pid}.dsh.sock` : `.${process.pid}.${tag}.dsh.sock`);
 removeStaleControlSockets(dirname(appSocket));
 
 /** Control sockets of uac servers that are no longer running. */
@@ -128,22 +134,39 @@ function removeStaleControlSockets(dir) {
     }
   }
 }
+/**
+ * The harness profile a model's threads run with (unieai-profiles.mjs). A
+ * profile changes dsh's patch, so each one gets its own dsh process per mode.
+ */
+const profileFor = (model) => profileForModel(model, { warn: (message) => log(`[uac] ${message}`) });
+const profileTags = new Map(); // profile_sha -> n, for `-p<n>` in host tags
+/** The dsh process's tag for `mode` and a resolved profile. */
+function hostTag(mode, resolved) {
+  if (!resolved) return mode;
+  const sha = resolved.identity.profile_sha;
+  if (!profileTags.has(sha)) profileTags.set(sha, profileTags.size + 1);
+  return `${mode}-p${profileTags.get(sha)}`;
+}
+
 // Fail at startup, where the TUI reports it, rather than on the first turn.
-const dsh = prepareDsh({ sandboxMode, controlSocket: controlSocketFor("standard") });
-log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel})`);
+const startupProfile = profileFor(writeDshAccount().defaultModel);
+const startupTag = hostTag("standard", startupProfile);
+const dsh = prepareDsh({ sandboxMode, controlSocket: controlSocketFor(startupTag), resolved: startupProfile });
+log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel}, ${profileLogLine(dsh.profile)})`);
 
-const hosts = new Map(); // mode -> dsh host
+const hosts = new Map(); // tag -> dsh host
 
-/** The dsh process for `mode`, started on first use. */
-function hostFor(mode = "standard") {
-  const existing = hosts.get(mode);
+/** The dsh process for `mode` and harness profile, started on first use. */
+function hostFor(mode = "standard", resolved = null) {
+  const tag = hostTag(mode, resolved);
+  const existing = hosts.get(tag);
   if (existing) return existing;
-  const controlSocket = controlSocketFor(mode);
-  const setup = mode === "standard" ? dsh : prepareDsh({ sandboxMode, controlSocket, mode });
+  const controlSocket = controlSocketFor(tag);
+  const setup = tag === startupTag ? dsh : prepareDsh({ sandboxMode, controlSocket, mode, resolved });
   // dsh's recent stderr: when it dies, its own error (a missing export, a bad
   // patch) is what the user needs, not "the connection closed".
   const stderr = [];
-  const tag = mode === "standard" ? "[dsh]" : `[dsh:${mode}]`;
+  const logTag = tag === "standard" ? "[dsh]" : `[dsh:${tag}]`;
   const host = createDshHost({
     onLog: (line) => log("[uac]", line),
     connect: async () => {
@@ -156,7 +179,7 @@ function hostFor(mode = "standard") {
           onLog: (line) => {
             stderr.push(line);
             if (stderr.length > 40) stderr.shift();
-            log(tag, line);
+            log(logTag, line);
           },
         });
       } catch (error) {
@@ -175,11 +198,11 @@ function hostFor(mode = "standard") {
     },
     connectControl: () => connectControlSocket(controlSocket),
   });
-  hosts.set(mode, host);
+  hosts.set(tag, host);
   // Start dsh now so a broken install shows up in the log before the first turn.
   host.agent().then(
-    (acp) => log(`uac: dsh ${mode} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
-    (error) => log(`uac: dsh ${mode} failed to start: ${error.message}`),
+    (acp) => log(`uac: dsh ${tag} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
+    (error) => log(`uac: dsh ${tag} failed to start: ${error.message}`),
   );
   return host;
 }
@@ -241,7 +264,7 @@ async function declareConfiguredProvider(id, info) {
   log(`[uac] config provider ${id} at ${baseUrl}: ${models.join(", ")}`);
   return models;
 }
-hostFor(threadMode());
+hostFor(threadMode(), startupProfile);
 
 /** The unieai-control plugin listens once dsh has loaded it; wait briefly for it. */
 async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = {}) {
@@ -272,7 +295,7 @@ await launchAppServer({
   onHandOver: claimed.release,
   onShutdown: async () => {
     await Promise.all([...hosts.values()].map((host) => host.close()));
-    for (const mode of hosts.keys()) rmSync(controlSocketFor(mode), { force: true });
+    for (const tag of hosts.keys()) rmSync(controlSocketFor(tag), { force: true });
   },
   // What this account can actually run: a model it does not offer (a config
   // written for another account — Studio's ids differ from Rabi's) becomes
@@ -315,6 +338,11 @@ await launchAppServer({
     const chosen = model && account.models.includes(model) ? model : account.defaultModel;
     // The client's hidden structured turns (thread titles): one tool-less call.
     if (oneShot) return createOneShotEngine({ oneShot: oneShotModel, model: chosen, onText: callbacks.onText });
+    // The harness profile of the model the session starts on; it holds for
+    // the session (a later model switch keeps the same dsh process).
+    const sessionModel = modelProvider && modelProvider !== "unieai" && !ownServer ? model : chosen;
+    const resolved = profileFor(sessionModel);
+    log(`[uac] session on ${sessionModel || "(provider default)"}, ${profileLogLine(resolved?.identity ?? null)}`);
     // Where a model runs: a self-hosted server's `<server>/<model>`, else the gateway.
     const route = (slug) => {
       const { provider, model: id } = routeModel(slug, loadSelfHostedProviders());
@@ -324,7 +352,7 @@ await launchAppServer({
     // it from the config before the first session.
     if (modelProvider && modelProvider !== "unieai" && !LOCAL_PROVIDERS[modelProvider] && !ownServer) {
       return createDshEngine({
-        host: hostFor(variant ?? "standard"),
+        host: hostFor(variant ?? "standard", resolved),
         workspace: cwd,
         model,
         provider: modelProvider,
@@ -343,7 +371,7 @@ await launchAppServer({
     // comes from it, declared in dsh before the first session.
     if (LOCAL_PROVIDERS[modelProvider]) {
       return createDshEngine({
-        host: hostFor(variant ?? "standard"),
+        host: hostFor(variant ?? "standard", resolved),
         workspace: cwd,
         model,
         provider: modelProvider,
@@ -356,7 +384,7 @@ await launchAppServer({
     const routed = route(chosen);
     return createDshEngine({
       // Threads stored before modes existed have none: standard.
-      host: hostFor(variant ?? "standard"),
+      host: hostFor(variant ?? "standard", resolved),
       workspace: cwd,
       model: routed.model,
       provider: routed.provider,

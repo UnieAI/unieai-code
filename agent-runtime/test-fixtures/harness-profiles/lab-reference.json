@@ -1,0 +1,68 @@
+{
+  "base_patch": "- id: acp\n  config:\n    provider: unieai\n    model: \"Example-Model-7B\"\n- id: system-prompt\n  config:\n    includeHarnessIdentity: false\n    includeRuntimeContext: true\n    personaPrefix: |\n      You are {{model}}, a coding agent.\n\n      # Rules\n      - Keep going until the task is solved.\n\n- id: compaction-basic\n  config:\n    thresholdRatio: 0.75\n",
+  "catalog": [
+    "unieai-exec",
+    "unieai-exec-notify",
+    "unieai-edit-observe",
+    "unieai-skills",
+    "unieai-edit-rescue",
+    "unieai-edit-feedback",
+    "unieai-apply-patch",
+    "unieai-web-search",
+    "unieai-vision-fallback",
+    "unieai-secret-redact",
+    "unieai-auto-approval",
+    "unieai-rewind",
+    "unieai-wait-agents",
+    "unieai-agents",
+    "unieai-schedule",
+    "unieai-loop-truncation",
+    "unieai-loop-completion",
+    "unieai-todo-guard",
+    "unieai-loop-toolerrors",
+    "unieai-toolcall-repair",
+    "unieai-context-overflow",
+    "unieai-context-usage",
+    "unieai-loop-guard"
+  ],
+  "cases": [
+    {
+      "file": "example.yaml",
+      "profile_sha": "5f009f07c401",
+      "instructions": "- Verify the result against every requirement before finishing.\n- Leading and trailing spaces are stripped.\n- 回答使用使用者的語言 — keep the user's language ✓\n\n## Tool guidance\n- `exec_command`: Read stderr before retrying a failed command.\n- `apply_patch`: Keep each hunk small; re-read the file after a failed patch.\n\n## Skills available\n- verify-first: How to check work before declaring it \"done\" (確認)",
+      "pack_env": {
+        "UNIEAI_PERSONA_RIGOR": "1",
+        "UNIEAI_DSH_PLUGINS": "unieai-exec,unieai-exec-notify,unieai-edit-observe,unieai-skills,unieai-edit-rescue,unieai-edit-feedback,unieai-apply-patch,unieai-vision-fallback,unieai-secret-redact,unieai-auto-approval,unieai-wait-agents,unieai-agents,unieai-schedule,unieai-loop-truncation,unieai-loop-completion,unieai-todo-guard,unieai-loop-toolerrors,unieai-toolcall-repair,unieai-context-overflow,unieai-context-usage,unieai-loop-guard",
+        "UNIEAI_HOME": "/installed-agent/hlab-home"
+      },
+      "skill_files": {
+        "verify-first/SKILL.md": "---\nname: verify-first\ndescription: \"How to check work before declaring it \\\"done\\\" (\\u78ba\\u8a8d)\"\n---\n\n1. Re-read the task.\n2. Run the program on the given input.\n\n3. Compare the output with what was asked.\n"
+      },
+      "patched": "- id: acp\n  config:\n    provider: unieai\n    model: \"Example-Model-7B\"\n- id: system-prompt\n  config:\n    includeHarnessIdentity: false\n    includeRuntimeContext: true\n    personaPrefix: |\n      You are {{model}}, a coding agent.\n\n      # Rules\n      - Keep going until the task is solved.\n\n      - Verify the result against every requirement before finishing.\n      - Leading and trailing spaces are stripped.\n      - 回答使用使用者的語言 — keep the user's language ✓\n\n      ## Tool guidance\n      - `exec_command`: Read stderr before retrying a failed command.\n      - `apply_patch`: Keep each hunk small; re-read the file after a failed patch.\n\n      ## Skills available\n      - verify-first: How to check work before declaring it \"done\" (確認)\n\n- id: compaction-basic\n  config:\n    thresholdRatio: 0.75\n",
+      "patched_empty": "- id: system-prompt\n  config:\n    includeRuntimeContext: true\n    personaPrefix: |\n      - Verify the result against every requirement before finishing.\n      - Leading and trailing spaces are stripped.\n      - 回答使用使用者的語言 — keep the user's language ✓\n\n      ## Tool guidance\n      - `exec_command`: Read stderr before retrying a failed command.\n      - `apply_patch`: Keep each hunk small; re-read the file after a failed patch.\n\n      ## Skills available\n      - verify-first: How to check work before declaring it \"done\" (確認)\n"
+    },
+    {
+      "file": "family.yaml",
+      "profile_sha": "4c3262b8bc20",
+      "instructions": "## Tool guidance\n- `write_stdin`: Poll a running session with empty chars and a long yield_time_ms.",
+      "pack_env": {
+        "UNIEAI_DSH_PLUGINS": "unieai-exec,unieai-skills",
+        "UNIEAI_HOME": "/installed-agent/hlab-home"
+      },
+      "skill_files": {},
+      "patched": "- id: acp\n  config:\n    provider: unieai\n    model: \"Example-Model-7B\"\n- id: system-prompt\n  config:\n    includeHarnessIdentity: false\n    includeRuntimeContext: true\n    personaPrefix: |\n      You are {{model}}, a coding agent.\n\n      # Rules\n      - Keep going until the task is solved.\n\n      ## Tool guidance\n      - `write_stdin`: Poll a running session with empty chars and a long yield_time_ms.\n\n- id: compaction-basic\n  config:\n    thresholdRatio: 0.75\n",
+      "patched_empty": "- id: system-prompt\n  config:\n    includeRuntimeContext: true\n    personaPrefix: |\n      ## Tool guidance\n      - `write_stdin`: Poll a running session with empty chars and a long yield_time_ms.\n"
+    },
+    {
+      "file": "minimal.yaml",
+      "profile_sha": "cc2e1c875185",
+      "instructions": "",
+      "pack_env": {
+        "UNIEAI_HOME": "/installed-agent/hlab-home"
+      },
+      "skill_files": {},
+      "patched": "- id: acp\n  config:\n    provider: unieai\n    model: \"Example-Model-7B\"\n- id: system-prompt\n  config:\n    includeHarnessIdentity: false\n    includeRuntimeContext: true\n    personaPrefix: |\n      You are {{model}}, a coding agent.\n\n      # Rules\n      - Keep going until the task is solved.\n\n- id: compaction-basic\n  config:\n    thresholdRatio: 0.75\n",
+      "patched_empty": ""
+    }
+  ]
+}

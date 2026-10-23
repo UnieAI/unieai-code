@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/UnieAI/unieai-harness-lab/schemas/profile.schema.json",
+  "title": "harness-lab profile",
+  "description": "Copyright (c) 2026 UnieAI. Licensed under the Apache License, Version 2.0. The non-weight settings of a coding agent for one model: persona level, plugin set, tool guidance and skills, plus where they came from and what they measured.",
+  "$comment": "Copied from unieai-harness-lab (src/harness_lab/schemas/profile.schema.json), which owns this schema: change it there first, then copy it here. One addition is pending in the lab: the optional top-level `match` list.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "model",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model id as the gateway serves it, without a provider prefix (e.g. Qwen3.6-35B-A3B)."
+    },
+    "match": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._:/*?-]{1,128}$"
+      },
+      "description": "Glob patterns (* and ?) naming further model ids this profile applies to, e.g. Qwen3.6-*. The exact `model` always matches first; among patterns the most specific (most literal characters) wins."
+    },
+    "status": {
+      "enum": [
+        "unmeasured",
+        "measured",
+        "candidate",
+        "adopted",
+        "rejected"
+      ],
+      "description": "unmeasured: initial values, no evidence yet. measured: evaluated as-is, no edit adopted. candidate: proposed and probed, not validated. adopted: passed held-out validation. rejected: failed validation (kept for the record)."
+    },
+    "harness": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Harness kind the profile was measured with (dsh, codex, ...). Profiles load on other harnesses but their measurements do not transfer."
+    },
+    "notes": {
+      "type": "string"
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "description": "Named persona level the harness knows (shipped: minimal, standard, rigor)."
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "maxItems": 12,
+          "description": "Short instruction lines appended to the persona."
+        }
+      }
+    },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "enum": [
+            "all",
+            "none",
+            "default"
+          ],
+          "description": "Starting set: all plugins the harness ships, none, or the harness's own default."
+        },
+        "enable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "disable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "tool_guidance": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool",
+          "text"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "description",
+          "body"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{1,47}$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "profile_sha of the profile this one was derived from."
+        },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "lessons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "description": "Appended by hlab only; never edit by hand. Each row states model x harness version x result x cost.",
+      "items": {
+        "type": "object",
+        "required": [
+          "date",
+          "model",
+          "harness",
+          "harness_version",
+          "split",
+          "n",
+          "passed"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "harness_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "benchmark": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "split": {
+            "type": "string"
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "passed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "base_passed": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "p_value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokens_per_task": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "seconds_per_task": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

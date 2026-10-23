@@ -1,0 +1,4 @@
+# A test fixture: only the required keys; everything else takes its default.
+schema_version: 1
+model: Minimal-Model
+status: adopted

@@ -10,13 +10,24 @@
  * and presets, `unieai login --api`) are declared beside it, or alone when there
  * is no UnieAI sign-in.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadCredentials, unieaiHome } from "../config.mjs";
 import { buildPersona } from "./unieai-persona.mjs";
-import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
+import { PLUGINS, renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
+import {
+  appendPersona,
+  personaRigor,
+  profileIdentity,
+  profileInstructions,
+  profilePluginChoice,
+  profileSkillFiles,
+  resolveProfile,
+  validateProfile,
+  writeSkillFiles,
+} from "./unieai-profiles.mjs";
 
 export const DSH_PROVIDER_ID = "unieai";
 export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
@@ -36,9 +47,10 @@ export const BUNDLED_SKILLS_DIR = join(here, "skills");
 /**
  * Whether uac offers `publish_artifact`: on by default, and named in
  * `UNIEAI_DSH_PLUGINS` like a catalog plugin so an A/B run can leave it out.
+ * A harness profile's plugin choice counts the same way (see pluginEnv).
  */
-export function artifactsEnabled(env = process.env) {
-  const choice = String(env.UNIEAI_DSH_PLUGINS ?? "").trim();
+export function artifactsEnabled(env = process.env, profile = null) {
+  const choice = String(pluginEnv(env, profile).UNIEAI_DSH_PLUGINS ?? "").trim();
   if (!choice || choice === "all") return true;
   return choice.split(",").map((id) => id.trim()).includes("unieai-artifacts");
 }
@@ -457,13 +469,29 @@ export function modePatch(mode) {
   }
 }
 
+/** `unieai-artifacts` is chosen like a catalog plugin (see artifactsEnabled). */
+const ARTIFACTS_ID = "unieai-artifacts";
+
+/**
+ * `env` with a harness profile's plugin choice as `UNIEAI_DSH_PLUGINS`. A
+ * value already set wins, so A/B runs keep choosing their own set.
+ */
+export function pluginEnv(env = process.env, profile = null) {
+  if (String(env.UNIEAI_DSH_PLUGINS ?? "").trim() || !profile) return env;
+  const choice = profilePluginChoice(profile, {
+    catalog: [...PLUGINS.map((plugin) => plugin.id), ARTIFACTS_ID],
+    defaults: [...PLUGINS.filter((plugin) => plugin.profiles.includes("cli")).map((plugin) => plugin.id), ARTIFACTS_ID],
+  });
+  return choice ? { ...env, UNIEAI_DSH_PLUGINS: choice } : env;
+}
+
 /**
  * The plugins uac loads: the `cli` profile of the vendored uac-plugins
  * catalog, narrowed by `UNIEAI_DSH_PLUGINS` (`off`, or a comma list of ids)
- * for A/B runs.
+ * for A/B runs, else by the harness profile's `plugins`.
  */
-export function selectPlugins(env = process.env) {
-  return selectCatalogPlugins({ profile: "cli", env });
+export function selectPlugins(env = process.env, profile = null) {
+  return selectCatalogPlugins({ profile: "cli", env: pluginEnv(env, profile) });
 }
 
 const indent = (text, spaces) => text.split("\n").map((line) => (line ? " ".repeat(spaces) + line : line)).join("\n");
@@ -496,6 +524,11 @@ export function renderPatch({
   // publish_artifact and the bundled `artifact` skill (not in minimal mode).
   artifacts = false,
   artifactsUrl = ARTIFACTS_PLUGIN_URL,
+  // The harness profile for this model (unieai-profiles.mjs), or null.
+  profile = null,
+  // Where its skill layer (profileSkillLayer) is written: unieai-skills
+  // reads this directory in place of the bundled one.
+  profileSkillsDir = null,
 }) {
   const q = yamlQuote;
   plugins = pluginsForMode(plugins, mode);
@@ -513,7 +546,7 @@ export function renderPatch({
     const text = buildPersona({
       execTools,
       shellOnly: mode === "minimal",
-      rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
+      rigor: personaRigor(profile, process.env),
     });
     // No working directory here: dsh 0.2 states it in the runtime context
     // (user side, so the system prompt stays cacheable) and no longer
@@ -569,7 +602,11 @@ export function renderPatch({
     plugins,
     profile: "cli",
     config: {
-      "unieai-skills": artifacts ? { home, bundledSkillDir: BUNDLED_SKILLS_DIR } : { home },
+      "unieai-skills": profileSkillsDir
+        ? { home, bundledSkillDir: profileSkillsDir }
+        : artifacts
+          ? { home, bundledSkillDir: BUNDLED_SKILLS_DIR }
+          : { home },
       "unieai-agents": { home },
       "unieai-web-search": { gatewayBaseUrl },
       "unieai-vision-fallback": visionModel
@@ -620,7 +657,88 @@ export function renderPatch({
   }
   inserts.push(...parts.inserts, ...modeRows.inserts);
   lines.push("- insert:", ...inserts);
-  return `${lines.join("\n")}\n`;
+  // The profile's persona lines and tool guidance go inside the persona row,
+  // in exactly the form the harness lab measured them.
+  return appendPersona(`${lines.join("\n")}\n`, profileInstructions(profile));
+}
+
+/** Every file of the skills that ship with UnieAI Code, relative to `dir`. */
+function bundledSkillFiles(dir = BUNDLED_SKILLS_DIR) {
+  const files = {};
+  const walk = (path) => {
+    for (const name of readdirSync(path)) {
+      const full = join(path, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else files[relative(dir, full).split("\\").join("/")] = readFileSync(full, "utf8");
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return files;
+}
+
+/**
+ * The skill layer a profile adds, as `{ "<name>/SKILL.md": text }`: its own
+ * skills over the bundled ones (when `artifacts` offers them). unieai-skills
+ * reads the directory holding it as its bundled root, so user and project
+ * skills still outrank it. Empty when the profile has no skills.
+ */
+export function profileSkillLayer({ profile, artifacts = false }) {
+  const own = profileSkillFiles(profile);
+  if (Object.keys(own).length === 0) return {};
+  const shadowed = new Set(Object.keys(own).map((path) => path.split("/")[0]));
+  const bundled = Object.entries(artifacts ? bundledSkillFiles() : {}).filter(([path]) => !shadowed.has(path.split("/")[0]));
+  return { ...Object.fromEntries(bundled), ...own };
+}
+
+/**
+ * dsh's settings and patch for one model and harness profile, without
+ * touching the disk: the in-process contract described at the top of
+ * unieai-profiles.mjs (the harness lab renders candidates with it).
+ *
+ * `profile`: an object, applied whatever its status (an invalid one throws);
+ * null for none; undefined to resolve it for `model` (UNIEAI_HARNESS_PROFILE,
+ * $UNIEAI_HOME/profiles, the bundled ones). `skillsDir` is where the caller
+ * writes `skillFiles`; without it a profile's skills are not offered.
+ */
+export function renderUacConfig({
+  model,
+  profile,
+  baseUrl = null,
+  modelInfo = null,
+  env = process.env,
+  home = unieaiHome(),
+  skillsDir = null,
+  acp = false,
+  artifacts = false,
+  mode = "standard",
+  warn = () => {},
+  ...patchOptions
+}) {
+  let identity = null;
+  if (profile === undefined) {
+    const resolved = resolveProfile(model, { env, home, warn });
+    profile = resolved?.profile ?? null;
+    identity = resolved?.identity ?? null;
+  } else if (profile) {
+    const errors = validateProfile(profile);
+    if (errors.length) throw new Error(`invalid profile: ${errors.join("; ")}`);
+    identity = profileIdentity(profile);
+  }
+  const plugins = pluginsForMode(selectPlugins(env, profile), mode);
+  const skillFiles = profileSkillLayer({ profile, artifacts: artifacts && mode !== "minimal" });
+  const settings = renderSettings({ baseUrl, models: [modelInfo ?? { id: model }], defaultModel: model });
+  const patch = renderPatch({
+    ...patchOptions,
+    defaultModel: model,
+    plugins,
+    acp,
+    home,
+    mode,
+    artifacts,
+    profile,
+    profileSkillsDir: skillsDir && Object.keys(skillFiles).length ? skillsDir : null,
+  });
+  return { settings, patch, plugins: plugins.map((plugin) => plugin.id), profile: identity, skillFiles };
 }
 
 /**
@@ -753,16 +871,48 @@ export function pickVisionRoute({ catalog, defaultModel, selfHosted = [], gatewa
  * Write dsh's home for the account and return the child environment and command.
  * Throws when the user is not signed in: without a gateway dsh has no model.
  */
-export function prepareDsh({ env = process.env, sandboxMode = "workspace-write", controlSocket = null, mode = "standard" } = {}) {
+/**
+ * The harness profile for a thread's model (`<server>/<model>` is looked up
+ * by its bare id): `{ profile, identity }` or null, every skipped file
+ * reported through `warn`.
+ */
+export function profileForModel(model, { env = process.env, warn = () => {} } = {}) {
+  try {
+    return resolveProfile(routeModel(model, loadSelfHostedProviders()).model, { env, warn });
+  } catch (error) {
+    // A profile is never worth failing a start over.
+    warn(`profile: none, resolving one failed: ${error.message}`);
+    return null;
+  }
+}
+
+export function prepareDsh({
+  env = process.env,
+  sandboxMode = "workspace-write",
+  controlSocket = null,
+  mode = "standard",
+  // The harness profile this dsh process applies, as profileForModel
+  // returns it (null: none); by default the account's default model's.
+  resolved,
+  warn = () => {},
+} = {}) {
   const { home, defaultModel, defaultRoute, models, gatewayBaseUrl, vision } = writeDshAccount({ env });
-  // One dsh process per mode, each with its own patch; standard keeps the
-  // name it always had.
-  const patchPath = join(home, mode === "standard" ? "uac.patch.yml" : `uac.${mode}.patch.yml`);
-  const plugins = pluginsForMode(selectPlugins(env), mode);
+  if (resolved === undefined) resolved = profileForModel(defaultModel, { env, warn });
+  const profile = resolved?.profile ?? null;
+  const identity = resolved?.identity ?? null;
+  // One dsh process per mode and profile, each with its own patch; standard
+  // without a profile keeps the name it always had.
+  const suffix = `${mode === "standard" ? "" : `.${mode}`}${identity ? `.${identity.profile_sha}` : ""}`;
+  const patchPath = join(home, `uac${suffix}.patch.yml`);
+  const plugins = pluginsForMode(selectPlugins(env, profile), mode);
   // UNIEAI_AUTO_APPROVAL_MODEL names a cheaper reviewer for auto mode; only
   // a model the account serves (the session's provider routes it).
   const autoApprovalModel = models.includes(env.UNIEAI_AUTO_APPROVAL_MODEL) ? env.UNIEAI_AUTO_APPROVAL_MODEL : null;
-  const artifacts = artifactsEnabled(env);
+  const artifacts = artifactsEnabled(env, profile);
+  // The profile's skills, by profile_sha: the same profile writes the same files.
+  const skillFiles = profileSkillLayer({ profile, artifacts: artifacts && mode !== "minimal" });
+  const profileSkillsDir = Object.keys(skillFiles).length ? join(home, "profile-skills", identity.profile_sha) : null;
+  if (profileSkillsDir) writeSkillFiles(profileSkillsDir, skillFiles);
   writeFileSync(
     patchPath,
     renderPatch({
@@ -775,6 +925,8 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
       autoApprovalModel,
       mode,
       artifacts,
+      profile,
+      profileSkillsDir,
     }),
   );
 
@@ -789,7 +941,17 @@ export function prepareDsh({ env = process.env, sandboxMode = "workspace-write",
   // launch, so a key there would pin dsh to it across a Studio key rotation.
   delete childEnv[GATEWAY_KEY_ENV];
   for (const name of Object.keys(childEnv)) if (/^UNIEAI_SELF_HOSTED_.*_API_KEY$/.test(name)) delete childEnv[name];
-  return { env: childEnv, defaultModel, models, controlSocket, mode, plugins: plugins.map((p) => p.id), ...dshCommand(childEnv) };
+  return {
+    env: childEnv,
+    defaultModel,
+    models,
+    controlSocket,
+    mode,
+    plugins: plugins.map((p) => p.id),
+    // What `profileLogLine` names in the server log.
+    profile: identity,
+    ...dshCommand(childEnv),
+  };
 }
 
 /** The app-server protocol's sandbox names -> dsh's permission modes. */

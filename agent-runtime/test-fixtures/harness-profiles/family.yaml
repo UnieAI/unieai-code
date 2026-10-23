@@ -1,0 +1,15 @@
+# A test fixture: a model family by `match:` (a uac addition the lab's schema
+# does not have yet), plugins from an empty base.
+schema_version: 1
+model: Family-1.0-Base
+match: ["Family-1.*", "Family-*"]
+status: adopted
+harness: dsh
+persona:
+  level: minimal
+plugins:
+  base: none
+  enable: [unieai-exec, unieai-skills]
+tool_guidance:
+  - tool: write_stdin
+    text: Poll a running session with empty chars and a long yield_time_ms.
