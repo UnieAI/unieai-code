@@ -12,6 +12,7 @@ UnieAI Code 是以 [openai/codex](https://github.com/openai/codex)（Rust）為�
 | [vscode-extension.md](vscode-extension.md) | VS Code 聊天面板：安裝、雙引擎、功能 |
 | [benchmarks.md](benchmarks.md) | Benchmark 方法與結果（HumanEval、SWE-bench） |
 | [remote-control-protocol.md](remote-control-protocol.md) | Remote Control 協定 v1：relay、配對、Noise 端對端加密、方法白名單（給 Ava 實作 relay 與網頁端） |
+| [harness-profiles.md](harness-profiles.md) | 每個模型的 harness profile（uac）：格式、套用順序、hlab 如何採用、如何關閉 |
 
 ## 三個 repo 的關係
 
