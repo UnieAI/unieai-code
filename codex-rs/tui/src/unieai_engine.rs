@@ -29,6 +29,7 @@ pub(crate) const UAC_SERVER_ENV_VAR: &str = "UNIEAI_UAC_SERVER";
 const ENGINE_FILE: &str = "engine";
 const UAC_DIR: &str = "uac";
 const UAC_MODE_FILE: &str = "mode";
+const UAC_PROFILE_FILE: &str = "profile.json";
 const UAC_SOCKET: &str = "app-server.sock";
 const UAC_LOG: &str = "server.log";
 const UAC_SCRIPT: &str = "agent-runtime/bin/unieai-uac-server.mjs";
@@ -147,6 +148,24 @@ pub(crate) fn configured_uac_mode(codex_home: &Path) -> UacMode {
         .ok()
         .and_then(|raw| UacMode::parse(&raw))
         .unwrap_or(UacMode::Standard)
+}
+
+/// The harness profile the uac server applied to `thread_id`, as
+/// `profile <model> <sha8>`: it records one per thread in
+/// `$CODEX_HOME/uac/profile.json` (agent-runtime/src/unieai-dsh/unieai-profiles.mjs,
+/// `recordThreadProfile`). None when the thread has no profile or none is recorded.
+pub(crate) fn uac_thread_profile(codex_home: &Path, thread_id: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(codex_home.join(UAC_DIR).join(UAC_PROFILE_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let entry = value.get("threads")?.get(thread_id)?;
+    let model = entry.get("model")?.as_str()?;
+    let sha: String = entry
+        .get("profile_sha")?
+        .as_str()?
+        .chars()
+        .take(8)
+        .collect();
+    Some(format!("profile {model} {sha}"))
 }
 
 pub(crate) fn write_uac_mode(codex_home: &Path, mode: UacMode) -> std::io::Result<()> {

@@ -42,6 +42,29 @@ fn uac_mode_parses_round_trips_and_defaults_to_standard() {
 }
 
 #[test]
+fn uac_thread_profile_reads_the_servers_record_by_thread() {
+    let home = tempfile::tempdir().expect("tempdir");
+    assert_eq!(uac_thread_profile(home.path(), "thread-a"), None);
+    std::fs::create_dir_all(home.path().join("uac")).expect("mkdir");
+    std::fs::write(
+        home.path().join("uac").join("profile.json"),
+        r#"{"threads": {
+            "thread-a": {"model": "Qwen3.6-35B-A3B", "status": "adopted", "profile_sha": "3f2a9c0e1b7d", "source": "bundled"},
+            "thread-b": null
+        }}"#,
+    )
+    .expect("write");
+    assert_eq!(
+        uac_thread_profile(home.path(), "thread-a"),
+        Some("profile Qwen3.6-35B-A3B 3f2a9c0e".to_string())
+    );
+    assert_eq!(uac_thread_profile(home.path(), "thread-b"), None);
+    assert_eq!(uac_thread_profile(home.path(), "thread-c"), None);
+    std::fs::write(home.path().join("uac").join("profile.json"), "not json").expect("write");
+    assert_eq!(uac_thread_profile(home.path(), "thread-a"), None);
+}
+
+#[test]
 fn uac_socket_is_distinct_from_the_daemon_socket() {
     let home = tempfile::tempdir().expect("tempdir");
     let uac = uac_socket_path(home.path());

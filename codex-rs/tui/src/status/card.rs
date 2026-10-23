@@ -45,11 +45,16 @@ use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
 use super::remote_connection::RemoteConnectionStatus;
 
-/// The engine this session runs on, with the uac mode when it is uac.
-fn engine_summary(config: &Config) -> String {
+/// The engine this session runs on, with the uac mode when it is uac, and the
+/// harness profile the uac server applied to this session's thread, if any.
+fn engine_summary(config: &Config, session_id: Option<&str>) -> String {
     if crate::unieai_engine::session_is_uac() {
+        let profile = session_id
+            .and_then(|id| crate::unieai_engine::uac_thread_profile(&config.codex_home, id))
+            .map(|profile| format!(" · {profile}"))
+            .unwrap_or_default();
         format!(
-            "{} · {}",
+            "{} · {}{profile}",
             crate::unieai_engine::EngineKind::Uac.display_name(),
             crate::unieai_engine::configured_uac_mode(&config.codex_home).display_name(),
         )
@@ -407,7 +412,7 @@ impl StatusHistoryCell {
             permissions,
             collaboration_mode: collaboration_mode.map(ToString::to_string),
             model_provider,
-            engine: engine_summary(config),
+            engine: engine_summary(config, session_id.as_deref()),
             remote_connection: remote_connection.cloned(),
             show_chatgpt_usage_link,
             account,
