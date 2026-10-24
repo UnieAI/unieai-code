@@ -743,10 +743,10 @@ async fn unieai_project_config_dir_skills_are_discovered_alongside_agents_skills
     let mut skill_paths = outcome
         .skills
         .into_iter()
-        .map(|skill| skill.path_to_skills_md)
+        .map(|skill| skill.path_to_skills_md.to_path_buf())
         .collect::<Vec<_>>();
     skill_paths.sort();
-    let mut expected = vec![agents_skill, unieai_skill];
+    let mut expected = vec![agents_skill.to_path_buf(), unieai_skill.to_path_buf()];
     expected.sort();
     assert_eq!(skill_paths, expected);
 }

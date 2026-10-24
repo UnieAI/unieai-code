@@ -197,6 +197,8 @@ fn model_provider_from_proto(
         supports_websockets: provider.supports_websockets,
         supports_standalone_web_search: provider.supports_standalone_web_search,
         capabilities: None,
+        project_id: provider.project_id,
+        location: provider.location,
         include_internal_metadata: false,
     };
     Ok((id, info))
@@ -218,6 +220,8 @@ fn model_provider_to_proto(
         auth,
         gateway_oauth: _,
         aws: _,
+        project_id,
+        location,
         wire_api,
         query_params,
         http_headers,
@@ -253,6 +257,8 @@ fn model_provider_to_proto(
         requires_openai_auth,
         supports_websockets,
         supports_standalone_web_search,
+        project_id,
+        location,
     }
 }
 
@@ -448,6 +454,8 @@ mod tests {
     #[test]
     fn model_provider_proto_roundtrips_through_domain_type() {
         let mut expected = expected_provider();
+        expected.project_id = Some("vertex-project".to_string());
+        expected.location = Some("us-central1".to_string());
         expected.auth = None;
         expected.experimental_bearer_token = Some("synthetic-provider-token".into());
         let proto = model_provider_to_proto("local", expected.clone());
@@ -522,6 +530,8 @@ mod tests {
                             requires_openai_auth: false,
                             supports_websockets: true,
                             supports_standalone_web_search: true,
+                            project_id: None,
+                            location: None,
                         }],
                         features: HashMap::from([
                             ("plugins".to_string(), false),
@@ -588,6 +598,8 @@ mod tests {
             gateway_oauth: None,
             aws: None,
             capabilities: None,
+            project_id: None,
+            location: None,
             include_internal_metadata: false,
         }
     }
