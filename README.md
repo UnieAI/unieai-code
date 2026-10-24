@@ -32,6 +32,10 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.39** (2026-10-24) — fixes uac not starting in 0.0.38 (Rabi sign-ins saw a 404),
+Windows builds reporting version 0.0.22, and the welcome logo vanishing at launch;
+merges upstream Codex through 2026-10-23 and moves uac to deepseek-harness 0.2.1-rc.3.
+
 **0.0.38** (2026-10-22) — highlights:
 
 - **Connect a model API** — sign in with UnieAI Rabi (now first), UnieAI Studio, or no

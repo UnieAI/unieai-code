@@ -33,6 +33,38 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.39 — 2026-10-24
+
+A fix release for 0.0.38, which could not start the uac engine on any
+install.
+
+- Merged upstream Codex through
+  [`970111f6cb`](https://github.com/openai/codex/commit/970111f6cb) (2026-10-23,
+  124 commits). Notable: a model the provider does not have now fails the turn
+  instead of being retried, reasoning-effort overrides are on by default,
+  a `/` command keeps its prefix in the editable composer text, consecutive
+  prompts in the background transcript are grouped, retained reasoning is no
+  longer counted twice in token usage, and SQLite databases on NFS use DELETE
+  journaling (`unieai migrate-nfs-db` converts existing ones).
+
+### Fixed
+
+- **uac starts again.** The 0.0.38 package left out a module the uac server
+  imports, so uac died at launch with `ERR_MODULE_NOT_FOUND` and the session
+  fell back to codex. On a Rabi account that showed up as
+  `404 Not Found … /api/desktop/v1/responses`, since Rabi serves only chat
+  completions. The release build now fails if a shipped module imports a file
+  that was left out.
+- **Windows reports its real version.** Windows builds always reported
+  `0.0.22-dev-uc0.5.0-ac0.4.0`, whatever the release, so updating seemed not
+  to work and the update notice kept coming back.
+- **The welcome logo stays.** A warning shown at launch (such as uac not
+  starting) no longer clears the logo a moment after it appears.
+
+### uac engine
+
+- deepseek-harness 0.2.1-rc.3.
+
 ## 0.0.38 — 2026-10-22
 
 - Merged upstream Codex twice: through
