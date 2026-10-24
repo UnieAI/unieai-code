@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,7 @@ AGENT_RUNTIME_FILES = [
     "package.json",
     "bin/unieai-uac-server.mjs",
     "src/config.mjs",
+    "src/unieai-billing.mjs",
     "src/app-server",
     "src/unieai-dsh",
 ]
@@ -392,6 +394,28 @@ def stage_agent_runtime(staging_dir: Path) -> None:
             )
         else:
             shutil.copy2(src, dest)
+    check_agent_runtime_imports(dest_root)
+
+
+# A relative `import ... from "./x.mjs"` / `import("./x.mjs")` in a staged file.
+RELATIVE_IMPORT_RE = re.compile(r"""(?:\bfrom|\bimport\s*\(?)\s*["'](\.{1,2}/[^"']+)["']""")
+
+
+def check_agent_runtime_imports(dest_root: Path) -> None:
+    """Fail the build when a staged module imports a file AGENT_RUNTIME_FILES left out.
+
+    0.0.38 shipped without src/unieai-billing.mjs, so uac crashed at startup
+    with ERR_MODULE_NOT_FOUND on every install.
+    """
+    missing = []
+    for module in sorted(dest_root.rglob("*.mjs")):
+        for target in RELATIVE_IMPORT_RE.findall(module.read_text(encoding="utf-8")):
+            if not (module.parent / target).resolve().exists():
+                missing.append(f"{module.relative_to(dest_root)} -> {target}")
+    if missing:
+        raise RuntimeError(
+            "agent-runtime files import modules missing from AGENT_RUNTIME_FILES: " + ", ".join(missing)
+        )
 
 
 def agent_runtime_dependencies() -> dict[str, str]:
