@@ -149,8 +149,11 @@ jobs:
       - name: Stamp workspace version
         shell: bash
         run: |
-          perl -0pi -e 's/\[workspace\.package\]\nversion = "[^"]*"/[workspace.package]\nversion = "${{ steps.version.outputs.value }}"/' Cargo.toml
+          # Windows runners check out with CRLF, so the newline is \r?\n; an
+          # unmatched pattern once shipped every Windows build as the dev id.
+          perl -0pi -e 's/\[workspace\.package\](\r?\n)version = "[^"]*"/[workspace.package]$1version = "${{ steps.version.outputs.value }}"/' Cargo.toml
           grep -A1 '^\[workspace.package\]' Cargo.toml | head -2
+          perl -0ne 'exit(/\[workspace\.package\]\r?\nversion = "\Q${{ steps.version.outputs.value }}\E"/ ? 0 : 1)' Cargo.toml || { echo "::error::Cargo.toml version was not stamped"; exit 1; }
 
       - name: Install Rust target
         shell: bash
