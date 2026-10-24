@@ -24,5 +24,5 @@ pub(crate) fn is_startup_cell(cell: &dyn HistoryCell) -> bool {
         || cell
             .as_any()
             .downcast_ref::<history_cell::WarningHistoryCell>()
-            .is_some_and(|warning| warning.server_version_notice)
+            .is_some_and(|warning| warning.startup_notice)
 }

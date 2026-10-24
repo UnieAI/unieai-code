@@ -47,7 +47,8 @@ pub(crate) enum WarningKey<'a> {
 
 #[derive(Debug)]
 pub(crate) struct WarningHistoryCell {
-    pub(crate) server_version_notice: bool,
+    /// Startup metadata (server version, uac fallback): keeps the welcome logo.
+    pub(crate) startup_notice: bool,
     pub(super) visible_in_transcript: bool,
     pub(super) key: String,
     pub(super) diagnostic: String,

@@ -96,7 +96,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
 pub(crate) fn new_warning_event(message: String) -> WarningHistoryCell {
     let style = crate::style::status_style(crate::style::StatusTone::Attention);
     WarningHistoryCell {
-        server_version_notice: false,
+        startup_notice: false,
         visible_in_transcript: false,
         key: message.clone(),
         diagnostic: message.clone(),
@@ -111,6 +111,15 @@ pub(crate) fn new_warning_event(message: String) -> WarningHistoryCell {
 pub(crate) fn new_usage_warning_event(message: String) -> WarningHistoryCell {
     WarningHistoryCell {
         visible_in_transcript: true,
+        ..new_warning_event(message)
+    }
+}
+
+/// A warning shown with the session header at launch; like the header, it
+/// leaves the welcome logo in place.
+pub(crate) fn new_startup_warning_event(message: String) -> WarningHistoryCell {
+    WarningHistoryCell {
+        startup_notice: true,
         ..new_warning_event(message)
     }
 }
@@ -130,7 +139,7 @@ pub(crate) fn new_server_version_warning(
         ));
     }
     WarningHistoryCell {
-        server_version_notice: true,
+        startup_notice: true,
         visible_in_transcript: false,
         key,
         diagnostic: lines
