@@ -330,7 +330,7 @@ jobs:
       id-token: write  # npm trusted publishing
     steps:
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           # No registry-url: it writes an .npmrc with a placeholder token that
@@ -442,7 +442,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
