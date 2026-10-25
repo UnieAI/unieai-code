@@ -1,0 +1,92 @@
+# Copyright (c) 2026 UnieAI. All rights reserved.
+schema_version: 1
+model: Qwen3.6-35B-A3B
+status: adopted
+harness: dsh
+notes: 'Adopted 2026-10-25 by the user on cost: held-out val 15/48 vs base 14/48 (p=1.0, accuracy unchanged)
+  with 21% fewer tokens per task (2.92M vs 3.69M) and 28% less time (799 s vs 1113 s). Not an accuracy
+  win; the lab rule (p<0.05) alone would have rejected it.'
+persona:
+  level: standard
+  extra:
+  - 'Watch for repetition: if a call fails or returns the same output twice, do not retry it — re-read
+    the file, narrow the command, or switch tools. Budget time: prefer targeted checks over full-suite
+    reruns, and stop once the requirement is verified rather than polishing.'
+plugins:
+  base: default
+  enable:
+  - unieai-loop-guard
+  disable: []
+tool_guidance:
+- tool: exec_command
+  text: 'Always bound commands: set yield_time_ms and wrap risky runs in `timeout N`. Prefer targeted
+    tests/files over full suites; run the full suite at most once, near the end. Redirect verbose output
+    to a file and tail it. If a background session is still running after one poll, do other work or kill
+    it — do not poll it repeatedly.'
+skills: []
+provenance:
+  parent: cc2e1c875185
+  edits:
+  - op: enable_plugin
+    args:
+      plugin: unieai-loop-guard
+    rationale: A mechanical loop detector interrupts the repeated-call pattern that inflates turn counts
+      and burns the time budget, instead of relying on the model to notice it is stuck.
+    scope: invariant
+    cue: 10/41 failing runs repeated one identical tool call >=5 times (max x18); median 88 tool calls
+      vs 12 in passing runs
+  - op: set_tool_guidance
+    args:
+      tool: exec_command
+      text: 'Always bound commands: set yield_time_ms and wrap risky runs in `timeout N`. Prefer targeted
+        tests/files over full suites; run the full suite at most once, near the end. Redirect verbose
+        output to a file and tail it. If a background session is still running after one poll, do other
+        work or kill it — do not poll it repeatedly.'
+    rationale: Caps the wall-clock cost of individual commands and stops the poll-until-done pattern that
+      dominates time-limited failures.
+    scope: invariant
+    cue: Longest waits of 30-60s per call, repeated write_stdin polling, and full-suite/coverage reruns
+      consumed the budget in time-limited runs
+  - op: add_persona_line
+    args:
+      text: 'Watch for repetition: if a call fails or returns the same output twice, do not retry it —
+        re-read the file, narrow the command, or switch tools. Budget time: prefer targeted checks over
+        full-suite reruns, and stop once the requirement is verified rather than polishing.'
+    rationale: Makes self-detection of stalls and time budgeting an explicit behavior, so the agent changes
+      approach or wraps up instead of grinding through near-identical calls until timeout.
+    scope: invariant
+    cue: 17/41 runs hit the agent time limit and 10/41 looped; failing runs use ~6x the turns of passing
+      ones
+  lessons: []
+  run: /home/ubuntu/service/unieai-harness-lab/runs/opt-qwen36-tb100/iter-1
+measurements:
+- date: '2026-10-25'
+  model: Qwen3.6-35B-A3B
+  harness: dsh
+  harness_version: 0.2.1-rc.2+pack:unieai-dsh@f534ae533f1f
+  benchmark: harbor:datacurve+terminal-bench
+  split: val
+  n: 48
+  passed: 14
+  base_passed: null
+  p_value: null
+  total_tokens: 177055510
+  tokens_per_task: 3688656.5
+  seconds_per_task: 1112.6
+  run: /home/ubuntu/service/unieai-harness-lab/runs/opt-qwen36-tb100/iter-1/base
+  verdict: base
+- date: '2026-10-25'
+  model: Qwen3.6-35B-A3B
+  harness: dsh
+  harness_version: 0.2.1-rc.2+pack:unieai-dsh@f534ae533f1f
+  benchmark: harbor:datacurve+terminal-bench
+  split: val
+  n: 48
+  passed: 15
+  base_passed: 14
+  p_value: 1.0
+  total_tokens: 140136969
+  tokens_per_task: 2919520.2
+  seconds_per_task: 799.3
+  run: /home/ubuntu/service/unieai-harness-lab/runs/opt-qwen36-tb100/iter-1/candidate
+  verdict: adopted

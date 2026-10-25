@@ -14,7 +14,8 @@ level and extra lines, plugin set, tool guidance and skills. See
   `$UNIEAI_HOME/profiles` applies at any status). A profile is adopted by the
   lab (`hlab optimize`, then held-out validation) and arrives here with its
   `measurements` row; nobody writes one here by hand.
-- No profile has been adopted yet, so this directory ships none. Test
+- Adopted: `Qwen3.6-35B-A3B.yaml` (2026-10-25, on cost: held-out accuracy
+  unchanged, 21% fewer tokens and 28% less time; see its `notes`). Test
   fixtures live in `../test-fixtures/harness-profiles/`.
 - `node --test src/unieai-dsh/unieai-profiles.test.mjs` checks every file
   here: valid, named after its model, and no model id matched equally by two
