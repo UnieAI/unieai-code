@@ -16,6 +16,7 @@
  *   update_hunk:  "*** Update File: " filename LF change_move? change?
  *   change_move:  "*** Move to: " filename LF
  *   change:       (("@@" | "@@ " text) LF | (" " | "+" | "-") text LF)+ ("*** End of File" LF)?
+ *   (also accepted: a unified-diff header "@@ -a,b +c,d @@ [text]" in place of "@@")
  */
 import { reindent, seekSequence, seekSequenceTier } from "./unieai-edit-match.mjs";
 
@@ -28,6 +29,9 @@ const MOVE_TO = "*** Move to: ";
 const EOF_MARKER = "*** End of File";
 const CONTEXT = "@@ ";
 const EMPTY_CONTEXT = "@@";
+// A unified-diff hunk header (`@@ -28,6 +28,14 @@ optional function line`),
+// which some models (gemma) write instead of codex's `@@` / `@@ context`.
+const LINE_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?:\s(.*))?$/;
 const ENVIRONMENT_ID = "*** Environment ID:";
 
 export class PatchParseError extends Error {
@@ -190,6 +194,14 @@ export function parsePatch(text) {
           chunks.push(emptyChunk());
           continue;
         }
+        const lineHeader = LINE_HEADER.exec(updateLine);
+        if (lineHeader) {
+          // The numbers are dropped (the hunk's own lines locate it); git's
+          // function line after them is a hint, used only if the file has it.
+          const hint = lineHeader[1]?.trim();
+          chunks.push(hint ? { ...emptyChunk(), context: hint, contextOptional: true } : emptyChunk());
+          continue;
+        }
         if (updateLine.startsWith(CONTEXT)) {
           chunks.push({ ...emptyChunk(), context: updateLine.slice(CONTEXT.length) });
           continue;
@@ -254,8 +266,8 @@ export function applyChunks(original, chunks, path) {
   for (const chunk of chunks) {
     if (chunk.context !== null && chunk.context !== undefined) {
       const idx = seekSequence(lines, [chunk.context], lineIndex, false);
-      if (idx < 0) throw new PatchApplyError(`Failed to find context '${chunk.context}' in ${path}`);
-      lineIndex = idx + 1;
+      if (idx >= 0) lineIndex = idx + 1;
+      else if (!chunk.contextOptional) throw new PatchApplyError(`Failed to find context '${chunk.context}' in ${path}`);
     }
     if (chunk.oldLines.length === 0) {
       const at = lines.length && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
