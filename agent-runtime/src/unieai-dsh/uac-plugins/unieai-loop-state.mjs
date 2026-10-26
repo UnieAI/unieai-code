@@ -45,6 +45,8 @@ export function turnState(agent, turn) {
     budgetNoticed: false,
     /** Doom layer 1: `name:args` → executions seen (cleared by a mutation). */
     doomCounts: new Map(),
+    /** Doom layer 1 for file edits: edit key → times made this turn (never cleared). */
+    editCounts: new Map(),
     /** Doom layer 2: consecutive same-tool streak. */
     streak: { name: null, count: 0, warned: false },
     /** Doom layer 2 warning waiting for the next step. */

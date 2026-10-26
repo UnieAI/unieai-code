@@ -26,13 +26,17 @@
  *   Doom L1  The `doomLimit`-th identical call (same tool, same arguments) is
  *            not executed; the model is told to use the earlier result. A
  *            successful file mutation clears the counts.
+ *   Circles  File edits keep their own counts for the whole turn (hunk line
+ *            numbers ignored): the `doomLimit`-th identical edit means the
+ *            model is undoing and redoing one change, and it is not made.
+ *            `editCircles` (default on) runs this check even with `doom` off.
  *   Doom L2  A streak of calls to one tool (novel successful call 0.5,
  *            repeat or failure 1, skipped repeat 2) warns at `streakWarn` and
  *            forces the landing at `streakForce`.
  *
- * Budget and doom are independent: with no budget configured only the doom
- * guard runs (`doom: false` turns it off), and with both off the plugin is
- * idle. unieai-loop-completion can rescind a landing once per turn (reprieve)
+ * Budget, doom and circles are independent: with no budget configured only
+ * the guards run (`doom: false` / `editCircles: false` turn them off), and with
+ * all three off the plugin is idle. unieai-loop-completion can rescind a landing once per turn (reprieve)
  * through unieai-loop-state.
  *
  * The deadline also cancels a step that overruns it by `cancelGraceMs`, and
@@ -50,6 +54,7 @@ export const DEFAULTS = Object.freeze({
   minRetryWindowMs: 15_000,
   cancelGraceMs: 60_000,
   doom: true,
+  editCircles: true,
   doomLimit: 3,
   streakWarn: 5,
   streakForce: 7,
@@ -86,6 +91,10 @@ export const MESSAGES = Object.freeze({
     "current result to where the task expects it (and commit, if the task says to) if you have not, " +
     "finish the change you are making, " +
     "run the most relevant check once, and give your final answer.",
+  oscillating: (tool, count) =>
+    `You have made this exact ${tool} edit ${count} times this turn, undoing it in between; your edits are ` +
+    "going in a circle. Do not make it again. Re-read the full error and the code around the line it names, " +
+    "find what actually causes it, and fix that instead.",
   repeated: (tool, count) =>
     `You have already called ${tool} with these exact arguments ${count} times. Do not repeat it — ` +
     "use the earlier result or change your approach. If you cannot proceed, answer with what you have.",
@@ -113,11 +122,17 @@ export function resolveConfig(config = {}, env = process.env) {
     minRetryWindowMs: positiveInt(config.minRetryWindowMs, DEFAULTS.minRetryWindowMs),
     cancelGraceMs: positiveInt(config.cancelGraceMs, DEFAULTS.cancelGraceMs),
     doom: flag(config.doom, flag(env.UNIEAI_DOOM_GUARD, DEFAULTS.doom)),
+    editCircles: flag(config.editCircles, flag(env.UNIEAI_EDIT_CIRCLES, DEFAULTS.editCircles)),
     doomLimit: Math.max(2, positiveInt(config.doomLimit, positiveInt(env.UNIEAI_DOOM_LIMIT, DEFAULTS.doomLimit))),
     streakWarn,
     streakForce: Math.max(streakWarn + 1, positiveInt(config.streakForce, positiveInt(env.UNIEAI_DOOM_STREAK_FORCE, DEFAULTS.streakForce))),
     mutatingTools: new Set(Array.isArray(config.mutatingTools) ? config.mutatingTools : MUTATING_TOOLS),
   };
+}
+
+/** Doom layer 1 key of an edit: line numbers in hunk headers do not make it a different edit. */
+export function editKey(name, args) {
+  return `${name}:${stableStringify(args ?? {}).replace(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/g, "@@")}`;
 }
 
 /** Doom layer 2 weight of one finished call. */
@@ -129,8 +144,8 @@ export function streakWeight({ skipped, repeated, failed }) {
 export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = process.env } = {}) {
   const config = resolveConfig(rawConfig, env);
   const budgeted = config.maxSteps > 0 || config.deadlineMs > 0;
-  if (!budgeted && !config.doom) {
-    ctx.logger.info(`${name}: no budget and doom guard off; idle`);
+  if (!budgeted && !config.doom && !config.editCircles) {
+    ctx.logger.info(`${name}: no budget, doom guard and edit-circle guard off; idle`);
     return;
   }
   const clocks = new WeakMap(); // agent → { turn, startedAt, deadlineWarned, timer }
@@ -269,25 +284,28 @@ export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = proce
     return notices.length > 0 ? { ...decision, messages: [...decision.messages, ...notices] } : decision;
   });
 
-  if (config.doom) {
-    // Layer 1: one guard for the whole tree; it only counts, and denies the
-    // repeat. It runs after every tools/pre-execute listener allowed the call.
+  if (config.doom || config.editCircles) {
+    // Layer 1 and circles: one guard for the whole tree; it only counts, and
+    // denies the repeat. It runs after every tools/pre-execute listener allowed the call.
     ctx.tools.guard((exec) => {
       if (!exec.agent || exec.parent !== undefined) return undefined;
+      const editing = config.mutatingTools.has(exec.name);
+      if (!(editing ? config.editCircles : config.doom)) return undefined;
       const state = turnState(exec.agent);
       if (!state || state.wrapUp) return undefined;
       let key;
       try {
-        key = `${exec.name}:${stableStringify(exec.arguments ?? {})}`;
+        key = editing ? editKey(exec.name, exec.arguments) : `${exec.name}:${stableStringify(exec.arguments ?? {})}`;
       } catch {
         return undefined;
       }
-      const seen = (state.doomCounts.get(key) ?? 0) + 1;
-      state.doomCounts.set(key, seen);
+      const counts = editing ? state.editCounts : state.doomCounts;
+      const seen = (counts.get(key) ?? 0) + 1;
+      counts.set(key, seen);
       if (seen >= config.doomLimit) {
         state.calls.set(exec.callId, "skipped");
         ctx.logger.info(`${name}: ${exec.name} repeated ${seen} times with identical arguments; not running it`);
-        return MESSAGES.repeated(exec.name, seen);
+        return editing ? MESSAGES.oscillating(exec.name, seen) : MESSAGES.repeated(exec.name, seen);
       }
       if (seen > 1) state.calls.set(exec.callId, "repeat");
       return undefined;
