@@ -36,7 +36,7 @@ export function turnState(agent, turn) {
     wrapUpStep: 0,
     /** Why the wrap-up started: 'steps' | 'deadline' | 'doom'. */
     wrapUpReason: null,
-    /** Doom layer 2 asked for the wrap-up. */
+    /** Doom layer 2 (true) or edit circles ('circles') asked for the wrap-up. */
     forceWrapUp: false,
     /** The tools-stripped grace step has been entered (its step number). */
     graceStep: 0,
@@ -47,6 +47,8 @@ export function turnState(agent, turn) {
     doomCounts: new Map(),
     /** Doom layer 1 for file edits: edit key → times made this turn (never cleared). */
     editCounts: new Map(),
+    /** Circling edits refused this turn (`circleForce` of them force the landing). */
+    circleBlocks: 0,
     /** Doom layer 2: consecutive same-tool streak. */
     streak: { name: null, count: 0, warned: false },
     /** Doom layer 2 warning waiting for the next step. */

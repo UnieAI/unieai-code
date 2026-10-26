@@ -29,6 +29,8 @@
  *   Circles  File edits keep their own counts for the whole turn (hunk line
  *            numbers ignored): the `doomLimit`-th identical edit means the
  *            model is undoing and redoing one change, and it is not made.
+ *            The `circleForce`-th refused edit forces the landing: a model
+ *            that keeps resending it is not going to get out on its own.
  *            `editCircles` (default on) runs this check even with `doom` off.
  *   Doom L2  A streak of calls to one tool (novel successful call 0.5,
  *            repeat or failure 1, skipped repeat 2) warns at `streakWarn` and
@@ -55,6 +57,7 @@ export const DEFAULTS = Object.freeze({
   cancelGraceMs: 60_000,
   doom: true,
   editCircles: true,
+  circleForce: 5,
   doomLimit: 3,
   streakWarn: 5,
   streakForce: 7,
@@ -73,6 +76,10 @@ export const MUTATING_TOOLS = Object.freeze([
 ]);
 
 export const MESSAGES = Object.freeze({
+  circleWrapUp:
+    "[loop guardrail] You keep making edits you already made and undid; this turn is going in a circle. " +
+    "Do not call any more tools. Reply with plain text now: (1) what you changed and what works, " +
+    "(2) the error you could not get past and what you tried, (3) what you would try next.",
   wrapUp:
     "[loop guardrail] Your tool budget for this turn is exhausted. Do not call any more tools. " +
     "Reply with plain text now, summarizing: (1) what you completed and the key results, " +
@@ -123,6 +130,7 @@ export function resolveConfig(config = {}, env = process.env) {
     cancelGraceMs: positiveInt(config.cancelGraceMs, DEFAULTS.cancelGraceMs),
     doom: flag(config.doom, flag(env.UNIEAI_DOOM_GUARD, DEFAULTS.doom)),
     editCircles: flag(config.editCircles, flag(env.UNIEAI_EDIT_CIRCLES, DEFAULTS.editCircles)),
+    circleForce: positiveInt(config.circleForce, DEFAULTS.circleForce),
     doomLimit: Math.max(2, positiveInt(config.doomLimit, positiveInt(env.UNIEAI_DOOM_LIMIT, DEFAULTS.doomLimit))),
     streakWarn,
     streakForce: Math.max(streakWarn + 1, positiveInt(config.streakForce, positiveInt(env.UNIEAI_DOOM_STREAK_FORCE, DEFAULTS.streakForce))),
@@ -243,10 +251,10 @@ export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = proce
       const elapsed = clock ? now() - clock.startedAt : 0;
       const deadlinePassed = config.deadlineMs > 0 && elapsed >= config.deadlineMs;
       const lastStep = state.maxSteps > 0 && step >= state.maxSteps;
-      const reason = state.forceWrapUp ? "doom" : deadlinePassed ? "deadline" : lastStep ? "steps" : null;
+      const reason = state.forceWrapUp ? state.forceWrapUp === "circles" ? "circles" : "doom" : deadlinePassed ? "deadline" : lastStep ? "steps" : null;
       if (reason) {
         startLanding(agent, state, step, reason);
-        notices.push(pluginNotice(name, MESSAGES.wrapUp, `wrap up now (${reason})`));
+        notices.push(pluginNotice(name, reason === "circles" ? MESSAGES.circleWrapUp : MESSAGES.wrapUp, `wrap up now (${reason})`));
       } else {
         const used = step - 1;
         if (
@@ -305,7 +313,13 @@ export function apply(ctx, rawConfig = {}, { now = () => Date.now(), env = proce
       if (seen >= config.doomLimit) {
         state.calls.set(exec.callId, "skipped");
         ctx.logger.info(`${name}: ${exec.name} repeated ${seen} times with identical arguments; not running it`);
-        return editing ? MESSAGES.oscillating(exec.name, seen) : MESSAGES.repeated(exec.name, seen);
+        if (!editing) return MESSAGES.repeated(exec.name, seen);
+        state.circleBlocks += 1;
+        if (state.circleBlocks >= config.circleForce && !state.forceWrapUp) {
+          state.forceWrapUp = "circles";
+          ctx.logger.info(`${name}: ${state.circleBlocks} circling edits refused; forcing the wrap-up`);
+        }
+        return MESSAGES.oscillating(exec.name, seen);
       }
       if (seen > 1) state.calls.set(exec.callId, "repeat");
       return undefined;
