@@ -400,6 +400,27 @@ const MINIMAL_DISABLED = [
   "plan-mode",
 ];
 
+/**
+ * dsh-base rows that reach DeepSeek's own services: the official API and
+ * account providers, its search/fetch API, the account login, the request
+ * extensions that ride along with official-API calls (one carries the session
+ * log), and the feedback telemetry exporter. uac talks to models only through
+ * the UnieAI gateway or the user's connected servers, so none of them has a
+ * job; off, a DEEPSEEK_API_KEY in the environment or a project's `.env`
+ * cannot wake them either. DSH_TELEMETRY_DISABLED stays set as well.
+ */
+export const DEEPSEEK_ROWS_OFF = Object.freeze([
+  "llm-deepseek",
+  "llm-deepseek-account",
+  "deepseek-account",
+  "deepseek-llm-api-extensions",
+  "session-log-deepseek",
+  "plugin-package-inventory-deepseek",
+  "web-search-deepseek",
+  "web-deepseek-api",
+  "session-telemetry-otel",
+]);
+
 /** The plugins `mode` keeps from `plugins`. */
 export function pluginsForMode(plugins, mode) {
   return mode === "minimal" ? plugins.filter((plugin) => !TOOL_PLUGINS.has(plugin.id)) : plugins;
@@ -619,6 +640,8 @@ export function renderPatch({
     inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
   }
   inserts.push(...parts.inserts, ...modeRows.inserts);
+  // Last, so no row above can turn one back on.
+  lines.push(...DEEPSEEK_ROWS_OFF.flatMap((id) => [`- id: ${id}`, "  disabled: true"]));
   lines.push("- insert:", ...inserts);
   return `${lines.join("\n")}\n`;
 }
