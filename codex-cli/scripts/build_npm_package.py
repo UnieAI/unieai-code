@@ -314,7 +314,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json["files"] = ["bin/codex.js", "agent-runtime"]
         # Kept out of codex-cli/package.json: that is a pnpm workspace member,
         # and the workspace's release-age policy would refuse fresh pins.
-        package_json["dependencies"] = {**agent_runtime_dependencies(), **pinned_harness_dependencies()}
+        package_json["dependencies"] = {**agent_runtime_dependencies(), **pinned_lock_dependencies()}
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
                 f"npm:{CODEX_NPM_NAME}@"
@@ -341,34 +341,43 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
 
 
 
-def pinned_harness_dependencies() -> dict[str, str]:
-    """Every deepseek-harness package at the exact version agent-runtime's lockfile holds.
+def pinned_lock_dependencies() -> dict[str, str]:
+    """Every package agent-runtime's lockfile installs, at the exact version it holds.
 
     deepseek-harness pins its own packages with caret ranges on prereleases
     (`^0.1.6-alpha.1`), so a fresh install resolves the newest prerelease of
     each: 0.0.27 got dsh alpha.1 with dsh-app-boot alpha.2, which lacks an
     export alpha.1 needs, and dsh crashed on start (uac then failed every
-    turn). npm ignores both npm-shrinkwrap.json and `overrides` for global
-    installs, but it does reuse a top-level exact version that satisfies a
-    nested range, so listing each package here pins the whole tree. Platform
-    add-ons (os/cpu-specific, optional) stay out: npm picks those itself.
+    turn). Its ~300 third-party dependencies float the same way, so a
+    compromised release inside a range would reach users on their next
+    install. npm ignores both npm-shrinkwrap.json and `overrides` for global
+    installs (checked with npm 10 and 11), but it does reuse a top-level exact
+    version that satisfies a nested range, so listing each hoisted package
+    here pins the tree. Platform add-ons (os/cpu-specific, optional) stay out:
+    npm picks those itself. A package the lockfile also holds at a second,
+    nested version keeps that copy's range; those are printed.
     """
     with open(AGENT_RUNTIME_ROOT / "package-lock.json", "r", encoding="utf-8") as fh:
         lock = json.load(fh)
 
-    def package_name(path: str) -> str:
-        return path.rsplit("node_modules/", 1)[-1]
-
     pins: dict[str, str] = {}
+    nested: list[str] = []
     for path, entry in lock.get("packages", {}).items():
-        name = package_name(path)
-        if not path or not name.startswith("@deepseek-ai/") or entry.get("dev"):
+        if not path or entry.get("dev") or entry.get("link"):
             continue
         if entry.get("os") or entry.get("cpu") or entry.get("optional"):
             continue
+        name = path.rsplit("node_modules/", 1)[-1]
         version = entry.get("version")
-        if pins.setdefault(name, version) != version:
-            raise RuntimeError(f"agent-runtime/package-lock.json has two versions of {name}: {pins[name]} and {version}")
+        if not version:
+            raise RuntimeError(f"agent-runtime/package-lock.json: {path} has no version")
+        if path != f"node_modules/{name}":
+            if name.startswith("@deepseek-ai/"):
+                raise RuntimeError(f"agent-runtime/package-lock.json has a nested deepseek-harness package: {path}@{version}")
+            nested.append(f"{path.removeprefix('node_modules/')}@{version}")
+            continue
+        real = entry.get("name")
+        pins[name] = f"npm:{real}@{version}" if real and real != name else version
     dsh_version = pins.get("@deepseek-ai/dsh")
     if dsh_version is None:
         raise RuntimeError("agent-runtime/package-lock.json has no @deepseek-ai/dsh; run npm install in agent-runtime")
@@ -376,6 +385,8 @@ def pinned_harness_dependencies() -> dict[str, str]:
     mixed = sorted(f"{name}@{version}" for name, version in pins.items() if name.startswith("@deepseek-ai/dsh") and version != dsh_version)
     if mixed:
         raise RuntimeError(f"agent-runtime/package-lock.json mixes deepseek-harness versions (dsh is {dsh_version}): " + ", ".join(mixed[:10]))
+    if nested:
+        print(f"note: {len(nested)} nested package copies keep their ranges: " + ", ".join(sorted(nested)), file=sys.stderr)
     return dict(sorted(pins.items()))
 
 

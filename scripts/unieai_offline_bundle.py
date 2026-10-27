@@ -207,6 +207,34 @@ def npm_tarballs(version: str, platform: str, npm_dir: Path | None, cache: Path)
     return found[0], found[1]
 
 
+LOCKFILE = Path(__file__).resolve().parent.parent / "agent-runtime" / "package-lock.json"
+
+
+def check_against_lockfile(node_modules: Path) -> None:
+    """Fail when an installed package is not at a version agent-runtime's lockfile holds."""
+    if not LOCKFILE.exists():
+        log(f"no {LOCKFILE}; installed versions not checked")
+        return
+    locked: dict[str, set[str]] = {}
+    for path, entry in json.loads(LOCKFILE.read_text())["packages"].items():
+        if path:
+            locked.setdefault(path.rsplit("node_modules/", 1)[-1], set()).add(entry.get("version"))
+    drift = []
+    for manifest in node_modules.rglob("package.json"):
+        rel = manifest.parent.relative_to(node_modules.parent).as_posix()
+        name = rel.rsplit("node_modules/", 1)[-1]
+        if name.count("/") > (1 if name.startswith("@") else 0) or name not in locked:
+            continue
+        try:
+            version = json.loads(manifest.read_text()).get("version")
+        except (OSError, ValueError):
+            continue
+        if version not in locked[name]:
+            drift.append(f"{rel}@{version} (lockfile: {', '.join(sorted(locked[name]))})")
+    if drift:
+        raise SystemExit("installed packages differ from agent-runtime/package-lock.json: " + "; ".join(sorted(drift)[:20]))
+
+
 def build(platform: str, version: str, npm_dir: Path | None, out: Path, node_version: str, cache: Path) -> Path:
     target, _dist, os_name, cpu, libc = PLATFORMS[platform]
     windows = platform.startswith("win32")
@@ -234,11 +262,18 @@ def build(platform: str, version: str, npm_dir: Path | None, out: Path, node_ver
     (package / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     flags = [f"--os={os_name}", f"--cpu={cpu}"] + ([f"--libc={libc}"] if libc else [])
     log(f"{platform}: npm install ({' '.join(flags)})")
-    run(
-        ["npm", "install", "--omit=dev", "--ignore-scripts", "--no-bin-links", "--no-audit", "--no-fund", "--no-package-lock", *flags],
-        cwd=package,
-        stdout=subprocess.DEVNULL,
-    )
+    # The package's dependencies pin every lockfile package exactly
+    # (build_npm_package.py). A fresh npm cache per bundle: every tarball is
+    # downloaded and checked against the registry's integrity, never taken
+    # from a cache an earlier step could have left behind.
+    with tempfile.TemporaryDirectory(dir=out) as npm_cache:
+        run(
+            ["npm", "install", "--omit=dev", "--ignore-scripts", "--no-bin-links", "--no-audit", "--no-fund", "--no-package-lock",
+             f"--cache={npm_cache}", *flags],
+            cwd=package,
+            stdout=subprocess.DEVNULL,
+        )
+    check_against_lockfile(package / "node_modules")
     dsh_version = json.loads((package / "node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
 
     stage_node(platform, node_version, cache, work / "node")
