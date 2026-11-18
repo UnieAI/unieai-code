@@ -33,6 +33,18 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.40 — 2026-11-18
+
+### Fixed
+
+- **uac runs on Windows.** On Windows the uac engine never started, so every
+  session fell back to codex; the server log showed
+  `listen EACCES: permission denied …\uac\app-server.sock`. Node cannot
+  serve a Unix socket on Windows, so there the uac server now listens on a
+  loopback port (127.0.0.1) that only accepts clients presenting a random
+  token. The token is kept in your own `uac` directory. dsh's control channel
+  uses a named pipe there. macOS and Linux keep using Unix sockets.
+
 ## 0.0.39 — 2026-10-24
 
 A fix release for 0.0.38, which could not start the uac engine on any
