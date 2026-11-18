@@ -18,7 +18,6 @@ use std::time::Duration;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
-use codex_app_server_client::RemoteAppServerEndpoint;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use qrcode::Color as QrColor;
@@ -271,7 +270,7 @@ impl UacRemoteControl {
             .await
             .map_err(|err| err.to_string())?;
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-            endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            endpoint: crate::unieai_engine::uac_endpoint(socket_path),
             client_name: "unieai-remote-control".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
             experimental_api: true,

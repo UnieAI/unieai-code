@@ -13,7 +13,7 @@
  * local processes we ship, so the negotiation surface is one handshake and the
  * frame types a JSON-RPC stream actually uses.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:net";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -128,8 +128,13 @@ export function decodeFrames(buffer, carry = { opcode: null, chunks: [] }) {
  * Every message is one JSON value; malformed text is reported through `onError`
  * rather than killing the connection, because one bad frame from a client should
  * not take down a session.
+ *
+ * `loopback: true` listens on 127.0.0.1 (a port the OS picks) instead of
+ * `socketPath` — Windows, where Node cannot serve a unix socket (see
+ * unieai-local-endpoint.mjs). A TCP port is reachable by every local user,
+ * so `authToken` is then required of every upgrade as `Authorization: Bearer`.
  */
-export function serveJsonOverUnixSocket({ socketPath, onConnection, onError = () => {} }) {
+export function serveJsonOverUnixSocket({ socketPath, onConnection, onError = () => {}, loopback = false, authToken = null }) {
   const server = createServer((socket) => {
     let upgraded = false;
     let buffer = Buffer.alloc(0);
@@ -152,10 +157,14 @@ export function serveJsonOverUnixSocket({ socketPath, onConnection, onError = ()
       if (!upgraded) {
         const end = buffer.indexOf("\r\n\r\n");
         if (end < 0) return; // headers still arriving
-        const { ok, key } = parseUpgrade(buffer.subarray(0, end).toString("utf8"));
+        const { ok, key, headers } = parseUpgrade(buffer.subarray(0, end).toString("utf8"));
         buffer = buffer.subarray(end + 4);
         if (!ok) {
           socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+          return;
+        }
+        if (authToken && !bearerMatches(headers.get("authorization"), authToken)) {
+          socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n");
           return;
         }
         socket.write(
@@ -189,11 +198,23 @@ export function serveJsonOverUnixSocket({ socketPath, onConnection, onError = ()
   return {
     listen: () => new Promise((resolve, reject) => {
       server.once("error", reject);
-      server.listen(socketPath, () => resolve(socketPath));
+      if (loopback) server.listen(0, "127.0.0.1", () => resolve(socketPath));
+      else server.listen(socketPath, () => resolve(socketPath));
     }),
+    /** The loopback port, once listening with `loopback: true`; else null. */
+    port: () => (loopback ? server.address()?.port ?? null : null),
     close: () => new Promise((resolve) => server.close(() => resolve())),
     server,
   };
+}
+
+/** Constant-time comparison of an `Authorization: Bearer <token>` header. */
+export function bearerMatches(header, token) {
+  const match = /^Bearer\s+(.+)$/i.exec(String(header ?? "").trim());
+  if (!match) return false;
+  const given = Buffer.from(match[1].trim());
+  const expected = Buffer.from(String(token));
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 /** A client key, for tests and for any future outbound connection. */

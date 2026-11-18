@@ -182,16 +182,22 @@ fn a_server_started_by_another_release_does_not_count_as_ours() {
         pid: Some(42),
         cli_version: Some(crate::version::CODEX_CLI_VERSION.to_string()),
         account_id: None,
+        port: None,
+        token: None,
     };
     let older = UacServerStamp {
         pid: Some(42),
         cli_version: Some("0.0.1".to_string()),
         account_id: None,
+        port: None,
+        token: None,
     };
     let unknown = UacServerStamp {
         pid: Some(42),
         cli_version: None,
         account_id: None,
+        port: None,
+        token: None,
     };
     assert!(stamp_matches_this_release(Some(&ours)));
     assert!(!stamp_matches_this_release(Some(&older)));
@@ -373,4 +379,33 @@ fn only_the_openai_preset_also_runs_on_codex() {
         Some(value) => unsafe { std::env::set_var("UNIEAI_API_KEY", value) },
         None => unsafe { std::env::remove_var("UNIEAI_API_KEY") },
     }
+}
+
+#[test]
+fn loopback_endpoint_comes_from_the_stamp_and_only_when_it_has_a_port() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let socket = home.path().join("uac").join("app-server.sock");
+    std::fs::create_dir_all(socket.parent().expect("parent")).expect("mkdir");
+    let stamp = PathBuf::from(format!("{}.json", socket.display()));
+
+    // No stamp, or one from a unix server (no port): dial the socket itself.
+    assert_eq!(uac_loopback_endpoint(&socket), None);
+    std::fs::write(&stamp, r#"{"pid":42,"cliVersion":"0.0.40"}"#).expect("write");
+    assert_eq!(uac_loopback_endpoint(&socket), None);
+
+    // A Windows server's stamp: its loopback port and token.
+    std::fs::write(
+        &stamp,
+        r#"{"pid":42,"cliVersion":"0.0.40","port":50123,"token":"s3cret"}"#,
+    )
+    .expect("write");
+    assert_eq!(
+        uac_loopback_endpoint(&socket),
+        Some(
+            codex_app_server_client::RemoteAppServerEndpoint::WebSocket {
+                websocket_url: "ws://127.0.0.1:50123/rpc".to_string(),
+                auth_token: Some("s3cret".to_string()),
+            }
+        )
+    );
 }

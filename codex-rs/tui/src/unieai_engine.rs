@@ -492,6 +492,15 @@ struct UacServerStamp {
     /// Which account the server signed in as (product|gateway|email).
     #[serde(default)]
     account_id: Option<String>,
+    /// Windows only: the loopback port the server really listens on. Node
+    /// cannot serve a unix socket there (`listen` makes named pipes, and
+    /// refuses any other path with EACCES), so the socket path only names
+    /// the server and this is where to reach it.
+    #[serde(default)]
+    port: Option<u16>,
+    /// Windows only: the bearer token the loopback port demands.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// The same identity from this session's credentials file, so a server
@@ -573,6 +582,7 @@ async fn stop_uac_server(socket: &Path, pid: Option<i32>) -> bool {
     false
 }
 
+#[cfg(not(windows))]
 async fn socket_is_live(socket: &Path) -> bool {
     matches!(
         tokio::time::timeout(
@@ -582,6 +592,54 @@ async fn socket_is_live(socket: &Path) -> bool {
         .await,
         Ok(Ok(_))
     )
+}
+
+/// On Windows the server is live when the loopback port its stamp names
+/// accepts a connection (see [`UacServerStamp::port`]).
+#[cfg(windows)]
+async fn socket_is_live(socket: &Path) -> bool {
+    let Some(port) = server_stamp(socket).and_then(|stamp| stamp.port) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(
+            UAC_PROBE_INTERVAL * 4,
+            tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// The endpoint to dial for a uac server whose stamp gives a loopback port
+/// (Windows), or None when `socket` has no such stamp — every unix socket,
+/// including the codex daemon's.
+pub(crate) fn uac_loopback_endpoint(
+    socket: &Path,
+) -> Option<codex_app_server_client::RemoteAppServerEndpoint> {
+    let stamp = server_stamp(socket)?;
+    let port = stamp.port?;
+    Some(
+        codex_app_server_client::RemoteAppServerEndpoint::WebSocket {
+            websocket_url: format!("ws://127.0.0.1:{port}/rpc"),
+            auth_token: stamp.token,
+        },
+    )
+}
+
+/// The endpoint for the uac server at `socket`: its unix socket, or on
+/// Windows the loopback port its stamp gives.
+pub(crate) fn uac_endpoint(
+    socket: AbsolutePathBuf,
+) -> codex_app_server_client::RemoteAppServerEndpoint {
+    if cfg!(windows)
+        && let Some(endpoint) = uac_loopback_endpoint(socket.as_path())
+    {
+        return endpoint;
+    }
+    codex_app_server_client::RemoteAppServerEndpoint::UnixSocket {
+        socket_path: socket,
+    }
 }
 
 /// Return the uac server's socket, starting the server first if nothing is

@@ -875,14 +875,18 @@ export function apply(ctx, config = {}) {
     socket.on("close", failPending);
     socket.on("error", () => {});
   });
+  // A Windows named pipe (the uac server passes one there) has no file to
+  // chmod or remove. Node cannot set its ACL; the default one lets other
+  // local users open it read-only at most, so they cannot send requests.
+  const isPipe = /^\\\\[.?]\\pipe\\/i.test(socketPath);
   server.listen(socketPath, () => {
-    chmodSync(socketPath, 0o600);
+    if (!isPipe) chmodSync(socketPath, 0o600);
     ctx.logger.info(`unieai-control: listening on ${socketPath}`);
   });
   ctx.on("dispose", () => {
     execLifetime.abort();
     unsubscribeExec();
     server.close();
-    rmSync(socketPath, { force: true });
+    if (!isPipe) rmSync(socketPath, { force: true });
   });
 }
