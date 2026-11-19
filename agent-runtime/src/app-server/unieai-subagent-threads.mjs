@@ -1,14 +1,14 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-subagent-threads.mjs — dsh subagents as codex agent threads.
+ * unieai-subagent-threads.mjs — rabi subagents as codex agent threads.
  *
  * codex shows a spawned agent in two places: a "Started `/root/name`" row in
  * the parent's transcript (a `subAgentActivity` item), and a thread of its
  * own that the agent picker opens and follows live (`thread/started`, then
- * that thread's turns and items). dsh runs subagents in the parent's process;
+ * that thread's turns and items). rabi runs subagents in the parent's process;
  * unieai-control reports when one starts and ends, and pings when its session
  * changes. One record per child turns that into the same notifications; the
- * child's turns are read from dsh's log through the root thread's engine.
+ * child's turns are read from rabi's log through the root thread's engine.
  *
  * A child's thread is read-only: its input comes from the agent that
  * started it, not from the user. Each read also reports the child's token

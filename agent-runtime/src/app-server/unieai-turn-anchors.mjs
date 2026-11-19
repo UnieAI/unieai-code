@@ -3,28 +3,28 @@
  * unieai-turn-anchors.mjs — which of the engine's turns each client turn is.
  *
  * The client's turns and the engine's are not one to one. uac answers some
- * prompts itself (`/loop` list and stop) without a dsh turn, a `!command`
- * outside a turn gets a client turn of its own, and dsh starts turns on its
+ * prompts itself (`/loop` list and stop) without a rabi turn, a `!command`
+ * outside a turn gets a client turn of its own, and rabi starts turns on its
  * own (a scheduled turn, a goal round, a subagent waking it) that the client
- * shows as turns while one client turn can also span several dsh turns.
+ * shows as turns while one client turn can also span several rabi turns.
  * Counting turns on either side and mapping by index therefore drifted, and
  * the client's next rewind found a history whose last turn was not the one
  * it knew ("thread history changed").
  *
  * So each client turn records what it began with (`thread.turnMeta[turnId]`):
  *
- *   { anchor: n }            the dsh turn number of its first dsh turn; the
- *                            dsh turns after it that start no client turn
+ *   { anchor: n }            the rabi turn number of its first rabi turn; the
+ *                            rabi turns after it that start no client turn
  *                            (a goal round's next round) belong to it too
  *   { anchor: n, prompt }    the same, shown with `prompt` as its user message
  *                            because the model got something else (`/loop 5m`
  *                            sends the loop's instructions; `!` notes)
  *   { local: true, prompt?, reply?, compaction? }
- *                            no dsh turn (a `/loop` answered by uac, a
+ *                            no rabi turn (a `/loop` answered by uac, a
  *                            `!command`, `/compact`): nothing in the engine's
  *                            history, so what the client was shown is kept
  *
- * An engine with `turnAnchors` reports every dsh turn in `history()`, each
+ * An engine with `turnAnchors` reports every rabi turn in `history()`, each
  * with its `anchor`, and counts `keepTurns` in those turns.
  */
 import { agentMessageItem, userMessageItem } from "./items.mjs";
@@ -79,7 +79,7 @@ export function alignTurns({ threadId, turnIds, turnMeta = {}, history }) {
     claimed.add(turn.anchor);
   }
 
-  // Where each client turn starts in the history, if it has a dsh turn.
+  // Where each client turn starts in the history, if it has a rabi turn.
   const starts = turnIds.map((id) => {
     const anchor = turnMeta[id]?.anchor ?? legacy.get(id);
     return typeof anchor === "number" && position.has(anchor) ? position.get(anchor) : null;
@@ -143,7 +143,7 @@ export function entryTurn(entry, history) {
 
 /**
  * How many history turns to keep so the turn `turnId` and every one after
- * it are gone: where the first of them with a dsh turn starts. Null when
+ * it are gone: where the first of them with a rabi turn starts. Null when
  * none of them has one (nothing to drop on the engine's side), or when
  * `turnId` is not among the entries.
  */

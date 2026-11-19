@@ -5,7 +5,7 @@
  *
  * codex runs a user's `!` command itself, outside the model's turn, shows it
  * as a command card (source `userShell`), and puts the command and its output
- * in the conversation so the model knows what the user saw. dsh has no such
+ * in the conversation so the model knows what the user saw. rabi has no such
  * entry point, so the bridge runs the command in the thread's directory with
  * the user's shell and hands the model a bounded note with its next prompt.
  */

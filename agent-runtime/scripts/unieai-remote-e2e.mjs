@@ -2,9 +2,9 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * unieai-remote-e2e.mjs — Remote Control end to end against the real uac
- * server (real dsh), in an isolated home:
+ * server (real rabi), in an isolated home:
  *
- *   fake model gateway ← dsh ← uac server ⇄ bridge ⇄ reference relay ⇄ headless browser
+ *   fake model gateway ← rabi ← uac server ⇄ bridge ⇄ reference relay ⇄ headless browser
  *                                   ⇅
  *                             TUI-like socket client
  *

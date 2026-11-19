@@ -65,10 +65,10 @@ Built against the API above and an in-memory stub of it
 
 - **Tool:** `publish_artifact` (actions `publish | update_settings | list |
   read | delete`; delete only when the user asks) is a uac host plugin,
-  `agent-runtime/src/unieai-dsh/unieai-artifacts.mjs`, with the logic in
+  `agent-runtime/src/unieai-rabi/unieai-artifacts.mjs`, with the logic in
   `unieai-artifacts-core.mjs`. It is not in uac-plugins because it reads the
   UnieAI Code login, which Studio's runtime does not have.
-  `UNIEAI_DSH_PLUGINS` must name `unieai-artifacts` when it narrows the set.
+  `UNIEAI_RABI_PLUGINS` must name `unieai-artifacts` when it narrows the set.
 - **Engines:** uac only. The tool needs the Rabi key, and a Rabi login already
   runs on uac only (Rabi's relay has no Responses API), so a codex-engine
   session never has a key to publish with. Revisit with Studio single sign-on.
@@ -87,7 +87,7 @@ Built against the API above and an in-memory stub of it
   `{id, account, version, viewerUrl, title}`, shared by the tool and the CLI.
   Not the project's `.unieai/`: ids belong to the account and `.unieai/` is
   checked into repositories.
-- **Skill:** `artifact`, bundled in `agent-runtime/src/unieai-dsh/skills/`
+- **Skill:** `artifact`, bundled in `agent-runtime/src/unieai-rabi/skills/`
   (passed to `unieai-skills` as `bundledSkillDir`, so a user or project skill of
   the same name wins). It keeps v1's inline-first guidance and mentions the
   four CDNs only for a library that is genuinely needed.

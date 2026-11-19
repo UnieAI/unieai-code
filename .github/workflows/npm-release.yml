@@ -476,7 +476,7 @@ jobs:
             cp -r /b/unieai-code-${VERSION}-linux-x64 /tmp/x && HOME=/root sh /tmp/x/install.sh &&
             /root/.local/bin/unieai --version &&
             /root/.local/share/unieai-code/${VERSION}/node/bin/node \
-              /root/.local/share/unieai-code/${VERSION}/package/node_modules/@deepseek-ai/dsh/lib/bin.js --version"
+              /root/.local/share/unieai-code/${VERSION}/package/node_modules/@unieai/rabi/lib/bin.js --version"
 
       - name: Attach to the GitHub Release
         if: ${{ github.event_name == 'push' || inputs.publish }}

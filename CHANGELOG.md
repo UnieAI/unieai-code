@@ -30,7 +30,7 @@ file lists only UnieAI's own changes; when a release brings in upstream Codex,
 it says how far. Upstream's own changes are listed on the
 [openai/codex releases page](https://github.com/openai/codex/releases).
 
-"uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
+"uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
 ## 0.0.40 — 2026-11-18
@@ -42,7 +42,7 @@ the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
   `listen EACCES: permission denied …\uac\app-server.sock`. Node cannot
   serve a Unix socket on Windows, so there the uac server now listens on a
   loopback port (127.0.0.1) that only accepts clients presenting a random
-  token. The token is kept in your own `uac` directory. dsh's control channel
+  token. The token is kept in your own `uac` directory. rabi's control channel
   uses a named pipe there. macOS and Linux keep using Unix sockets.
 
 ## 0.0.39 — 2026-10-24
@@ -75,7 +75,7 @@ install.
 
 ### uac engine
 
-- deepseek-harness 0.2.1-rc.3.
+- rabi-harness 0.2.1-rc.3.
 
 ## 0.0.38 — 2026-10-22
 
@@ -280,7 +280,7 @@ install.
 
 ### uac engine
 
-- Moved to deepseek-harness 0.2.1-rc.2. Web search and `describe_image` now
+- Moved to rabi-harness 0.2.1-rc.2. Web search and `describe_image` now
   also start where no credentials file exists.
 - Edits are no longer refused as "stale" after a shell command read or
   changed the file. `apply_patch` matches against the file as it is now. In a

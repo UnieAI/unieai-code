@@ -3,7 +3,7 @@
 //!
 //! `codex` is the embedded Rust engine. `uac` (unieai-agent-core) is served by
 //! `agent-runtime/bin/unieai-uac-server.mjs`, which answers the app-server protocol's
-//! engine methods by driving deepseek-harness (`dsh`) over ACP and forwards every
+//! engine methods by driving rabi-harness (`rabi`) over ACP and forwards every
 //! other method to the Rust app-server. The TUI reaches it as a local daemon on
 //! its own socket, so the upstream daemon socket keeps its meaning.
 //!
@@ -12,7 +12,7 @@
 //! relaunches, because an app-server connection is not swapped mid-session.
 //! Without a choice, sessions run on uac.
 //!
-//! uac also has dsh's agent modes ([`UacMode`]), stored in
+//! uac also has rabi's agent modes ([`UacMode`]), stored in
 //! `$CODEX_HOME/uac/mode`. The uac server reads it when a thread starts, so
 //! the mode belongs to the thread: a resumed session keeps the one it began in.
 
@@ -68,12 +68,12 @@ impl EngineKind {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Codex => "built-in Rust engine",
-            Self::Uac => "unieai-agent-core engine (deepseek-harness over ACP)",
+            Self::Uac => "unieai-agent-core engine (rabi-harness over ACP)",
         }
     }
 }
 
-/// dsh's agent modes, as its web app names them.
+/// rabi's agent modes, as its web app names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UacMode {
     Standard,
@@ -141,7 +141,7 @@ fn uac_mode_file(codex_home: &Path) -> PathBuf {
     codex_home.join(UAC_DIR).join(UAC_MODE_FILE)
 }
 
-/// The dsh mode new uac sessions start in.
+/// The rabi mode new uac sessions start in.
 pub(crate) fn configured_uac_mode(codex_home: &Path) -> UacMode {
     std::fs::read_to_string(uac_mode_file(codex_home))
         .ok()
@@ -200,7 +200,7 @@ pub(crate) fn assumed_coming_soon_context() -> crate::slash_command::ComingSoonC
     }
 }
 
-/// Slash commands only the uac engine serves: `/context` (dsh measures the
+/// Slash commands only the uac engine serves: `/context` (rabi measures the
 /// context). Hidden from the popup on codex; dispatch says why when typed.
 pub(crate) fn only_uac_serves(command: crate::slash_command::SlashCommand) -> bool {
     !session_is_uac() && command == crate::slash_command::SlashCommand::Context
@@ -252,7 +252,7 @@ pub(crate) fn configured_engine(codex_home: &Path) -> EngineKind {
 }
 
 /// The startup warning for a uac engine that did not start: the reason, the
-/// last line of the server log (where node / dsh report what broke), and
+/// last line of the server log (where node / rabi report what broke), and
 /// where to look.
 pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error) -> String {
     // The one cause users can fix themselves: say exactly how.
@@ -743,7 +743,7 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
     }
 }
 
-/// The oldest Node.js major uac (deepseek-harness) runs on.
+/// The oldest Node.js major uac (rabi-harness) runs on.
 const UAC_MIN_NODE_MAJOR: u64 = 22;
 
 /// The node to run the uac server with: `UNIEAI_NODE`, else `node` on PATH

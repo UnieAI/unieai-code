@@ -26,7 +26,7 @@ It comes in three forms:
 | **VS Code extension** | An in-editor chat panel powered by the same engine. |
 
 The CLI runs a session on one of two engines, picked with `/engine`: **uac**
-(unieai-agent-core on deepseek-harness, the default) or **codex**. The embeddable engine
+(unieai-agent-core on rabi-harness, the default) or **codex**. The embeddable engine
 runs on [`@unieai/agent-core`](third_party/unieai-agent-core) — our shared agent loop,
 also used by UnieAI Studio.
 
@@ -36,7 +36,7 @@ also used by UnieAI Studio.
 
 **0.0.39** (2026-10-24) — fixes uac not starting in 0.0.38 (Rabi sign-ins saw a 404),
 Windows builds reporting version 0.0.22, and the welcome logo vanishing at launch;
-merges upstream Codex through 2026-10-23 and moves uac to deepseek-harness 0.2.1-rc.3.
+merges upstream Codex through 2026-10-23 and moves uac to rabi-harness 0.2.1-rc.3.
 
 **0.0.38** (2026-10-22) — highlights:
 
@@ -169,7 +169,7 @@ diagnose issues.
 ```
 ├── codex-rs/                     # Rust CLI (TUI, exec, sandbox, app-server)
 ├── agent-runtime/                # @unieai/code-agent-runtime — engines (npm), incl. the uac server
-│   ├── bin/unieai-uac-server.mjs #   uac: drives deepseek-harness for the TUI
+│   ├── bin/unieai-uac-server.mjs #   uac: drives rabi-harness for the TUI
 │   ├── src/engine.mjs            #   one turn on the agent-core loop + coding layer
 │   └── src/tools.mjs             #   bash / read / write / edit (sandboxed, verifying)
 ├── third_party/

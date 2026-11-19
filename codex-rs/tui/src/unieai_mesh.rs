@@ -3,7 +3,7 @@
 //! pieces every TUI peer surface shares (permission stamp, engine name).
 //!
 //! A codex-engine thread joins the mesh from core, when its `Session` is
-//! built. A uac thread never builds one — deepseek-harness runs the turn — so
+//! built. A uac thread never builds one — rabi-harness runs the turn — so
 //! the TUI joins on its behalf, with the same crate, socket directory, store,
 //! wire protocol, framing, and permission-hold rule:
 //!

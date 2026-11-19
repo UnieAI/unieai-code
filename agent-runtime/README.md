@@ -51,7 +51,7 @@ Requires a signed-in UnieAI gateway (`unieai login`) — credentials are read fr
 - `src/session.mjs`, `src/config.mjs` — session persistence and gateway credentials.
 - `bin/tui.mjs` — the slim terminal UI.
 - `bin/app-server.mjs` — serves the CLI's app-server protocol from this engine.
-- `bin/unieai-uac-server.mjs`, `src/unieai-dsh/` — the `uac` engine (see below).
+- `bin/unieai-uac-server.mjs`, `src/unieai-rabi/` — the `uac` engine (see below).
 
 ## `/engine`: codex or unieai-agent-core (uac)
 
@@ -59,33 +59,33 @@ In the `unieai` TUI, `/engine` (or `/engine codex|uac`) picks the engine for new
 sessions and relaunches onto it. The choice is saved in `$CODEX_HOME/engine`;
 `UNIEAI_ENGINE=codex|uac` overrides it for one launch.
 
-`uac` runs deepseek-harness (`dsh --profile acp`) behind `bin/unieai-uac-server.mjs`:
-engine methods drive dsh over the Agent Client Protocol, everything else is
+`uac` runs rabi-harness (`rabi --profile acp`) behind `bin/unieai-uac-server.mjs`:
+engine methods drive rabi over the Agent Client Protocol, everything else is
 forwarded to the Rust app-server. The TUI starts it detached on
 `$CODEX_HOME/uac/app-server.sock` (log: `$CODEX_HOME/uac/server.log`) and falls
 back to codex if it cannot start.
 
-- dsh is the pinned `@deepseek-ai/dsh` dependency (override with
-  `UNIEAI_DSH_BIN`: its `bin.js` or an executable).
-- dsh gets a private home, `$CODEX_HOME/uac/dsh-home`. Its `settings.yaml` and
+- rabi is the pinned `@unieai/rabi` dependency (override with
+  `UNIEAI_RABI_BIN`: its `bin.js` or an executable).
+- rabi gets a private home, `$CODEX_HOME/uac/rabi-home`. Its `settings.yaml` and
   `.credentials.yaml` are rewritten from `unieai.json` before each new thread.
 - Models follow the Studio account: every TUI launch (and `unieai login sync`)
   refreshes `unieai.json` from Studio's `/api/config`.
 - ACP covers prompting and cancelling. Everything else runs through
-  `src/unieai-dsh/unieai-control.mjs`, a plugin loaded into dsh that listens on a private
+  `src/unieai-rabi/unieai-control.mjs`, a plugin loaded into rabi that listens on a private
   socket next to the app-server's: steering a running turn, manual compaction,
   history (for resume and the transcript), and fork at a turn boundary (thread
   fork, and prompt edit / `thread/revert` as fork-minus-later-turns).
-- UnieAI's dsh plugins (codex-style exec and edit tools, tool-call repair,
+- UnieAI's rabi plugins (codex-style exec and edit tools, tool-call repair,
   loop guardrails) come from [UnieAI/uac-plugins](https://github.com/UnieAI/uac-plugins),
-  vendored in `src/unieai-dsh/uac-plugins/` (`UPSTREAM` names the commit). uac
+  vendored in `src/unieai-rabi/uac-plugins/` (`UPSTREAM` names the commit). uac
   loads the catalog's `cli` profile. Update the copy with
   `npm run sync:uac-plugins` from a clean checkout next to this repository
-  (or `UAC_PLUGINS_DIR`); never edit it here. `UNIEAI_DSH_PLUGINS=off|id,id`
+  (or `UAC_PLUGINS_DIR`); never edit it here. `UNIEAI_RABI_PLUGINS=off|id,id`
   selects plugins for A/B runs, and `UNIEAI_TURN_MAX_STEPS` /
   `UNIEAI_TURN_DEADLINE_MS` give each turn a budget with a soft landing.
 - uac threads are indexed in `$CODEX_HOME/uac/threads.json` (ids, titles, the
-  dsh session behind each), so `/resume`, rename and archive work across
-  restarts. Conversation content stays in dsh's session log.
+  rabi session behind each), so `/resume`, rename and archive work across
+  restarts. Conversation content stays in rabi's session log.
 - Not supported: `review/start` and thread goals. Approvals are per call;
   "allow for session" is remembered per tool by the bridge.

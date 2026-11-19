@@ -3,7 +3,7 @@
 /**
  * unieai-sync-uac-plugins.mjs — vendor UnieAI/uac-plugins into agent-runtime.
  *
- * The uac engine loads its dsh plugins from src/unieai-dsh/uac-plugins/, a
+ * The uac engine loads its rabi plugins from src/unieai-rabi/uac-plugins/, a
  * committed copy of the plugin modules in https://github.com/UnieAI/uac-plugins
  * (a private repo the release build cannot fetch). Tests and test kits are not
  * copied. UPSTREAM records the commit the copy came from.
@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const target = join(runtimeRoot, "src", "unieai-dsh", "uac-plugins");
+const target = join(runtimeRoot, "src", "unieai-rabi", "uac-plugins");
 const REPO = "https://github.com/UnieAI/uac-plugins";
 
 const args = process.argv.slice(2);

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-uac-live-check.mjs — drive a real uac server (and the real dsh it
+ * unieai-uac-live-check.mjs — drive a real uac server (and the real rabi it
  * pins) through the app-server protocol, the way the TUI does, against the
  * signed-in account's gateway.
  *
- * Unit tests run the engine against a fake ACP agent, so a dsh upgrade that
+ * Unit tests run the engine against a fake ACP agent, so a rabi upgrade that
  * changes the patch schema, the prompt variables or the session format passes
  * them and still fails on the first real turn. This is the check to run after
- * moving the dsh pin and before a release.
+ * moving the rabi pin and before a release.
  *
  *   node scripts/unieai-uac-live-check.mjs [--model <id>] [--keep]
  *

@@ -1,0 +1,9 @@
+{
+  "name": "unieai-rabi-upstream",
+  "private": true,
+  "description": "The upstream harness release Rabi is forked from. scripts/unieai-rabi-fork.mjs republishes exactly what package-lock.json pins here.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3"
+  }
+}

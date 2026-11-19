@@ -7,10 +7,10 @@ import { billingFailureOf, billingMessage, describeTurnError, formatResetTime, i
 const now = new Date(2026, 9, 20, 12, 0, 0);
 const at = (hours) => new Date(now.getTime() + hours * 3600_000).toISOString();
 
-test("finds the billing code in the HTTP failure text dsh reports", () => {
+test("finds the billing code in the HTTP failure text rabi reports", () => {
   const body = JSON.stringify({ error: { code: "plan_limit_reached", window: "fiveHour", resetsAt: at(3) } });
   assert.deepEqual(billingFailureOf(`429 ${body}`), { code: "plan_limit_reached", window: "fiveHour", resetsAt: at(3), periodEnd: null });
-  // Wrapped by dsh's "Internal error: <details>", details nested under data.
+  // Wrapped by rabi's "Internal error: <details>", details nested under data.
   const wrapped = `Internal error: ${JSON.stringify({ status: 402, body: JSON.stringify({ error: { code: "wallet_monthly_limit_reached", details: { periodEnd: at(48) } } }) })}`;
   assert.deepEqual(billingFailureOf(wrapped), { code: "wallet_monthly_limit_reached", window: null, resetsAt: null, periodEnd: at(48) });
   // Text with no JSON still names the code.

@@ -4,7 +4,7 @@
  *
  * The Rust app-server keeps its own thread index; threads served from here
  * are not in it, so `thread/list` and `thread/resume` answered by Rust never
- * saw them. An engine whose conversations persist (uac: dsh sessions) keeps
+ * saw them. An engine whose conversations persist (uac: rabi sessions) keeps
  * this index so they can be listed, resumed, forked and reverted.
  *
  * One JSON document, rewritten atomically. Small by nature: one entry per
@@ -27,14 +27,14 @@ const FIELDS = [
   "createdAtEpoch",
   "updatedAtEpoch",
   "turnIds",
-  // What each turn began with in the engine (unieai-turn-anchors.mjs): dsh
+  // What each turn began with in the engine (unieai-turn-anchors.mjs): rabi
   // turn numbers, and the few words shown for a turn the engine never saw.
   "turnMeta",
   "engineState",
   // The client's tools (thread/start `dynamicTools`); thread/resume does not
   // resend them, as with the Rust server, which keeps them with the thread.
   "clientTools",
-  // The engine variant it runs in (uac: the dsh mode); a resumed thread stays in it.
+  // The engine variant it runs in (uac: the rabi mode); a resumed thread stays in it.
   "mode",
   // The client's -s / -a for the thread ({ sandbox, approval }).
   "permissions",

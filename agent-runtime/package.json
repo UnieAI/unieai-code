@@ -2,7 +2,7 @@
   "name": "@unieai/code-agent-runtime",
   "private": true,
   "version": "0.5.0",
-  "description": "UnieAI Code engines: the uac (deepseek-harness) app-server bridge, plus the agent-core loop, coding tools and slim TUI. agent-core itself is vendored at third_party/unieai-agent-core (git submodule).",
+  "description": "UnieAI Code engines: the uac (rabi-harness) app-server bridge, plus the agent-core loop, coding tools and slim TUI. agent-core itself is vendored at third_party/unieai-agent-core (git submodule).",
   "type": "module",
   "bin": {
     "unieai-agent": "./bin/tui.mjs"
@@ -16,8 +16,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
+    "@unieai/rabi": "0.2.1-rc.3",
+    "@unieai/rabi-llm": "0.2.1-rc.3",
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0"

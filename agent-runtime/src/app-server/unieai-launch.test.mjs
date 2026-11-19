@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { createStopControls } from "./unieai-launch.mjs";
-import { claimServer, socketIsLive, tryClaimLock } from "../unieai-dsh/unieai-server-lock.mjs";
+import { claimServer, socketIsLive, tryClaimLock } from "../unieai-rabi/unieai-server-lock.mjs";
 
 // Unix socket paths must stay under ~108 bytes: keep the scratch dir short.
 const scratch = () => mkdtempSync(join(process.env.UNIEAI_TEST_TMP || "/tmp", "uac-l-"));

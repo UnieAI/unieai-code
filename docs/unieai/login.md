@@ -183,7 +183,7 @@ provider），所以兩個 provider（或 provider 和 Studio）有同名模型�
 
 | 引擎 | 支援 |
 |---|---|
-| **uac**（預設） | 全部 provider 完整支援。每個 provider 在 dsh 的 `settings.yaml` 是一個 `openai-completions` provider（`displayName` 是 `OpenRouter`、`gpu (self-hosted)` 這類標籤），各自一個 key 環境變數（`UNIEAI_SELF_HOSTED_<NAME>_API_KEY`）；key 的值只寫進 dsh 的 `.credentials.yaml`（0600），跟 gateway key 一樣，不會出現在 `settings.yaml`。thread 中途 `/model` 可以在 Studio 模型和各 provider 的模型之間切換。 |
+| **uac**（預設） | 全部 provider 完整支援。每個 provider 在 rabi 的 `settings.yaml` 是一個 `openai-completions` provider（`displayName` 是 `OpenRouter`、`gpu (self-hosted)` 這類標籤），各自一個 key 環境變數（`UNIEAI_SELF_HOSTED_<NAME>_API_KEY`）；key 的值只寫進 rabi 的 `.credentials.yaml`（0600），跟 gateway key 一樣，不會出現在 `settings.yaml`。thread 中途 `/model` 可以在 Studio 模型和各 provider 的模型之間切換。 |
 | **codex** | 這版 codex 只剩 Responses API（`wire_api = "chat"` 已被上游移除）。**OpenAI** 本身有 Responses API，所以 OpenAI preset 也能在 codex 上跑（見下）；其他 preset 和自架伺服器多半只有 chat completions，**只在 uac 上跑**：只有這些、沒有 Studio 登入時自動用 uac；選了它們的模型時 `/engine` 不能切到 codex；codex 引擎的 `/model` 不列它們。 |
 
 codex 引擎用 OpenAI preset，或伺服器本身支援 `/v1/responses`（新版 vLLM、Ollama、

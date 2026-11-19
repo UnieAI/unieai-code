@@ -11,7 +11,7 @@
 //! notifications every thread delivers.
 //!
 //! Stopping goes through the protocol both engines answer: `turn/interrupt`
-//! on the agent's thread (uac routes a subagent's to dsh's own interrupt) and
+//! on the agent's thread (uac routes a subagent's to rabi's own interrupt) and
 //! `thread/backgroundTerminals/terminate` for a command. Opening a command
 //! pages its recent output: uac answers `unieai/exec/output`; on the codex
 //! engine the footer's last lines for that process stand in.
