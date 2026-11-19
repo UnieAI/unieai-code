@@ -5,7 +5,7 @@
  * test page (agent-runtime/src/remote-relay). For end-to-end testing and as
  * an on-prem fallback; Ava hosts the production relay.
  *
- *   REMOTE_RELAY_ALLOWED_ORIGINS=https://agent.unieai.com node agent-runtime/bin/unieai-remote-relay.mjs
+ *   REMOTE_RELAY_ALLOWED_ORIGINS=https://rabi.unieai.com node agent-runtime/bin/unieai-remote-relay.mjs
  *   UNIEAI_REMOTE_RELAY_URL=http://<host>:8790/api/remote unieai remote-control start
  *
  * Environment:
@@ -25,7 +25,7 @@ const allowedOrigins = (process.env.REMOTE_RELAY_ALLOWED_ORIGINS ?? "")
   .filter(Boolean);
 const stub = process.env.REMOTE_RELAY_STUB_AUTH === "1";
 if (!stub && allowedOrigins.length === 0) {
-  process.stderr.write("Set REMOTE_RELAY_ALLOWED_ORIGINS (e.g. https://agent.unieai.com), or REMOTE_RELAY_STUB_AUTH=1 for a local test.\n");
+  process.stderr.write("Set REMOTE_RELAY_ALLOWED_ORIGINS (e.g. https://rabi.unieai.com), or REMOTE_RELAY_STUB_AUTH=1 for a local test.\n");
   process.exit(2);
 }
 

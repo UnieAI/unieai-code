@@ -38,7 +38,7 @@ enum RemoteControlSubcommand {
 struct StartArgs {
     /// Relay base URL, e.g. https://ava.example.com/api/remote (default:
     /// UNIEAI_REMOTE_RELAY_URL, then $CODEX_HOME/remote-control/settings.json,
-    /// then https://agent.unieai.com/api/remote).
+    /// then https://rabi.unieai.com/api/remote).
     #[arg(long, value_name = "URL")]
     relay: Option<String>,
 

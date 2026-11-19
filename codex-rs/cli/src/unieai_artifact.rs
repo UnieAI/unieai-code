@@ -1,6 +1,6 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 //! `unieai artifact` — pages published from UnieAI Code to the user's UnieAI
-//! gallery (ava, agent.unieai.com): list, open, delete, publish, set.
+//! gallery (ava, rabi.unieai.com): list, open, delete, publish, set.
 //!
 //! The same routes and id memory as the uac engine's `publish_artifact` tool
 //! (see `codex_login::unieai_artifacts`), so publishing a path the agent

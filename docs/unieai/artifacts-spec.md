@@ -3,7 +3,7 @@
 
 Status: ava's API is built (ava commit 26d9e43e2, not deployed yet); the
 client is built against it and an in-memory stub. Owner of hosting: ava
-(agent.unieai.com). Owner of the client tool and skill: unieai-code.
+(rabi.unieai.com). Owner of the client tool and skill: unieai-code.
 
 ## Goal
 

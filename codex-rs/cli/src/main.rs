@@ -584,7 +584,7 @@ struct LoginCommand {
     #[arg(long = "rabi", conflicts_with_all = ["use_chatgpt", "studio_url", "gateway_url"])]
     use_rabi: bool,
 
-    /// UnieAI Rabi URL for other deployments (default: https://agent.unieai.com).
+    /// UnieAI Rabi URL for other deployments (default: https://rabi.unieai.com).
     #[arg(long = "rabi-url", value_name = "URL", requires = "use_rabi")]
     rabi_url: Option<String>,
 

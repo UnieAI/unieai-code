@@ -27,6 +27,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname, platform } from "node:os";
 import { join } from "node:path";
+import { RABI_URL, canonicalRabiUrl } from "../config.mjs";
 import { createChannel } from "./unieai-remote-channel.mjs";
 import {
   PAIR_PROTOCOL,
@@ -39,7 +40,7 @@ import {
   toBase64Url,
 } from "./unieai-remote-noise.mjs";
 
-export const DEFAULT_RELAY_URL = "https://agent.unieai.com/api/remote";
+export const DEFAULT_RELAY_URL = `${RABI_URL}/api/remote`;
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
 /** How long a browser that went away keeps its session (§7.4). */
 export const SESSION_GRACE_MS = 15 * 60 * 1000;
@@ -169,7 +170,7 @@ export function hostCredential(codexHome) {
   return {
     account: stored.account === "rabi" ? "rabi" : "studio",
     token: stored.access_token,
-    origin: String(stored.studio_url).replace(/\/+$/, ""),
+    origin: canonicalRabiUrl(String(stored.studio_url).replace(/\/+$/, "")),
   };
 }
 
@@ -179,7 +180,8 @@ export function hostCredential(codexHome) {
  */
 export function resolveRelayUrl({ requested = null, env = process.env, settings = {} } = {}) {
   const url = requested || env.UNIEAI_REMOTE_RELAY_URL || settings.relayUrl || DEFAULT_RELAY_URL;
-  return String(url).replace(/\/+$/, "");
+  // A relay saved before Rabi moved hosts.
+  return canonicalRabiUrl(String(url).replace(/\/+$/, ""));
 }
 
 /** The pairing link (§4.1): everything secret is in the fragment. */

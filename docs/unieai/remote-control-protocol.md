@@ -10,7 +10,7 @@ Remote Control lets a person watch, steer, approve and answer a live local
 | Party | Runs | Role |
 |---|---|---|
 | **Host** | the uac server on the user's machine (`agent-runtime/src/app-server/unieai-remote-bridge.mjs`) | holds the session; dials out to the relay; terminates end-to-end encryption |
-| **Relay** | Ava (`agent.unieai.com`), or on-prem / the reference relay | authenticates the host, admits browsers to a room, forwards opaque frames |
+| **Relay** | Ava (`rabi.unieai.com`), or on-prem / the reference relay | authenticates the host, admits browsers to a room, forwards opaque frames |
 | **Browser** | Ava's remote UI, or the reference test page | pairs once, then watches and drives the session |
 
 The relay is untrusted for content: **it sees only ciphertext plus routing
@@ -57,7 +57,7 @@ All relay endpoints live under one base URL, the **relay base**:
 
 | Deployment | Relay base |
 |---|---|
-| Ava (default) | `https://agent.unieai.com/api/remote` |
+| Ava (default) | `https://rabi.unieai.com/api/remote` |
 | On-prem Ava | `https://<ava-host>/api/remote` |
 | Reference relay | `http://<host>:<port>/api/remote` |
 
@@ -127,7 +127,7 @@ logins write:
 
 | `account` | credential | origin |
 |---|---|---|
-| `rabi` | `access_token` (the long-lived desktop API key) | `studio_url` (e.g. `https://agent.unieai.com`) |
+| `rabi` | `access_token` (the long-lived desktop API key) | `studio_url` (e.g. `https://rabi.unieai.com`) |
 | `studio` (or absent) | `access_token` (OAuth access token; the TUI refreshes it) | `studio_url` (e.g. `https://studio.unieai.com`) |
 
 `hostId` is a random id the host generates once and stores with its key pair
@@ -152,7 +152,7 @@ shown in Ava's machine list; a host MAY send an empty string.
 
 ```
 200 { "roomId": "r_…", "hostSession": "<opaque>", "joinToken": "<opaque>",
-      "webUrl": "https://agent.unieai.com/remote", "expiresAt": "<ISO-8601>" }
+      "webUrl": "https://rabi.unieai.com/remote", "expiresAt": "<ISO-8601>" }
 ```
 
 - `roomId`: stable for `(owner, hostId)` — the same host registering again gets
