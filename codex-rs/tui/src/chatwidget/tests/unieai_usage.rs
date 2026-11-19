@@ -78,7 +78,7 @@ fn usage(five_hour_used: i64, extra_usage: bool) -> StudioUsage {
             "periodEnd": iso(now + chrono::Duration::days(12)),
         },
         "links": {
-            "manage": "https://agent.unieai.com/settings/subscription",
+            "manage": "https://rabi.unieai.com/settings/subscription",
             "topUp": "http://127.0.0.1:9/plan"
         }
     }))

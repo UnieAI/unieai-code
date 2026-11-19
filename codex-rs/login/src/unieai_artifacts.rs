@@ -1,6 +1,6 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 //! Artifacts: pages published from UnieAI Code to ava (UnieAI Rabi,
-//! `agent.unieai.com`). See `docs/unieai/artifacts-spec.md`.
+//! `rabi.unieai.com`). See `docs/unieai/artifacts-spec.md`.
 //!
 //! ava serves the routes under `/api/agent-next/artifacts`, authenticated
 //! with the Rabi desktop key that `unieai login --rabi` stores in
@@ -100,13 +100,13 @@ pub fn artifacts_account(codex_home: &Path) -> Result<ArtifactsAccount> {
     let Some(credentials) = load_unieai_credentials(codex_home) else {
         return Err(ArtifactsError::new(
             "not_signed_in",
-            "Publishing artifacts needs a UnieAI Rabi sign-in (agent.unieai.com). Run `unieai login --rabi` first.",
+            "Publishing artifacts needs a UnieAI Rabi sign-in (rabi.unieai.com). Run `unieai login --rabi` first.",
         ));
     };
     if credentials.account != UnieAIAccountKind::Rabi {
         return Err(ArtifactsError::new(
             "not_rabi",
-            "Artifacts are hosted by UnieAI Rabi (agent.unieai.com), and this machine is signed in to UnieAI Studio, whose key Rabi does not accept. \
+            "Artifacts are hosted by UnieAI Rabi (rabi.unieai.com), and this machine is signed in to UnieAI Studio, whose key Rabi does not accept. \
              Link a Rabi account with `unieai login --rabi` (it replaces the Studio sign-in here; Studio single sign-on is planned).",
         ));
     }

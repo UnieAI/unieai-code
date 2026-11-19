@@ -862,7 +862,7 @@ impl AuthModeWidget {
                         idx,
                         option,
                         "Sign in with UnieAI Rabi",
-                        "Use your Rabi account (agent.unieai.com)",
+                        "Use your Rabi account (rabi.unieai.com)",
                     ));
                 }
                 SignInOption::ModelApi => {
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn a_public_sign_in_page_opens_here_even_when_the_server_is_not_in_process() {
         assert!(sign_in_page_opens_here(
-            "https://agent.unieai.com/device?code=ABCD"
+            "https://rabi.unieai.com/device?code=ABCD"
         ));
         // A loopback callback belongs to whoever serves it, which is not us.
         assert!(!sign_in_page_opens_here(

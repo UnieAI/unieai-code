@@ -31,7 +31,7 @@ unieai logout      # revoke + 刪除 unieai.json
 ## TUI onboarding
 
 第一次啟動（`~/.unieai` 無憑證）會走互動式登入：
-1. **Sign in with UnieAI Rabi**（agent.unieai.com，預設反白）
+1. **Sign in with UnieAI Rabi**（rabi.unieai.com，預設反白）
 2. **Sign in with UnieAI Studio**（公有雲）
 3. **Sign in with your company's UnieAI Studio**（輸入公司/地端 URL）
 4. **Connect a model API (OpenAI, OpenRouter, DeepSeek, Ollama, your server…)**

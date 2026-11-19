@@ -37,7 +37,7 @@ pub enum UnieAIAccountKind {
     /// UnieAI Studio: OAuth tokens plus the org's inference gateway key.
     #[default]
     Studio,
-    /// UnieAI Rabi (agent.unieai.com): one desktop API key for the product's
+    /// UnieAI Rabi (rabi.unieai.com): one desktop API key for the product's
     /// chat-completions relay. See [`crate::unieai_rabi`].
     Rabi,
 }
@@ -136,7 +136,12 @@ pub fn unieai_credentials_path(codex_home: &Path) -> PathBuf {
 /// Loads stored UnieAI credentials, returning `None` when absent or invalid.
 pub fn load_unieai_credentials(codex_home: &Path) -> Option<UnieAICredentials> {
     let contents = std::fs::read_to_string(unieai_credentials_path(codex_home)).ok()?;
-    serde_json::from_str(&contents).ok()
+    let mut credentials: UnieAICredentials = serde_json::from_str(&contents).ok()?;
+    // A Rabi login from before the product moved hosts.
+    credentials.studio_url = crate::unieai_rabi::canonical_rabi_url(&credentials.studio_url);
+    credentials.gateway_base_url =
+        crate::unieai_rabi::canonical_rabi_url(&credentials.gateway_base_url);
+    Some(credentials)
 }
 
 pub fn save_unieai_credentials(

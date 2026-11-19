@@ -1,7 +1,7 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
  * unieai-artifacts.mjs — the `publish_artifact` tool: put a page the agent
- * wrote on ava (agent.unieai.com) at a private URL, and update it in place.
+ * wrote on ava (rabi.unieai.com) at a private URL, and update it in place.
  *
  * A uac host plugin (not in uac-plugins: it needs the UnieAI Code login in
  * `unieai.json`, which Studio's runtime does not have). Loaded through the uac
