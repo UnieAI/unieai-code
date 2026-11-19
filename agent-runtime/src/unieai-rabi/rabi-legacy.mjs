@@ -13,8 +13,17 @@
  *    rebuilds them, and they name the old packages. Session logs record
  *    which plugin wrote each entry, so their package names are rewritten
  *    (and only those: a session also holds the user's own words).
+ *
+ * An upgrade does not stop the old release at once: its uac server hands the
+ * socket to the new one and keeps serving the windows it has (unieai-launch's
+ * drain), and its rabi keeps writing under dsh-home by path. Moving the
+ * directory under it would fail its writes or make it start a second
+ * dsh-home. So while an old server is alive the move waits: the new release
+ * runs on a fresh rabi-home, an old conversation resumed there says to close
+ * the older windows (legacySessionPresent), and a later start, once the old
+ * server is gone, merges dsh-home into rabi-home.
  */
-import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import zlib from "node:zlib";
 import { rewritePackageNames } from "./rabi-rewrite.mjs";
@@ -122,18 +131,125 @@ function rewriteSessionLog(path) {
   return true;
 }
 
+/** Files Rabi or uac write afresh on every start; the old copies are not kept. */
+const REGENERATED = /^(settings\.yaml(\..*)?|\.credentials\.yaml|uac(\.[a-z]+)?\.patch\.yml)$/;
 /**
- * Move `<uacDir>/dsh-home` to `<uacDir>/rabi-home` once. Returns what was
- * done, or null when there was nothing to move (already moved, a fresh
- * install, or both exist, in which case the new home wins and the old one is
- * left for the user).
+ * An old server's rabi control socket: the app-server socket's name with
+ * `.<pid>[.<mode>].dsh.sock` in place of `.sock` (app-server.4242.dsh.sock).
  */
-export function migrateLegacyHome(uacDir, { log = () => {} } = {}) {
+const LEGACY_CONTROL_SOCKET = /\.(\d+)\.(?:[a-z]+\.)?dsh\.sock/g;
+
+function alive(pid) {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error?.code !== "EPERM") return false;
+  }
+  // A recycled pid is not an old server; Linux can say which program it is.
+  try {
+    return /unieai-uac-server/.test(readFileSync(`/proc/${pid}/cmdline`, "utf8"));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Pids of uac servers from before the rename that are still running. Each
+ * one names its rabi control socket, pid included, in the patch it writes
+ * into dsh-home (every platform), and on POSIX that socket is also a file
+ * beside the app-server socket.
+ */
+export function legacyServerPids(uacDir, { socketDirs = [] } = {}) {
+  const legacy = join(uacDir, LEGACY_HOME_NAME);
+  const pids = new Set();
+  const collect = (text) => {
+    for (const m of String(text).matchAll(LEGACY_CONTROL_SOCKET)) pids.add(Number(m[1]));
+  };
+  try {
+    for (const name of readdirSync(legacy)) {
+      if (/^uac(\.[a-z]+)?\.patch\.yml$/.test(name)) collect(readFileSync(join(legacy, name), "utf8"));
+    }
+  } catch {}
+  for (const dir of new Set([uacDir, ...socketDirs])) {
+    try {
+      collect(readdirSync(dir).join("\n"));
+    } catch {}
+  }
+  return [...pids].filter(alive).sort((a, b) => a - b);
+}
+
+/** Whether a conversation is still only in the old home (its move is waiting). */
+export function legacySessionPresent(uacDir, sessionId) {
+  const sessions = join(uacDir, LEGACY_HOME_NAME, "sessions");
+  try {
+    return readdirSync(sessions).some((dir) => existsSync(join(sessions, dir, sessionId)));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Move what `from` has and `to` lacks; where both have a directory, look
+ * inside. Returns the paths left behind because `to` already had them.
+ */
+function mergeMove(from, to, left = []) {
+  if (!existsSync(to)) {
+    renameSync(from, to);
+    return left;
+  }
+  if (!statSync(from).isDirectory() || !statSync(to).isDirectory()) {
+    left.push(from);
+    return left;
+  }
+  for (const name of readdirSync(from)) mergeMove(join(from, name), join(to, name), left);
+  return left;
+}
+
+/** Remove empty directories under (and including) `dir`. */
+function pruneEmpty(dir) {
+  if (!statSync(dir).isDirectory()) return false;
+  for (const name of readdirSync(dir)) pruneEmpty(join(dir, name));
+  if (readdirSync(dir).length) return false;
+  rmdirSync(dir);
+  return true;
+}
+
+/**
+ * Carry `<uacDir>/dsh-home` into `<uacDir>/rabi-home`. Returns what was
+ * done, `{ deferred: true, pids }` while an old server still runs on it, or
+ * null when there is no old home. When rabi-home already exists (a start
+ * while the move waited) the two are merged: a conversation either side has
+ * is kept, and anything both have stays in the new home; the old copies of
+ * those are left in `dsh-home.unmerged-<time>` for the user.
+ */
+export function migrateLegacyHome(uacDir, { log = () => {}, socketDirs = [] } = {}) {
   const legacy = join(uacDir, LEGACY_HOME_NAME);
   const home = join(uacDir, HOME_NAME);
-  if (!existsSync(legacy) || existsSync(home)) return null;
-  renameSync(legacy, home);
-  for (const dir of REBUILT) rmSync(join(home, dir), { recursive: true, force: true });
+  if (!existsSync(legacy)) return null;
+  const pids = legacyServerPids(uacDir, { socketDirs });
+  if (pids.length) {
+    log(`uac: ${legacy} is still in use by an older UnieAI Code (pid ${pids.join(", ")}); it moves to ${home} once that exits`);
+    return { deferred: true, pids };
+  }
+  for (const dir of REBUILT) rmSync(join(legacy, dir), { recursive: true, force: true });
+  let merged = false;
+  let left = [];
+  if (!existsSync(home)) {
+    renameSync(legacy, home);
+  } else {
+    merged = true;
+    for (const name of readdirSync(legacy)) {
+      if (REGENERATED.test(name)) rmSync(join(legacy, name), { force: true });
+      else mergeMove(join(legacy, name), join(home, name), left);
+    }
+    if (!pruneEmpty(legacy)) {
+      const unmerged = `${legacy}.unmerged-${Date.now()}`;
+      renameSync(legacy, unmerged);
+      left = left.map((path) => unmerged + path.slice(legacy.length));
+      log(`uac: ${left.length} item(s) of ${legacy} were already in ${home}; the old copies are in ${unmerged}`);
+    }
+  }
   let rewritten = 0;
   let skipped = 0;
   for (const path of sessionLogs(join(home, "sessions"))) {
@@ -144,6 +260,6 @@ export function migrateLegacyHome(uacDir, { log = () => {} } = {}) {
       log(`uac: could not migrate ${path}: ${error.message}`);
     }
   }
-  log(`uac: moved ${legacy} to ${home} (${rewritten} session logs updated${skipped ? `, ${skipped} skipped` : ""})`);
-  return { from: legacy, to: home, rewritten, skipped };
+  log(`uac: ${merged ? "merged" : "moved"} ${legacy} ${merged ? "into" : "to"} ${home} (${rewritten} session logs updated${skipped ? `, ${skipped} skipped` : ""})`);
+  return { from: legacy, to: home, merged, left, rewritten, skipped };
 }

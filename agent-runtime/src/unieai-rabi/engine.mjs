@@ -11,10 +11,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { AcpError } from "./acp-client.mjs";
 import { blamedServer } from "./unieai-mcp-servers.mjs";
-import { RABI_PROVIDER_ID } from "./config.mjs";
+import { RABI_PROVIDER_ID, rabiHome } from "./config.mjs";
+import { legacySessionPresent } from "./rabi-legacy.mjs";
 import { completedItem, reasoningItem, agentMessageItem, userMessageItem } from "../app-server/items.mjs";
 
 /**
@@ -935,6 +936,14 @@ export function createRabiEngine({
         await applyPermissions();
         return acp;
       } catch (error) {
+        // Still in the old home, whose move waits for an older release to
+        // exit (rabi-legacy.mjs): a fresh session here would leave the
+        // conversation behind for good.
+        if (!process.env.RABI_HOME && legacySessionPresent(dirname(rabiHome()), sessionId)) {
+          throw new Error(
+            "This conversation is still open in an older UnieAI Code. Close the older UnieAI Code windows, then resume it again.",
+          );
+        }
         onLog(`rabi could not resume ${sessionId} (${error.message}); starting a new session`);
       }
     }

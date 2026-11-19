@@ -689,7 +689,10 @@ export function writeRabiAccount({ env = process.env, localProviders = [], provi
   }
   const home = rabiHome(env);
   // An install from before the Rabi rename keeps its sessions.
-  if (!env.RABI_HOME) migrateLegacyHome(dirname(home), { log: (line) => process.stderr.write(`${line}\n`) });
+  if (!env.RABI_HOME) {
+    const socketDirs = env.UNIEAI_APP_SERVER_SOCKET ? [dirname(env.UNIEAI_APP_SERVER_SOCKET)] : [];
+    migrateLegacyHome(dirname(home), { socketDirs, log: (line) => process.stderr.write(`${line}\n`) });
+  }
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const gatewayCatalog = gateway ? credentials.models.filter((m) => m?.id) : [];
   const selfHostedCatalog = selfHosted.flatMap((server) =>
