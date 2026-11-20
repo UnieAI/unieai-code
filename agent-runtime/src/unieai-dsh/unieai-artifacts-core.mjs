@@ -1,6 +1,6 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-artifacts-core.mjs — publish pages to ava (agent.unieai.com) as
+ * unieai-artifacts-core.mjs — publish pages to ava (rabi.unieai.com) as
  * artifacts: local validation, the HTTP routes, and the id memory.
  *
  * See docs/unieai/artifacts-spec.md. ava hosts the pages under
@@ -29,6 +29,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { canonicalRabiUrl } from "../config.mjs";
 
 export const ROUTE = "/api/agent-next/artifacts";
 export const SOURCE = "unieai-code";
@@ -114,17 +115,17 @@ export function resolveAccount(home = unieaiHome()) {
   try {
     stored = JSON.parse(readFileSync(join(home, "unieai.json"), "utf8"));
   } catch {
-    throw new ArtifactsError("not_signed_in", "Publishing artifacts needs a UnieAI Rabi sign-in (agent.unieai.com). Run `unieai login --rabi`, then publish again.");
+    throw new ArtifactsError("not_signed_in", "Publishing artifacts needs a UnieAI Rabi sign-in (rabi.unieai.com). Run `unieai login --rabi`, then publish again.");
   }
   if (stored?.account !== "rabi") {
     throw new ArtifactsError(
       "not_rabi",
-      "Artifacts are hosted by UnieAI Rabi (agent.unieai.com), and this machine is signed in to UnieAI Studio, whose key Rabi does not accept. " +
+      "Artifacts are hosted by UnieAI Rabi (rabi.unieai.com), and this machine is signed in to UnieAI Studio, whose key Rabi does not accept. " +
         "Link a Rabi account with `unieai login --rabi` (it replaces the Studio sign-in here; Studio single sign-on is planned). " +
         "Until then, the page stays a local file.",
     );
   }
-  const baseUrl = String(stored.studio_url ?? "").trim().replace(/\/+$/, "");
+  const baseUrl = canonicalRabiUrl(String(stored.studio_url ?? "").trim().replace(/\/+$/, ""));
   const apiKey = String(stored.gateway_api_key ?? "");
   if (!baseUrl || !apiKey) {
     throw new ArtifactsError("not_signed_in", "The stored Rabi sign-in is incomplete. Run `unieai login --rabi` again.");

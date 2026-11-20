@@ -70,11 +70,11 @@ fn deep_homes_get_a_short_stable_socket() {
 fn write_account(home: &std::path::Path, account: &str) {
     let json = serde_json::json!({
         "account": account,
-        "studio_url": "https://agent.unieai.com",
+        "studio_url": "https://rabi.unieai.com",
         "access_token": "",
         "refresh_token": "",
         "expires_at": 0,
-        "gateway_base_url": "https://agent.unieai.com/api/desktop/v1",
+        "gateway_base_url": "https://rabi.unieai.com/api/desktop/v1",
         "gateway_api_key": "k",
     });
     std::fs::write(home.join("unieai.json"), json.to_string()).expect("write unieai.json");

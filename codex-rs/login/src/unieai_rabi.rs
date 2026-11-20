@@ -1,7 +1,7 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 //! UnieAI Rabi device-code login.
 //!
-//! Rabi (the UnieAI agent web product, `agent.unieai.com`) signs a desktop in
+//! Rabi (the UnieAI agent web product, `rabi.unieai.com`) signs a desktop in
 //! with its own device grant: `POST /api/desktop/device/start` returns a user
 //! code, the person approves it at `/desktop/authorize`, and
 //! `POST /api/desktop/device/poll` then answers with a long-lived desktop API
@@ -28,7 +28,24 @@ use crate::unieai::normalize_url;
 use crate::unieai::post_json;
 use crate::unieai::save_unieai_credentials;
 
-pub const DEFAULT_RABI_URL: &str = "https://agent.unieai.com";
+pub const DEFAULT_RABI_URL: &str = "https://rabi.unieai.com";
+/// Where Rabi was until 2026-11. It now answers with a redirect to
+/// [`DEFAULT_RABI_URL`], and an HTTP client drops the `Authorization` header
+/// on a redirect to another host, so a login stored with this origin would
+/// get 401 for every request: see [`canonical_rabi_url`].
+pub const LEGACY_RABI_URL: &str = "https://agent.unieai.com";
+
+/// `url` with Rabi's former origin replaced by its current one; any other
+/// URL unchanged. Applied where a stored login is read, so a sign-in from
+/// before the move keeps working without signing in again.
+pub fn canonical_rabi_url(url: &str) -> String {
+    match url.strip_prefix(LEGACY_RABI_URL) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{DEFAULT_RABI_URL}{rest}")
+        }
+        _ => url.to_string(),
+    }
+}
 
 /// Where the product's approval page lives (it completes the grant itself).
 const APPROVE_PATH: &str = "/desktop/authorize";
@@ -122,7 +139,7 @@ pub fn resolve_rabi_url(override_url: Option<&str>) -> String {
         .map(str::to_string)
         .or_else(|| std::env::var("UNIEAI_RABI_URL").ok())
         .filter(|url| !url.trim().is_empty())
-        .map(|url| normalize_url(&url))
+        .map(|url| canonical_rabi_url(&normalize_url(&url)))
         .unwrap_or_else(|| DEFAULT_RABI_URL.to_string())
 }
 

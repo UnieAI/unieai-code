@@ -69,7 +69,7 @@ Extra usage 開關對它沒有意義。
     "periodEnd": "2026-11-01T00:00:00.000Z"
   },
   "links": {
-    "manage": "https://agent.unieai.com/settings/subscription",
+    "manage": "https://rabi.unieai.com/settings/subscription",
     "topUp": "https://studio.unieai.com/plan"
   }
 }

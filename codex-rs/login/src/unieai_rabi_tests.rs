@@ -6,8 +6,8 @@ use pretty_assertions::assert_eq;
 #[test]
 fn gateway_is_the_desktop_relay() {
     assert_eq!(
-        rabi_gateway_url("https://agent.unieai.com/"),
-        "https://agent.unieai.com/api/desktop/v1"
+        rabi_gateway_url("https://rabi.unieai.com/"),
+        "https://rabi.unieai.com/api/desktop/v1"
     );
 }
 
@@ -96,4 +96,52 @@ fn rabi_credentials_round_trip_and_gate_codex() {
     let loaded = load_unieai_credentials(dir.path()).expect("load");
     assert_eq!(loaded, credentials);
     assert!(!loaded.account.supports_codex_engine());
+}
+
+#[test]
+fn rabi_former_origin_becomes_the_current_one() {
+    assert_eq!(
+        canonical_rabi_url("https://agent.unieai.com"),
+        DEFAULT_RABI_URL
+    );
+    assert_eq!(
+        canonical_rabi_url("https://agent.unieai.com/api/desktop/v1"),
+        "https://rabi.unieai.com/api/desktop/v1"
+    );
+    // Anything else is left alone, including hosts that merely start alike.
+    for url in [
+        "https://studio.unieai.com",
+        "https://agent.unieai.com.example.org/api",
+        "https://agent.demo.unieai.com",
+        "",
+    ] {
+        assert_eq!(canonical_rabi_url(url), url);
+    }
+    assert_eq!(
+        resolve_rabi_url(Some("agent.unieai.com/")),
+        DEFAULT_RABI_URL
+    );
+}
+
+#[test]
+fn a_login_stored_before_the_move_is_read_with_the_current_origin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("unieai.json"),
+        serde_json::json!({
+            "account": "rabi",
+            "studio_url": "https://agent.unieai.com",
+            "access_token": "",
+            "refresh_token": "",
+            "expires_at": NO_EXPIRY,
+            "gateway_base_url": "https://agent.unieai.com/api/desktop/v1",
+            "gateway_api_key": "rk-1",
+            "gateway_base_url_locked": true
+        })
+        .to_string(),
+    )
+    .expect("write");
+    let loaded = load_unieai_credentials(dir.path()).expect("load");
+    assert_eq!(loaded.studio_url, DEFAULT_RABI_URL);
+    assert_eq!(loaded.gateway_base_url, rabi_gateway_url(DEFAULT_RABI_URL));
 }

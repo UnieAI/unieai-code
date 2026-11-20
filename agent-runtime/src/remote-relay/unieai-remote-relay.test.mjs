@@ -294,7 +294,7 @@ test("remote input and answers are reduced to what the spec allows", () => {
   assert.deepEqual(remoteAnswer("item/commandExecution/requestApproval", { decision: "acceptForSession" }), { decision: "acceptForSession" });
   assert.deepEqual(remoteAnswer("item/commandExecution/requestApproval", { decision: { acceptWithExecpolicyAmendment: {} } }), { decision: "decline" });
   assert.deepEqual(remoteAnswer("item/tool/requestUserInput", { answers: { q1: { answers: ["A", 3] } }, extra: 1 }), { answers: { q1: { answers: ["A"] } } });
-  assert.equal(resolveRelayUrl({ env: {}, settings: {} }), "https://agent.unieai.com/api/remote");
+  assert.equal(resolveRelayUrl({ env: {}, settings: {} }), "https://rabi.unieai.com/api/remote");
   assert.equal(resolveRelayUrl({ env: { UNIEAI_REMOTE_RELAY_URL: "https://ava.corp/api/remote/" }, settings: {} }), "https://ava.corp/api/remote");
   assert.equal(resolveRelayUrl({ requested: "http://x/api/remote", env: { UNIEAI_REMOTE_RELAY_URL: "https://y" } }), "http://x/api/remote");
 });
@@ -310,7 +310,7 @@ test("a relay that answers 404 to register fails start at once, saying where the
     };
     const bridge = createRemoteBridge({ handlers: {}, codexHome: home, fetch: fetch404, env: {} });
     await assert.rejects(bridge.start(), (error) => {
-      assert.match(error.message, /no Remote Control relay at https:\/\/agent\.unieai\.com\/api\/remote \(it answered 404\)/);
+      assert.match(error.message, /no Remote Control relay at https:\/\/rabi\.unieai\.com\/api\/remote \(it answered 404\)/);
       assert.match(error.message, /--relay <URL>/);
       return true;
     });

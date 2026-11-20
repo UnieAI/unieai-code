@@ -21,7 +21,7 @@ fn usage_body() -> Value {
         "extraUsage": {"enabled": true},
         "grants": [{"label": "Welcome credit", "remainingMicroUsd": 2_000_000, "expiresAt": "2026-11-30T00:00:00Z"}],
         "wallet": {"availableMicroUsd": 18_250_000, "monthlyLimitUsd": 50, "monthlySpentUsd": 7.5, "periodEnd": "2026-11-01T00:00:00.000Z"},
-        "links": {"manage": "https://agent.unieai.com/settings/subscription", "topUp": "https://studio.example/plan"}
+        "links": {"manage": "https://rabi.unieai.com/settings/subscription", "topUp": "https://studio.example/plan"}
     })
 }
 
