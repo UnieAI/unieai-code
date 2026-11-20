@@ -2,8 +2,8 @@
 //! `/context` on the uac engine: what is using the context window.
 //!
 //! The uac server answers `unieai/context/read` with a breakdown that the
-//! unieai-context-usage dsh plugin measures (system prompt, tool definitions,
-//! instructions, skills, messages, tool results, free space, and where dsh
+//! unieai-context-usage rabi plugin measures (system prompt, tool definitions,
+//! instructions, skills, messages, tool results, free space, and where rabi
 //! compacts). It is not a codex protocol method, so it goes out as raw
 //! JSON-RPC, which only a remote app-server connection carries; the uac
 //! engine always is one.

@@ -637,7 +637,7 @@ test("a turn the engine starts on its own becomes a client turn, after any open 
   const ctx = { emit: (m, p) => emitted.push([m, p]) };
   const { thread } = await h["thread/start"]({}, ctx);
   await h["turn/start"]({ threadId: thread.id, input: "go" }, ctx);
-  // dsh starts its next turn (a goal round) before the client's has closed.
+  // rabi starts its next turn (a goal round) before the client's has closed.
   hooks.onEngineTurn({ phase: "start" });
   assert.equal(emitted.filter(([m]) => m === "turn/started").length, 1, "waits for the open turn");
   release();
@@ -755,8 +755,8 @@ function execEngine(sessions) {
 test("an exec session the model left running is a background terminal: items with a process id, list, output, stop", async () => {
   const repoRoot = join(import.meta.dirname, "..", "..", "..");
   const sessions = [
-    { sessionId: "dsh-root", id: 1000, cmd: "sleep 120", cwd: "/repo", running: true, startedAt: Date.now() - 5_000, exitCode: null },
-    { sessionId: "dsh-root", id: 1001, cmd: "make test", cwd: "/repo", running: false, startedAt: Date.now() - 9_000, exitCode: 0 },
+    { sessionId: "rabi-root", id: 1000, cmd: "sleep 120", cwd: "/repo", running: true, startedAt: Date.now() - 5_000, exitCode: null },
+    { sessionId: "rabi-root", id: 1001, cmd: "make test", cwd: "/repo", running: false, startedAt: Date.now() - 9_000, exitCode: 0 },
   ];
   const fake = execEngine(sessions);
   const emitted = [];
@@ -800,8 +800,8 @@ test("an exec session the model left running is a background terminal: items wit
 
 test("cleaning background terminals stops every running exec session of the thread", async () => {
   const sessions = [
-    { sessionId: "dsh-root", id: 7, cmd: "npm run dev", cwd: "/repo", running: true },
-    { sessionId: "dsh-root", id: 8, cmd: "tail -f log", cwd: "/repo", running: true },
+    { sessionId: "rabi-root", id: 7, cmd: "npm run dev", cwd: "/repo", running: true },
+    { sessionId: "rabi-root", id: 8, cmd: "tail -f log", cwd: "/repo", running: true },
   ];
   const fake = execEngine(sessions);
   const ctx = { emit: () => {}, request: async () => ({}) };

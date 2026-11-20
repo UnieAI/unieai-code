@@ -21,7 +21,7 @@ function checkResponse(name, value) {
 }
 
 /**
- * An engine whose "conversation" is a list of user turns, like dsh's session:
+ * An engine whose "conversation" is a list of user turns, like rabi's session:
  * `send` appends a turn, `revert` truncates, `fork` copies a prefix into a new
  * conversation named by its state.
  */

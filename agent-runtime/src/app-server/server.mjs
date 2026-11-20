@@ -22,7 +22,7 @@ import { createItemBridge, startedItem, userMessageItem, agentMessageItem, reaso
 import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { backgroundTerminal, createExecSessions } from "./unieai-exec-sessions.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
-import { dshAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
+import { rabiAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
 import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
 import { createThreadClients } from "./unieai-thread-clients.mjs";
 import { createRemoteBridge } from "./unieai-remote-bridge.mjs";
@@ -110,7 +110,7 @@ const PROTOCOL_SANDBOX = { "read-only": "readOnly", "workspace-write": "workspac
 
 /**
  * How long an interrupted turn is given to end itself before the server ends
- * it. Long enough for a cancelled dsh turn to unwind and deliver its trailing
+ * it. Long enough for a cancelled rabi turn to unwind and deliver its trailing
  * items, short enough that a user who interrupted is not left unable to type.
  */
 const INTERRUPT_GRACE_MS = 3_000;
@@ -120,7 +120,7 @@ const GOAL_STATUS_TO_ENGINE = { active: "active", paused: "paused", complete: "c
 
 /**
  * An engine goal ({ objective, phase, ... }) as the protocol's ThreadGoal.
- * dsh budgets goals in rounds, not tokens, so there is no token budget;
+ * rabi budgets goals in rounds, not tokens, so there is no token budget;
  * timestamps are when this server first and last saw the goal.
  */
 function threadGoal(thread, goal) {
@@ -195,7 +195,7 @@ export function createHandlers({
   // and not only in the one line the client shows.
   onTurnError = () => {},
   threadStore = null,
-  // The engine variant a new thread runs in (uac: the dsh mode), read when
+  // The engine variant a new thread runs in (uac: the rabi mode), read when
   // the thread starts; a forked thread keeps its source's.
   threadMode = () => null,
   interruptGraceMs = INTERRUPT_GRACE_MS,
@@ -287,7 +287,7 @@ export function createHandlers({
    */
   const threadEmitter = (thread) => thread?.connection?.emit ?? null;
 
-  // dsh subagents, each shown as a thread of its own.
+  // rabi subagents, each shown as a thread of its own.
   const subagents = createSubagentThreads({ turnShape, threadShape });
   // Commands the model left running, as the client's background terminals.
   const execSessions = createExecSessions({ subagent: (threadId) => subagents.get(threadId), emitterOf: threadEmitter });
@@ -335,7 +335,7 @@ export function createHandlers({
     serviceTier: null,
     effort: t.effort ?? null,
     summary: null,
-    // dsh has no plan/default split of its own; a thread is always the one
+    // rabi has no plan/default split of its own; a thread is always the one
     // the client started, and its model is the thread's.
     collaborationMode: { mode: "default", settings: { model: t.model || defaultModel || "" } },
     multiAgentMode: "explicitRequestOnly",
@@ -357,7 +357,7 @@ export function createHandlers({
     // What the thread runs under: its own -s when it has one.
     sandbox: sandboxShape(t),
     activePermissionProfile: permissionProfileShape(t),
-    // dsh decides how much the model thinks; no effort is chosen here, and
+    // rabi decides how much the model thinks; no effort is chosen here, and
     // "none" would read as thinking turned off.
     reasoningEffort: null,
     multiAgentMode: "explicitRequestOnly",
@@ -541,7 +541,7 @@ export function createHandlers({
         }),
       });
       ctx?.emit?.("thread/status/changed", { threadId: thread.id, status: { type: "idle" } });
-      // dsh began its next turn while this one was still open (a goal round).
+      // rabi began its next turn while this one was still open (a goal round).
       if (thread.engineTurnWaiting) {
         const { anchor } = thread.engineTurnWaiting;
         thread.engineTurnWaiting = null;
@@ -582,10 +582,10 @@ export function createHandlers({
     const anchors = thread.engine?.turnAnchors === true;
     let anchored = false;
     const onTurn = anchors
-      ? ({ turn: dshTurn, rewritten }) => {
-          if (typeof dshTurn !== "number") return;
+      ? ({ turn: rabiTurn, rewritten }) => {
+          if (typeof rabiTurn !== "number") return;
           anchored = true;
-          setTurnMeta(thread, turn.turnId, anchoredTurnMeta(dshTurn, { prompt: rewritten || text !== shown ? shown : null }));
+          setTurnMeta(thread, turn.turnId, anchoredTurnMeta(rabiTurn, { prompt: rewritten || text !== shown ? shown : null }));
         }
       : null;
     const settle = (result) => {
@@ -701,12 +701,12 @@ export function createHandlers({
             autoResolutionMs: null,
           })
           .catch(() => null);
-        return { answers: dshAnswers(questions, response) };
+        return { answers: rabiAnswers(questions, response) };
       },
-      // dsh compacts on its own when the context fills: the client shows
+      // rabi compacts on its own when the context fills: the client shows
       // that the way it shows a compaction it asked for.
       onCompaction: ({ phase, requested }) => {
-        // /compact shows its own turn, whether dsh records the command or
+        // /compact shows its own turn, whether rabi records the command or
         // the bridge asked for it.
         if (requested || thread.compacting) return;
         const emit = (method, params) => {
@@ -729,7 +729,7 @@ export function createHandlers({
       onSubagent: (note) => subagents.onSubagent(thread, note),
       onChildActivity: (note) => subagents.onChildActivity(thread, note),
       onExecSession: (note) => execSessions.onExecSession(thread, note),
-      // Turns dsh runs without a prompt from the client (a goal round, a
+      // Turns rabi runs without a prompt from the client (a goal round, a
       // background subagent's result waking this agent) become client turns.
       onEngineTurn: ({ phase, reason, turn }) => (phase === "start" ? startEngineTurn(thread, turn) : endEngineTurn(thread, reason)),
       // A turn a schedule started (unieai-schedule) shows its prompt as the
@@ -793,7 +793,7 @@ export function createHandlers({
   /**
    * The engine's `keepTurns` that drops the client turn `turnId` and every
    * one after it. `{ keepTurns: null }` when the engine has nothing to drop
-   * (only turns it answered without a dsh turn go).
+   * (only turns it answered without a rabi turn go).
    */
   const engineKeepTurns = async (thread, engine, turnId) => {
     const index = thread.turnIds.indexOf(turnId);
@@ -1069,7 +1069,7 @@ export function createHandlers({
         thread.queuedInput = [...(thread.queuedInput ?? []), { text, clientId, images }];
         return { turnId: turn.id };
       }
-      // An engine that reports when the model takes the message (dsh:
+      // An engine that reports when the model takes the message (rabi:
       // at its next step) emits the user message then, through
       // steerDelivered; the client keeps it pending until that point, as it
       // does for codex. Others count it as delivered now.
@@ -1151,7 +1151,7 @@ export function createHandlers({
      * two disagree forever: every later turn/start is refused with "cannot
      * start a turn while a turn is running" and the session cannot be used
      * again. This used to abort and wait for the engine's promise to settle,
-     * which it does not do when dsh will not cancel what it is running.
+     * which it does not do when rabi will not cancel what it is running.
      *
      * The abort is still what ends it cleanly, so the engine gets a moment to
      * unwind and deliver its trailing items; the turn is closed here only if
@@ -1159,7 +1159,7 @@ export function createHandlers({
      */
     async "turn/interrupt"(params) {
       // A subagent's turn is its parent's to run, but the user may stop it
-      // (the TUI's task list): dsh interrupts the child, and its parent hears
+      // (the TUI's task list): rabi interrupts the child, and its parent hears
       // the child was interrupted.
       const child = subagents.get(params?.threadId);
       if (child) {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { hostCredential, resolveRelayUrl } from "./app-server/unieai-remote-bridge.mjs";
 import { RABI_URL, canonicalRabiUrl, loadCredentials } from "./config.mjs";
-import { resolveAccount } from "./unieai-dsh/unieai-artifacts-core.mjs";
+import { resolveAccount } from "./unieai-rabi/unieai-artifacts-core.mjs";
 
 const OLD = "https://agent.unieai.com";
 

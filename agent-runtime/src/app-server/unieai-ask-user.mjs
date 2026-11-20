@@ -1,9 +1,9 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-ask-user.mjs — dsh's questions to the user, asked through codex's
+ * unieai-ask-user.mjs — rabi's questions to the user, asked through codex's
  * question UI.
  *
- * dsh's `ask_user_question` (and `exit_plan_mode`, which asks for a plan's
+ * rabi's `ask_user_question` (and `exit_plan_mode`, which asks for a plan's
  * approval) wait on an answerer; unieai-control forwards the questions here.
  * The client has codex's request_user_input screen, driven by the
  * `item/tool/requestUserInput` server request: options to pick from, an
@@ -15,7 +15,7 @@ const NOTE_PREFIX = "user_note: ";
 /** The protocol asks for a short header (the TUI draws it as a tab). */
 const HEADER_LIMIT = 12;
 
-/** dsh questions -> the protocol's ToolRequestUserInputQuestion list. */
+/** rabi questions -> the protocol's ToolRequestUserInputQuestion list. */
 export function protocolQuestions(questions) {
   return questions.map((question, index) => ({
     id: String(question.id ?? `q${index + 1}`),
@@ -31,10 +31,10 @@ export function protocolQuestions(questions) {
 }
 
 /**
- * The client's answers -> dsh's `{ id, selected, custom? }` per question: the
+ * The client's answers -> rabi's `{ id, selected, custom? }` per question: the
  * labels of the options picked, and what the user typed as `custom`.
  */
-export function dshAnswers(questions, response) {
+export function rabiAnswers(questions, response) {
   return questions.map((question, index) => {
     const id = String(question.id ?? `q${index + 1}`);
     const given = response?.answers?.[id]?.answers ?? [];

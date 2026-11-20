@@ -1,7 +1,7 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 // Client turns line up with the engine's when they are not one to one:
-// `/loop` list and stop answered without a dsh turn, scheduled turns and goal
-// rounds dsh starts on its own, a `!command` turn. The engine here keeps a dsh
+// `/loop` list and stop answered without a rabi turn, scheduled turns and goal
+// rounds rabi starts on its own, a `!command` turn. The engine here keeps a rabi
 // event log and reads it with the real unieai-control functions, so history,
 // rewind and fork go through the same code as uac's.
 import { test } from "node:test";
@@ -13,11 +13,11 @@ import { createHandlers } from "./server.mjs";
 import { createThreadStore } from "./unieai-thread-store.mjs";
 import { alignTurns, keepTurnsBefore } from "./unieai-turn-anchors.mjs";
 import { userMessageItem } from "./items.mjs";
-import { forkCut, historyFromEvents, rewindRequest } from "../unieai-dsh/unieai-control.mjs";
-import { historyTurn } from "../unieai-dsh/engine.mjs";
+import { forkCut, historyFromEvents, rewindRequest } from "../unieai-rabi/unieai-control.mjs";
+import { historyTurn } from "../unieai-rabi/engine.mjs";
 
-/** A dsh session log per conversation; `/loop` handled as unieai-schedule does. */
-function dshWorld() {
+/** A rabi session log per conversation; `/loop` handled as unieai-schedule does. */
+function rabiWorld() {
   const sessions = new Map(); // id -> events
   const calls = [];
   let nextSession = 1;
@@ -60,7 +60,7 @@ function dshWorld() {
       },
       async history() {
         if (!id) return [];
-        return historyFromEvents(events(), { everyTurn: true }).map((turn) => ({ ...historyTurn(turn), anchor: turn.dshTurn, opener: turn.opener }));
+        return historyFromEvents(events(), { everyTurn: true }).map((turn) => ({ ...historyTurn(turn), anchor: turn.rabiTurn, opener: turn.opener }));
       },
       async revertPreview({ keepTurns }) {
         calls.push(["preview", keepTurns]);
@@ -96,7 +96,7 @@ function dshWorld() {
     factory,
     calls,
     sessions,
-    // dsh runs a scheduled turn on its own: the bridge's notes, in order.
+    // rabi runs a scheduled turn on its own: the bridge's notes, in order.
     scheduledTick(text) {
       const turn = engineRef.runTurn({ kind: "unieai-schedule", summary: text }, `<scheduled>${text}`);
       hooks.onEngineTurn({ phase: "start", turn });
@@ -116,7 +116,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "uac-anchors-"));
-  const world = dshWorld();
+  const world = rabiWorld();
   const store = createThreadStore(join(dir, "threads.json"));
   const make = () => createHandlers({ createEngineFor: world.factory, codexHome: dir, threadStore: store });
   const emitted = [];
@@ -158,11 +158,11 @@ test("/loop list and stop leave rewinding to the turns around them working", asy
   const preview = await h["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: t2 }, ctx);
   assert.equal(preview.files.length, 1, "turn 2's edits can be put back");
   await h["thread/revert"]({ threadId: thread.id, beforeTurnId: t2, restoreFiles: true }, ctx);
-  assert.deepEqual(world.calls.slice(-2), [["preview", 1], ["revert", 1, true]], "dsh keeps its one turn");
+  assert.deepEqual(world.calls.slice(-2), [["preview", 1], ["revert", 1, true]], "rabi keeps its one turn");
   const after = await readAsTui(h, ctx, thread.id);
   assert.deepEqual(after.ids, [t1, list, stop]);
 
-  // Rewinding to a /loop turn drops only local turns: nothing to do in dsh.
+  // Rewinding to a /loop turn drops only local turns: nothing to do in rabi.
   await h["thread/revert"]({ threadId: thread.id, beforeTurnId: stop, restoreFiles: true }, ctx);
   assert.equal(world.calls.at(-1)[0], "revert", "no new engine call");
   assert.equal(world.calls.filter(([m]) => m === "revert").length, 1);
@@ -172,7 +172,7 @@ test("/loop list and stop leave rewinding to the turns around them working", asy
   assert.deepEqual(world.calls.at(-1), ["revert", 0, true]);
   assert.deepEqual((await readAsTui(h, ctx, thread.id)).ids, []);
 
-  // The conversation carries on with dsh's turn numbers reused after the cut.
+  // The conversation carries on with rabi's turn numbers reused after the cut.
   const again = await turn(h, ctx, thread.id, "edit again");
   assert.deepEqual((await readAsTui(h, ctx, thread.id)).ids, [again]);
 });
@@ -198,7 +198,7 @@ test("a scheduled turn and goal rounds are client turns of their own, for rewind
   const { thread: full } = await h["thread/read"]({ threadId: thread.id, includeTurns: true }, ctx);
   assert.equal(full.turns[3].items.filter((i) => i.type === "agentMessage").length, 3, "all three goal rounds are that one turn's");
 
-  // dsh turns: 1 edit one, 2 loop, 3 tick, 4-6 goal rounds, 7 edit two.
+  // rabi turns: 1 edit one, 2 loop, 3 tick, 4-6 goal rounds, 7 edit two.
   await h["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: t2 }, ctx);
   assert.deepEqual(world.calls.at(-1), ["preview", 6]);
   await h["thread/revert/preview"]({ threadId: thread.id, beforeTurnId: goal }, ctx);
@@ -230,14 +230,14 @@ test("the bookkeeping survives a restart, and a fork keeps the turns it was aske
   assert.deepEqual(resumed.thread.turns.map((t) => t.id), [t1, list, t2]);
 
   const forked = await second["thread/fork"]({ threadId: thread.id, lastTurnId: list }, ctx);
-  assert.deepEqual(world.calls.at(-1), ["fork", 1], "the fork stops before edit two's dsh turn");
+  assert.deepEqual(world.calls.at(-1), ["fork", 1], "the fork stops before edit two's rabi turn");
   assert.deepEqual(forked.thread.turns.map((t) => t.id), [t1, list]);
 
   await second["thread/revert"]({ threadId: thread.id, beforeTurnId: t2 }, ctx);
   assert.deepEqual(world.calls.at(-1), ["revert", 1, false]);
 });
 
-test("a `!command` turn of its own has no dsh turn", async () => {
+test("a `!command` turn of its own has no rabi turn", async () => {
   const { make, ctx, world } = setup();
   const h = make();
   const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
@@ -271,18 +271,18 @@ test("/compact is a turn the client keeps as its latest, so it is in the history
   assert.deepEqual((await readAsTui(h, ctx, thread.id)).ids, [t1, compaction]);
 });
 
-test("turns from before the bookkeeping map onto the user-prompted dsh turns", () => {
+test("turns from before the bookkeeping map onto the user-prompted rabi turns", () => {
   const history = [
     { anchor: 1, opener: "user", items: [userMessageItem("", "one")], status: "completed" },
     { anchor: 2, opener: null, items: [], status: "completed" },
     { anchor: 3, opener: "user", items: [userMessageItem("", "two")], status: "completed" },
     { anchor: 4, opener: "user", items: [userMessageItem("", "three")], status: "completed" },
   ];
-  // a and b predate turnMeta; c was recorded; d has not reached dsh yet.
+  // a and b predate turnMeta; c was recorded; d has not reached rabi yet.
   const entries = alignTurns({ threadId: "t", turnIds: ["a", "b", "c", "d"], turnMeta: { c: { anchor: 4 } }, history });
   assert.deepEqual(entries.map((e) => [e.id, e.from, e.to]), [["a", 0, 2], ["b", 2, 3], ["c", 3, 4], ["d", 4, 4]]);
   assert.equal(keepTurnsBefore(entries, "b"), 2);
-  assert.equal(keepTurnsBefore(entries, "d"), null, "nothing of d's in dsh");
+  assert.equal(keepTurnsBefore(entries, "d"), null, "nothing of d's in rabi");
 
   // A user turn no client turn knows still shows, under an id of its own.
   const lost = alignTurns({ threadId: "t", turnIds: ["a"], turnMeta: { a: { anchor: 1 } }, history });

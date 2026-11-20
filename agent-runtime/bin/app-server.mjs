@@ -13,7 +13,7 @@
  *   UNIEAI_APP_SERVER_SOCKET=/tmp/x.sock node …      # somewhere else, for testing
  *
  * The `/engine` command does not use this entry point; it runs
- * unieai-uac-server.mjs (deepseek-harness) on its own socket.
+ * unieai-uac-server.mjs (rabi-harness) on its own socket.
  *
  * Engine methods are answered here; every other method is proxied to
  * `unieai app-server` so the platform surface stays upstream's.

@@ -15,7 +15,7 @@
  *     looks to learn about the server. The Rust client already speaks
  *     `ws://` with a token, so nothing new is needed on that side but reading
  *     the stamp.
- *   - sockets only Node talks to (dsh's unieai-control channel) become named
+ *   - sockets only Node talks to (rabi's unieai-control channel) become named
  *     pipes, derived from the path so both ends compute the same name.
  *
  * The path stays the identity in both cases: locks, stamps and the TUI's

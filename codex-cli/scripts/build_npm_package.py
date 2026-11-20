@@ -16,7 +16,7 @@ CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
 AGENT_RUNTIME_ROOT = REPO_ROOT / "agent-runtime"
 # What the uac engine (`/engine uac`) needs at runtime, relative to
-# agent-runtime/. Its npm dependencies (deepseek-harness) become the root
+# agent-runtime/. Its npm dependencies (rabi-harness) become the root
 # package's dependencies; see stage_agent_runtime.
 AGENT_RUNTIME_FILES = [
     "package.json",
@@ -24,7 +24,7 @@ AGENT_RUNTIME_FILES = [
     "src/config.mjs",
     "src/unieai-billing.mjs",
     "src/app-server",
-    "src/unieai-dsh",
+    "src/unieai-rabi",
 ]
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
@@ -342,12 +342,12 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
 
 
 def pinned_harness_dependencies() -> dict[str, str]:
-    """Every deepseek-harness package at the exact version agent-runtime's lockfile holds.
+    """Every rabi-harness package at the exact version agent-runtime's lockfile holds.
 
-    deepseek-harness pins its own packages with caret ranges on prereleases
+    rabi-harness pins its own packages with caret ranges on prereleases
     (`^0.1.6-alpha.1`), so a fresh install resolves the newest prerelease of
-    each: 0.0.27 got dsh alpha.1 with dsh-app-boot alpha.2, which lacks an
-    export alpha.1 needs, and dsh crashed on start (uac then failed every
+    each: 0.0.27 got rabi alpha.1 with rabi-app-boot alpha.2, which lacks an
+    export alpha.1 needs, and rabi crashed on start (uac then failed every
     turn). npm ignores both npm-shrinkwrap.json and `overrides` for global
     installs, but it does reuse a top-level exact version that satisfies a
     nested range, so listing each package here pins the whole tree. Platform
@@ -362,20 +362,20 @@ def pinned_harness_dependencies() -> dict[str, str]:
     pins: dict[str, str] = {}
     for path, entry in lock.get("packages", {}).items():
         name = package_name(path)
-        if not path or not name.startswith("@deepseek-ai/") or entry.get("dev"):
+        if not path or not name.startswith("@unieai/") or entry.get("dev"):
             continue
         if entry.get("os") or entry.get("cpu") or entry.get("optional"):
             continue
         version = entry.get("version")
         if pins.setdefault(name, version) != version:
             raise RuntimeError(f"agent-runtime/package-lock.json has two versions of {name}: {pins[name]} and {version}")
-    dsh_version = pins.get("@deepseek-ai/dsh")
-    if dsh_version is None:
-        raise RuntimeError("agent-runtime/package-lock.json has no @deepseek-ai/dsh; run npm install in agent-runtime")
-    # deepseek-harness ships as one release train.
-    mixed = sorted(f"{name}@{version}" for name, version in pins.items() if name.startswith("@deepseek-ai/dsh") and version != dsh_version)
+    rabi_version = pins.get("@unieai/rabi")
+    if rabi_version is None:
+        raise RuntimeError("agent-runtime/package-lock.json has no @unieai/rabi; run npm install in agent-runtime")
+    # rabi-harness ships as one release train.
+    mixed = sorted(f"{name}@{version}" for name, version in pins.items() if name.startswith("@unieai/rabi") and version != rabi_version)
     if mixed:
-        raise RuntimeError(f"agent-runtime/package-lock.json mixes deepseek-harness versions (dsh is {dsh_version}): " + ", ".join(mixed[:10]))
+        raise RuntimeError(f"agent-runtime/package-lock.json mixes rabi-harness versions (rabi is {rabi_version}): " + ", ".join(mixed[:10]))
     return dict(sorted(pins.items()))
 
 

@@ -102,3 +102,6 @@ benchmarks/results/traj-*/
 /logs/
 /unieai-agent-core-*.json
 /unieai-codex-*.json
+
+# unieai-rabi-fork.mjs build output (default --out)
+agent-runtime/.rabi-fork/

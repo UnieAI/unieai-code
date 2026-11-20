@@ -5,7 +5,7 @@
 //! ava serves the routes under `/api/agent-next/artifacts`, authenticated
 //! with the Rabi desktop key that `unieai login --rabi` stores in
 //! `unieai.json`. The uac engine's `publish_artifact` tool
-//! (`agent-runtime/src/unieai-dsh/unieai-artifacts-core.mjs`) speaks the same
+//! (`agent-runtime/src/unieai-rabi/unieai-artifacts-core.mjs`) speaks the same
 //! routes and shares the id memory kept here in `artifacts.json`, so a page
 //! published by either one is updated in place by the other.
 //!

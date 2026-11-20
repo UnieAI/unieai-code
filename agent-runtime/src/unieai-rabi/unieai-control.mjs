@@ -1,0 +1,892 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
+/**
+ * unieai-control.mjs — a rabi plugin that serves what ACP does not expose.
+ *
+ * rabi's ACP bridge offers prompt / cancel / new / resume / close. The
+ * app-server protocol also needs steering a running turn, manual compaction,
+ * the session's history (to rebuild a thread on resume), and forking at a turn
+ * boundary (fork, and revert = fork minus the last turns). rabi has all of these
+ * internally (`agent.steer`, `ctx.compaction`, `ctx.sessionQuery`,
+ * seeded `ctx.agents.create`), so this plugin runs inside the rabi process and
+ * answers newline-delimited JSON-RPC on a private unix socket.
+ *
+ * Session ids are shared with ACP: an ACP session id is the rabi session id.
+ *
+ * Client tools: the app-server client (the TUI) may offer its own tools at
+ * thread start (`dynamicTools`: session list, cross-session messages, thread
+ * delegation). `registerTools` registers them in that session's agent scope;
+ * a call is sent back over the SAME connection as a `callTool` request, and
+ * the bridge answers it by asking the client (`item/tool/call`).
+ *
+ * Loaded through the uac patch (see config.mjs `renderPatch`).
+ */
+import { randomUUID } from "node:crypto";
+import { chmodSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { createInterface } from "node:readline";
+import { createUserMessage } from "@unieai/rabi-llm";
+import { createMcpToolDefinition } from "@unieai/rabi-mcp-client";
+import { SANDBOX_MODES, setSandboxMode } from "@unieai/rabi-sandbox-policy";
+import { APPROVAL_POLICIES, setApprovalPolicy } from "@unieai/rabi-user-approval";
+import { appendPluginRecord } from "@unieai/rabi-session";
+import { isBillingFailure } from "../unieai-billing.mjs";
+// The same module URL unieai-exec loads (config.mjs points rabi at this
+// directory's uac-plugins), so both see one registry of background sessions.
+import { onBackground } from "./uac-plugins/unieai-exec-state.mjs";
+
+export const name = "unieai-control";
+/** The session record unieai-auto-approval reads (its MODE_RECORD). */
+export const AUTO_APPROVAL_RECORD = "plugin:unieai-auto-approval/mode";
+const REVIEWERS = ["auto", "user"];
+
+export const inject = ["agents", "compaction", "sessionQuery", "sessions", "tools"];
+
+/** Client tool specs (the app-server `DynamicToolSpec` shape) -> flat tool list. */
+export function flattenClientTools(specs) {
+  const out = [];
+  for (const spec of Array.isArray(specs) ? specs : []) {
+    if (spec?.type === "namespace") {
+      for (const tool of spec.tools ?? []) {
+        if (tool?.type === "function" || tool?.type === undefined) out.push({ ...tool, namespace: spec.name });
+      }
+    } else if (spec?.type === "function" || spec?.type === undefined) {
+      out.push({ ...spec, namespace: null });
+    }
+  }
+  return out
+    .filter((tool) => typeof tool.name === "string" && tool.name && tool.inputSchema && typeof tool.inputSchema === "object")
+    .map(({ name: toolName, description = "", inputSchema, namespace }) => ({ name: toolName, description, inputSchema, namespace }));
+}
+
+/** The client's `DynamicToolCallResponse` -> an MCP `CallToolResult`. */
+export function mcpResultOf(response) {
+  const items = Array.isArray(response?.contentItems) ? response.contentItems : [];
+  const content = items.map((item) => {
+    if (item?.type === "inputText") return { type: "text", text: String(item.text ?? "") };
+    // Images and audio are URLs to the client; name them rather than drop them.
+    if (item?.type === "inputImage") return { type: "text", text: `[image: ${item.imageUrl}]` };
+    if (item?.type === "inputAudio") return { type: "text", text: `[audio: ${item.audioUrl}]` };
+    return { type: "text", text: JSON.stringify(item) };
+  });
+  return { content: content.length ? content : [{ type: "text", text: "" }], isError: response?.success === false };
+}
+
+/** Plain text of a message's content blocks. */
+export function textOf(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block?.type === "text" ? block.text : ""))
+    .filter(Boolean)
+    .join("");
+}
+
+const epochSeconds = (ms) => (Number.isFinite(ms) ? Math.floor(ms / 1000) : null);
+
+/** Who a rabi turn's opening message came from, for `historyFromEvents`. */
+const OPENERS = { user: "user", "unieai-schedule": "scheduled" };
+
+/**
+ * rabi events -> a flat, JSON-friendly history grouped by turn.
+ *
+ * By default only turns opened for a user prompt count: other turns (goal
+ * rounds, injected context, scheduled turns) fold into the preceding user
+ * turn so nothing the model did goes missing.
+ *
+ * With `everyTurn`, each rabi turn is its own entry, with its rabi turn number
+ * (`rabiTurn`) and what opened it (`opener`: "user", "scheduled" or null).
+ * The app-server maps its client turns onto these: the client shows a turn
+ * rabi started on its own (a scheduled turn, a goal round) as a turn of its
+ * own, and answers some prompts (`/loop` list and stop) with no rabi turn at
+ * all, so counting user turns does not say which client turn is which.
+ */
+export function historyFromEvents(events, { everyTurn = false } = {}) {
+  const turns = [];
+  let pendingTurn = null; // a turn/start not yet known to be a user turn
+  let current = null;
+  for (const event of events) {
+    const data = event.data ?? {};
+    switch (event.type) {
+      case "turn/start":
+        pendingTurn = { rabiTurn: data.turn, startSeq: event.seq, startedAt: epochSeconds(event.time) };
+        if (everyTurn) {
+          current = { ...pendingTurn, opener: null, items: [], endSeq: null, reason: null, answered: false };
+          turns.push(current);
+          pendingTurn = null;
+        }
+        break;
+      case "user/message": {
+        const source = data.source?.kind;
+        if (source === "user" && pendingTurn) {
+          current = { ...pendingTurn, items: [], endSeq: null, reason: null };
+          turns.push(current);
+          pendingTurn = null;
+        }
+        if (!current) break;
+        // What opened the turn: a message before the model's first answer
+        // (a steer comes after one).
+        if (everyTurn && current.opener === null && !current.answered && OPENERS[source]) current.opener = OPENERS[source];
+        if (source === "user") {
+          current.items.push({ type: "user", text: textOf(data.content) });
+        } else if (everyTurn && source === "unieai-schedule") {
+          // The client shows a scheduled turn's prompt as its user message.
+          current.items.push({ type: "user", text: data.source.summary ?? textOf(data.content) });
+        }
+        break;
+      }
+      case "assistant/message": {
+        if (!current) break;
+        if (everyTurn) current.answered = true;
+        const message = data.message ?? {};
+        const reasoning = (message.content ?? [])
+          .filter((block) => block?.type === "reasoning")
+          .map((block) => block.text)
+          .join("");
+        const text = (message.content ?? [])
+          .filter((block) => block?.type === "text")
+          .map((block) => block.text)
+          .join("");
+        if (reasoning) current.items.push({ type: "reasoning", text: reasoning });
+        if (text) current.items.push({ type: "assistant", text });
+        break;
+      }
+      case "tool/call":
+        if (!current) break;
+        current.items.push({ type: "tool", callId: data.callId, name: data.name, arguments: data.arguments, status: "inProgress", output: "" });
+        break;
+      case "tool/result": {
+        const result = data.message?.content?.[0];
+        if (!result || !current) break;
+        const call = current.items.find((item) => item.type === "tool" && item.callId === result.toolCallId);
+        if (call) {
+          call.status = result.isError ? "failed" : "completed";
+          call.output = textOf(result.content);
+        }
+        break;
+      }
+      case "turn/end":
+        if (current && current.rabiTurn === data.turn) {
+          current.endSeq = event.seq;
+          current.reason = data.reason?.kind ?? null;
+          current.completedAt = epochSeconds(event.time);
+        }
+        if (pendingTurn?.rabiTurn === data.turn) pendingTurn = null;
+        break;
+      default:
+        break;
+    }
+  }
+  if (everyTurn) for (const turn of turns) delete turn.answered;
+  return turns;
+}
+
+/**
+ * Where a fork keeping the first `keepTurns` turns ends: just past the last
+ * kept turn's `turn/end`, or before the first turn when none are kept.
+ * Returns null when a kept turn is still open. Turns are user turns, or
+ * every rabi turn with `everyTurn` (see historyFromEvents).
+ */
+export function forkCut(events, keepTurns, { everyTurn = false } = {}) {
+  const turns = historyFromEvents(events, { everyTurn });
+  if (keepTurns > turns.length) return null;
+  if (keepTurns === 0) {
+    const first = turns[0];
+    return first ? first.startSeq : events.length;
+  }
+  const last = turns[keepTurns - 1];
+  if (last.endSeq === null) return null;
+  // Keep everything through the end of the kept turn's non-user successors,
+  // i.e. up to the start of the next user turn.
+  const next = turns[keepTurns];
+  return next ? next.startSeq : lastBalancedEnd(events) ?? last.endSeq + 1;
+}
+
+/** One past the last `turn/end`, the latest point with no open turn. */
+function lastBalancedEnd(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type === "turn/end") return events[index].seq + 1;
+  }
+  return null;
+}
+
+async function withObservation(ctx, sessionId, read) {
+  const observed = await ctx.sessionQuery.observeSession(sessionId);
+  try {
+    return await read(observed);
+  } finally {
+    await observed[Symbol.asyncDispose]?.();
+    observed[Symbol.dispose]?.();
+  }
+}
+
+/** The unieai-rewind plugin's service, when that plugin is loaded. */
+function rewindService(ctx) {
+  // A real context throws on reading a service it did not inject; ask reflect.
+  return ctx.reflect?.get?.("unieaiRewind") ?? null;
+}
+
+/**
+ * What unieai-rewind needs to undo every user turn from `keepTurns` on: the
+ * session's workspace, its events, and where the first undone turn starts.
+ * Null when there is no such turn.
+ */
+export function rewindRequest(observed, keepTurns, { everyTurn = false } = {}) {
+  const turn = historyFromEvents(observed.events, { everyTurn })[keepTurns];
+  if (!turn) return null;
+  return { cwd: observed.header?.cwd, events: observed.events, fromSeq: turn.startSeq };
+}
+
+/** One rabi usage record as the app-server protocol's TokenUsageBreakdown. */
+export function usageBreakdown(usage = {}) {
+  const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0) || 0;
+  const output = Number(usage.outputTokens ?? usage.output_tokens ?? 0) || 0;
+  const cached = Number(usage.cacheReadTokens ?? usage.cachedInputTokens ?? usage.cachedTokens ?? 0) || 0;
+  const cacheWrite = Number(usage.cacheWriteTokens ?? 0) || 0;
+  const reasoning = Number(usage.reasoningTokens ?? usage.reasoningOutputTokens ?? 0) || 0;
+  return {
+    totalTokens: Number(usage.totalTokens ?? 0) || input + output,
+    inputTokens: input,
+    cachedInputTokens: cached,
+    cacheWriteInputTokens: cacheWrite,
+    outputTokens: output,
+    reasoningOutputTokens: reasoning,
+  };
+}
+
+/** Totals and the last model call, from a session's assistant messages. */
+export function usageFromEvents(events) {
+  const total = usageBreakdown({});
+  let last = usageBreakdown({});
+  for (const event of events ?? []) {
+    if (event?.type !== "assistant/message" || !event.data?.usage) continue;
+    last = usageBreakdown(event.data.usage);
+    for (const key of Object.keys(total)) total[key] += last[key];
+  }
+  return { total, last };
+}
+
+/**
+ * One background exec session as the client sees it: who owns it (the rabi
+ * session), its command and directory, and whether it is still running.
+ */
+export function execSessionView(sessionId, handle) {
+  return {
+    sessionId,
+    id: handle.id,
+    cmd: String(handle.cmd ?? ""),
+    cwd: handle.cwd ?? null,
+    tty: Boolean(handle.tty),
+    startedAt: Number.isFinite(handle.startedAt) ? handle.startedAt : null,
+    backgroundedAt: Number.isFinite(handle.backgroundedAt) ? handle.backgroundedAt : null,
+    running: Boolean(handle.running),
+    exitCode: handle.exitCode ?? null,
+  };
+}
+
+/** A subagent's session events that change what its thread shows. */
+const CHILD_ACTIVITY = new Set(["turn/start", "turn/end", "user/message", "assistant/message", "tool/call", "tool/result"]);
+
+export function apply(ctx, config = {}) {
+  const socketPath = config.socket || process.env.UAC_CONTROL_SOCKET;
+  if (!socketPath) {
+    ctx.logger.warn("unieai-control: no socket configured; disabled");
+    return;
+  }
+  const route = { provider: config.provider, model: config.model };
+  /** sessionId -> disposers of the client tools registered for it. */
+  const clientTools = new Map();
+  /** sessionId -> names of those tools (what /context counts as the client's). */
+  const clientToolNames = new Map();
+  const dropClientTools = (sessionId) => {
+    for (const dispose of clientTools.get(sessionId) ?? []) {
+      try {
+        dispose();
+      } catch {
+        // The agent scope is already gone.
+      }
+    }
+    clientTools.delete(sessionId);
+    clientToolNames.delete(sessionId);
+  };
+  ctx.on("agent/disposed", ({ agent }) => {
+    dropClientTools(agent.id);
+    steersWaiting.delete(agent.id);
+  });
+
+  // A UnieAI billing refusal (plan limit, empty wallet, monthly ceiling) lasts
+  // until the user acts or the window resets: retrying it as a rate limit
+  // only delays the message. Ahead of llm-retry, end the turn instead.
+  ctx.on(
+    "agent/request-error",
+    (payload, next) => (isBillingFailure(payload?.failure?.message) ? Promise.resolve(undefined) : next()),
+    { prepend: true },
+  );
+
+  // The bridge's connection, for changes it did not ask about (goal edits
+  // the model makes with its goal tools).
+  let bridge = null;
+  const goalsOf = () => ctx.get?.("goals");
+  const goalView = (goal) =>
+    goal === undefined || goal === null
+      ? null
+      : { id: goal.id, revision: goal.revision, objective: goal.objective, phase: goal.phase, roundsStarted: goal.roundsStarted ?? 0, maxGoalRounds: goal.maxGoalRounds ?? null };
+  // Compaction, so the client can show it: rabi compacts on its own when the
+  // context fills, which otherwise happened invisibly.
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || (event?.type !== "compaction/start" && event?.type !== "compaction/end")) return;
+    bridge.notify?.("compaction", {
+      sessionId: session.header.id,
+      phase: event.type === "compaction/start" ? "start" : "end",
+      compactionId: event.data?.compactionId ?? null,
+      // A compaction the user asked for carries the command that started it.
+      requested: Boolean(event.data?.sourceCommandId),
+    });
+  });
+
+  // Turn boundaries, so the bridge can show turns rabi starts on its own
+  // (a goal round, a background subagent's result waking its parent).
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || (event?.type !== "turn/start" && event?.type !== "turn/end")) return;
+    bridge.notify?.("turnBoundary", {
+      sessionId: session.header.id,
+      phase: event.type === "turn/start" ? "start" : "end",
+      turn: event.data?.turn ?? null,
+      reason: event.data?.reason?.kind ?? null,
+    });
+  });
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "goal/change" || !bridge) return;
+    const agent = ctx.agents.get(session.header.id);
+    let goal = null;
+    try {
+      goal = agent ? goalView(goalsOf()?.get(agent)) : null;
+    } catch {
+      // Not the live agent: the next read reports it.
+    }
+    bridge.notify?.("goalChanged", { sessionId: session.header.id, goal });
+  });
+
+  // A turn unieai-schedule started (a wake-up, a recurring task): the bridge
+  // shows its prompt as the turn's user message, since no one typed it.
+  ctx.on("session/event", (session, event) => {
+    if (!bridge || event?.type !== "user/message" || event.data?.source?.kind !== "unieai-schedule") return;
+    bridge.notify?.("scheduledPrompt", {
+      sessionId: session.header.id,
+      text: event.data.source.summary ?? textOf(event.data.content),
+    });
+  });
+
+  // Subagents, so the bridge can show each child as its own thread: when one
+  // starts and ends (with its parent and label), and a ping whenever its
+  // session gains something to show. The bridge reads the child's turns
+  // itself (`history`), so events are not copied here.
+  const childParent = new Map(); // child session id -> parent session id
+  const startsWaiting = new Map(); // child session id -> timer, until its descriptor is logged
+  const parentOfChild = (id) => childParent.get(id) ?? ctx.agents.get(id)?.session?.header?.parentSession;
+  const announceStart = (id, descriptor) => {
+    clearTimeout(startsWaiting.get(id));
+    startsWaiting.delete(id);
+    const header = ctx.agents.get(id)?.session?.header;
+    bridge?.notify?.("subagent", {
+      phase: "start",
+      sessionId: id,
+      parentSessionId: childParent.get(id),
+      depth: header?.delegationDepth ?? 1,
+      cwd: header?.cwd ?? null,
+      label: descriptor?.label ?? null,
+      model: descriptor?.agentModel ?? null,
+    });
+  };
+  ctx.on("subagent/start", (info) => {
+    const id = String(info.id);
+    const parent = parentOfChild(id);
+    if (!parent) return; // not an in-process child
+    childParent.set(id, parent);
+    // A one-shot child logs its descriptor (its label) at its first step,
+    // just after this; a continuable one already has it.
+    const descriptor = ctx.agents.get(id)?.session?.snapshotEvents?.().find((event) => event.type === "subagent/descriptor");
+    if (descriptor) announceStart(id, descriptor.data);
+    else startsWaiting.set(id, setTimeout(() => announceStart(id, null), 2000));
+  });
+  ctx.on("subagent/end", (info) => {
+    const id = String(info.id);
+    const parent = parentOfChild(id);
+    if (!parent) return;
+    if (startsWaiting.has(id)) announceStart(id, null);
+    const message = info.lastAssistantMessage;
+    bridge?.notify?.("subagent", {
+      phase: "end",
+      sessionId: id,
+      parentSessionId: parent,
+      stopReason: info.stopReason ?? null,
+      lastAssistantMessage: typeof message === "string" ? message : message == null ? null : textOf(message),
+    });
+  });
+  ctx.on("session/event", (session, event) => {
+    const header = session?.header;
+    if (header?.origin !== "subagent" || !header.parentSession) return;
+    if (event?.type === "subagent/descriptor" && startsWaiting.has(header.id)) announceStart(header.id, event.data);
+    if (!bridge || !CHILD_ACTIVITY.has(event?.type)) return;
+    bridge.notify?.("childActivity", { sessionId: header.id, parentSessionId: header.parentSession, type: event.type });
+  });
+  ctx.on("agent/disposed", ({ agent }) => {
+    // A child's own disposal can come before its subagent/end: its link
+    // outlives it, and goes with its parent.
+    for (const [child, parent] of childParent) if (parent === agent.id) childParent.delete(child);
+  });
+
+  // Exec sessions an agent left running (unieai-exec), so the client can list,
+  // read and stop them like codex's background terminals. Each one is
+  // announced when it is backgrounded and again when it exits.
+  const execSessions = new Map(); // exec session id -> { agent, handle }
+  const execLifetime = new AbortController();
+  const unsubscribeExec = onBackground((agent, handle) => {
+    if (execLifetime.signal.aborted || !agent?.id) return;
+    execSessions.set(handle.id, { agent, handle });
+    const view = () => ({ ...execSessionView(agent.id, handle), parentSessionId: parentOfChild(agent.id) ?? null });
+    bridge?.notify?.("execSession", { phase: "start", ...view() });
+    void handle.whenExited(Infinity, execLifetime.signal).then((exited) => {
+      if (!exited) return;
+      if (execSessions.get(handle.id)?.handle === handle) execSessions.delete(handle.id);
+      bridge?.notify?.("execSession", { phase: "end", ...view(), killed: Boolean(handle.killed) });
+    });
+  });
+  /** Whether `sessionId` is `rootId` or one of its subagents (at any depth). */
+  const withinSession = (sessionId, rootId) => {
+    for (let id = sessionId, hops = 0; id && hops < 32; id = parentOfChild(id), hops += 1) {
+      if (id === rootId) return true;
+    }
+    return false;
+  };
+  const execEntry = (id) => {
+    const entry = execSessions.get(Number(id));
+    if (!entry) throw new Error(`no background exec session ${id}`);
+    return entry;
+  };
+
+  // The model's questions to the user (ask_user_question, and exit_plan_mode's
+  // plan review) go to the bridge, which asks through the client. Without a
+  // bridge the next answerer (none, under ACP) decides.
+  ctx.on("user-questions/request", async (request, next) => {
+    const sessionId = request?.agent?.id;
+    if (!bridge || !sessionId) return next();
+    const asked = bridge.request("askUser", {
+      sessionId,
+      questions: request.questions.map((question) => ({
+        id: question.id,
+        question: question.question,
+        header: question.header ?? null,
+        detail: question.detail ?? null,
+        options: question.options ?? [],
+        multiSelect: Boolean(question.multiSelect),
+      })),
+    });
+    const signal = request.signal;
+    const aborted = new Promise((_, reject) => {
+      if (signal?.aborted) reject(new Error("ask_user_question was aborted before the user answered"));
+      signal?.addEventListener("abort", () => reject(new Error("ask_user_question was aborted before the user answered")), { once: true });
+    });
+    const { answers } = await Promise.race([asked, aborted]);
+    return { answers };
+  });
+
+  // Prefixed to every message steered into a running turn. Short on purpose:
+  // it rides on every interjection, and it only has to name the decision and
+  // the two ways it can go.
+  const STEER_GUIDANCE =
+    "[Sent while you were working. Before you act on it, decide whether it conflicts with the change " +
+    "you have in flight. If it conflicts, or makes that work pointless, say so and switch. If it does " +
+    "not, add it to your todo list and finish the step you are on before you start it.]";
+
+  // Steered messages waiting for the model: sessionId -> [{ text, clientId, peer }].
+  // rabi queues a steer for the next step and logs it as a user message when
+  // that step takes it; the client is told then, so it can keep showing the
+  // message as pending until the model has really received it.
+  const steersWaiting = new Map();
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "user/message") return;
+    const waiting = steersWaiting.get(session.header.id);
+    if (!waiting?.length) return;
+    const text = textOf(event.data?.content);
+    // What was delivered is the guidance block followed by what the user
+    // wrote, so the user's text is the tail of it. Matching on equality here
+    // left every steer pending in the client forever.
+    const index = waiting.findIndex((entry) => text === entry.text || text.endsWith(entry.text));
+    if (index < 0) return;
+    const [delivered] = waiting.splice(index, 1);
+    delivered.peer.notify?.("steerDelivered", { sessionId: session.header.id, clientId: delivered.clientId, text });
+  });
+
+  const methods = {
+    /**
+     * Register the client's tools for one session (replacing earlier ones).
+     * Calls go back to the client over the connection that registered them.
+     */
+    async registerTools({ sessionId, tools }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      dropClientTools(sessionId);
+      const disposers = [];
+      const names = [];
+      for (const tool of flattenClientTools(tools)) {
+        const definition = createMcpToolDefinition(ctx, {
+          name: tool.name,
+          rawName: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          call: async (args, exec) =>
+            mcpResultOf(
+              await peer.request("callTool", {
+                sessionId,
+                callId: exec.callId,
+                namespace: tool.namespace,
+                tool: tool.name,
+                arguments: args,
+              }),
+            ),
+        });
+        try {
+          disposers.push(agent.ctx.tools.register(definition));
+          names.push(tool.name);
+        } catch (error) {
+          ctx.logger.warn(`unieai-control: client tool ${tool.name} not registered: ${error?.message ?? error}`);
+        }
+      }
+      clientTools.set(sessionId, disposers);
+      clientToolNames.set(sessionId, names);
+      return { registered: disposers.length };
+    },
+
+    /**
+     * The client's `-s` / `-a` for one session, as rabi's own per-session
+     * `sandbox/mode` and `approval/policy` events (what its permission
+     * picker writes). Only a change is appended, so resuming a session does
+     * not grow its log. `reviewer` "auto" (codex's "Approve for me") is a
+     * record the unieai-auto-approval plugin reads: a reviewer model answers
+     * the session's approval asks and only risky ones reach the user.
+     */
+    async setPermissions({ sessionId, sandbox = null, approval = null, reviewer = null }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const events = agent.session.snapshotEvents?.() ?? [];
+      const last = (type, key) => events.findLast?.((event) => event?.type === type)?.data?.[key] ?? null;
+      const applied = {};
+      if (sandbox && SANDBOX_MODES.includes(sandbox) && last("sandbox/mode", "mode") !== sandbox) {
+        setSandboxMode(agent.session, sandbox);
+        applied.sandbox = sandbox;
+      }
+      if (approval && APPROVAL_POLICIES.includes(approval) && last("approval/policy", "policy") !== approval) {
+        setApprovalPolicy(agent.session, approval);
+        applied.approval = approval;
+      }
+      if (REVIEWERS.includes(reviewer) && (last(AUTO_APPROVAL_RECORD, "reviewer") ?? "user") !== reviewer) {
+        appendPluginRecord(agent.session, AUTO_APPROVAL_RECORD, { reviewer });
+        applied.reviewer = reviewer;
+      }
+      return { applied };
+    },
+
+    /** Token usage so far in the session (the TUI's /status and header). */
+    async usage({ sessionId }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const { total, last } = usageFromEvents(agent.session.snapshotEvents?.() ?? []);
+      const window = agent.session.requestContext?.()?.contextWindow ?? null;
+      // rabi's own measure of the context (what auto-compaction goes by), from
+      // the token meter in the agent's scope or the root.
+      let contextUsed = null;
+      try {
+        const meter = agent.ctx?.get?.("tokenMeter") ?? ctx.get?.("tokenMeter");
+        const measured = meter?.measure(agent.session)?.totalTokens;
+        if (Number.isFinite(measured)) contextUsed = measured;
+      } catch {
+        // No meter in this profile: the last call's counts stand in.
+      }
+      return { total, last, modelContextWindow: Number.isFinite(window) ? window : null, contextUsed };
+    },
+
+    /**
+     * Stop a subagent's current work, as the user (the TUI's task list):
+     * rabi's own interrupt, under the authority of the child's direct parent.
+     * One-shot and continuable children alike are resident activations; an
+     * idle or finished one is a no-op.
+     */
+    async subagentInterrupt({ sessionId }) {
+      const parentSessionId = parentOfChild(sessionId);
+      if (!parentSessionId) throw new Error(`not a subagent: ${sessionId}`);
+      const subagents = ctx.get?.("subagents");
+      if (subagents?.interrupt) {
+        subagents.interrupt(sessionId, { kind: "user", parentSessionId });
+        return { interrupted: true };
+      }
+      // A composition without the subagent service: cancel the child's turn.
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) return { interrupted: false };
+      agent.cancel?.({ kind: "user" }, { keepInbox: true });
+      return { interrupted: true };
+    },
+
+    /**
+     * Exec sessions left running by `sessionId` and its subagents (all of
+     * them without a session), oldest first.
+     */
+    async execSessions({ sessionId = null } = {}) {
+      const sessions = [];
+      for (const { agent, handle } of execSessions.values()) {
+        if (sessionId && !withinSession(agent.id, sessionId)) continue;
+        sessions.push({ ...execSessionView(agent.id, handle), parentSessionId: parentOfChild(agent.id) ?? null });
+      }
+      return { sessions };
+    },
+
+    /** The last output of one exec session, without consuming what the model has not read. */
+    async execOutput({ id, maxBytes = 16_000 }) {
+      const { agent, handle } = execEntry(id);
+      const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, 256_000) : 16_000;
+      return { ...execSessionView(agent.id, handle), output: handle.peek?.(limit) ?? "" };
+    },
+
+    /** Stop one exec session (the user's /tasks stop). Its exit is announced as usual. */
+    async execKill({ id }) {
+      const { handle } = execEntry(id);
+      if (!handle.running) return { killed: false };
+      await handle.kill?.();
+      return { killed: true };
+    },
+
+    /**
+     * What is using the session's context (the TUI's /context), measured by
+     * the unieai-context-usage plugin; a child session counts its parent's
+     * client tools.
+     */
+    async context({ sessionId }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const service = ctx.get?.("unieaiContextUsage");
+      if (!service) throw new Error("context usage is not available: the unieai-context-usage plugin is not loaded");
+      const owner = clientToolNames.has(sessionId) ? sessionId : parentOfChild(sessionId);
+      return service.measure(agent, { clientToolNames: clientToolNames.get(owner) ?? [] });
+    },
+
+    /** The session's current goal (null when none). */
+    async goalGet({ sessionId }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      if (!agent || !goals) return { goal: null, supported: Boolean(goals) };
+      return { goal: goalView(goals.get(agent)), supported: true };
+    },
+
+    /**
+     * The client's goal edit (TUI /goal): a new objective creates or edits
+     * the goal (replacing a completed one, as rabi's own /goal does), a status
+     * pauses, resumes or completes it.
+     */
+    async goalSet({ sessionId, objective = null, status = null }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      if (!goals) throw new Error("this rabi composition has no goal service");
+      const ref = (goal) => ({ id: goal.id, revision: goal.revision });
+      let current = goals.get(agent);
+      if (objective?.trim()) {
+        current =
+          current === undefined || current.phase === "complete"
+            ? goals.create(agent, { objective })
+            : goals.edit(agent, ref(current), { objective });
+      }
+      if (status && current !== undefined) {
+        if (status === "paused" && current.phase === "active") current = goals.pause(agent, ref(current));
+        else if (status === "active" && current.phase !== "active") current = goals.resume(agent, ref(current));
+        else if (status === "complete" && current.phase !== "complete") current = goals.complete(agent, ref(current));
+      }
+      if (current === undefined) throw new Error("no goal is set; give an objective");
+      return { goal: goalView(current) };
+    },
+
+    async goalClear({ sessionId }, peer) {
+      bridge = peer;
+      const agent = ctx.agents.get(sessionId);
+      const goals = goalsOf();
+      const current = agent && goals ? goals.get(agent) : undefined;
+      if (current === undefined) return { cleared: false };
+      goals.clear(agent, { id: current.id, revision: current.revision });
+      return { cleared: true };
+    },
+
+    /**
+     * The client's `/loop ...` (unieai-schedule): `{ reply }` answers the
+     * user without the model, `{ prompt }` is what to send the model instead.
+     */
+    async loopCommand({ sessionId, text }) {
+      const schedule = ctx.get?.("unieaiSchedule");
+      if (!schedule) return { handled: true, reply: "Scheduling is not available: the unieai-schedule plugin is not loaded." };
+      if (!ctx.agents.get(sessionId)) throw new Error(`session is not open: ${sessionId}`);
+      return schedule.loopCommand(sessionId, String(text ?? ""));
+    },
+
+    async steer({ sessionId, text, content = null, clientId = null }, peer) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent || !String(text ?? "").trim()) return { delivered: false };
+      const waiting = steersWaiting.get(sessionId) ?? [];
+      waiting.push({ text, clientId, peer });
+      steersWaiting.set(sessionId, waiting);
+      // `content` carries the message's images; `text` is what the client
+      // showed, and what the delivered message is matched by.
+      const blocks = Array.isArray(content) && content.length ? content : [{ type: "text", text }];
+      // The persona says what to do with a message that arrives mid-work, but
+      // it says it thousands of characters earlier, at the top of the turn.
+      // Measured: the model read the steer and went straight at it, leaving
+      // the step it was on unfinished and never adding the new requirement to
+      // its list. The instruction belongs where the decision is made.
+      agent.steer(
+        createUserMessage({ content: [{ type: "text", text: STEER_GUIDANCE }, ...blocks], source: { kind: "user" } }),
+      );
+      return { delivered: true };
+    },
+
+    async compact({ sessionId }) {
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) throw new Error(`session is not open: ${sessionId}`);
+      const result = await ctx.compaction.compactNow(agent, AbortSignal.timeout(10 * 60_000));
+      return { compacted: result !== null };
+    },
+
+    /** A tool call's name and arguments, for a result whose start the bridge missed. */
+    async toolCall({ sessionId, callId }) {
+      return withObservation(ctx, sessionId, (observed) => {
+        const call = observed.events.findLast((event) => event.type === "tool/call" && event.data?.callId === callId);
+        return call ? { name: call.data.name, arguments: call.data.arguments } : { name: null, arguments: null };
+      });
+    },
+
+    async history({ sessionId, everyTurn = false }) {
+      return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events, { everyTurn }) }));
+    },
+
+    /**
+     * The files that undoing every user turn from `keepTurns` on would put
+     * back (the unieai-rewind plugin's checkpoints): `{available, files}`.
+     */
+    async rewindPreview({ sessionId, keepTurns, everyTurn = false }) {
+      const rewind = rewindService(ctx);
+      if (!rewind) return { available: false, reason: "file checkpoints are off", files: [] };
+      return withObservation(ctx, sessionId, (observed) => {
+        const request = rewindRequest(observed, keepTurns, { everyTurn });
+        return request ? rewind.preview(request) : { available: true, files: [] };
+      });
+    },
+
+    /** Put those files back: `{files, failed, undo}`. */
+    async rewindRestore({ sessionId, keepTurns, everyTurn = false }) {
+      const rewind = rewindService(ctx);
+      if (!rewind) throw new Error("file checkpoints are off");
+      return withObservation(ctx, sessionId, (observed) => {
+        const request = rewindRequest(observed, keepTurns, { everyTurn });
+        return request ? rewind.restore(request) : { files: [], failed: [], undo: null };
+      });
+    },
+
+    /**
+     * A new session holding the first `keepTurns` user turns of `sessionId`
+     * (all completed turns when omitted). The child is persisted and left
+     * closed so the client opens it with ACP `session/resume`.
+     */
+    async fork({ sessionId, keepTurns = null, everyTurn = false, provider, model }) {
+      return withObservation(ctx, sessionId, async (observed) => {
+        const events = observed.events;
+        const total = historyFromEvents(events, { everyTurn }).filter((turn) => turn.endSeq !== null).length;
+        const keep = keepTurns === null ? total : Math.max(0, Math.min(keepTurns, total));
+        const cut = forkCut(events, keep, { everyTurn });
+        if (cut === null) throw new Error("the turn to fork through has not completed");
+        const childId = randomUUID();
+        const cwd = observed.header?.cwd;
+        const handle = await ctx.agents.create({
+          sessionId: childId,
+          seed: events.slice(0, cut),
+          inheritedEventCount: cut,
+          // No parentSession: ACP refuses to resume a session that has one.
+          meta: { ...(cwd === undefined ? {} : { cwd }), isSeeded: true },
+          agentOptions: { provider: provider ?? route.provider, model: model ?? route.model },
+        });
+        try {
+          // Flushing is what materializes the new session's log on disk.
+          await ctx.sessions.flush(handle.agent.session);
+        } finally {
+          await handle.dispose();
+        }
+        return { sessionId: childId, keptTurns: keep };
+      });
+    },
+  };
+
+  rmSync(socketPath, { force: true });
+  const server = createServer((socket) => {
+    const write = (message) => socket.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+    // The connection is two-way: the bridge calls methods here, and client
+    // tools call back to the bridge (`callTool`) on the same socket.
+    let nextId = 0;
+    const pending = new Map();
+    const peer = {
+      notify(method, params) {
+        write({ method, params });
+      },
+      request(method, params) {
+        const id = `unieai-control:${(nextId += 1)}`;
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject });
+          write({ id, method, params });
+        });
+      },
+    };
+    createInterface({ input: socket }).on("line", async (line) => {
+      let request;
+      try {
+        request = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (request.method === undefined) {
+        const waiter = pending.get(request.id);
+        if (!waiter) return;
+        pending.delete(request.id);
+        if (request.error) waiter.reject(new Error(request.error.message ?? "client tool failed"));
+        else waiter.resolve(request.result);
+        return;
+      }
+      const handler = methods[request.method];
+      if (!handler) {
+        write({ id: request.id, error: { code: -32601, message: `unknown method: ${request.method}` } });
+        return;
+      }
+      bridge = peer;
+      try {
+        write({ id: request.id, result: await handler(request.params ?? {}, peer) });
+      } catch (error) {
+        write({ id: request.id, error: { code: -32603, message: String(error?.message || error) } });
+      }
+    });
+    const failPending = () => {
+      for (const waiter of pending.values()) waiter.reject(new Error("the bridge disconnected"));
+      pending.clear();
+    };
+    socket.on("close", failPending);
+    socket.on("error", () => {});
+  });
+  // A Windows named pipe (the uac server passes one there) has no file to
+  // chmod or remove. Node cannot set its ACL; the default one lets other
+  // local users open it read-only at most, so they cannot send requests.
+  const isPipe = /^\\\\[.?]\\pipe\\/i.test(socketPath);
+  server.listen(socketPath, () => {
+    if (!isPipe) chmodSync(socketPath, 0o600);
+    ctx.logger.info(`unieai-control: listening on ${socketPath}`);
+  });
+  ctx.on("dispose", () => {
+    execLifetime.abort();
+    unsubscribeExec();
+    server.close();
+    if (!isPipe) rmSync(socketPath, { force: true });
+  });
+}

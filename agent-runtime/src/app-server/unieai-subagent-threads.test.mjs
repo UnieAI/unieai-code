@@ -1,5 +1,5 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
-// dsh subagents shown as codex agent threads: the parent's rows, the child's
+// rabi subagents shown as codex agent threads: the parent's rows, the child's
 // own thread, and every notification valid for the client (it drops what it
 // cannot deserialize, silently).
 import { test } from "node:test";

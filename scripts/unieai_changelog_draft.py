@@ -54,7 +54,7 @@ def guess_group(subject: str) -> str:
         return "Probably skip"
     if re.match(r"^(login|auth)\b", s) or "model list" in s or "rabi" in s:
         return "Login & models"
-    if re.match(r"^uac\b", s) or "dsh" in s:
+    if re.match(r"^uac\b", s) or "rabi" in s:
         return "uac engine"
     if re.match(r"^(fix|fixes)\b", s) or re.search(r"\b(no longer|stop|fix|again)\b", s):
         return "Fixed"

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { connect } from "node:net";
 import { appServerDialTarget, fnv1a64, isPipeName, nodeSocketEndpoint, pipeNameFor } from "./unieai-local-endpoint.mjs";
 import { bearerMatches, newClientKey, serveJsonOverUnixSocket } from "./ws.mjs";
-import { socketIsLive } from "../unieai-dsh/unieai-server-lock.mjs";
+import { socketIsLive } from "../unieai-rabi/unieai-server-lock.mjs";
 
 test("fnv1a64 matches the published test vectors", () => {
   assert.equal(fnv1a64(""), "cbf29ce484222325");
@@ -19,7 +19,7 @@ test("fnv1a64 matches the published test vectors", () => {
 });
 
 test("a Node-only socket is its path on Unix and a named pipe on Windows", () => {
-  const path = "C:\\Users\\user\\.unieai\\uac\\app-server.123.dsh.sock";
+  const path = "C:\\Users\\user\\.unieai\\uac\\app-server.123.rabi.sock";
   assert.equal(nodeSocketEndpoint(path, { windows: false }), path);
   const pipe = nodeSocketEndpoint(path, { windows: true });
   assert.match(pipe, /^\\\\\.\\pipe\\unieai-[0-9a-f]{16}$/);

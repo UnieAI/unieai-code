@@ -1,0 +1,813 @@
+// Copyright (c) 2026 UnieAI. All rights reserved.
+/**
+ * config.mjs — where rabi lives and how it reaches the UnieAI gateway.
+ *
+ * rabi keeps its own home (settings, sessions). The uac engine gives it a
+ * private one under `$CODEX_HOME/uac/rabi-home` and writes a `settings.yaml`
+ * there that declares the signed-in gateway as an OpenAI-compatible provider,
+ * so rabi uses the same account and models as the rest of UnieAI Code without
+ * touching the user's own `~/.rabi`. Connected model APIs (self-hosted servers
+ * and presets, `unieai login --api`) are declared beside it, or alone when there
+ * is no UnieAI sign-in.
+ */
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadCredentials, unieaiHome } from "../config.mjs";
+import { HOME_NAME, migrateLegacyHome } from "./rabi-legacy.mjs";
+import { buildPersona } from "./unieai-persona.mjs";
+import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
+
+export const RABI_PROVIDER_ID = "unieai";
+export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+/** The control plugin rabi loads by URL (see unieai-control.mjs). */
+export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "unieai-control.mjs")).href;
+
+/** `publish_artifact` (see unieai-artifacts.mjs), a uac host plugin loaded by URL. */
+export const ARTIFACTS_PLUGIN_URL = pathToFileURL(join(here, "unieai-artifacts.mjs")).href;
+
+/** Skills that ship with UnieAI Code (the `artifact` skill); user and project skills outrank them. */
+export const BUNDLED_SKILLS_DIR = join(here, "skills");
+
+/**
+ * Whether uac offers `publish_artifact`: on by default, and named in
+ * `UNIEAI_RABI_PLUGINS` like a catalog plugin so an A/B run can leave it out.
+ */
+export function artifactsEnabled(env = process.env) {
+  const choice = String(env.UNIEAI_RABI_PLUGINS ?? "").trim();
+  if (!choice || choice === "all") return true;
+  return choice.split(",").map((id) => id.trim()).includes("unieai-artifacts");
+}
+
+/** Starts rabi's CLI on Nodes where its bin.js would not start itself. */
+export const RABI_LAUNCHER = join(here, "unieai-rabi-launch.mjs");
+
+/** `bin.js` of the `@unieai/rabi` this package depends on, if installed. */
+export function installedRabiBin() {
+  try {
+    const manifest = require.resolve("@unieai/rabi/package.json");
+    const bin = join(dirname(manifest), "lib", "bin.js");
+    return existsSync(bin) ? bin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The command that starts rabi as an ACP agent.
+ *
+ * `UNIEAI_RABI_BIN` names either rabi's `bin.js` (run with node) or an
+ * executable. Otherwise the pinned `@unieai/rabi` dependency is used,
+ * then `rabi` on PATH.
+ */
+export function rabiCommand(env = process.env) {
+  const target = env.UNIEAI_RABI_BIN || installedRabiBin();
+  const args = ["--profile", "acp"];
+  const patch = env.UNIEAI_RABI_PATCH;
+  if (patch) args.push("--patch", patch);
+  if (!target) return { command: "rabi", args };
+  // Through the launcher: rabi's bin.js does not start on a Node without import.meta.main.
+  if (/\.[cm]?js$/.test(target)) return { command: process.execPath, args: [RABI_LAUNCHER, target, ...args] };
+  return { command: target, args };
+}
+
+export function rabiHome(env = process.env) {
+  return env.RABI_HOME || join(unieaiHome(), "uac", HOME_NAME);
+}
+
+/** The model the TUI defaults to, from `$CODEX_HOME/config.toml`. */
+export function configuredModel(home = unieaiHome()) {
+  try {
+    const text = readFileSync(join(home, "config.toml"), "utf8");
+    // Only the top-level key: stop at the first table header.
+    const top = text.split(/^\s*\[/m)[0];
+    return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Context window assumed for gateway models that declare none. */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+
+/**
+ * Codex retries every dropped stream and honours long Retry-After waits; rabi's
+ * default gives up on STREAM_CLOSED / PI_AI_ERROR and on waits over 10s, so a
+ * gateway hiccup ends the whole task. INVALID_REQUEST stays non-retryable.
+ */
+const RETRY_POLICY = {
+  maxRetries: 8,
+  retryableCodes: ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT", "STREAM_CLOSED", "PI_AI_ERROR"],
+  initialDelayMs: 1000,
+  maxDelayMs: 60000,
+};
+
+const yamlQuote = (value) => JSON.stringify(String(value));
+
+/** A gateway model as settings.yaml declares it. */
+export function gatewayModel(model) {
+  const id = typeof model === "string" ? model : model?.id;
+  const contextWindow = Number(model?.context_window ?? model?.contextWindow) || null;
+  const declared = model?.input_modalities ?? model?.inputModalities ?? null;
+  const input = Array.isArray(declared) ? declared.filter((m) => m === "text" || m === "image") : null;
+  return { id, contextWindow, input: input?.length ? input : null };
+}
+
+/**
+ * rabi's `settings.yaml` for the gateway. YAML is written by hand: flat and quoted.
+ *
+ * Each model carries what the gateway declared: its context window (else
+ * DEFAULT_CONTEXT_WINDOW, so compaction triggers for small models instead of
+ * never) and its input modalities (rabi treats an undeclared model as
+ * text-only, so read_image would refuse even on a vision model).
+ */
+/** Local model servers `--oss` / `--local-provider` select, by codex's provider id. */
+export const LOCAL_PROVIDERS = Object.freeze({
+  ollama: { displayName: "Ollama (local)", port: 11434 },
+  lmstudio: { displayName: "LM Studio (local)", port: 1234 },
+});
+
+/** Where a local provider listens: codex's CODEX_OSS_BASE_URL / CODEX_OSS_PORT, else its default port. */
+export function localProviderBaseUrl(id, env = process.env) {
+  if (env.CODEX_OSS_BASE_URL?.trim()) return env.CODEX_OSS_BASE_URL.trim().replace(/\/+$/, "");
+  const port = Number.parseInt(env.CODEX_OSS_PORT ?? "", 10) || LOCAL_PROVIDERS[id]?.port;
+  return `http://localhost:${port}/v1`;
+}
+
+/** The models a local OpenAI-compatible server offers (`GET /models`). */
+export async function fetchLocalModels(baseUrl, { fetchImpl = globalThis.fetch, timeoutMs = 5_000, apiKey = null } = {}) {
+  const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+  const response = await fetchImpl(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`${baseUrl}/models answered HTTP ${response.status}`);
+  const body = await response.json();
+  return (body?.data ?? body?.models ?? []).map((entry) => entry?.id ?? entry?.name).filter(Boolean);
+}
+
+/**
+ * Connected model APIs (self-hosted servers and provider presets), as
+ * `unieai login --api` (alias `--self-hosted`) saved them in
+ * `$CODEX_HOME/unieai-self-hosted.json`. The keys stay there: settings.yaml
+ * names each server's key by its own env var (selfHostedKeyEnv), and the
+ * value goes to rabi's owner-only credential store, as the gateway key does.
+ */
+export const SELF_HOSTED_FILE = "unieai-self-hosted.json";
+
+/**
+ * The presets' `kind` -> label and default provider id, as
+ * codex_login::unieai_self_hosted::API_PRESETS has them. A provider without
+ * a known kind (older files, `"custom"`) is a self-hosted server.
+ */
+export const API_PRESET_LABELS = Object.freeze({
+  openai: { label: "OpenAI", defaultId: "openai-api" },
+  openrouter: { label: "OpenRouter", defaultId: "openrouter" },
+  deepseek: { label: "DeepSeek", defaultId: "deepseek" },
+  groq: { label: "Groq", defaultId: "groq" },
+  together: { label: "Together", defaultId: "together" },
+  mistral: { label: "Mistral", defaultId: "mistral" },
+  gemini: { label: "Google Gemini", defaultId: "gemini" },
+  ollama: { label: "Ollama", defaultId: "ollama-local" },
+  lmstudio: { label: "LM Studio", defaultId: "lmstudio-local" },
+});
+
+/** What rabi calls a connected API: "OpenRouter", "OpenRouter (work)", "gpu (self-hosted)". */
+export function apiProviderLabel(server) {
+  const preset = server.kind ? API_PRESET_LABELS[server.kind] : null;
+  if (!preset) return `${server.displayName} (self-hosted)`;
+  return server.id === preset.defaultId ? preset.label : `${preset.label} (${server.id})`;
+}
+
+/** Context window assumed for a self-hosted model that declares none. */
+export const SELF_HOSTED_CONTEXT_WINDOW = 32_768;
+
+export function loadSelfHostedProviders(home = unieaiHome()) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(join(home, SELF_HOSTED_FILE), "utf8"));
+  } catch {
+    return [];
+  }
+  return (parsed?.providers ?? [])
+    .filter((p) => p?.id && p?.base_url)
+    .map((p) => ({
+      id: String(p.id),
+      kind: p.kind ? String(p.kind) : null,
+      displayName: p.name || String(p.id),
+      baseUrl: String(p.base_url).replace(/\/+$/, ""),
+      apiKey: p.api_key || null,
+      apiKeyEnv: p.api_key_env || null,
+      models: (p.models ?? [])
+        .filter((m) => m?.id)
+        .map((m) => ({ id: String(m.id), contextWindow: Number(m.context_window) || null, vision: Boolean(m.vision) })),
+    }));
+}
+
+/** The env var a self-hosted server's key is referenced by in rabi's settings. */
+export function selfHostedKeyEnv(id) {
+  return `UNIEAI_SELF_HOSTED_${String(id).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+}
+
+/** A server's key: the stored one, else its `--api-key-env` variable now. */
+export function selfHostedKey(provider, env = process.env) {
+  return provider.apiKey || (provider.apiKeyEnv ? env[provider.apiKeyEnv] : null) || null;
+}
+
+/**
+ * `{ provider, model, server }` for a model slug: `<server id>/<model>` names
+ * a self-hosted server's model; anything else is the gateway's.
+ */
+export function routeModel(slug, selfHosted = []) {
+  const value = String(slug ?? "");
+  const cut = value.indexOf("/");
+  if (cut > 0) {
+    const server = selfHosted.find((p) => p.id === value.slice(0, cut));
+    const model = value.slice(cut + 1);
+    if (server?.models.some((m) => m.id === model)) return { provider: server.id, model, server };
+  }
+  return { provider: RABI_PROVIDER_ID, model: value, server: null };
+}
+
+/** A self-hosted server as a settings.yaml provider (see renderSettings). */
+export function selfHostedProviderSpec(server) {
+  return {
+    id: server.id,
+    displayName: apiProviderLabel(server),
+    baseUrl: server.baseUrl,
+    keyEnv: selfHostedKeyEnv(server.id),
+    defaultContextWindow: SELF_HOSTED_CONTEXT_WINDOW,
+    models: server.models.map((m) => ({
+      id: m.id,
+      contextWindow: m.contextWindow ?? SELF_HOSTED_CONTEXT_WINDOW,
+      input: m.vision ? ["text", "image"] : null,
+    })),
+  };
+}
+
+export function renderSettings({ baseUrl, models, defaultModel, defaultProvider = RABI_PROVIDER_ID, shellTimeoutMs = 300_000, localProviders = [], providers = [] }) {
+  const q = yamlQuote;
+  const lines = [
+    "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
+    "llm-pi-ai:",
+    "  providers:",
+  ];
+  // The gateway only with a UnieAI sign-in: a self-hosted-only setup has none.
+  if (baseUrl) lines.push(
+    `    ${RABI_PROVIDER_ID}:`,
+    `      displayName: ${q("UnieAI")}`,
+    `      apiKeyEnv: ${GATEWAY_KEY_ENV}`,
+    "      api: openai-completions",
+    `      baseURL: ${q(baseUrl)}`,
+    `      defaultContextWindow: ${DEFAULT_CONTEXT_WINDOW}`,
+    "      retryPolicy:",
+    "        mode: normal",
+    `        maxRetries: ${RETRY_POLICY.maxRetries}`,
+    `        retryableCodes: [${RETRY_POLICY.retryableCodes.join(", ")}]`,
+    "        backoff:",
+    `          initialDelayMs: ${RETRY_POLICY.initialDelayMs}`,
+    `          maxDelayMs: ${RETRY_POLICY.maxDelayMs}`,
+    "          jitterRatio: 0.1",
+    "      compat:",
+    "        supportsDeveloperRole: false",
+    "        maxTokensField: max_tokens",
+    "      models:",
+  );
+  for (const model of baseUrl ? models.map(gatewayModel) : []) {
+    lines.push(`        - id: ${q(model.id)}`);
+    if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
+    if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+  }
+  // Local servers need no key; their windows are unknown, so a
+  // conservative default keeps compaction ahead of the server's limit.
+  for (const local of localProviders) {
+    lines.push(
+      `    ${local.id}:`,
+      `      displayName: ${q(LOCAL_PROVIDERS[local.id]?.displayName ?? local.id)}`,
+      `      apiKeyEnv: ${LOCAL_KEY_ENV}`,
+      "      api: openai-completions",
+      `      baseURL: ${q(local.baseUrl)}`,
+      "      defaultContextWindow: 32768",
+      "      compat:",
+      "        supportsDeveloperRole: false",
+      "        maxTokensField: max_tokens",
+      "      models:",
+      ...local.models.map((id) => `        - id: ${q(id)}`),
+    );
+  }
+  // Self-hosted servers and config.toml providers: each with its own key
+  // env var (the value is in the credential store, never here).
+  for (const provider of providers) {
+    lines.push(
+      `    ${provider.id}:`,
+      `      displayName: ${q(provider.displayName ?? provider.id)}`,
+      `      apiKeyEnv: ${provider.keyEnv}`,
+      "      api: openai-completions",
+      `      baseURL: ${q(provider.baseUrl)}`,
+      `      defaultContextWindow: ${provider.defaultContextWindow ?? SELF_HOSTED_CONTEXT_WINDOW}`,
+      "      compat:",
+      "        supportsDeveloperRole: false",
+      "        maxTokensField: max_tokens",
+      "      models:",
+    );
+    for (const model of provider.models) {
+      lines.push(`        - id: ${q(model.id)}`);
+      if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
+      if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+    }
+  }
+  // Codex yields long commands instead of killing them at 60s. With plain
+  // bash the next best thing is a foreground budget that fits a build.
+  lines.push(
+    "shell:",
+    `  timeoutMs: ${shellTimeoutMs}`,
+    "  maxTimeoutMs: 1800000",
+    "  maxOutputBytes: 1048576",
+  );
+  if (defaultModel) {
+    lines.push("agent-default-model:", `  provider: ${defaultProvider}`, `  model: ${q(defaultModel)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * rabi's agent modes, as its web app offers them (`rabi-agent-presets`): the
+ * ACP profile uac runs is `standard` laid out flat, so each other mode is a
+ * patch on top of it.
+ *
+ *   standard  the full coding agent
+ *   ptc       tools presented as a TypeScript SDK the model drives with one
+ *             `run_code` program, instead of one round trip per tool
+ *   cordis    standard plus runtime inspection and composition authoring
+ *   minimal   one persistent shell and nothing else
+ */
+export const UAC_MODES = Object.freeze(["standard", "ptc", "cordis", "minimal"]);
+
+export function parseUacMode(raw) {
+  const mode = String(raw ?? "").trim().toLowerCase();
+  if (mode === "creator" || mode === "創造") return "cordis";
+  return UAC_MODES.includes(mode) ? mode : null;
+}
+
+/**
+ * The mode new threads use: `UNIEAI_UAC_MODE`, else what `/engine` saved in
+ * `$CODEX_HOME/uac/mode`, else standard. Read per thread, so a switch applies
+ * to the next session without restarting the server.
+ */
+export function configuredUacMode({ env = process.env, home = unieaiHome() } = {}) {
+  const fromEnv = parseUacMode(env.UNIEAI_UAC_MODE);
+  if (fromEnv) return fromEnv;
+  try {
+    return parseUacMode(readFileSync(join(home, "uac", "mode"), "utf8")) ?? "standard";
+  } catch {
+    return "standard";
+  }
+}
+
+/** unieai plugins that add tools; minimal mode has only its shell. */
+const TOOL_PLUGINS = new Set([
+  "unieai-exec",
+  "unieai-edit-observe",
+  "unieai-skills",
+  "unieai-edit-rescue",
+  "unieai-edit-feedback",
+  "unieai-apply-patch",
+  "unieai-web-search",
+  "unieai-vision-fallback",
+  "unieai-wait-agents",
+  "unieai-schedule",
+]);
+
+/** The ACP profile's tool rows that minimal mode turns off. */
+const MINIMAL_DISABLED = [
+  "tool-bash",
+  "tool-pwsh",
+  "tool-jobs",
+  "tool-fs",
+  "tool-fs-search",
+  "tool-skill",
+  "tool-subagent-control",
+  "tool-subagent-list-agents",
+  "tool-subagent",
+  "tool-subagent-fork",
+  "tool-workflow",
+  "tool-todo",
+  "tool-goal",
+  "tool-ralph",
+  "tool-web",
+  "tool-plugin-manager",
+  "plan-mode",
+];
+
+/** The plugins `mode` keeps from `plugins`. */
+export function pluginsForMode(plugins, mode) {
+  return mode === "minimal" ? plugins.filter((plugin) => !TOOL_PLUGINS.has(plugin.id)) : plugins;
+}
+
+/** The rows and inserts that turn the flat standard composition into `mode`. */
+export function modePatch(mode) {
+  const disable = (id) => [`- id: ${id}`, "  disabled: true"];
+  switch (mode) {
+    case "ptc":
+      // The presentation is the `tools` row's own `mode` in a flat
+      // composition (the preset's `tool-presentation` row only works under a
+      // preset's scope). run_code is PTC mode's composition surface; a second
+      // model-authored orchestration tool beside it is what the preset turns off.
+      return {
+        rows: ["- id: tools", "  config:", "    mode: ptc", ...disable("tool-workflow")],
+        inserts: [],
+      };
+    case "cordis":
+      // tool-cordis waits on `cordisInspect`, which the host runner provides
+      // (rabi's web app mounts it; the ACP profile does not).
+      return {
+        rows: [],
+        inserts: [
+          "    - id: cordis-host-runner",
+          "      name: '@unieai/rabi-cordis-host-runner'",
+          "    - id: tool-cordis",
+          "      name: '@unieai/rabi-tool-cordis'",
+        ],
+      };
+    case "minimal":
+      return {
+        rows: MINIMAL_DISABLED.flatMap(disable),
+        inserts: [
+          "    - id: persistent-shell",
+          "      name: cordis:group",
+          "      group: true",
+          "      isolate:",
+          "        terminals: true",
+          "      config:",
+          "        - id: pty",
+          "          name: '@unieai/rabi-terminal'",
+          "        - id: terminal-bash",
+          "          name: '@unieai/rabi-terminal-bash'",
+          "          config:",
+          "            timeoutMs: 300000",
+          "        - id: persistent-bash",
+          "          name: '@unieai/rabi-tool-bash-persistent'",
+          "          config:",
+          "            timeoutMs: 300000",
+        ],
+      };
+    default:
+      return { rows: [], inserts: [] };
+  }
+}
+
+/**
+ * The plugins uac loads: the `cli` profile of the vendored uac-plugins
+ * catalog, narrowed by `UNIEAI_RABI_PLUGINS` (`off`, or a comma list of ids)
+ * for A/B runs.
+ */
+export function selectPlugins(env = process.env) {
+  return selectCatalogPlugins({ profile: "cli", env });
+}
+
+const indent = (text, spaces) => text.split("\n").map((line) => (line ? " ".repeat(spaces) + line : line)).join("\n");
+
+/**
+ * The patch rabi loads last: the ACP route (it ignores `agent-default-model`),
+ * the UnieAI persona, harness settings ported from codex, and UnieAI plugins
+ * (unieai-control serves what ACP does not). A patch row replaces a row's
+ * whole config, so each row restates the fields it keeps.
+ */
+export function renderPatch({
+  defaultModel,
+  // The rabi provider `defaultModel` belongs to (a self-hosted server's id).
+  defaultProvider = RABI_PROVIDER_ID,
+  controlSocket = null,
+  pluginUrl = CONTROL_PLUGIN_URL,
+  plugins = [],
+  acp = true,
+  persona = true,
+  home = unieaiHome(),
+  gatewayBaseUrl = null,
+  visionModel = null,
+  // Where visionModel is served when not on the gateway (a self-hosted
+  // server), and the env var its key is referenced by.
+  visionBaseUrl = null,
+  visionKeyRef = null,
+  // A smaller account model for auto mode's reviewer; else the session's own.
+  autoApprovalModel = null,
+  mode = "standard",
+  // publish_artifact and the bundled `artifact` skill (not in minimal mode).
+  artifacts = false,
+  artifactsUrl = ARTIFACTS_PLUGIN_URL,
+}) {
+  const q = yamlQuote;
+  plugins = pluginsForMode(plugins, mode);
+  artifacts = artifacts && mode !== "minimal";
+  const execTools = plugins.some((plugin) => plugin.execTools);
+  const lines = [];
+  if (acp) {
+    lines.push("- id: acp", "  config:", `    provider: ${defaultProvider}`, `    model: ${q(defaultModel)}`);
+  }
+  if (persona) {
+    // The measured-failure rules ship inert: they are written from benchmark
+    // trajectories but have not been scored yet, and a prompt that reads well
+    // is not evidence that it helps. UNIEAI_PERSONA_RIGOR=1 turns them on,
+    // which is how the A/B arm runs; the default flips once there is a number.
+    const text = buildPersona({
+      execTools,
+      shellOnly: mode === "minimal",
+      rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
+    });
+    // No working directory here: rabi 0.2 states it in the runtime context
+    // (user side, so the system prompt stays cacheable) and no longer
+    // registers a {{cwd}} prompt variable.
+    lines.push(
+      "- id: system-prompt",
+      "  config:",
+      "    includeHarnessIdentity: false",
+      "    includeRuntimeContext: true",
+      "    personaPrefix: |",
+      indent(text, 6),
+    );
+  }
+  lines.push(
+    // Leave a quarter of the window for reasoning and output, and give the
+    // summary room: thinking models truncate an 8k summary.
+    "- id: compaction-basic",
+    "  config:",
+    "    thresholdRatio: 0.75",
+    "    retainRatio: 0.15",
+    "    maxTokens: 16384",
+    "    compactionRetries: 2",
+    "    maxOverflowRetries: 2",
+    // Codex keeps ~10k tokens of a tool result; rabi inlined 50KB. The spill
+    // preview keeps head and tail and the full text stays readable.
+    // unieai-exec already cuts to ~44KB itself; don't cut its output twice.
+    "- id: spill-policy",
+    "  config:",
+    `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    // Above rabi's own 50 KiB default: a lower cap turned single reads into
+    // windowed ones (41 reads where 57 KiB would have been one).
+    "- id: tool-fs",
+    "  config:",
+    "    readMaxBytes: 65536",
+    "- id: tool-jobs",
+    "  config:",
+    "    waitTimeoutMs: 60000",
+    "    maxWaitTimeoutMs: 1800000",
+    "- id: jobs",
+    "  config:",
+    "    maxConcurrentJobsPerOwner: 16",
+  );
+  // rabi's web_search needs a DeepSeek key uac does not have. unieai-web-search
+  // replaces it (and owns this row); without that plugin, just turn it off.
+  if (mode !== "minimal" && !plugins.some((plugin) => plugin.id === "unieai-web-search")) {
+    lines.push("- id: tool-web", "  config:", "    fetch: true", "    search: false", "    searchTimeoutMs: 60000");
+  }
+  // One layout for both engines: the user's AGENTS.md (and, through
+  // unieai-skills and unieai-agents, their skills and agent definitions) live
+  // in the UnieAI home, not rabi's.
+  lines.push("- id: agent-instructions", "  config:", "    maxBytes: 65536", `    rabiHome: ${q(home)}`);
+  const parts = renderPatchParts({
+    plugins,
+    profile: "cli",
+    config: {
+      "unieai-skills": artifacts ? { home, bundledSkillDir: BUNDLED_SKILLS_DIR } : { home },
+      "unieai-agents": { home },
+      "unieai-web-search": { gatewayBaseUrl },
+      "unieai-vision-fallback": visionModel
+        ? { gatewayBaseUrl: visionBaseUrl ?? gatewayBaseUrl, visionModel, ...(visionKeyRef ? { gatewayKeyRef: visionKeyRef } : {}) }
+        : {},
+      "unieai-auto-approval": autoApprovalModel ? { model: autoApprovalModel } : {},
+    },
+  });
+  lines.push(...parts.rows);
+  const modeRows = modePatch(mode);
+  lines.push(...modeRows.rows);
+  const inserts = [];
+  if (controlSocket) {
+    inserts.push(
+      "    - id: unieai-control",
+      `      name: ${q(pluginUrl)}`,
+      "      config:",
+      `        socket: ${q(controlSocket)}`,
+      `        provider: ${defaultProvider}`,
+      `        model: ${q(defaultModel)}`,
+    );
+  }
+  // rabi-base (the ACP profile) leaves out the ask tool; the control plugin
+  // answers it through the client, so it is only offered with one.
+  if (controlSocket) {
+    inserts.push("    - id: tool-ask-user", "      name: '@unieai/rabi-tool-ask-user'");
+  }
+  // The date, appended as a user-role snapshot so the system prefix stays put.
+  inserts.push(
+    "    - id: time-context",
+    "      name: '@unieai/rabi-time-context'",
+    "      config:",
+    "        refreshIntervalMs: 1800000",
+  );
+  // create_worktree: a new branch and checkout under <repo>/.agents/worktrees
+  // that the session moves into. rabi ships it off (its GUI turns it on);
+  // minimal mode keeps only its shell.
+  if (mode !== "minimal") {
+    inserts.push(
+      "    - id: worktree",
+      "      name: '@unieai/rabi-experimental-worktree'",
+      "    - id: tool-worktree",
+      "      name: '@unieai/rabi-experimental-tool-worktree'",
+    );
+  }
+  if (artifacts) {
+    inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
+  }
+  inserts.push(...parts.inserts, ...modeRows.inserts);
+  lines.push("- insert:", ...inserts);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The account model to describe images with when `defaultModel` cannot see
+ * them: null when the default model takes images or no model does. Prefers a
+ * model of the same family (a shared name prefix), then one named for vision.
+ */
+export function pickVisionModel(catalog, defaultModel) {
+  const accepts = (model) => (model?.input_modalities ?? model?.inputModalities ?? []).includes("image");
+  const current = catalog.find((model) => model?.id === defaultModel);
+  if (current && accepts(current)) return null;
+  const candidates = catalog.filter(accepts).map((model) => model.id);
+  if (candidates.length === 0) return null;
+  const family = String(defaultModel ?? "").split(/[-_]/).slice(0, 2).join("-").toLowerCase();
+  const score = (id) => (family && id.toLowerCase().startsWith(family) ? 2 : 0) + (/vision|-vl\b|-vl-/i.test(id) ? 1 : 0);
+  return [...candidates].sort((a, b) => score(b) - score(a))[0];
+}
+
+/**
+ * An explicit choice wins; the TUI's configured model only when the gateway
+ * serves it (config.toml may name a model from another provider).
+ */
+export function pickDefaultModel({ explicit, configured, listed }) {
+  if (explicit) return explicit;
+  if (configured && (listed.length === 0 || listed.includes(configured))) return configured;
+  return listed[0] ?? configured ?? null;
+}
+
+/** rabi's credential store: refs by env-var name, reloaded on change. */
+/** Local servers take no key, but rabi refuses a provider without one. */
+export const LOCAL_KEY_ENV = "UNIEAI_LOCAL_API_KEY";
+
+/**
+ * `keys`: { ENV_NAME: value } for self-hosted servers (a placeholder when
+ * keyless). rabi rejects the whole store over an empty value, so without a
+ * UnieAI sign-in the gateway key is left out rather than written empty.
+ */
+export function renderCredentials({ apiKey, keys = {} }) {
+  const gateway = apiKey ? `  ${GATEWAY_KEY_ENV}: ${JSON.stringify(String(apiKey))}\n` : "";
+  const extra = Object.entries(keys).map(([name, value]) => `  ${name}: ${JSON.stringify(String(value || "none"))}\n`);
+  return `version: 1\n\nrefs:\n${gateway}  ${LOCAL_KEY_ENV}: "local"\n${extra.join("")}`;
+}
+
+function writePrivate(path, contents) {
+  writeFileSync(path, contents, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+/**
+ * Point rabi at the signed-in account: its models (as last synced from Studio
+ * into unieai.json — the TUI syncs on every launch) and its gateway key, and
+ * at every self-hosted model server (`<server>/<model>` slugs). Either alone
+ * is enough. rabi hot-reloads both files, so a running rabi follows a later
+ * sync; call this again before each new thread.
+ *
+ * `providers` are further OpenAI-compatible providers to declare (config.toml
+ * `[model_providers]` a thread asked for), each with its `keyValue`.
+ */
+export function writeRabiAccount({ env = process.env, localProviders = [], providers = [], unieai = unieaiHome() } = {}) {
+  const credentials = loadCredentials();
+  const gateway = credentials.signedIn && credentials.gatewayBaseUrl ? credentials : null;
+  const selfHosted = loadSelfHostedProviders(unieai);
+  if (!gateway && selfHosted.length === 0) {
+    throw new Error("unieai-agent-core needs a UnieAI sign-in or a self-hosted model server; run `unieai login` (or `unieai login --api <PRESET|URL>`) first");
+  }
+  const home = rabiHome(env);
+  // An install from before the Rabi rename keeps its sessions.
+  if (!env.RABI_HOME) {
+    const socketDirs = env.UNIEAI_APP_SERVER_SOCKET ? [dirname(env.UNIEAI_APP_SERVER_SOCKET)] : [];
+    migrateLegacyHome(dirname(home), { socketDirs, log: (line) => process.stderr.write(`${line}\n`) });
+  }
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const gatewayCatalog = gateway ? credentials.models.filter((m) => m?.id) : [];
+  const selfHostedCatalog = selfHosted.flatMap((server) =>
+    server.models.map((m) => ({ id: `${server.id}/${m.id}`, input_modalities: m.vision ? ["text", "image"] : ["text"] })),
+  );
+  const catalog = [...gatewayCatalog, ...selfHostedCatalog];
+  const listed = catalog.map((m) => m.id);
+  let defaultModel = pickDefaultModel({ explicit: env.UNIEAI_MODEL, configured: configuredModel(unieai), listed });
+  // Without a gateway only a self-hosted model can run.
+  if (!gateway && !routeModel(defaultModel, selfHosted).server) defaultModel = selfHostedCatalog[0]?.id ?? null;
+  if (!defaultModel) {
+    throw new Error("no models are available for this UnieAI account; add models in UnieAI Studio");
+  }
+  const route = routeModel(defaultModel, selfHosted);
+  const gatewayIds = gatewayCatalog.map((m) => m.id);
+  // The gateway declares the default model even when its listing does not.
+  const gatewayModels = route.server ? gatewayIds : [...new Set([defaultModel, ...gatewayIds])];
+  const declared = gatewayModels.map((id) => gatewayCatalog.find((m) => m.id === id) ?? { id });
+  const models = [...new Set([defaultModel, ...listed])];
+  const keys = Object.fromEntries([
+    ...selfHosted.map((server) => [selfHostedKeyEnv(server.id), selfHostedKey(server, env)]),
+    ...providers.map((provider) => [provider.keyEnv, provider.keyValue]),
+  ]);
+  writePrivate(join(home, ".credentials.yaml"), renderCredentials({ apiKey: gateway?.gatewayApiKey || "", keys }));
+  writeFileSync(
+    join(home, "settings.yaml"),
+    renderSettings({
+      baseUrl: gateway?.gatewayBaseUrl ?? null,
+      models: declared,
+      defaultModel: route.model,
+      defaultProvider: route.provider,
+      localProviders,
+      providers: [...selfHosted.map(selfHostedProviderSpec), ...providers],
+    }),
+  );
+  return {
+    home,
+    defaultModel,
+    defaultRoute: { provider: route.provider, model: route.model },
+    models,
+    selfHosted,
+    gatewayBaseUrl: gateway?.gatewayBaseUrl ?? null,
+    vision: pickVisionRoute({ catalog, defaultModel, selfHosted, gatewayBaseUrl: gateway?.gatewayBaseUrl ?? null }),
+  };
+}
+
+/**
+ * Where describe_image sends images when the default model cannot see them:
+ * a vision model on the gateway or on a self-hosted server (see
+ * pickVisionModel), as renderPatch's vision fields. Null when the default
+ * model takes images or no model does.
+ */
+export function pickVisionRoute({ catalog, defaultModel, selfHosted = [], gatewayBaseUrl = null }) {
+  const slug = pickVisionModel(catalog, defaultModel);
+  if (!slug) return null;
+  const route = routeModel(slug, selfHosted);
+  if (route.server) {
+    return { visionModel: route.model, visionBaseUrl: route.server.baseUrl, visionKeyRef: selfHostedKeyEnv(route.server.id) };
+  }
+  return gatewayBaseUrl ? { visionModel: route.model, visionBaseUrl: null, visionKeyRef: null } : null;
+}
+
+/**
+ * Write rabi's home for the account and return the child environment and command.
+ * Throws when the user is not signed in: without a gateway rabi has no model.
+ */
+export function prepareRabi({ env = process.env, sandboxMode = "workspace-write", controlSocket = null, mode = "standard" } = {}) {
+  const { home, defaultModel, defaultRoute, models, gatewayBaseUrl, vision } = writeRabiAccount({ env });
+  // One rabi process per mode, each with its own patch; standard keeps the
+  // name it always had.
+  const patchPath = join(home, mode === "standard" ? "uac.patch.yml" : `uac.${mode}.patch.yml`);
+  const plugins = pluginsForMode(selectPlugins(env), mode);
+  // UNIEAI_AUTO_APPROVAL_MODEL names a cheaper reviewer for auto mode; only
+  // a model the account serves (the session's provider routes it).
+  const autoApprovalModel = models.includes(env.UNIEAI_AUTO_APPROVAL_MODEL) ? env.UNIEAI_AUTO_APPROVAL_MODEL : null;
+  const artifacts = artifactsEnabled(env);
+  writeFileSync(
+    patchPath,
+    renderPatch({
+      defaultModel: defaultRoute.model,
+      defaultProvider: defaultRoute.provider,
+      controlSocket,
+      plugins,
+      gatewayBaseUrl,
+      ...(vision ?? {}),
+      autoApprovalModel,
+      mode,
+      artifacts,
+    }),
+  );
+
+  const childEnv = {
+    ...env,
+    RABI_HOME: home,
+    RABI_TELEMETRY_DISABLED: "1",
+    RABI_PERMISSION_MODE: permissionMode(sandboxMode),
+    UNIEAI_RABI_PATCH: env.UNIEAI_RABI_PATCH || patchPath,
+  };
+  // The launch environment outranks the credential store and is frozen at
+  // launch, so a key there would pin rabi to it across a Studio key rotation.
+  delete childEnv[GATEWAY_KEY_ENV];
+  for (const name of Object.keys(childEnv)) if (/^UNIEAI_SELF_HOSTED_.*_API_KEY$/.test(name)) delete childEnv[name];
+  return { env: childEnv, defaultModel, models, controlSocket, mode, plugins: plugins.map((p) => p.id), ...rabiCommand(childEnv) };
+}
+
+/** The app-server protocol's sandbox names -> rabi's permission modes. */
+export function permissionMode(sandboxMode) {
+  switch (sandboxMode) {
+    case "readOnly":
+    case "read-only":
+      return "read-only";
+    case "dangerFullAccess":
+    case "danger-full-access":
+      return "danger-full-access";
+    default:
+      return "workspace-write";
+  }
+}

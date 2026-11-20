@@ -506,7 +506,7 @@ impl App {
         ));
         let dynamic_tool_status_updates = tokio::sync::broadcast::channel(/*capacity*/ 64).0;
         // The uac engine takes client tools as `dynamicTools` (its bridge
-        // forwards them to deepseek-harness); it does not load the TUI's MCP
+        // forwards them to rabi-harness); it does not load the TUI's MCP
         // server. Its threads therefore use the Dynamic transport, which also
         // carries the session-mesh peer tools the TUI answers for them.
         let uac_engine =

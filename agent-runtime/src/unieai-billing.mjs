@@ -9,7 +9,7 @@
  *   - 402 `insufficient_balance`: the wallet is empty;
  *   - 402 `wallet_monthly_limit_reached`: the month's wallet ceiling is hit.
  *
- * dsh only sees an HTTP failure with the body in its text: it would retry the
+ * rabi only sees an HTTP failure with the body in its text: it would retry the
  * 429 like any rate limit and show the raw JSON. unieai-control stops the
  * retries (`isBillingFailure`), and the app-server turns the failure into the
  * same message the codex engine shows (codex-rs protocol `UnieAIBillingError`).
@@ -49,7 +49,7 @@ function billingErrorIn(value, depth = 0) {
 
 /**
  * The billing refusal in a failure's text, or null.
- * @param {string} text - an error message (dsh's carries the HTTP body).
+ * @param {string} text - an error message (rabi's carries the HTTP body).
  * @returns {{code: string, window: string|null, resetsAt: string|null, periodEnd: string|null}|null}
  */
 export function billingFailureOf(text) {

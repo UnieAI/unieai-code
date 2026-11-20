@@ -136,7 +136,7 @@ test("no background terminals to list or clean, so /cd is not blocked", async ()
   assert.deepEqual(await handlers["thread/backgroundTerminals/clean"]({ threadId: thread.id }), {});
 });
 
-test("a compaction dsh decides on itself is shown like one the user asked for", async () => {
+test("a compaction rabi decides on itself is shown like one the user asked for", async () => {
   const { handlers, ctx, thread, emitted, live, engineOptions: engineOptionsOf } = await setup();
   await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "work" }] }, ctx);
   const engineOptions = engineOptionsOf();
@@ -152,7 +152,7 @@ test("a compaction dsh decides on itself is shown like one the user asked for", 
   );
   assert.equal(compaction[0][1], compaction[1][1], "the same item, so the client can close its timer");
 
-  // /compact already shows a turn of its own: dsh's events for it add nothing.
+  // /compact already shows a turn of its own: rabi's events for it add nothing.
   emitted.length = 0;
   thread.compacting = true;
   live.compacting = true;
@@ -196,7 +196,7 @@ test("an interrupt ends the turn even when the engine will not stop", async () =
   const emitted = [];
   const handlers = createHandlers({
     codexHome: "/h",
-    // dsh that ignores the abort: its promise never settles, so nothing but
+    // rabi that ignores the abort: its promise never settles, so nothing but
     // the interrupt itself can close the turn.
     createEngineFor: () => ({ send: () => new Promise(() => {}), cancel: () => {} }),
     interruptGraceMs: 40,

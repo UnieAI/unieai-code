@@ -110,7 +110,7 @@ export function startedItem({ tool, args = {}, id = newItemId(), cwd = null, cha
   const base = { type, id, status: "inProgress" };
   if (type === "fileChange") {
     // The TUI draws the diff card from the STARTED item. An engine that knows
-    // the change before running it (dsh: from the call's arguments) passes it
+    // the change before running it (rabi: from the call's arguments) passes it
     // here; agent-runtime only learns it after the write, so its card is empty.
     return { ...base, changes: change?.diff ? [fileUpdateChange(change)] : [] };
   }

@@ -11,7 +11,7 @@ fn parse_accepts_ids_and_full_name() {
         EngineKind::parse("unieai-agent-core"),
         Some(EngineKind::Uac)
     );
-    assert_eq!(EngineKind::parse("dsh"), None);
+    assert_eq!(EngineKind::parse("rabi"), None);
 }
 
 #[test]

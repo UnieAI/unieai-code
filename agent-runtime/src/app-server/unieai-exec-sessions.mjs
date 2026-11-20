@@ -1,6 +1,6 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 /**
- * unieai-exec-sessions.mjs — dsh exec sessions as codex background terminals.
+ * unieai-exec-sessions.mjs — rabi exec sessions as codex background terminals.
  *
  * codex shows a command the model left running (unified exec) as a
  * `commandExecution` item with a `processId` and the `unifiedExecStartup`

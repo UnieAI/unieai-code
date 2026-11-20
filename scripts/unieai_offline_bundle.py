@@ -4,13 +4,13 @@
 
 `npm install -g @unieai/code` needs the registry twice: once for the CLI and
 its platform binary, and again for the uac engine's dependencies
-(deepseek-harness and its native modules). An offline bundle carries all of
+(rabi-harness and its native modules). An offline bundle carries all of
 it, plus the Node.js runtime uac runs on, so a machine with no network (or no
 Node) installs from one archive:
 
   unieai-code-<version>-<platform>/
     package/          @unieai/code, installed: bin/codex.js, vendor/<target>/
-                      (native binary), agent-runtime/, node_modules/ (dsh and
+                      (native binary), agent-runtime/, node_modules/ (rabi and
                       its native modules for <platform>)
     node/             Node.js 22 for <platform>
     unieai | unieai.cmd   launcher (runs package/bin/codex.js with node/)
@@ -128,7 +128,7 @@ Write-Host "UnieAI Code $version installed: $bin\\unieai.cmd"
 README = """UnieAI Code {version} — offline install bundle ({platform})
 
 Everything needed is in this folder: the CLI, its uac engine
-(deepseek-harness {dsh}) with its native modules, and Node.js {node}.
+(rabi-harness {rabi}) with its native modules, and Node.js {node}.
 Nothing is downloaded during install.
 
   Linux / macOS:  sh install.sh
@@ -239,11 +239,11 @@ def build(platform: str, version: str, npm_dir: Path | None, out: Path, node_ver
         cwd=package,
         stdout=subprocess.DEVNULL,
     )
-    dsh_version = json.loads((package / "node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
+    rabi_version = json.loads((package / "node_modules/@unieai/rabi/package.json").read_text())["version"]
 
     stage_node(platform, node_version, cache, work / "node")
     (work / "VERSION").write_text(f"{version}\n")
-    (work / "README.txt").write_text(README.format(version=version, platform=platform, dsh=dsh_version, node=node_version))
+    (work / "README.txt").write_text(README.format(version=version, platform=platform, rabi=rabi_version, node=node_version))
     if windows:
         (work / "unieai.cmd").write_text(WINDOWS_LAUNCHER.replace("\n", "\r\n"))
         (work / "install.ps1").write_text(INSTALL_PS1)
@@ -266,7 +266,7 @@ def build(platform: str, version: str, npm_dir: Path | None, out: Path, node_ver
         log(f"{platform}: tar.gz")
         run(["tar", "-czf", str(archive), "-C", str(out), name])
     shutil.rmtree(work)
-    log(f"{platform}: {archive.name} ({archive.stat().st_size / 1e6:.0f} MB, dsh {dsh_version}, node {node_version})")
+    log(f"{platform}: {archive.name} ({archive.stat().st_size / 1e6:.0f} MB, rabi {rabi_version}, node {node_version})")
     return archive
 
 

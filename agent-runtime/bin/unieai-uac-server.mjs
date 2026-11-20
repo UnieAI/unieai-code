@@ -4,7 +4,7 @@
  * unieai-uac-server.mjs — the unieai-agent-core (uac) engine for `/engine uac`.
  *
  * Answers the app-server protocol's engine methods by driving
- * deepseek-harness (`dsh --profile acp`) over the Agent Client Protocol, and
+ * rabi-harness (`rabi --profile acp`) over the Agent Client Protocol, and
  * forwards every other method to the Rust app-server. The TUI starts this
  * detached on `$CODEX_HOME/uac/app-server.sock` when the engine is `uac`
  * (codex-rs/tui/src/unieai_engine.rs); it keeps running for later launches.
@@ -12,16 +12,18 @@
  *   UNIEAI_APP_SERVER_SOCKET=/tmp/uac.sock node agent-runtime/bin/unieai-uac-server.mjs
  *
  * Environment:
- *   UNIEAI_DSH_BIN     dsh's bin.js or executable (default: the pinned
- *                      @deepseek-ai/dsh dependency, then `dsh` on PATH)
- *   UNIEAI_DSH_PATCH   extra cordis patch for dsh (default: generated)
+ *   UNIEAI_RABI_BIN    rabi's bin.js or executable (default: the pinned
+ *                      @unieai/rabi dependency, then `rabi` on PATH)
+ *   UNIEAI_RABI_PATCH  extra cordis patch for rabi (default: generated)
  *   UNIEAI_MODEL       default model (default: config.toml `model`)
  *   UNIEAI_SANDBOX     read-only | workspace-write | danger-full-access
- *   DSH_HOME           dsh's home (default: $CODEX_HOME/uac/dsh-home)
- *   UNIEAI_UAC_MODE    dsh mode for new threads (default: $CODEX_HOME/uac/mode,
+ *   RABI_HOME          rabi's home (default: $CODEX_HOME/uac/rabi-home)
+ *   UNIEAI_UAC_MODE    rabi mode for new threads (default: $CODEX_HOME/uac/mode,
  *                      then standard): standard | ptc | cordis | minimal
  *
- * Each dsh mode runs in its own dsh process, started when a thread first
+ * The names from before the Rabi rename still work (src/unieai-rabi/rabi-legacy.mjs).
+ *
+ * Each rabi mode runs in its own rabi process, started when a thread first
  * needs it; a thread keeps the mode it started in.
  */
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -31,26 +33,29 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { launchAppServer, log } from "../src/app-server/unieai-launch.mjs";
 import { createThreadStore } from "../src/app-server/unieai-thread-store.mjs";
-import { createAcpConnection, spawnAcpAgent } from "../src/unieai-dsh/acp-client.mjs";
+import { createAcpConnection, spawnAcpAgent } from "../src/unieai-rabi/acp-client.mjs";
 import {
   LOCAL_PROVIDERS,
   configuredUacMode,
   fetchLocalModels,
   loadSelfHostedProviders,
   localProviderBaseUrl,
-  prepareDsh,
+  prepareRabi,
   routeModel,
   selfHostedKey,
   selfHostedKeyEnv,
-  writeDshAccount,
-} from "../src/unieai-dsh/config.mjs";
-import { createDshEngine, createDshHost } from "../src/unieai-dsh/engine.mjs";
+  writeRabiAccount,
+} from "../src/unieai-rabi/config.mjs";
+import { createRabiEngine, createRabiHost } from "../src/unieai-rabi/engine.mjs";
 import { loadCredentials } from "../src/config.mjs";
-import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-dsh/unieai-mcp-servers.mjs";
-import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
-import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
-import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
+import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
+import { agentFailureReason } from "../src/unieai-rabi/acp-client.mjs";
+import { createOneShotEngine, createOneShotModel } from "../src/unieai-rabi/unieai-oneshot.mjs";
+import { claimServer } from "../src/unieai-rabi/unieai-server-lock.mjs";
 import { IS_WINDOWS, nodeSocketEndpoint } from "../src/app-server/unieai-local-endpoint.mjs";
+import { adoptLegacyEnv } from "../src/unieai-rabi/rabi-legacy.mjs";
+
+adoptLegacyEnv(process.env);
 
 // A thread on a self-hosted model titles itself on that server: no UnieAI
 // sign-in is needed, and nothing about it reaches the gateway.
@@ -75,8 +80,8 @@ const { version } = require("../package.json");
 // The installed UnieAI Code package (agent-runtime/bin/ is two levels below it).
 const INSTALL_ROOT = join(dirname(new URL(import.meta.url).pathname), "..", "..");
 
-// deepseek-harness uses Node 22 APIs (Promise.withResolvers, …); say so plainly
-// instead of failing inside dsh. The TUI falls back to codex and names this log.
+// rabi-harness uses Node 22 APIs (Promise.withResolvers, …); say so plainly
+// instead of failing inside rabi. The TUI falls back to codex and names this log.
 const nodeMajor = Number(process.versions.node.split(".")[0]);
 if (nodeMajor < 22) {
   log(`uac needs Node.js 22 or newer; this is ${process.version}. Set UNIEAI_NODE to a newer node.`);
@@ -87,7 +92,7 @@ const sandboxMode = process.env.UNIEAI_SANDBOX || "workspace-write";
 const codexHome = process.env.CODEX_HOME || process.env.UNIEAI_HOME || join(homedir(), ".unieai");
 const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac", "app-server.sock");
 // One server per socket. Two TUIs opened together each start one; the second
-// must not start a dsh of its own next to the first one's (see
+// must not start a rabi of its own next to the first one's (see
 // unieai-server-lock.mjs). It waits for the first to answer and leaves, which
 // is what its TUI is waiting for. A server that hands the socket over to
 // another release (unieai-launch's drain) gives up the lock with it, so the
@@ -106,11 +111,11 @@ process.once("exit", claimed.release);
 // Next to the app-server socket, whose path the TUI already kept short. The
 // pid keeps it this process's: a server of another release can start while
 // this one still serves its clients (see unieai-launch's drain), and a shared
-// path would hand this server's dsh control channel to the new one's dsh.
+// path would hand this server's rabi control channel to the new one's rabi.
 // On Windows the path only names it: Node serves no unix sockets there, so
 // both ends use the named pipe derived from it (unieai-local-endpoint.mjs).
 const controlSocketPathFor = (mode) =>
-  appSocket.replace(/(\.sock)?$/, mode === "standard" ? `.${process.pid}.dsh.sock` : `.${process.pid}.${mode}.dsh.sock`);
+  appSocket.replace(/(\.sock)?$/, mode === "standard" ? `.${process.pid}.rabi.sock` : `.${process.pid}.${mode}.rabi.sock`);
 const controlSocketFor = (mode) => nodeSocketEndpoint(controlSocketPathFor(mode));
 removeStaleControlSockets(dirname(appSocket));
 
@@ -123,7 +128,7 @@ function removeStaleControlSockets(dir) {
     return;
   }
   for (const name of names) {
-    const pid = Number(/^app-server\.(\d+)\..*dsh\.sock$/.exec(name)?.[1]);
+    const pid = Number(/^app-server\.(\d+)\..*rabi\.sock$/.exec(name)?.[1]);
     if (!pid || pid === process.pid) continue;
     try {
       process.kill(pid, 0);
@@ -133,22 +138,22 @@ function removeStaleControlSockets(dir) {
   }
 }
 // Fail at startup, where the TUI reports it, rather than on the first turn.
-const dsh = prepareDsh({ sandboxMode, controlSocket: controlSocketFor("standard") });
-log(`uac: dsh = ${dsh.command} ${dsh.args.join(" ")} (home ${dsh.env.DSH_HOME}, model ${dsh.defaultModel})`);
+const rabi = prepareRabi({ sandboxMode, controlSocket: controlSocketFor("standard") });
+log(`uac: rabi = ${rabi.command} ${rabi.args.join(" ")} (home ${rabi.env.RABI_HOME}, model ${rabi.defaultModel})`);
 
-const hosts = new Map(); // mode -> dsh host
+const hosts = new Map(); // mode -> rabi host
 
-/** The dsh process for `mode`, started on first use. */
+/** The rabi process for `mode`, started on first use. */
 function hostFor(mode = "standard") {
   const existing = hosts.get(mode);
   if (existing) return existing;
   const controlSocket = controlSocketFor(mode);
-  const setup = mode === "standard" ? dsh : prepareDsh({ sandboxMode, controlSocket, mode });
-  // dsh's recent stderr: when it dies, its own error (a missing export, a bad
+  const setup = mode === "standard" ? rabi : prepareRabi({ sandboxMode, controlSocket, mode });
+  // rabi's recent stderr: when it dies, its own error (a missing export, a bad
   // patch) is what the user needs, not "the connection closed".
   const stderr = [];
-  const tag = mode === "standard" ? "[dsh]" : `[dsh:${mode}]`;
-  const host = createDshHost({
+  const tag = mode === "standard" ? "[rabi]" : `[rabi:${mode}]`;
+  const host = createRabiHost({
     onLog: (line) => log("[uac]", line),
     connect: async () => {
       try {
@@ -172,7 +177,7 @@ function hostFor(mode = "standard") {
             ? ` macOS stopped it, usually because files from a downloaded bundle are quarantined: run \`xattr -dr com.apple.quarantine "${INSTALL_ROOT}"\` and start again.`
             : "";
         throw new Error(
-          `deepseek-harness (dsh, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}.${macKilled} ` +
+          `rabi-harness (rabi, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}.${macKilled} ` +
             "Reinstall UnieAI Code if it persists; details are in the uac server log.",
         );
       }
@@ -180,10 +185,10 @@ function hostFor(mode = "standard") {
     connectControl: () => connectControlSocket(controlSocket),
   });
   hosts.set(mode, host);
-  // Start dsh now so a broken install shows up in the log before the first turn.
+  // Start rabi now so a broken install shows up in the log before the first turn.
   host.agent().then(
-    (acp) => log(`uac: dsh ${mode} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
-    (error) => log(`uac: dsh ${mode} failed to start: ${error.message}`),
+    (acp) => log(`uac: rabi ${mode} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
+    (error) => log(`uac: rabi ${mode} failed to start: ${error.message}`),
   );
   return host;
 }
@@ -192,7 +197,7 @@ const threadMode = () => configuredUacMode({ home: codexHome });
 
 /**
  * Local model servers threads have asked for (`--oss`, `--local-provider`),
- * by provider id. Every one stays declared in dsh's settings for the life of
+ * by provider id. Every one stays declared in rabi's settings for the life of
  * the server: settings are rewritten per thread, and dropping a provider
  * would cut off a thread still using it.
  */
@@ -200,7 +205,7 @@ const localProviders = new Map();
 /** config.toml `[model_providers]` threads asked for, declared the same way. */
 const configuredProviders = new Map();
 const writeAccount = () =>
-  writeDshAccount({ localProviders: [...localProviders.values()], providers: [...configuredProviders.values()] });
+  writeRabiAccount({ localProviders: [...localProviders.values()], providers: [...configuredProviders.values()] });
 
 /** Declare the local provider `id` with the models it serves now. */
 async function declareLocalProvider(id) {
@@ -220,7 +225,7 @@ async function declareLocalProvider(id) {
 
 /**
  * Declare config.toml's `[model_providers.<id>]` (codex's own mechanism) for a
- * thread on that provider: dsh speaks chat completions to its `base_url`,
+ * thread on that provider: rabi speaks chat completions to its `base_url`,
  * with the key from its `env_key` (or `experimental_bearer_token`).
  */
 async function declareConfiguredProvider(id, info) {
@@ -247,7 +252,7 @@ async function declareConfiguredProvider(id, info) {
 }
 hostFor(threadMode());
 
-/** The unieai-control plugin listens once dsh has loaded it; wait briefly for it. */
+/** The unieai-control plugin listens once rabi has loaded it; wait briefly for it. */
 async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -266,11 +271,11 @@ async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = 
 await launchAppServer({
   name: "unieai-agent-core (uac)",
   version,
-  // The protocol spells it `readOnly`; what the client is told must match dsh.
+  // The protocol spells it `readOnly`; what the client is told must match rabi.
   sandboxMode: sandboxMode === "read-only" ? "readOnly" : sandboxMode,
-  // dsh sessions persist, so uac threads do too: listed, resumed, forked.
+  // rabi sessions persist, so uac threads do too: listed, resumed, forked.
   threadStore: createThreadStore(join(codexHome, "uac", "threads.json")),
-  defaultModel: dsh.defaultModel,
+  defaultModel: rabi.defaultModel,
   threadMode,
   // Handing the socket to another release's server hands it the lock too.
   onHandOver: claimed.release,
@@ -303,12 +308,12 @@ await launchAppServer({
       return sessionMcpServers({ configured: servers, studio: studioMcpServer(loadCredentials()) });
     };
     // The TUI re-synced unieai.json with Studio when it launched; carry that
-    // into dsh's hot-reloaded settings before this thread picks a model.
-    let account = dsh;
+    // into rabi's hot-reloaded settings before this thread picks a model.
+    let account = rabi;
     try {
       account = writeAccount();
     } catch (error) {
-      log("[uac] could not refresh the account for dsh:", error.message);
+      log("[uac] could not refresh the account for rabi:", error.message);
     }
     const selfHosted = account.selfHosted ?? loadSelfHostedProviders();
     // A thread whose provider is a self-hosted server itself (config.toml
@@ -328,7 +333,7 @@ await launchAppServer({
     // config.toml `[model_providers.<id>]` that is none of the above: declare
     // it from the config before the first session.
     if (modelProvider && modelProvider !== "unieai" && !LOCAL_PROVIDERS[modelProvider] && !ownServer) {
-      return createDshEngine({
+      return createRabiEngine({
         host: hostFor(variant ?? "standard"),
         workspace: cwd,
         model,
@@ -345,9 +350,9 @@ await launchAppServer({
       });
     }
     // A local model server (--oss / --local-provider): the thread's model
-    // comes from it, declared in dsh before the first session.
+    // comes from it, declared in rabi before the first session.
     if (LOCAL_PROVIDERS[modelProvider]) {
-      return createDshEngine({
+      return createRabiEngine({
         host: hostFor(variant ?? "standard"),
         workspace: cwd,
         model,
@@ -359,7 +364,7 @@ await launchAppServer({
       });
     }
     const routed = route(chosen);
-    return createDshEngine({
+    return createRabiEngine({
       // Threads stored before modes existed have none: standard.
       host: hostFor(variant ?? "standard"),
       workspace: cwd,

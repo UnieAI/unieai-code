@@ -3,7 +3,7 @@
 //!
 //! The choice is persisted and the CLI relaunches onto it; the current
 //! conversation stays with the engine that started it. uac is listed once per
-//! dsh mode.
+//! rabi mode.
 
 use super::*;
 use crate::bottom_pane::SelectionItem;
