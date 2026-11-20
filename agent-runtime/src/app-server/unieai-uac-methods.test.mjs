@@ -271,3 +271,23 @@ test("another client reading a thread does not take over its tool calls and appr
   assert.deepEqual(asked, { a: [], b: ["item/tool/call"] });
   assert.equal(handlers._threads.get(thread.id).connection.driver, ctxB);
 });
+
+test("a thread on Full Access can go back to Default (the Windows TUI needs a server-owned environment)", async () => {
+  const { handlers, ctx, thread, emitted } = await setup();
+  // The Windows TUI gates Default on the codex Windows sandbox unless the
+  // thread's environment is owned by the server; "local" or none blocks it.
+  assert.deepEqual(thread.environments.map((e) => e.environmentId), ["uac"]);
+  assert.equal(thread.environments[0].cwd, process.cwd());
+  await handlers["thread/settings/update"]({ threadId: thread.id, permissions: ":danger-full-access", approvalPolicy: "never" }, ctx);
+  let settings = emitted.findLast(([m]) => m === "thread/settings/updated")[1].threadSettings;
+  assert.equal(settings.sandboxPolicy.type, "dangerFullAccess");
+  await handlers["thread/settings/update"]({ threadId: thread.id, permissions: ":workspace", approvalPolicy: "on-request" }, ctx);
+  settings = emitted.findLast(([m]) => m === "thread/settings/updated")[1].threadSettings;
+  assert.deepEqual([settings.activePermissionProfile.id, settings.sandboxPolicy.type, settings.approvalPolicy], [":workspace", "workspaceWrite", "on-request"]);
+  const read = await handlers["thread/read"]({ threadId: thread.id, includeTurns: false }, ctx);
+  assert.deepEqual(read.thread.environments.map((e) => e.environmentId), ["uac"]);
+  if (haveSchemas) {
+    const result = validateAgainstSchema("ServerNotification", { method: "thread/started", params: { thread } }, { repoRoot });
+    assert.equal(result.ok, true, result.problems?.join("\n  "));
+  }
+});

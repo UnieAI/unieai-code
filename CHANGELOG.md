@@ -33,6 +33,16 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.42 — 2026-11-20
+
+### Fixed
+
+- **Windows: leaving Full Access.** On Windows, once a uac session was set to
+  Full Access, choosing Default again only printed "Windows sandbox setup
+  requires local connections and executors" and the permissions stayed on
+  Full Access. uac sessions now tell the TUI that the uac engine confines
+  commands itself, so `/permissions` switches freely, as on macOS and Linux.
+
 ## 0.0.41 — 2026-11-20
 
 ### Fixed

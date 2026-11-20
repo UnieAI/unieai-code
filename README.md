@@ -32,6 +32,8 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.42** (2026-11-20) — on Windows, a uac session set to Full Access can switch back to Default.
+
 **0.0.41** (2026-11-20) — Rabi sign-ins work again after Rabi moved to rabi.unieai.com (no need
 to sign in again), and uac now runs on Rabi, UnieAI's build of the agent harness.
 
