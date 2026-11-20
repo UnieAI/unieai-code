@@ -103,6 +103,9 @@ export function requestedPermissions(params) {
 
 const REVIEWERS = { auto_review: "auto", guardian_subagent: "auto", user: "user" };
 
+/** The execution environment every uac thread reports (see threadShape). */
+export const UAC_ENVIRONMENT_ID = "uac";
+
 /** The protocol's approvalsReviewer for a thread's permissions. */
 const reviewerShape = (permissions) => (permissions?.reviewer === "auto" ? "auto_review" : "user");
 
@@ -278,6 +281,15 @@ export function createHandlers({
     // Not optional on the Rust side (no serde default), so a Thread without it
     // fails to deserialize and the client shows an empty pane.
     canAcceptDirectInput: t.canAcceptDirectInput ?? true,
+    // Where the thread's commands run. Not codex's "local" executor: rabi
+    // confines commands itself (rabi-sandbox), so the codex Windows sandbox
+    // the TUI sets up for "local" does not apply here. Without an
+    // environment the TUI on Windows treated the host as unknown and
+    // refused every switch to Default ("Windows sandbox setup requires
+    // local connections and executors"), so a thread put on Full Access
+    // could not leave it. A server-owned environment lets the choice
+    // through to thread/settings/update, as on Linux and macOS.
+    environments: [{ environmentId: UAC_ENVIRONMENT_ID, cwd: t.cwd, runtimeWorkspaceRoots: [t.cwd] }],
   });
 
   /**
