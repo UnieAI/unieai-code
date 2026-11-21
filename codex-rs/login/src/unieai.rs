@@ -877,6 +877,10 @@ pub async fn logout_unieai(codex_home: &Path) -> io::Result<bool> {
         tracing::warn!("failed to revoke UnieAI refresh token: {err}");
     }
 
+    // vCluster tokens (`unieai kube`) were issued to this sign-in; drop them too.
+    if let Err(err) = crate::unieai_kube::clear_kube_token_cache(codex_home) {
+        tracing::warn!("failed to clear cached vCluster tokens: {err}");
+    }
     delete_unieai_credentials(codex_home)
 }
 

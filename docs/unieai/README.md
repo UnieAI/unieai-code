@@ -8,6 +8,7 @@ UnieAI Code 是以 [openai/codex](https://github.com/openai/codex)（Rust）為�
 |---|---|
 | [architecture.md](architecture.md) | 整體架構：CLI/TUI、雙引擎、agent-core 收斂、開源模型 harness |
 | [login.md](login.md) | UnieAI Studio 登入（device flow、公司/地端、gateway 憑證） |
+| [kube.md](kube.md) | `unieai kube`：以 Studio 登入換取 vCluster 的 15 分鐘 kubectl 憑證（exec 外掛、快取、CI 機器身分） |
 | [usage-api.md](usage-api.md) | 方案用量與計費 API 契約（`/api/usage/me`、Extra usage、402/429 錯誤碼） |
 | [vscode-extension.md](vscode-extension.md) | VS Code 聊天面板：安裝、雙引擎、功能 |
 | [benchmarks.md](benchmarks.md) | Benchmark 方法與結果（HumanEval、SWE-bench） |

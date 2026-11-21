@@ -33,6 +33,19 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.43 — 2026-11-21
+
+### New
+
+- **`unieai kube` — kubectl for UnieAI Studio vClusters.** After `unieai login`
+  (Studio), `unieai kube kubeconfig <vCluster>` writes a kubeconfig that holds
+  no secret: kubectl runs `unieai kube token`, which exchanges your Studio
+  sign-in for a 15-minute token for that vCluster, caches it (owner-only) and
+  renews it before it expires. Access follows the roles assigned to you in the
+  vCluster's project, and stops within 15 minutes of being revoked. CI uses a
+  project machine identity key in `UNIEAI_MACHINE_KEY` instead of a sign-in.
+  `unieai kube logout` (or `unieai logout`) clears cached tokens. See `docs/unieai/kube.md`.
+
 ## 0.0.42 — 2026-11-20
 
 ### Fixed
