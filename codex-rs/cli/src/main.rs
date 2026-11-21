@@ -213,6 +213,9 @@ enum Subcommand {
     /// Pages published to your UnieAI gallery: list, open, delete, publish (needs `login --rabi`).
     Artifact(codex_cli::unieai_artifact::ArtifactCommand),
 
+    /// kubectl access to UnieAI Studio vClusters: kubeconfig, token, logout (needs `login`).
+    Kube(codex_cli::unieai_kube::KubeCommand),
+
     /// Execpolicy tooling.
     #[clap(hide = true)]
     Execpolicy(ExecpolicyCommand),
@@ -2064,6 +2067,14 @@ async fn cli_main(
             )?;
             codex_cli::unieai_artifact::run_artifact_command(cmd).await?;
         }
+        Some(Subcommand::Kube(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "kube",
+            )?;
+            codex_cli::unieai_kube::run_kube_command(cmd).await?;
+        }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
             DebugSubcommand::Models(cmd) => {
                 reject_remote_mode_for_subcommand(
@@ -2635,6 +2646,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Debug(_)) => Some("debug"),
         Some(Subcommand::Peers(_)) => Some("peers"),
         Some(Subcommand::Artifact(_)) => Some("artifact"),
+        Some(Subcommand::Kube(_)) => Some("kube"),
         Some(Subcommand::Execpolicy(_)) => Some("execpolicy"),
         Some(Subcommand::Apply(_)) => Some("apply"),
         Some(Subcommand::ResponsesApiProxy(_)) => Some("responses-api-proxy"),

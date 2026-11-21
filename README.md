@@ -32,6 +32,9 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.43** (2026-11-21) — `unieai kube`: kubectl access to UnieAI Studio vClusters with
+15-minute tokens from your Studio sign-in (CI uses a machine identity key in `UNIEAI_MACHINE_KEY`).
+
 **0.0.42** (2026-11-20) — on Windows, a uac session set to Full Access can switch back to Default.
 
 **0.0.41** (2026-11-20) — Rabi sign-ins work again after Rabi moved to rabi.unieai.com (no need
@@ -146,6 +149,7 @@ unieai [OPTIONS] [PROMPT]        # interactive TUI
 | `unieai review --diff PATH` | Non-interactive code review |
 | `unieai resume` / `fork` | Resume or fork a previous session |
 | `unieai login` / `logout` | Manage UnieAI Studio (or `--rabi`) credentials |
+| `unieai kube kubeconfig <vCluster>` | kubectl access to a UnieAI Studio vCluster: a kubeconfig that signs in through `unieai kube token` (15-minute tokens) |
 | `unieai mcp` | Manage external MCP servers |
 | `unieai peers mcp` | Let Claude Code or another MCP client talk to your sessions |
 | `unieai sandbox` | Run a command in the sandbox |
