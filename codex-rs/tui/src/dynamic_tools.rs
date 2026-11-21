@@ -370,6 +370,7 @@ async fn execute_inner(
                     request_id,
                     params: ThreadListParams {
                         excluded_thread_ids: None,
+                        attached_to_thread_id: None,
                         originators: None,
                         cursor: arguments.cursor.clone(),
                         limit: Some(limit),
@@ -1339,7 +1340,7 @@ async fn background_turn_program(
                 }
                 true
             }
-            Some(Account::AmazonBedrock { .. }) | None => false,
+            Some(Account::AmazonBedrock { .. } | Account::Gcp {}) | None => false,
         };
     // Retain saved metadata while suppressing it for accounts that cannot use Daybreak.
     let enabled = enabled && eligible;

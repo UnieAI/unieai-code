@@ -14,6 +14,8 @@ import { createForwarder } from "./forward.mjs";
 import { createItemBridge } from "./items.mjs";
 import { createApprovalBridge } from "./approval.mjs";
 import { loadCredentials, sandboxBin } from "../config.mjs";
+import { randomBytes } from "node:crypto";
+import { USE_LOOPBACK } from "./unieai-local-endpoint.mjs";
 
 export const log = (...parts) => process.stderr.write(`${parts.join(" ")}\n`);
 
@@ -38,6 +40,13 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   // A socket file left by a crashed process would make the CLI think a server is
   // live and then fail to connect, so clear a stale one before binding.
   if (existsSync(socketPath)) rmSync(socketPath, { force: true });
+  // Windows: Node cannot serve a unix socket there, so the server listens on
+  // loopback with a token, and the stamp below tells clients where (see
+  // unieai-local-endpoint.mjs). A stamp left by a crashed server would point
+  // them at a dead port until this one writes its own.
+  const loopback = USE_LOOPBACK;
+  const authToken = loopback ? randomBytes(32).toString("base64url") : null;
+  if (loopback) rmSync(`${socketPath}.json`, { force: true });
 
   // The server does not exist yet, and the forwarder needs to reach it: the Rust
   // child starts pushing notifications as soon as it is initialized. A ref keeps
@@ -54,6 +63,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
 
   const server = appServer = await startAppServer({
     socketPath,
+    loopback,
+    authToken,
     codexHome,
     version,
     sandboxMode,
@@ -129,7 +140,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
 
   // Only this user may drive the engine: the socket accepts turns that run
   // commands in the user's workspace.
-  chmodSync(socketPath, 0o600);
+  // (On Windows there is no socket file; the token is what keeps others out.)
+  if (!loopback) chmodSync(socketPath, 0o600);
   // The server outlives the client that started it, so the next client can
   // find it running an older release than itself. This says which release it
   // is and how to stop it (see the TUI's ensure_uac_server).
@@ -142,6 +154,10 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     accountId: loadCredentials().accountId || null,
     engineVersion: version,
     socket: socketPath,
+    // Windows only: where the server really listens, and the bearer token
+    // every client must present. The stamp is the user's own file (0600 on
+    // Unix; on Windows it inherits the profile directory's per-user ACL).
+    ...(loopback ? { port: server.port(), token: authToken } : {}),
     startedAt: new Date().toISOString(),
   };
   try {
@@ -149,7 +165,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
   } catch (error) {
     log(`[app-server] could not write ${stampPath}: ${error.message}`);
   }
-  log(`${name} app-server ${version} listening on ${socketPath}`);
+  log(`${name} app-server ${version} listening on ${loopback ? `127.0.0.1:${server.port()} (for ${socketPath})` : socketPath}`);
 
   const { shutdown, drain } = createStopControls({
     server,

@@ -79,6 +79,7 @@ async fn daemon_exclusion_survives_fork_picker() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "UnieAI's sign-in picker offers only the UnieAI flows, never Amazon Bedrock"]
 async fn daemon_auto_start_preserves_bedrock_onboarding() -> Result<()> {
     daemon_startup("bedrock").await
 }
@@ -146,6 +147,7 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
 }
 
 #[tokio::test]
+#[ignore = "UnieAI's sign-in picker offers only the UnieAI flows, never Amazon Bedrock"]
 #[cfg(unix)]
 async fn bedrock_onboarding_leaves_a_running_daemon_untouched() -> Result<()> {
     daemon_startup("bedrock-running").await
@@ -180,7 +182,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         format!(
             "model = \"gpt-5.6-terra\"\n\
          {}\
-         features.bedrock_setup_wizard = true\ncli_auth_credentials_store = \"file\"\n\
+         cli_auth_credentials_store = \"file\"\n\
          suppress_unstable_features_warning = true\nanalytics.enabled = false\n\
          windows.sandbox = \"unelevated\"\n\
          tui.disable_paste_burst = true\n\
@@ -191,6 +193,9 @@ async fn daemon_startup(command: &str) -> Result<()> {
             // auto-start off; these runs exercise upstream's daemon flows.
             if matches!(command, "bedrock" | "bedrock-running") {
                 ""
+            } else if command == "discovered" {
+                // This run sets `features.daemon_auto_start=false` itself below.
+                "model_provider = \"openai\"\n"
             } else {
                 "model_provider = \"openai\"\nfeatures.daemon_auto_start = true\n"
             },

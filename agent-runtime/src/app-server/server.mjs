@@ -1494,7 +1494,7 @@ export function textOf(input) {
  * — useful in tests, wrong in production, where the platform surface has to
  * reach the Rust app-server.
  */
-export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onTurnError, forward = null, onError = () => {}, onTrace = null, onIdle = null }) {
+export async function startAppServer({ socketPath, createEngineFor, codexHome, version, sandboxMode, threadStore = null, defaultModel = null, threadMode, resolveModel, onTurnError, forward = null, onError = () => {}, onTrace = null, onIdle = null, loopback = false, authToken = null }) {
   const handlers = createHandlers({ createEngineFor, codexHome, version, sandboxMode, threadStore, defaultModel, threadMode, resolveModel, onTurnError });
   // Ours are unknown to the Rust side: a thread id it would look up is dropped.
   const forwardPlatform = forward
@@ -1530,6 +1530,8 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
 
   const transport = serveJsonOverUnixSocket({
     socketPath,
+    loopback,
+    authToken,
     onError,
     onConnection: (conn) => {
       // Without this there is no way to tell a client that never connected from

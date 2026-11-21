@@ -50,6 +50,7 @@ import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai
 import { agentFailureReason } from "../src/unieai-dsh/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-dsh/unieai-oneshot.mjs";
 import { claimServer } from "../src/unieai-dsh/unieai-server-lock.mjs";
+import { IS_WINDOWS, nodeSocketEndpoint } from "../src/app-server/unieai-local-endpoint.mjs";
 
 // A thread on a self-hosted model titles itself on that server: no UnieAI
 // sign-in is needed, and nothing about it reaches the gateway.
@@ -106,8 +107,11 @@ process.once("exit", claimed.release);
 // pid keeps it this process's: a server of another release can start while
 // this one still serves its clients (see unieai-launch's drain), and a shared
 // path would hand this server's dsh control channel to the new one's dsh.
-const controlSocketFor = (mode) =>
+// On Windows the path only names it: Node serves no unix sockets there, so
+// both ends use the named pipe derived from it (unieai-local-endpoint.mjs).
+const controlSocketPathFor = (mode) =>
   appSocket.replace(/(\.sock)?$/, mode === "standard" ? `.${process.pid}.dsh.sock` : `.${process.pid}.${mode}.dsh.sock`);
+const controlSocketFor = (mode) => nodeSocketEndpoint(controlSocketPathFor(mode));
 removeStaleControlSockets(dirname(appSocket));
 
 /** Control sockets of uac servers that are no longer running. */
@@ -272,7 +276,8 @@ await launchAppServer({
   onHandOver: claimed.release,
   onShutdown: async () => {
     await Promise.all([...hosts.values()].map((host) => host.close()));
-    for (const mode of hosts.keys()) rmSync(controlSocketFor(mode), { force: true });
+    // A named pipe goes with its listener; only unix socket files linger.
+    if (!IS_WINDOWS) for (const mode of hosts.keys()) rmSync(controlSocketFor(mode), { force: true });
   },
   // What this account can actually run: a model it does not offer (a config
   // written for another account — Studio's ids differ from Rabi's) becomes

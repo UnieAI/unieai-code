@@ -70,6 +70,7 @@ codex-skills-extension = { workspace = true }
 unieai-session-mesh = { workspace = true }
 codex-state = { workspace = true }
 codex-agent-message-board-extension = { workspace = true }
+codex-message-board = { workspace = true }
 codex-agent-message-board-client = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-thread-store = { workspace = true }
@@ -78,6 +79,7 @@ codex-utils-absolute-path = { workspace = true }
 codex-utils-audio = { workspace = true }
 codex-utils-cache = { workspace = true }
 codex-utils-git-discovery = { workspace = true }
+codex-utils-head-tail-buffer = { workspace = true }
 codex-utils-image = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-output-truncation = { workspace = true }

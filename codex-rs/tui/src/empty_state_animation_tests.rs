@@ -506,3 +506,13 @@ fn onboarding_keeps_full_color_after_budget_and_pause() {
         },
     );
 }
+
+#[test]
+fn launch_warnings_keep_the_logo_but_later_warnings_dismiss_it() {
+    // The "uac did not start" warning arrives at launch; it used to clear the
+    // logo a moment after it appeared.
+    let launch = crate::history_cell::new_startup_warning_event("uac did not start".into());
+    let later = crate::history_cell::new_warning_event("something happened".into());
+    assert!(is_startup_cell(&launch));
+    assert!(!is_startup_cell(&later));
+}

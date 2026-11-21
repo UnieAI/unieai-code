@@ -26,6 +26,7 @@
  */
 import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { connect } from "node:net";
+import { appServerDialTarget } from "../app-server/unieai-local-endpoint.mjs";
 
 /** Whether `pid` is a running process (signal 0 only checks). */
 export function processIsAlive(pid) {
@@ -39,10 +40,15 @@ export function processIsAlive(pid) {
   }
 }
 
-/** Whether something accepts connections on the unix socket at `path`. */
-export function socketIsLive(path, timeoutMs = 600) {
+/**
+ * Whether something accepts connections on the app-server socket at `path`
+ * (on Windows: the loopback port its stamp names; see unieai-local-endpoint.mjs).
+ */
+export function socketIsLive(path, timeoutMs = 600, { target = appServerDialTarget } = {}) {
+  const dial = target(path);
+  if (!dial) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const socket = connect(path);
+    const socket = dial.path ? connect(dial.path) : connect(dial.port, dial.host);
     const done = (live) => {
       clearTimeout(timer);
       socket.destroy();

@@ -32,6 +32,12 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.40** (2026-11-18) — the uac engine now starts on Windows instead of falling back to codex.
+
+**0.0.39** (2026-10-24) — fixes uac not starting in 0.0.38 (Rabi sign-ins saw a 404),
+Windows builds reporting version 0.0.22, and the welcome logo vanishing at launch;
+merges upstream Codex through 2026-10-23 and moves uac to deepseek-harness 0.2.1-rc.3.
+
 **0.0.38** (2026-10-22) — highlights:
 
 - **Connect a model API** — sign in with UnieAI Rabi (now first), UnieAI Studio, or no
@@ -135,6 +141,7 @@ unieai [OPTIONS] [PROMPT]        # interactive TUI
 | `unieai review --diff PATH` | Non-interactive code review |
 | `unieai resume` / `fork` | Resume or fork a previous session |
 | `unieai login` / `logout` | Manage UnieAI Studio (or `--rabi`) credentials |
+| `unieai kube kubeconfig <vCluster>` | kubectl access to a UnieAI Studio vCluster: a kubeconfig that signs in through `unieai kube token` (15-minute tokens) |
 | `unieai mcp` | Manage external MCP servers |
 | `unieai peers mcp` | Let Claude Code or another MCP client talk to your sessions |
 | `unieai sandbox` | Run a command in the sandbox |

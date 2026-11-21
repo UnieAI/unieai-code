@@ -33,6 +33,63 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on deepseek-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## Unreleased
+
+### New
+
+- **`unieai kube` — kubectl for UnieAI Studio vClusters.** After `unieai login`
+  (Studio), `unieai kube kubeconfig <vCluster>` writes a kubeconfig that holds
+  no secret: kubectl runs `unieai kube token`, which exchanges your Studio
+  sign-in for a 15-minute token for that vCluster, caches it (owner-only) and
+  renews it before it expires. Access follows the roles assigned to you in the
+  vCluster's project, and stops within 15 minutes of being revoked. CI uses a
+  project machine identity key in `UNIEAI_API_KEY` instead of a sign-in.
+  `unieai kube logout` clears cached tokens. See `docs/unieai/kube.md`.
+
+## 0.0.40 — 2026-11-18
+
+### Fixed
+
+- **uac runs on Windows.** On Windows the uac engine never started, so every
+  session fell back to codex; the server log showed
+  `listen EACCES: permission denied …\uac\app-server.sock`. Node cannot
+  serve a Unix socket on Windows, so there the uac server now listens on a
+  loopback port (127.0.0.1) that only accepts clients presenting a random
+  token. The token is kept in your own `uac` directory. dsh's control channel
+  uses a named pipe there. macOS and Linux keep using Unix sockets.
+
+## 0.0.39 — 2026-10-24
+
+A fix release for 0.0.38, which could not start the uac engine on any
+install.
+
+- Merged upstream Codex through
+  [`970111f6cb`](https://github.com/openai/codex/commit/970111f6cb) (2026-10-23,
+  124 commits). Notable: a model the provider does not have now fails the turn
+  instead of being retried, reasoning-effort overrides are on by default,
+  a `/` command keeps its prefix in the editable composer text, consecutive
+  prompts in the background transcript are grouped, retained reasoning is no
+  longer counted twice in token usage, and SQLite databases on NFS use DELETE
+  journaling (`unieai migrate-nfs-db` converts existing ones).
+
+### Fixed
+
+- **uac starts again.** The 0.0.38 package left out a module the uac server
+  imports, so uac died at launch with `ERR_MODULE_NOT_FOUND` and the session
+  fell back to codex. On a Rabi account that showed up as
+  `404 Not Found … /api/desktop/v1/responses`, since Rabi serves only chat
+  completions. The release build now fails if a shipped module imports a file
+  that was left out.
+- **Windows reports its real version.** Windows builds always reported
+  `0.0.22-dev-uc0.5.0-ac0.4.0`, whatever the release, so updating seemed not
+  to work and the update notice kept coming back.
+- **The welcome logo stays.** A warning shown at launch (such as uac not
+  starting) no longer clears the logo a moment after it appears.
+
+### uac engine
+
+- deepseek-harness 0.2.1-rc.3.
+
 ## 0.0.38 — 2026-10-22
 
 - Merged upstream Codex twice: through

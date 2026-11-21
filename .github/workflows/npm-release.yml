@@ -88,9 +88,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: macos-14
+          - runner: macos-15
             target: x86_64-apple-darwin
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
@@ -149,8 +149,11 @@ jobs:
       - name: Stamp workspace version
         shell: bash
         run: |
-          perl -0pi -e 's/\[workspace\.package\]\nversion = "[^"]*"/[workspace.package]\nversion = "${{ steps.version.outputs.value }}"/' Cargo.toml
+          # Windows runners check out with CRLF, so the newline is \r?\n; an
+          # unmatched pattern once shipped every Windows build as the dev id.
+          perl -0pi -e 's/\[workspace\.package\](\r?\n)version = "[^"]*"/[workspace.package]$1version = "${{ steps.version.outputs.value }}"/' Cargo.toml
           grep -A1 '^\[workspace.package\]' Cargo.toml | head -2
+          perl -0ne 'exit(/\[workspace\.package\]\r?\nversion = "\Q${{ steps.version.outputs.value }}\E"/ ? 0 : 1)' Cargo.toml || { echo "::error::Cargo.toml version was not stamped"; exit 1; }
 
       - name: Install Rust target
         shell: bash
@@ -175,11 +178,10 @@ jobs:
           no_jitter_var="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET//-/_}"
           echo "${no_jitter_var}=1" >> "$GITHUB_ENV"
 
-      # openai/codex only publishes custom rusty_v8 artifacts for mac/linux
-      # (musl needs them; denoland ships no musl prebuilts). On Windows the
-      # v8 crate's build.rs downloads the official denoland prebuilt instead.
+      # The v8 crate builds the sandboxed (ptrcomp_sandbox) variant, which only
+      # openai/codex publishes; denoland's prebuilts 404 for it. Every target
+      # takes the openai artifacts, Windows included.
       - name: Configure rusty_v8 artifact overrides and verify checksums
-        if: ${{ !contains(matrix.target, 'windows') }}
         uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}

@@ -24,6 +24,13 @@ pub(crate) async fn connect(target: &AppServerTarget) -> color_eyre::Result<AppS
             endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
             ..
         } => {
+            // The uac server cannot serve a unix socket on Windows: its
+            // stamp says which loopback port it listens on instead.
+            if let Some(endpoint) =
+                crate::unieai_engine::uac_loopback_endpoint(socket_path.as_path())
+            {
+                return connect_remote_app_server(endpoint).await;
+            }
             // Revalidate at the real connection, not just the earlier discovery probe.
             let (socket_path, _directory) =
                 codex_uds::validate_private_socket_path(socket_path.as_path())?;
