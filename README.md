@@ -141,6 +141,7 @@ unieai [OPTIONS] [PROMPT]        # interactive TUI
 | `unieai review --diff PATH` | Non-interactive code review |
 | `unieai resume` / `fork` | Resume or fork a previous session |
 | `unieai login` / `logout` | Manage UnieAI Studio (or `--rabi`) credentials |
+| `unieai kube kubeconfig <vCluster>` | kubectl access to a UnieAI Studio vCluster: a kubeconfig that signs in through `unieai kube token` (15-minute tokens) |
 | `unieai mcp` | Manage external MCP servers |
 | `unieai peers mcp` | Let Claude Code or another MCP client talk to your sessions |
 | `unieai sandbox` | Run a command in the sandbox |

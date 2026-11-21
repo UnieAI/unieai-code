@@ -4,6 +4,7 @@ pub mod test_support;
 pub mod token_data;
 pub mod unieai;
 pub mod unieai_artifacts;
+pub mod unieai_kube;
 pub mod unieai_rabi;
 pub mod unieai_self_hosted;
 pub mod unieai_usage;
