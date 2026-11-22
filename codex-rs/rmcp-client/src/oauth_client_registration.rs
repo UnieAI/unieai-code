@@ -42,6 +42,29 @@ pub(crate) async fn start_authorization(
     callback_id: &str,
     client_registration: McpOAuthClientRegistration,
 ) -> Result<PreparedOAuthLogin> {
+    start_authorization_with_callback_policy(
+        server_url,
+        http_client,
+        scopes,
+        redirect_uri,
+        callback_id,
+        client_registration,
+        false,
+    )
+    .await
+}
+
+/// A shared remote callback must never silently fall back to a provider-specific path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_authorization_with_callback_policy(
+    server_url: &str,
+    http_client: Arc<dyn OAuthHttpClient>,
+    scopes: &[&str],
+    redirect_uri: &str,
+    callback_id: &str,
+    client_registration: McpOAuthClientRegistration,
+    require_issuer_binding: bool,
+) -> Result<PreparedOAuthLogin> {
     let mut auth_manager =
         AuthorizationManager::new_with_oauth_http_client(server_url, http_client).await?;
     auth_manager.set_allow_missing_issuer(true);
@@ -49,6 +72,9 @@ pub(crate) async fn start_authorization(
     validate_authorization_server_endpoints(&metadata)?;
     let authorization_server_issuer = metadata.issuer.clone();
     let callback_mode = callback_mode(&metadata)?;
+    if require_issuer_binding && callback_mode != McpOAuthCallbackMode::IssuerBound {
+        bail!("Remote MCP OAuth requires authorization response issuer support");
+    }
 
     let cimd_advertised = metadata
         .additional_fields

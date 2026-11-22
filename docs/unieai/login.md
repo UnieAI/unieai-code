@@ -28,6 +28,45 @@ unieai logout      # revoke + 刪除 unieai.json
 流程：要 device code → 顯示連結與代碼、自動開瀏覽器 → 你在 Studio 確認 →
 交換 token、抓 gateway 憑證與模型清單 → 寫入 `unieai.json`。
 
+## MCP 授權：SSH／遠端主機
+
+瀏覽器在本機、UnieAI Code 在 SSH 主機時，可以讓 Rabi 接收公開 callback，
+Code 自動領取授權結果。先在 `~/.unieai/config.toml` 新增或更新 MCP 設定：
+
+```toml
+[mcp_servers.space]
+url = "https://space.unieai.com/mcp"
+```
+
+然後在遠端終端執行：
+
+```bash
+unieai mcp login space --remote
+
+# 自架 Rabi（必須已部署遠端 MCP OAuth 路由）
+unieai mcp login space --remote --remote-url https://rabi.example.com
+```
+
+`space` 是設定名稱。用本機瀏覽器打開 CLI 顯示的連結，按頁面上的授權按鈕，
+登入 Space 並同意後，遠端終端會自動完成登入，網頁顯示完成。
+不需要貼回 callback、SSH port forwarding 或臨時公開 tunnel；請保持終端開啟。
+一次授權最長 10 分鐘，取消可按 Ctrl-C，逾時後重新執行登入即可。
+
+- `--remote-url` 需搭配 `--remote`，只接受 HTTPS origin，不帶路徑、query 或帳密。
+  開發測試可用 loopback HTTP。未指定時依 `UNIEAI_RABI_URL`、
+  `https://rabi.unieai.com` 的順序選擇。
+- Rabi 必須已部署 `/api/mcp/oauth/remote/*`；瀏覽器及 SSH 主機皆需能連到它。
+- MCP 授權伺服器需支援授權回應 `iss`（metadata 宣告
+  `authorization_response_iss_parameter_supported = true`），以及動態用戶端註冊
+  DCR，或預先註冊且允許 `<Rabi origin>/api/mcp/oauth/remote/callback` 的 OAuth client。
+  目前不支援遠端模式搭配 `--oauth-client-registration cimd`。
+- `--remote` 與 `--no-browser` 互斥。`--no-browser` 保留手動貼完整 callback 的流程；
+  不加兩者時仍使用原本的瀏覽器／本地 callback 流程。
+
+Rabi 只短暫交接授權碼。PKCE verifier、state 與 issuer 驗證、token 交換和
+MCP 憑證儲存都在 Code 完成；不會把既有 Code 帳號 token 或 MCP 認證 headers
+交給 Rabi。遠端模式不會啟動本地 callback listener，並使用原本的 MCP 憑證儲存設定。
+
 ## TUI onboarding
 
 第一次啟動（`~/.unieai` 無憑證）會走互動式登入：
