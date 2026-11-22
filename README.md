@@ -32,6 +32,9 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.44** (2026-11-22) — `/usage` on a Rabi sign-in draws the plan's real 5-hour and
+weekly allowances, and the status line with them; the retired per-feature gauges are gone.
+
 **0.0.43** (2026-11-21) — `unieai kube`: kubectl access to UnieAI Studio vClusters with
 15-minute tokens from your Studio sign-in (CI uses a machine identity key in `UNIEAI_MACHINE_KEY`).
 
