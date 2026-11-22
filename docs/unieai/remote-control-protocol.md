@@ -1,8 +1,11 @@
 # UnieAI Code Remote Control — protocol v1
 
 Status: v1, implemented by unieai-code (host side), by the reference relay in
-`agent-runtime/src/remote-relay/`, and by its test page. The Ava (Rabi) team
-implements the production relay and browser UI from this document alone.
+`agent-runtime/src/remote-relay/`, and by its test page. The production relay
+and browser UI are **not built yet**: rabi.unieai.com serves no route under
+`/api/remote` (probed live: `/api/remote/host/register` answers 404, and
+`app/api/remote` does not exist on `origin/ava`). Until Ava adds it, the host
+keeps defaulting to `${RABI_URL}/api/remote` and falls back to `--relay`.
 
 Remote Control lets a person watch, steer, approve and answer a live local
 `unieai` session from a browser or phone. Three parties take part:

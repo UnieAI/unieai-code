@@ -1,9 +1,12 @@
 <!-- Copyright (c) 2026 UnieAI. All rights reserved. -->
 # Artifacts from UnieAI Code
 
-Status: ava's API is built (ava commit 26d9e43e2, not deployed yet); the
-client is built against it and an in-memory stub. Owner of hosting: ava
-(rabi.unieai.com). Owner of the client tool and skill: unieai-code.
+Status: ava's API is built and **deployed** (merged in `origin/ava`; the live
+routes answer 401 without a key instead of 404), and the client is built
+against it plus an in-memory stub. Owner of hosting: ava (rabi.unieai.com).
+Owner of the client tool and skill: unieai-code. A publish from this machine
+is still unverified: it needs a Rabi login (`unieai login --rabi`), which this
+checkout does not have.
 
 ## Goal
 
@@ -23,7 +26,7 @@ gallery (Office ▸ 作品) next to ava's own artifacts.
   already accepts references to jsdelivr, unpkg, cdnjs and Google Fonts and
   refuses every other external reference.
 
-## The API (ava commit 26d9e43e2)
+## The API (ava commit 26d9e43e2, deployed)
 
 All routes are under `/api/agent-next/artifacts`, take a bearer desktop key
 with the `artifacts` scope, and answer errors as `{error:{code, message, …}}`.
@@ -60,8 +63,8 @@ with the `artifacts` scope, and answer errors as `{error:{code, message, …}}`.
 
 ## What unieai-code adds
 
-Built against the API above and an in-memory stub of it
-(`agent-runtime/scripts/unieai-ava-artifacts-stub.mjs`) until it is deployed.
+Built against the API above; `agent-runtime/scripts/unieai-ava-artifacts-stub.mjs`
+is an in-memory stub of it for local runs without a Rabi login.
 
 - **Tool:** `publish_artifact` (actions `publish | update_settings | list |
   read | delete`; delete only when the user asks) is a uac host plugin,
