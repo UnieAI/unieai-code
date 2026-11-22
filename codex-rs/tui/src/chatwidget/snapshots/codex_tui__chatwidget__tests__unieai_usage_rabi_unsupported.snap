@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Rabi
+
+  Plan usage isn't available from this Rabi yet.
+
+
+› 1. Open your plan  http://127.0.0.1:9/settings/subscription
+  2. Refresh
+
+  enter select · esc back

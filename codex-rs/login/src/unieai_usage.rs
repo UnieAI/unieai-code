@@ -12,6 +12,14 @@
 //!
 //! All three use the device-grant access token from `unieai.json`, refreshed
 //! here when it is about to expire (or once more after Studio rejects it).
+//!
+//! A Rabi login (`account: "rabi"`) reads the same two windows from Rabi's
+//! `GET /api/desktop/usage`, authenticated by the desktop key, and the body
+//! names who meters the account (`source`): Rabi itself, Studio for a personal
+//! account bound to Studio, or a standalone machine with no plan at all. Only
+//! the first carries numbers. [`fetch_rabi_usage`] reads it; the plan and the
+//! windows are Rabi's own types because Rabi has no grants, wallet or extra
+//! usage behind them.
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -229,6 +237,134 @@ pub fn unieai_top_up_url(studio_url: &str) -> String {
     format!("{}/plan", studio_url.trim_end_matches('/'))
 }
 
+/// Rabi's subscription page, where a Rabi plan is changed.
+pub fn unieai_rabi_plan_url(rabi_url: &str) -> String {
+    format!("{}/settings/subscription", rabi_url.trim_end_matches('/'))
+}
+
+/// Why a Rabi usage request did not produce data.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum RabiUsageError {
+    #[error("Sign in with UnieAI Rabi to see plan usage.")]
+    NotSignedIn,
+    #[error("Your UnieAI Rabi sign-in was refused. Run `unieai login --rabi` to sign in again.")]
+    Unauthorized,
+    /// Rabi refused the request and said why.
+    #[error("{0}")]
+    Rejected(String),
+    #[error("UnieAI Rabi answered HTTP {status}.")]
+    Status { status: u16 },
+    #[error("Couldn't reach UnieAI Rabi: {0}")]
+    Transport(String),
+    #[error("Couldn't read UnieAI Rabi's usage response: {0}")]
+    Parse(String),
+}
+
+/// `GET /api/desktop/usage`: the personal plan and the allowance behind it.
+///
+/// Rabi's own meter is the same one Studio runs — a 5-hour and a rolling
+/// weekly window in model-cost micro-USD — so the windows reuse
+/// [`StudioUsageWindow`] and one renderer serves both products. The six
+/// per-feature counters this route also carries (vision pages, agent sessions,
+/// tokens, tool and MCP calls) are metered but not billed: no plan caps them,
+/// so they are deliberately not read here.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RabiUsage {
+    #[serde(default)]
+    pub plan: Option<RabiPlan>,
+    #[serde(default)]
+    pub windows: RabiWindows,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct RabiPlan {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+impl RabiPlan {
+    pub fn display_name(&self) -> &str {
+        if self.name.trim().is_empty() {
+            &self.key
+        } else {
+            &self.name
+        }
+    }
+}
+
+/// Who meters a Rabi account's allowance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RabiUsageSource {
+    /// Rabi's own 5-hour + weekly windows: the numbers in [`RabiWindows`] are
+    /// the ones that gate a turn.
+    Rabi,
+    /// A personal account bound to Studio; Studio meters it, so Rabi has no
+    /// numbers of its own to show.
+    Studio,
+    /// No Studio connected: no plan rules apply at all.
+    Standalone,
+}
+
+impl RabiUsageSource {
+    fn parse(source: Option<&str>) -> RabiUsageSource {
+        match source.map(str::trim) {
+            Some("studio") => RabiUsageSource::Studio,
+            Some("standalone") => RabiUsageSource::Standalone,
+            // Absent on a Rabi that predates the field, when Rabi was the only
+            // possible answer.
+            _ => RabiUsageSource::Rabi,
+        }
+    }
+
+    /// Whether the windows are Rabi's own, i.e. whether they mean anything.
+    pub fn is_rabi_metered(self) -> bool {
+        self == RabiUsageSource::Rabi
+    }
+}
+
+/// The plan's two allowances plus who meters them (`source`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RabiWindows {
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Null on a plan that switched the 5-hour window off.
+    #[serde(default)]
+    pub five_hour: Option<StudioUsageWindow>,
+    #[serde(default)]
+    pub week: Option<StudioUsageWindow>,
+}
+
+impl RabiWindows {
+    pub fn source(&self) -> RabiUsageSource {
+        RabiUsageSource::parse(self.source.as_deref())
+    }
+
+    /// The windows as the shape Studio publishes, for the shared renderer.
+    pub fn as_studio(&self) -> StudioUsageWindows {
+        StudioUsageWindows {
+            five_hour: self.five_hour.clone(),
+            week: self.week.clone(),
+        }
+    }
+
+    /// Whether there is a number to show: a plan that includes no usage (or a
+    /// ledger Rabi could not read) reports neither window.
+    pub fn has_windows(&self) -> bool {
+        self.five_hour.is_some() || self.week.is_some()
+    }
+}
+
+/// Parse a `/api/desktop/usage` body.
+pub fn parse_rabi_usage(body: Value) -> Result<RabiUsage, RabiUsageError> {
+    serde_json::from_value(body).map_err(|err| RabiUsageError::Parse(err.to_string()))
+}
+
 /// Parse a `/api/usage/me` (or extra-usage) body, bare or in Studio's
 /// `{request_id, data}` envelope.
 pub fn parse_studio_usage(body: Value) -> Result<StudioUsage, StudioUsageError> {
@@ -294,6 +430,70 @@ pub async fn set_unieai_extra_usage(
         Some(body) => parse_studio_usage(body),
         None => Err(StudioUsageError::Status { status: 404 }),
     }
+}
+
+/// Rabi's plan usage for the signed-in Rabi account. `Ok(None)` when this Rabi
+/// does not serve `/api/desktop/usage` yet (404), or serves the pre-`windows`
+/// shape of it: both mean "no allowance numbers from this Rabi", not an error.
+///
+/// The desktop key does not expire client-side, so a 401 is not retried: the
+/// key was retired (a later login of the same client name replaces it) and the
+/// fix is to sign in again.
+pub async fn fetch_rabi_usage(codex_home: &Path) -> Result<Option<RabiUsage>, RabiUsageError> {
+    let credentials = match load_unieai_credentials(codex_home) {
+        Some(credentials) if credentials.account == UnieAIAccountKind::Rabi => credentials,
+        _ => return Err(RabiUsageError::NotSignedIn),
+    };
+    let url = format!(
+        "{}/api/desktop/usage",
+        credentials.studio_url.trim_end_matches('/')
+    );
+    let response = create_client()
+        .get(&url)
+        .header("Accept", "application/json")
+        .header(
+            "Authorization",
+            format!("Bearer {}", credentials.gateway_api_key),
+        )
+        .send()
+        .await
+        .map_err(|err| RabiUsageError::Transport(err.to_string()))?;
+    let status = response.status();
+    if status == http::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
+        return Err(RabiUsageError::Unauthorized);
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|err| RabiUsageError::Transport(err.to_string()))?;
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_string)
+        });
+        return Err(match message {
+            Some(message) if status.is_client_error() => RabiUsageError::Rejected(message),
+            _ => RabiUsageError::Status {
+                status: status.as_u16(),
+            },
+        });
+    }
+    let body = serde_json::from_str(&text).map_err(|err| RabiUsageError::Parse(err.to_string()))?;
+    let usage = parse_rabi_usage(body)?;
+    // A Rabi that predates `windows` answers with the retired meters only.
+    // Reporting that as "no windows" would tell the user their plan has no
+    // limit, which is a lie; it is simply not available from this Rabi yet.
+    if usage.windows.source.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(usage))
 }
 
 /// The signed-in Studio login, or why there is none.

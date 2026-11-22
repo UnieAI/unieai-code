@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Rabi · Plus plan
+
+  Metered by your UnieAI Studio plan: studio.unieai.com/usage has the numbers.
+
+
+› 1. Manage plan  http://127.0.0.1:9/settings/subscription
+  2. Refresh
+
+  enter select · esc back

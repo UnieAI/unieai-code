@@ -253,3 +253,202 @@ async fn no_studio_login_is_not_signed_in() {
         Err(StudioUsageError::NotSignedIn)
     );
 }
+
+/// The shape of Rabi's `app/api/desktop/usage/route.ts`.
+fn rabi_body() -> Value {
+    json!({
+        "plan": {"id": "plan_1", "key": "plus", "name": "Plus"},
+        "windows": {
+            "source": "rabi",
+            "fiveHour": {
+                "usedMicroUsd": 250_000,
+                "limitMicroUsd": 1_000_000,
+                "resetsAt": "2026-10-21T05:00:00.000Z",
+                "windowMinutes": 300
+            },
+            "week": {
+                "usedMicroUsd": 2_000_000,
+                "limitMicroUsd": 5_000_000,
+                "resetsAt": "2026-10-27T00:00:00.000Z",
+                "windowMinutes": 10_080
+            }
+        },
+        // Retired 2026-11-01: metered, never billed. Still in the body for
+        // desktop builds that predate `windows`, and deliberately not read.
+        "usage": {
+            "vlmPages": {"used": 12, "limit": 100, "resetAt": "2026-10-21T00:00:00.000Z", "windowHours": 24},
+            "agentSessions": {"used": 40, "limit": 200, "resetAt": "2026-10-21T00:00:00.000Z", "windowHours": 24},
+            "agentTokens": {"used": 1_500_000, "limit": 20_000_000, "resetAt": "2026-10-27T00:00:00.000Z", "windowHours": 168},
+            "mcpCalls": {"used": 0, "limit": 1000, "resetAt": "2026-10-21T00:00:00.000Z", "windowHours": 24},
+            "chatTokens": {"used": 250_000, "limit": null, "resetAt": "2026-10-21T00:00:00.000Z", "windowHours": 5},
+            "toolCalls": {"used": 3, "limit": 500, "resetAt": "2026-10-21T00:00:00.000Z", "windowHours": 24}
+        }
+    })
+}
+
+#[test]
+fn parses_rabi_desktop_usage() {
+    let usage = parse_rabi_usage(rabi_body()).expect("parse");
+    assert_eq!(
+        usage.plan.as_ref().map(RabiPlan::display_name),
+        Some("Plus")
+    );
+    assert_eq!(usage.windows.source(), RabiUsageSource::Rabi);
+    assert!(usage.windows.has_windows());
+
+    let five_hour = usage.windows.five_hour.as_ref().expect("five hour");
+    assert_eq!(five_hour.used_percent(), Some(25.0));
+    assert_eq!(five_hour.window_minutes, Some(300));
+    assert!(!five_hour.is_exhausted());
+    assert!(five_hour.resets_at.is_some());
+
+    let week = usage.windows.week.as_ref().expect("week");
+    assert_eq!(week.used_percent(), Some(40.0));
+    assert_eq!(week.window_minutes, Some(10_080));
+
+    // The shared renderer takes the same two windows as a Studio body.
+    let studio = usage.windows.as_studio();
+    assert_eq!(studio.five_hour.as_ref(), usage.windows.five_hour.as_ref());
+    assert_eq!(studio.week.as_ref(), usage.windows.week.as_ref());
+}
+
+#[test]
+fn a_rabi_that_meters_elsewhere_says_so() {
+    // A personal account bound to Studio is metered by Studio: Rabi has no
+    // numbers, and the empty windows are the answer, not zeros.
+    let usage = parse_rabi_usage(json!({"windows": {"source": "studio"}})).expect("parse");
+    assert_eq!(usage.windows.source(), RabiUsageSource::Studio);
+    assert!(!usage.windows.has_windows());
+    assert!(!usage.windows.source().is_rabi_metered());
+
+    let usage = parse_rabi_usage(json!({"windows": {"source": "standalone"}})).expect("parse");
+    assert_eq!(usage.windows.source(), RabiUsageSource::Standalone);
+    assert!(!usage.windows.has_windows());
+
+    // A Rabi from before `source` existed metered itself.
+    let usage = parse_rabi_usage(json!({"windows": {}})).expect("parse");
+    assert_eq!(usage.windows.source(), RabiUsageSource::Rabi);
+    assert!(!usage.windows.has_windows());
+}
+
+#[test]
+fn rabi_usage_parses_odd_numbers_and_a_disabled_five_hour_window() {
+    let usage = parse_rabi_usage(json!({
+        "plan": null,
+        "windows": {
+            "fiveHour": null,
+            "week": {"usedMicroUsd": "7", "limitMicroUsd": "10", "windowMinutes": "10080"}
+        }
+    }))
+    .expect("parse");
+    assert_eq!(usage.plan, None);
+    // A plan with the 5-hour window switched off still reports the week.
+    assert!(usage.windows.five_hour.is_none());
+    let week = usage.windows.week.as_ref().expect("week");
+    assert_eq!(week.used_percent(), Some(70.0));
+    assert_eq!(week.resets_at, None);
+    assert_eq!(week.window_minutes, Some(10_080));
+    // No windows object at all reads as no allowance rather than failing.
+    let empty = parse_rabi_usage(json!({"plan": {"key": "free"}})).expect("parse");
+    assert!(!empty.windows.has_windows());
+}
+
+fn rabi_home(server: &MockServer) -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("tempdir");
+    save_unieai_credentials(
+        home.path(),
+        &UnieAICredentials {
+            account: UnieAIAccountKind::Rabi,
+            studio_url: server.uri(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: i64::MAX,
+            email: None,
+            active_org_id: None,
+            gateway_base_url: format!("{}/api/desktop/v1", server.uri()),
+            gateway_api_key: "desktop-key".to_string(),
+            gateway_base_url_locked: false,
+            available_model_ids: None,
+            available_models: None,
+        },
+    )
+    .expect("save");
+    home
+}
+
+#[tokio::test]
+async fn fetches_rabi_usage_with_the_desktop_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/desktop/usage"))
+        .and(header("authorization", "Bearer desktop-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rabi_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = rabi_home(&server);
+    let usage = fetch_rabi_usage(home.path())
+        .await
+        .expect("fetch")
+        .expect("supported");
+    assert_eq!(usage.plan.map(|plan| plan.key), Some("plus".to_string()));
+}
+
+#[tokio::test]
+async fn a_rabi_without_the_usage_route_is_unsupported() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/desktop/usage"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let home = rabi_home(&server);
+    assert_eq!(fetch_rabi_usage(home.path()).await, Ok(None));
+}
+
+#[tokio::test]
+async fn a_rabi_that_predates_the_windows_is_unsupported_too() {
+    // The shape Rabi served before `windows` existed: a plan, the retired
+    // meters, and nothing the CLI can draw as a limit.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/desktop/usage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "plan": {"id": "plan_1", "key": "plus", "name": "Plus"},
+            "usage": {
+                "chatTokens": {"used": 250_000, "limit": null, "resetAt": null, "windowHours": 5}
+            }
+        })))
+        .mount(&server)
+        .await;
+    let home = rabi_home(&server);
+    // "No allowance numbers from this Rabi", not "your plan has no limit".
+    assert_eq!(fetch_rabi_usage(home.path()).await, Ok(None));
+}
+
+#[tokio::test]
+async fn a_retired_rabi_key_is_unauthorized() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/desktop/usage"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": "invalid_api_key", "status": 401
+        })))
+        .mount(&server)
+        .await;
+    let home = rabi_home(&server);
+    assert_eq!(
+        fetch_rabi_usage(home.path()).await,
+        Err(RabiUsageError::Unauthorized)
+    );
+}
+
+#[tokio::test]
+async fn rabi_usage_needs_a_rabi_login() {
+    let server = MockServer::start().await;
+    let home = studio_home(&server, far_future());
+    assert_eq!(
+        fetch_rabi_usage(home.path()).await,
+        Err(RabiUsageError::NotSignedIn)
+    );
+}

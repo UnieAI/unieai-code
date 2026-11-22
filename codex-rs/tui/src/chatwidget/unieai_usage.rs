@@ -12,6 +12,13 @@
 //!
 //! The ChatGPT `/usage` menu (`usage.rs`) is untouched and still serves a
 //! ChatGPT login.
+//!
+//! A Rabi login (`unieai login --rabi`) is metered per feature instead: Rabi's
+//! `/api/desktop/usage` returns gauges in pages, sessions, tokens and calls,
+//! each over its own plan-configured window (docs/unieai/usage-api.md). `/usage`
+//! lists every gauge as is; the status-line limit items are filled only from a
+//! gauge whose window is actually 5 hours (primary) or a week (secondary), so
+//! their labels stay true.
 
 use super::*;
 use crate::clock_format::ClockFormat;
@@ -22,11 +29,16 @@ use codex_app_server_protocol::CreditsSnapshot;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_login::unieai::UnieAIAccountKind;
 use codex_login::unieai_usage::FIVE_HOUR_WINDOW_MINUTES;
+use codex_login::unieai_usage::RabiUsage;
+use codex_login::unieai_usage::RabiUsageError;
+use codex_login::unieai_usage::RabiUsageSource;
 use codex_login::unieai_usage::StudioUsage;
 use codex_login::unieai_usage::StudioUsageError;
 use codex_login::unieai_usage::StudioUsageWindow;
+use codex_login::unieai_usage::StudioUsageWindows;
 use codex_login::unieai_usage::StudioWallet;
 use codex_login::unieai_usage::WEEK_WINDOW_MINUTES;
+use codex_login::unieai_usage::unieai_rabi_plan_url;
 use codex_login::unieai_usage::unieai_top_up_url;
 use ratatui::text::Span;
 use std::time::Duration;
@@ -54,6 +66,11 @@ pub(crate) enum UnieAIUsageEvent {
         started_at: Instant,
         result: Result<Option<StudioUsage>, StudioUsageError>,
     },
+    /// A live Rabi read after a turn.
+    PolledRabi {
+        started_at: Instant,
+        result: Result<Option<RabiUsage>, RabiUsageError>,
+    },
     /// Ask before turning extra usage on; turning it off needs no question.
     ConfirmExtraUsage {
         enable: bool,
@@ -69,6 +86,10 @@ pub(crate) enum UnieAIUsageLoad {
     /// This Studio has no `/api/usage/me` yet (404): the wallet alone.
     Unsupported(Result<Option<StudioWallet>, StudioUsageError>),
     Failed(StudioUsageError),
+    Rabi(RabiUsage),
+    /// This Rabi has no `/api/desktop/usage` yet (404).
+    RabiUnsupported,
+    RabiFailed(RabiUsageError),
 }
 
 #[derive(Default)]
@@ -90,6 +111,40 @@ enum UsageAccount {
     Studio { studio_url: String },
     Rabi { url: String },
     None,
+}
+
+/// Which product's plan a session's usage comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UsageProduct {
+    Studio,
+    Rabi,
+}
+
+impl UsageProduct {
+    fn name(self) -> &'static str {
+        match self {
+            UsageProduct::Studio => "UnieAI Studio",
+            UsageProduct::Rabi => "UnieAI Rabi",
+        }
+    }
+}
+
+impl UsageAccount {
+    fn product(&self) -> Option<UsageProduct> {
+        match self {
+            UsageAccount::Studio { .. } => Some(UsageProduct::Studio),
+            UsageAccount::Rabi { .. } => Some(UsageProduct::Rabi),
+            UsageAccount::None => None,
+        }
+    }
+
+    fn url(&self) -> Option<&str> {
+        match self {
+            UsageAccount::Studio { studio_url } => Some(studio_url),
+            UsageAccount::Rabi { url } => Some(url),
+            UsageAccount::None => None,
+        }
+    }
 }
 
 impl ChatWidget {
@@ -115,24 +170,20 @@ impl ChatWidget {
         Local::now()
     }
 
+    /// The product `/usage` is about, for panel titles.
+    fn unieai_usage_product_name(&self) -> &'static str {
+        self.unieai_usage_account()
+            .product()
+            .unwrap_or(UsageProduct::Studio)
+            .name()
+    }
+
     /// `/usage` without a ChatGPT login.
     pub(crate) fn open_unieai_usage(&mut self) {
-        match self.unieai_usage_account() {
-            UsageAccount::Studio { .. } => {}
-            UsageAccount::Rabi { url } => {
-                self.add_info_message(
-                    format!(
-                        "/usage shows UnieAI Studio plan usage, and this session is signed in to UnieAI Rabi. See your Rabi usage at {url}."
-                    ),
-                    /*hint*/ None,
-                );
-                return;
-            }
-            UsageAccount::None => {
-                self.add_error_message(UNIEAI_USAGE_NO_STUDIO_LOGIN.to_string());
-                return;
-            }
-        }
+        let Some(product) = self.unieai_usage_account().product() else {
+            self.add_error_message(UNIEAI_USAGE_NO_STUDIO_LOGIN.to_string());
+            return;
+        };
         let request_id = self.take_unieai_usage_request_id();
         self.unieai_usage.panel_request_id = Some(request_id);
         let params = self.unieai_usage_message_params(
@@ -145,12 +196,23 @@ impl ChatWidget {
         self.request_redraw();
         let codex_home = self.config.codex_home.clone();
         self.spawn_unieai_usage_task(async move {
-            let load = match codex_login::unieai_usage::fetch_unieai_usage(&codex_home).await {
-                Ok(Some(usage)) => UnieAIUsageLoad::Usage(usage),
-                Ok(None) => UnieAIUsageLoad::Unsupported(
-                    codex_login::unieai_usage::fetch_unieai_wallet(&codex_home).await,
-                ),
-                Err(err) => UnieAIUsageLoad::Failed(err),
+            let load = match product {
+                UsageProduct::Studio => {
+                    match codex_login::unieai_usage::fetch_unieai_usage(&codex_home).await {
+                        Ok(Some(usage)) => UnieAIUsageLoad::Usage(usage),
+                        Ok(None) => UnieAIUsageLoad::Unsupported(
+                            codex_login::unieai_usage::fetch_unieai_wallet(&codex_home).await,
+                        ),
+                        Err(err) => UnieAIUsageLoad::Failed(err),
+                    }
+                }
+                UsageProduct::Rabi => {
+                    match codex_login::unieai_usage::fetch_rabi_usage(&codex_home).await {
+                        Ok(Some(usage)) => UnieAIUsageLoad::Rabi(usage),
+                        Ok(None) => UnieAIUsageLoad::RabiUnsupported,
+                        Err(err) => UnieAIUsageLoad::RabiFailed(err),
+                    }
+                }
             };
             UnieAIUsageEvent::Loaded { request_id, load }
         });
@@ -166,6 +228,12 @@ impl ChatWidget {
                 self.unieai_usage.poll_in_flight = false;
                 if let Ok(Some(usage)) = result {
                     self.apply_studio_usage(&usage, started_at);
+                }
+            }
+            UnieAIUsageEvent::PolledRabi { started_at, result } => {
+                self.unieai_usage.poll_in_flight = false;
+                if let Ok(Some(usage)) = result {
+                    self.apply_rabi_usage(&usage, started_at);
                 }
             }
             UnieAIUsageEvent::ConfirmExtraUsage { enable } => {
@@ -184,17 +252,21 @@ impl ChatWidget {
             return;
         }
         self.unieai_usage.panel_request_id = None;
-        let studio_url = match self.unieai_usage_account() {
-            UsageAccount::Studio { studio_url } => studio_url,
-            UsageAccount::Rabi { .. } | UsageAccount::None => {
-                self.bottom_pane.dismiss_view_by_id(UNIEAI_USAGE_VIEW_ID);
-                return;
-            }
+        let account = self.unieai_usage_account();
+        let (Some(product), Some(url)) = (account.product(), account.url()) else {
+            self.bottom_pane.dismiss_view_by_id(UNIEAI_USAGE_VIEW_ID);
+            return;
         };
-        if let UnieAIUsageLoad::Usage(usage) = &load {
-            self.apply_studio_usage(usage, Instant::now());
+        match (&load, product) {
+            (UnieAIUsageLoad::Usage(usage), UsageProduct::Studio) => {
+                self.apply_studio_usage(usage, Instant::now());
+            }
+            (UnieAIUsageLoad::Rabi(usage), UsageProduct::Rabi) => {
+                self.apply_rabi_usage(usage, Instant::now());
+            }
+            _ => {}
         }
-        let params = self.unieai_usage_panel_params(&load, &studio_url);
+        let params = self.unieai_usage_panel_params(&load, url);
         if self
             .bottom_pane
             .replace_selection_view_if_present(UNIEAI_USAGE_VIEW_ID, params)
@@ -203,14 +275,10 @@ impl ChatWidget {
         }
     }
 
-    fn unieai_usage_panel_params(
-        &self,
-        load: &UnieAIUsageLoad,
-        studio_url: &str,
-    ) -> SelectionViewParams {
+    fn unieai_usage_panel_params(&self, load: &UnieAIUsageLoad, url: &str) -> SelectionViewParams {
         let now = self.unieai_usage_now();
         match load {
-            UnieAIUsageLoad::Usage(usage) => self.unieai_usage_data_params(usage, studio_url, now),
+            UnieAIUsageLoad::Usage(usage) => self.unieai_usage_data_params(usage, url, now),
             UnieAIUsageLoad::Unsupported(wallet) => {
                 let mut lines = vec![Line::from(
                     "Plan usage isn't available from this Studio yet.".to_string(),
@@ -228,7 +296,7 @@ impl ChatWidget {
                 }
                 let mut params = self.unieai_usage_message_params(lines, /*retry*/ false);
                 params.items = vec![
-                    link_item("Top up credits", unieai_top_up_url(studio_url)),
+                    link_item("Top up credits", unieai_top_up_url(url)),
                     refresh_item(),
                 ];
                 params
@@ -237,6 +305,51 @@ impl ChatWidget {
                 vec![Line::from(format!("Couldn't load your plan usage. {err}"))],
                 /*retry*/ true,
             ),
+            UnieAIUsageLoad::Rabi(usage) => self.unieai_rabi_usage_data_params(usage, url, now),
+            UnieAIUsageLoad::RabiUnsupported => {
+                let mut params = self.unieai_usage_message_params(
+                    vec![Line::from(
+                        "Plan usage isn't available from this Rabi yet.".to_string(),
+                    )],
+                    /*retry*/ false,
+                );
+                params.items = vec![
+                    link_item("Open your plan", unieai_rabi_plan_url(url)),
+                    refresh_item(),
+                ];
+                params
+            }
+            UnieAIUsageLoad::RabiFailed(err) => self.unieai_usage_message_params(
+                vec![Line::from(format!(
+                    "Couldn't load your Rabi plan usage. {err}"
+                ))],
+                /*retry*/ true,
+            ),
+        }
+    }
+
+    /// Rabi's gauges: no extra usage, no wallet, so the only link is the plan.
+    fn unieai_rabi_usage_data_params(
+        &self,
+        usage: &RabiUsage,
+        rabi_url: &str,
+        now: DateTime<Local>,
+    ) -> SelectionViewParams {
+        let lines = rabi_usage_panel_lines(usage, now, self.clock_format);
+        let mut items = Vec::new();
+        if usage.plan.is_some() {
+            items.push(link_item("Manage plan", unieai_rabi_plan_url(rabi_url)));
+        }
+        items.push(refresh_item());
+        SelectionViewParams {
+            view_id: Some(UNIEAI_USAGE_VIEW_ID),
+            header: Box::new(Paragraph::new(lines).wrap(Wrap { trim: false })),
+            footer_hint: Some(super::usage::usage_hint_line(
+                &self.bottom_pane.list_keymap(),
+                "select",
+            )),
+            items,
+            ..SelectionViewParams::picker()
         }
     }
 
@@ -287,7 +400,10 @@ impl ChatWidget {
         body: Vec<Line<'static>>,
         retry: bool,
     ) -> SelectionViewParams {
-        let mut lines = vec![usage_title_line(None), Line::default()];
+        let mut lines = vec![
+            usage_title_line(self.unieai_usage_product_name(), None),
+            Line::default(),
+        ];
         lines.extend(body);
         let items = if retry {
             vec![
@@ -423,17 +539,23 @@ impl ChatWidget {
         {
             return;
         }
-        if !matches!(self.unieai_usage_account(), UsageAccount::Studio { .. }) {
+        let Some(product) = self.unieai_usage_account().product() else {
             return;
-        }
+        };
         let started_at = Instant::now();
         self.unieai_usage.poll_in_flight = true;
         self.unieai_usage.last_poll_at = Some(started_at);
         let codex_home = self.config.codex_home.clone();
         self.spawn_unieai_usage_task(async move {
-            UnieAIUsageEvent::Polled {
-                started_at,
-                result: codex_login::unieai_usage::fetch_unieai_usage(&codex_home).await,
+            match product {
+                UsageProduct::Studio => UnieAIUsageEvent::Polled {
+                    started_at,
+                    result: codex_login::unieai_usage::fetch_unieai_usage(&codex_home).await,
+                },
+                UsageProduct::Rabi => UnieAIUsageEvent::PolledRabi {
+                    started_at,
+                    result: codex_login::unieai_usage::fetch_rabi_usage(&codex_home).await,
+                },
             }
         });
     }
@@ -477,16 +599,28 @@ impl ChatWidget {
         self.update_plan_exhausted_notice(usage);
     }
 
-    fn update_plan_exhausted_notice(&mut self, usage: &StudioUsage) {
-        let exhausted = [
-            (usage.windows.five_hour.as_ref(), "5-hour"),
-            (usage.windows.week.as_ref(), "weekly"),
-        ]
-        .into_iter()
-        .filter_map(|(window, label)| Some((window?, label)))
-        .filter(|(window, _)| window.is_exhausted())
-        .max_by_key(|(window, _)| window.resets_at);
-        let Some((window, label)) = exhausted else {
+    /// Rabi's windows as the `codex` limit, so `/status` and the status line
+    /// work for it too. A Rabi gateway sends none of these headers, so the
+    /// reading always applies. Exhaustion also warns in the history once.
+    fn apply_rabi_usage(&mut self, usage: &RabiUsage, started_at: Instant) {
+        let headers_are_newer = self
+            .unieai_usage
+            .header_snapshot_at
+            .is_some_and(|at| at >= started_at);
+        if !headers_are_newer {
+            self.on_rate_limit_snapshot(Some(rabi_rate_limit_snapshot(usage)));
+        }
+        self.update_rabi_exhausted_notice(usage);
+    }
+
+    fn update_rabi_exhausted_notice(&mut self, usage: &RabiUsage) {
+        let exhausted = usage
+            .windows
+            .source()
+            .is_rabi_metered()
+            .then(|| exhausted_window(&usage.windows.as_studio()))
+            .flatten();
+        let Some((resets_at, label)) = exhausted else {
             self.unieai_usage.exhausted_notice_shown = false;
             return;
         };
@@ -495,8 +629,35 @@ impl ChatWidget {
         }
         self.unieai_usage.exhausted_notice_shown = true;
         let now = self.unieai_usage_now();
-        let resets = window
-            .resets_at
+        let resets = resets_at
+            .map(|at| {
+                format!(
+                    " Resets at {}.",
+                    crate::status::format_reset_timestamp(
+                        at.with_timezone(&Local),
+                        now,
+                        self.clock_format
+                    )
+                )
+            })
+            .unwrap_or_default();
+        self.add_to_history(history_cell::new_usage_warning_event(format!(
+            "Your Rabi {label} allowance is used up.{resets} /usage shows your plan."
+        )));
+        self.request_redraw();
+    }
+
+    fn update_plan_exhausted_notice(&mut self, usage: &StudioUsage) {
+        let Some((resets_at, label)) = exhausted_window(&usage.windows) else {
+            self.unieai_usage.exhausted_notice_shown = false;
+            return;
+        };
+        if self.unieai_usage.exhausted_notice_shown {
+            return;
+        }
+        self.unieai_usage.exhausted_notice_shown = true;
+        let now = self.unieai_usage_now();
+        let resets = resets_at
             .map(|at| {
                 format!(
                     " resets at {}",
@@ -568,11 +729,10 @@ impl ChatWidget {
     }
 }
 
-/// The `codex` limit the status surfaces read: primary is the 5-hour window,
-/// secondary the weekly one. Credits count as usable only with extra usage
-/// on, so the near-limit warnings stay quiet only when going past the limit
-/// would not stop the user.
-pub(super) fn studio_rate_limit_snapshot(usage: &StudioUsage) -> RateLimitSnapshot {
+/// The two windows as the status surfaces read them: primary is the 5-hour
+/// window, secondary the weekly one. An unmeasured or unlimited window is
+/// absent rather than zero, so nothing claims a limit that is not there.
+fn window_pair(windows: &StudioUsageWindows) -> (Option<RateLimitWindow>, Option<RateLimitWindow>) {
     let window = |window: Option<&StudioUsageWindow>, default_minutes: i64| {
         let window = window?;
         Some(RateLimitWindow {
@@ -581,12 +741,41 @@ pub(super) fn studio_rate_limit_snapshot(usage: &StudioUsage) -> RateLimitSnapsh
             resets_at: window.resets_at.map(|at| at.timestamp()),
         })
     };
+    (
+        window(windows.five_hour.as_ref(), FIVE_HOUR_WINDOW_MINUTES),
+        window(windows.week.as_ref(), WEEK_WINDOW_MINUTES),
+    )
+}
+
+/// The window that ran out, whichever resets last (so the warning names the
+/// one the user has to wait for), as its reset time and its label. `None` when
+/// neither is exhausted.
+fn exhausted_window(
+    windows: &StudioUsageWindows,
+) -> Option<(Option<DateTime<chrono::Utc>>, &'static str)> {
+    [
+        (windows.five_hour.as_ref(), "5-hour"),
+        (windows.week.as_ref(), "weekly"),
+    ]
+    .into_iter()
+    .filter_map(|(window, label)| Some((window?, label)))
+    .filter(|(window, _)| window.is_exhausted())
+    .max_by_key(|(window, _)| window.resets_at)
+    .map(|(window, label)| (window.resets_at, label))
+}
+
+/// The `codex` limit the status surfaces read: primary is the 5-hour window,
+/// secondary the weekly one. Credits count as usable only with extra usage
+/// on, so the near-limit warnings stay quiet only when going past the limit
+/// would not stop the user.
+pub(super) fn studio_rate_limit_snapshot(usage: &StudioUsage) -> RateLimitSnapshot {
+    let (primary, secondary) = window_pair(&usage.windows);
     RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
         limit_name: None,
         normal_model_slug: None,
-        primary: window(usage.windows.five_hour.as_ref(), FIVE_HOUR_WINDOW_MINUTES),
-        secondary: window(usage.windows.week.as_ref(), WEEK_WINDOW_MINUTES),
+        primary,
+        secondary,
         credits: usage.wallet.is_some().then(|| CreditsSnapshot {
             has_credits: usage.extra_usage.enabled && usage.credits_available(),
             unlimited: false,
@@ -601,8 +790,32 @@ pub(super) fn studio_rate_limit_snapshot(usage: &StudioUsage) -> RateLimitSnapsh
     }
 }
 
-fn usage_title_line(plan: Option<String>) -> Line<'static> {
-    let mut spans = vec!["Usage".bold(), " · UnieAI Studio".dim()];
+/// Rabi's windows as the `codex` limit. Only an account Rabi meters has numbers
+/// to report: a Studio-bound account is metered by Studio, and a standalone
+/// machine has no plan at all, so neither fills the status line.
+pub(super) fn rabi_rate_limit_snapshot(usage: &RabiUsage) -> RateLimitSnapshot {
+    let (primary, secondary) = if usage.windows.source().is_rabi_metered() {
+        window_pair(&usage.windows.as_studio())
+    } else {
+        (None, None)
+    };
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        normal_model_slug: None,
+        primary,
+        secondary,
+        // Rabi has no API credits to spend past a limit.
+        credits: None,
+        individual_limit: None,
+        spend_control_reached: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }
+}
+
+fn usage_title_line(product: &'static str, plan: Option<String>) -> Line<'static> {
+    let mut spans = vec!["Usage".bold(), format!(" · {product}").dim()];
     if let Some(plan) = plan {
         spans.push(" · ".dim());
         spans.push(plan.into());
@@ -633,7 +846,10 @@ pub(super) fn usage_panel_lines(
         }
         name
     });
-    let mut lines = vec![usage_title_line(plan), Line::default()];
+    let mut lines = vec![
+        usage_title_line(UsageProduct::Studio.name(), plan),
+        Line::default(),
+    ];
     if usage.plan.is_none() {
         lines.push(Line::from(
             "No plan: every request is billed to your wallet.".to_string(),
@@ -726,6 +942,52 @@ fn window_spans(
         }
     }
     spans
+}
+
+/// The Rabi panel body: the plan and the two windows that gate it, when Rabi
+/// is the one metering. An account metered elsewhere says so instead of
+/// showing numbers it does not own.
+pub(super) fn rabi_usage_panel_lines(
+    usage: &RabiUsage,
+    now: DateTime<Local>,
+    clock_format: ClockFormat,
+) -> Vec<Line<'static>> {
+    let plan = usage
+        .plan
+        .as_ref()
+        .map(|plan| format!("{} plan", plan.display_name()));
+    let mut lines = vec![
+        usage_title_line(UsageProduct::Rabi.name(), plan),
+        Line::default(),
+    ];
+    match usage.windows.source() {
+        RabiUsageSource::Rabi => {
+            if !usage.windows.has_windows() {
+                lines.push(Line::from(
+                    "This plan has no 5-hour or weekly limit.".to_string(),
+                ));
+                return lines;
+            }
+            for (label, window) in [
+                ("5-hour limit", usage.windows.five_hour.as_ref()),
+                ("Weekly limit", usage.windows.week.as_ref()),
+            ] {
+                if let Some(window) = window {
+                    lines.push(labeled(label, window_spans(window, now, clock_format)));
+                }
+            }
+        }
+        // The numbers belong to a Studio plan this login cannot read.
+        RabiUsageSource::Studio => lines.push(Line::from(
+            "Metered by your UnieAI Studio plan: studio.unieai.com/usage has the numbers."
+                .to_string(),
+        )),
+        RabiUsageSource::Standalone => lines.push(Line::from(
+            "No plan: this machine is not connected to a Studio account, so requests are not metered."
+                .to_string(),
+        )),
+    }
+    lines
 }
 
 fn wallet_lines(wallet: &StudioWallet, now: DateTime<Local>) -> Vec<Line<'static>> {

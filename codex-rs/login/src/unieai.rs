@@ -43,6 +43,9 @@ pub enum UnieAIAccountKind {
 }
 
 impl UnieAIAccountKind {
+    /// Takes `&self` because that is the signature `skip_serializing_if`
+    /// demands, so clippy's "pass by value" advice cannot apply here.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn is_studio(&self) -> bool {
         *self == Self::Studio
     }

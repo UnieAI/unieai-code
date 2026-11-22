@@ -3,14 +3,18 @@
 
 use super::super::unieai_usage::UnieAIUsageEvent;
 use super::super::unieai_usage::UnieAIUsageLoad;
+use super::super::unieai_usage::rabi_rate_limit_snapshot;
 use super::super::unieai_usage::studio_rate_limit_snapshot;
 use super::*;
 use chrono::TimeZone;
 use codex_login::unieai::UnieAIAccountKind;
 use codex_login::unieai::UnieAICredentials;
+use codex_login::unieai_usage::RabiUsage;
+use codex_login::unieai_usage::RabiUsageError;
 use codex_login::unieai_usage::StudioUsage;
 use codex_login::unieai_usage::StudioUsageError;
 use codex_login::unieai_usage::StudioWallet;
+use codex_login::unieai_usage::parse_rabi_usage;
 use codex_login::unieai_usage::parse_studio_usage;
 use pretty_assertions::assert_eq;
 
@@ -94,6 +98,49 @@ async fn studio_chat() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver<AppE
     (chat, rx)
 }
 
+async fn rabi_chat() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+    let (mut chat, rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    std::fs::create_dir_all(&chat.config.codex_home).expect("codex home");
+    sign_in(&chat, UnieAIAccountKind::Rabi);
+    chat.unieai_usage.now_override = Some(now());
+    chat.clock_format = crate::clock_format::ClockFormat::TwentyFourHour;
+    (chat, rx)
+}
+
+/// A Rabi login whose plan Rabi meters itself: the same two windows Studio
+/// reports, in micro-USD.
+fn rabi_usage(five_hour_used: i64, week_used: i64) -> RabiUsage {
+    let now = now();
+    parse_rabi_usage(serde_json::json!({
+        "plan": {"id": "plan_1", "key": "plus", "name": "Plus"},
+        "windows": {
+            "source": "rabi",
+            "fiveHour": {
+                "usedMicroUsd": five_hour_used,
+                "limitMicroUsd": 4_000_000,
+                "resetsAt": iso(now + chrono::Duration::hours(2)),
+                "windowMinutes": 300,
+            },
+            "week": {
+                "usedMicroUsd": week_used,
+                "limitMicroUsd": 20_000_000,
+                "resetsAt": iso(now + chrono::Duration::days(6)),
+                "windowMinutes": 10080,
+            }
+        }
+    }))
+    .expect("rabi usage")
+}
+
+/// A Rabi login someone else meters ("studio") or nobody meters ("standalone").
+fn rabi_usage_from(source: &str) -> RabiUsage {
+    parse_rabi_usage(serde_json::json!({
+        "plan": {"id": "plan_1", "key": "plus", "name": "Plus"},
+        "windows": {"source": source},
+    }))
+    .expect("rabi usage")
+}
+
 fn open_and_load(chat: &mut ChatWidget, load: UnieAIUsageLoad) {
     chat.dispatch_command(SlashCommand::Usage);
     let request_id = chat
@@ -118,14 +165,49 @@ async fn unieai_usage_without_a_studio_login_says_what_it_needs() {
 }
 
 #[tokio::test]
-async fn unieai_usage_with_a_rabi_login_points_to_rabi() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    std::fs::create_dir_all(&chat.config.codex_home).expect("codex home");
-    sign_in(&chat, UnieAIAccountKind::Rabi);
-    chat.dispatch_command(SlashCommand::Usage);
-    let rendered = history_text(&mut rx);
-    assert!(rendered.contains("signed in to UnieAI Rabi"), "{rendered}");
-    assert_eq!(chat.unieai_usage_panel_request_id(), None);
+async fn unieai_usage_on_a_rabi_login_shows_both_windows() {
+    let (mut chat, _rx) = rabi_chat().await;
+    open_and_load(
+        &mut chat,
+        UnieAIUsageLoad::Rabi(rabi_usage(2_000_000, 5_000_000)),
+    );
+    assert_chatwidget_snapshot!("unieai_usage_rabi_panel", render_bottom_popup(&chat, 90));
+}
+
+#[tokio::test]
+async fn unieai_usage_on_a_rabi_metered_by_studio_says_where_the_numbers_are() {
+    let (mut chat, _rx) = rabi_chat().await;
+    open_and_load(&mut chat, UnieAIUsageLoad::Rabi(rabi_usage_from("studio")));
+    assert_chatwidget_snapshot!(
+        "unieai_usage_rabi_metered_by_studio",
+        render_bottom_popup(&chat, 90)
+    );
+}
+
+#[tokio::test]
+async fn unieai_usage_on_a_rabi_without_the_usage_route_links_the_plan() {
+    let (mut chat, _rx) = rabi_chat().await;
+    open_and_load(&mut chat, UnieAIUsageLoad::RabiUnsupported);
+    assert_chatwidget_snapshot!(
+        "unieai_usage_rabi_unsupported",
+        render_bottom_popup(&chat, 90)
+    );
+}
+
+#[tokio::test]
+async fn unieai_usage_on_a_rabi_failure_offers_a_retry() {
+    let (mut chat, mut rx) = rabi_chat().await;
+    open_and_load(
+        &mut chat,
+        UnieAIUsageLoad::RabiFailed(RabiUsageError::Unauthorized),
+    );
+    assert_chatwidget_snapshot!("unieai_usage_rabi_failed", render_bottom_popup(&chat, 90));
+    while rx.try_recv().is_ok() {}
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UnieAIUsage(UnieAIUsageEvent::Open))
+    );
 }
 
 #[tokio::test]
@@ -276,6 +358,109 @@ async fn gateway_headers_newer_than_a_studio_read_win() {
         .and_then(|display| display.primary.as_ref())
         .map(|window| window.used_percent);
     assert_eq!(primary, Some(80.0));
+}
+
+#[tokio::test]
+async fn rabi_windows_feed_the_five_hour_and_weekly_status_items() {
+    let rabi = rabi_usage(2_000_000, 5_000_000);
+    let snapshot = rabi_rate_limit_snapshot(&rabi);
+    assert_eq!(snapshot.limit_id.as_deref(), Some("codex"));
+    assert_eq!(
+        snapshot
+            .primary
+            .as_ref()
+            .map(|window| (window.used_percent, window.window_duration_mins)),
+        Some((50, Some(300)))
+    );
+    assert_eq!(
+        snapshot
+            .secondary
+            .as_ref()
+            .map(|window| (window.used_percent, window.window_duration_mins)),
+        Some((25, Some(10080)))
+    );
+    // Rabi has no API credits behind a limit.
+    assert_eq!(snapshot.credits, None);
+
+    let (mut chat, _rx) = rabi_chat().await;
+    open_and_load(&mut chat, UnieAIUsageLoad::Rabi(rabi));
+    let five_hour = chat
+        .status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit)
+        .expect("five hour item");
+    let weekly = chat
+        .status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit)
+        .expect("weekly item");
+    assert!(five_hour.starts_with("5h"), "{five_hour}");
+    assert!(weekly.starts_with("weekly"), "{weekly}");
+}
+
+#[tokio::test]
+async fn a_rabi_that_is_not_metered_by_rabi_leaves_the_status_items_empty() {
+    // Studio meters this account, so Rabi has no reading to publish.
+    let snapshot = rabi_rate_limit_snapshot(&rabi_usage_from("studio"));
+    assert_eq!(snapshot.primary, None);
+    assert_eq!(snapshot.secondary, None);
+    // A standalone machine has no plan at all.
+    let snapshot = rabi_rate_limit_snapshot(&rabi_usage_from("standalone"));
+    assert_eq!(snapshot.primary, None);
+    assert_eq!(snapshot.secondary, None);
+    // A Rabi plan with the 5-hour window switched off keeps the week.
+    let rabi = parse_rabi_usage(serde_json::json!({
+        "windows": {
+            "source": "rabi",
+            "week": {
+                "usedMicroUsd": 5_000_000,
+                "limitMicroUsd": 20_000_000,
+                "windowMinutes": 10080,
+            }
+        }
+    }))
+    .expect("rabi usage");
+    let snapshot = rabi_rate_limit_snapshot(&rabi);
+    assert_eq!(snapshot.primary, None);
+    assert_eq!(
+        snapshot
+            .secondary
+            .as_ref()
+            .map(|window| window.used_percent),
+        Some(25)
+    );
+}
+
+#[tokio::test]
+async fn an_exhausted_rabi_window_warns_once_in_the_history() {
+    let (mut chat, mut rx) = rabi_chat().await;
+    let poll = |chat: &mut ChatWidget, five_hour_used: i64| {
+        chat.on_unieai_usage_event(UnieAIUsageEvent::PolledRabi {
+            started_at: std::time::Instant::now(),
+            result: Ok(Some(rabi_usage(five_hour_used, /*week_used*/ 0))),
+        });
+    };
+    poll(&mut chat, 3_900_000);
+    poll(&mut chat, 4_000_000);
+    poll(&mut chat, 4_000_000);
+    let rendered = history_text(&mut rx);
+    assert_eq!(
+        rendered
+            .matches("Your Rabi 5-hour allowance is used up.")
+            .count(),
+        1,
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn a_rabi_metered_by_studio_never_warns_about_a_rabi_limit() {
+    let (mut chat, mut rx) = rabi_chat().await;
+    let mut usage = rabi_usage(4_000_000, /*week_used*/ 20_000_000);
+    // Rabi still sends the numbers for a Studio-bound account's own windows,
+    // but they are not the limits the user hits: the source decides.
+    usage.windows.source = Some("studio".to_string());
+    chat.on_unieai_usage_event(UnieAIUsageEvent::PolledRabi {
+        started_at: std::time::Instant::now(),
+        result: Ok(Some(usage)),
+    });
+    assert_eq!(history_text(&mut rx), "");
 }
 
 #[tokio::test]
