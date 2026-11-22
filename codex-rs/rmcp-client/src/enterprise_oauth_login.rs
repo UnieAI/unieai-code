@@ -244,6 +244,7 @@ pub async fn perform_enterprise_oauth_login_return_url(
         McpOAuthClientRegistration::Auto,
         /*oauth_resource*/ None,
         /*launch_browser*/ false,
+        /*listen_for_callback*/ true,
         request.callback_port,
         request.callback_url,
         /*global_callback_url*/ None,

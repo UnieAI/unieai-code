@@ -23,6 +23,7 @@ use codex_mcp::should_retry_without_scopes;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::perform_oauth_login;
 use codex_rmcp_client::perform_oauth_login_with_callback_input;
+use codex_rmcp_client::perform_remote_oauth_login;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::event::KeyCode;
@@ -34,10 +35,14 @@ use tokio::sync::oneshot;
 
 const MAX_CALLBACK_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum McpLoginMode {
     Browser,
     PasteCallback,
+    Remote {
+        url: String,
+        client: codex_http_client::HttpClient,
+    },
 }
 
 /// Retry provider-rejected discovered scopes once, retaining the selected input mode.
@@ -69,7 +74,7 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
         .enumerate()
     {
         let login = async {
-            match mode {
+            match &mode {
                 McpLoginMode::Browser => {
                     perform_oauth_login(
                         name,
@@ -88,6 +93,18 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
                         Arc::clone(&http_client),
                     )
                     .await
+                }
+                McpLoginMode::Remote { url: remote_url, client } => {
+                    perform_remote_oauth_login(
+                        name, url, store_mode, keyring_backend_kind,
+                        http_headers.clone(), env_http_headers.clone(), scopes,
+                        oauth_config, client_registration, oauth_resource,
+                        Arc::clone(&http_client), client, remote_url,
+                        |verification_uri| println!(
+                            "Authorize the MCP server by opening this URL in your browser:\n{verification_uri}\n\n\
+                             After approval, this terminal will finish automatically."
+                        ),
+                    ).await
                 }
                 McpLoginMode::PasteCallback => {
                     let input = &mut pending_input;

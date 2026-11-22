@@ -215,8 +215,16 @@ pub struct LoginArgs {
     pub name: String,
 
     /// Print the authorization URL and accept the callback URL without opening a browser.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "remote")]
     pub no_browser: bool,
+
+    /// Complete SSH/headless OAuth through a public Rabi page, without copying a callback.
+    #[arg(long)]
+    pub remote: bool,
+
+    /// Rabi HTTPS origin used for remote OAuth (defaults to UNIEAI_RABI_URL or rabi.unieai.com).
+    #[arg(long, value_name = "HTTPS_ORIGIN", requires = "remote")]
+    pub remote_url: Option<String>,
 
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
@@ -547,6 +555,8 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let LoginArgs {
         name,
         no_browser,
+        remote,
+        remote_url,
         scopes,
         oauth_client_registration,
     } = login_args;
@@ -596,8 +606,33 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
     let credential_name = server.oauth_credential_name(&name);
-    let callback_url =
-        resolve_oauth_callback(server, &url, config.mcp_oauth_callback_url.as_deref())?;
+    let callback_url = if remote {
+        None
+    } else {
+        resolve_oauth_callback(server, &url, config.mcp_oauth_callback_url.as_deref())?
+    };
+    let mode = if remote {
+        let remote_url =
+            remote_url.unwrap_or_else(|| codex_login::unieai_rabi::resolve_rabi_url(None));
+        // Deliberately separate from the MCP headers helper and account auth clients.
+        let client = codex_http_client::HttpClientBuilder::new()
+            .without_redirects()
+            .without_request_logging()
+            .build_respecting_outbound_proxy_policy(
+                &config.http_client_factory(),
+                &remote_url,
+                codex_http_client::ClientRouteClass::Auth,
+            )
+            .map_err(|_| anyhow!("Could not create the remote OAuth service client"))?;
+        McpLoginMode::Remote {
+            url: remote_url,
+            client,
+        }
+    } else if no_browser {
+        McpLoginMode::PasteCallback
+    } else {
+        McpLoginMode::Browser
+    };
 
     perform_oauth_login_retry_without_scopes(
         credential_name.as_ref(),
@@ -614,11 +649,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
         callback_url.as_deref(),
         config.mcp_oauth_callback_url.as_deref(),
         http_client,
-        if no_browser {
-            McpLoginMode::PasteCallback
-        } else {
-            McpLoginMode::Browser
-        },
+        mode,
     )
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");

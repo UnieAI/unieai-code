@@ -68,6 +68,37 @@ fn oauth_client_secret_requires_url_and_client_id_without_disclosure() {
     }
 }
 
+#[test]
+fn remote_oauth_flags_select_one_callback_mode() {
+    let cli = McpCli::try_parse_from([
+        "mcp",
+        "login",
+        "space",
+        "--remote",
+        "--remote-url",
+        "https://rabi.example",
+    ])
+    .expect("remote OAuth arguments");
+    let McpSubcommand::Login(login) = cli.subcommand else {
+        panic!("expected login")
+    };
+    assert!(login.remote);
+    assert!(!login.no_browser);
+    assert_eq!(login.remote_url.as_deref(), Some("https://rabi.example"));
+    for args in [
+        vec!["mcp", "login", "space", "--remote", "--no-browser"],
+        vec![
+            "mcp",
+            "login",
+            "space",
+            "--remote-url",
+            "https://rabi.example",
+        ],
+    ] {
+        assert!(McpCli::try_parse_from(args).is_err());
+    }
+}
+
 async fn isolated_test_home(test_name: &str) -> anyhow::Result<Option<PathBuf>> {
     const CHILD: &str = "CODEX_MCP_NETWORK_TEST_CHILD";
     let test_name = format!("mcp_cmd::tests::{test_name}");
@@ -234,6 +265,8 @@ async fn application_network_mcp_login_denies_even_an_allowed_mcp_server() -> an
             super::LoginArgs {
                 name: "policy-probe".to_string(),
                 no_browser: true,
+                remote: false,
+                remote_url: None,
                 scopes: Vec::new(),
                 oauth_client_registration: None,
             },

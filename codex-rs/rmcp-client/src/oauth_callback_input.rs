@@ -65,6 +65,7 @@ where
         client_registration,
         oauth_resource,
         /*launch_browser*/ false,
+        /*listen_for_callback*/ true,
         callback_port,
         callback_url,
         global_callback_url,
@@ -96,7 +97,7 @@ where
     save_oauth_tokens(server_name, &stored, store_mode, keyring_backend_kind).await
 }
 
-fn parse_callback_url(
+pub(super) fn parse_callback_url(
     input: &str,
     redirect_uri: &str,
     authorization_url: &str,
