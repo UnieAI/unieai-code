@@ -33,6 +33,24 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.44 — 2026-11-22
+
+### Improved
+
+- **A Rabi plan shows the allowances it actually has: a 5-hour window and a
+  rolling week.** `/usage` on a Rabi sign-in draws those two — used and limit
+  in model-cost USD, and when each resets — and the status line's 5-hour and
+  weekly items fill in from the same numbers. A window that runs out warns once
+  in the conversation, like Studio's does. The six per-feature gauges (vision
+  pages, agent sessions, agent tokens, chat tokens, MCP calls, tool calls) are
+  retired and no longer shown: no plan capped them, and nothing was charged
+  against them.
+- When the allowance belongs to UnieAI Studio, or the machine has no account,
+  `/usage` says who meters it instead of drawing an empty Rabi meter.
+- Needs the matching Rabi build: `GET /api/desktop/usage` now answers a
+  `windows` block. Until Rabi serves it, `/usage` reports that this Rabi does
+  not offer plan usage yet rather than claiming the plan has no limit.
+
 ## 0.0.43 — 2026-11-21
 
 ### New

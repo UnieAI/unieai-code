@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/unieai_usage.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Usage · UnieAI Rabi · Plus plan
+
+  5-hour limit  [██████████░░░░░░░░░░] 50% used · resets in 2h 0m (14:00)
+  Weekly limit  [█████░░░░░░░░░░░░░░░] 25% used · resets in 6d 0h (12:00 on 26 Oct)
+
+
+› 1. Manage plan  http://127.0.0.1:9/settings/subscription
+  2. Refresh
+
+  enter select · esc back
