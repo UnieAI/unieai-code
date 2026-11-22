@@ -351,3 +351,70 @@ fn remote_oauth_rejects_unsafe_origins_and_cross_origin_grants() {
     grant.verification_uri = format!("https://attacker.example{API_PATH}/authorize/{SESSION}");
     assert!(grant.validate(&origin).is_err());
 }
+
+fn relay_client(relay: &MockServer) -> codex_http_client::HttpClient {
+    HttpClientBuilder::new()
+        .without_redirects()
+        .without_request_logging()
+        .build_respecting_outbound_proxy_policy(
+            &HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            &relay.uri(),
+            ClientRouteClass::Auth,
+        )
+        .expect("relay client")
+}
+
+async fn mount_status(relay: &MockServer, endpoint: &str, status: u16) {
+    Mock::given(method("POST"))
+        .and(path(format!("{API_PATH}/{endpoint}")))
+        .respond_with(ResponseTemplate::new(status))
+        .mount(relay)
+        .await;
+}
+
+#[tokio::test]
+async fn remote_oauth_start_without_the_route_does_not_claim_expiry() {
+    let relay = MockServer::start().await;
+    mount_status(&relay, "start", 404).await;
+    let origin = Url::parse(&relay.uri()).expect("relay origin");
+    let error = post_json::<RemoteGrant>(&relay_client(&relay), &origin, "start", false, json!({}))
+        .await
+        .err()
+        .expect("a relay without the route must fail");
+    let message = error.to_string();
+    assert!(message.contains("404"), "{message}");
+    assert!(!message.to_lowercase().contains("expired"), "{message}");
+}
+
+#[tokio::test]
+async fn remote_oauth_session_gone_endpoint_still_reports_expiry() {
+    let relay = MockServer::start().await;
+    mount_status(&relay, "poll", 410).await;
+    let origin = Url::parse(&relay.uri()).expect("relay origin");
+    let error = post_json::<PollResponse>(&relay_client(&relay), &origin, "poll", true, json!({}))
+        .await
+        .err()
+        .expect("a gone session must fail");
+    assert!(
+        error.to_string().to_lowercase().contains("expired"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn remote_oauth_accepts_an_empty_acknowledgement_body() {
+    let relay = MockServer::start().await;
+    mount_status(&relay, "configure", 204).await;
+    let origin = Url::parse(&relay.uri()).expect("relay origin");
+    let client = relay_client(&relay);
+    let acknowledged: Value = post_json(&client, &origin, "configure", true, json!({}))
+        .await
+        .expect("204 is a valid acknowledgement");
+    assert_eq!(acknowledged, Value::Null);
+    // A typed response still requires a body.
+    assert!(
+        post_json::<PollResponse>(&client, &origin, "configure", true, json!({}))
+            .await
+            .is_err()
+    );
+}

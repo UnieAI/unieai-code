@@ -107,6 +107,7 @@ async fn post_json<T: DeserializeOwned>(
     client: &codex_http_client::HttpClient,
     origin: &Url,
     endpoint: &str,
+    session_scoped: bool,
     body: Value,
 ) -> std::result::Result<T, RelayError> {
     let operation = async {
@@ -122,7 +123,14 @@ async fn post_json<T: DeserializeOwned>(
             .map_err(|_| RelayError::Unavailable)?;
         let status = response.status();
         if matches!(status.as_u16(), 404 | 410) {
-            return Err(RelayError::Expired);
+            // A gone session endpoint means this login expired; a missing /start
+            // means the relay has no remote OAuth at all, so "run login again"
+            // would only loop.
+            return Err(if session_scoped {
+                RelayError::Expired
+            } else {
+                RelayError::Status(status.as_u16())
+            });
         }
         if !status.is_success() {
             // Never display service-controlled bodies, redirect locations, or URLs.
@@ -139,6 +147,11 @@ async fn post_json<T: DeserializeOwned>(
             }
             bytes.extend_from_slice(&chunk);
         }
+        if bytes.is_empty() {
+            // Endpoints may acknowledge with 204 and no body: a `Value` target
+            // accepts that as null, while a typed target still fails.
+            return serde_json::from_value(Value::Null).map_err(|_| RelayError::InvalidResponse);
+        }
         serde_json::from_slice(&bytes).map_err(|_| RelayError::InvalidResponse)
     };
     timeout(REQUEST_TIMEOUT, operation)
@@ -153,7 +166,8 @@ async fn poll_callback(
 ) -> Result<String> {
     let mut transient_failures = 0;
     loop {
-        let response = post_json::<PollResponse>(client, origin, "poll", grant.credentials()).await;
+        let response =
+            post_json::<PollResponse>(client, origin, "poll", true, grant.credentials()).await;
         match response {
             Ok(response) if response.status == "callback" => {
                 return response
@@ -238,7 +252,7 @@ async fn perform_remote_oauth_login_with_cancel(
             "Remote MCP OAuth requires DCR or a client registered for the public callback; CIMD only supports loopback callbacks"
         );
     }
-    let grant: RemoteGrant = post_json(relay_client, &origin, "start", json!({})).await?;
+    let grant: RemoteGrant = post_json(relay_client, &origin, "start", false, json!({})).await?;
     grant.validate(&origin)?;
     let operation = async {
         let flow = OauthLoginFlow::new(
@@ -279,7 +293,7 @@ async fn perform_remote_oauth_login_with_cancel(
         let mut configure = grant.credentials();
         configure["authorization_url"] = json!(authorization_url);
         configure["server_url"] = json!(display_server.as_str());
-        let _: Value = post_json(relay_client, &origin, "configure", configure).await?;
+        let _: Value = post_json(relay_client, &origin, "configure", true, configure).await?;
         show_authorization(&grant.verification_uri);
         let callback_url = poll_callback(relay_client, &origin, &grant).await?;
         let callback = parse_callback_url(&callback_url, &flow.redirect_uri, &authorization_url)?;
@@ -315,7 +329,8 @@ async fn perform_remote_oauth_login_with_cancel(
     // A repeatable acknowledgement closes the browser even if its first response was lost.
     let mut acknowledged = false;
     for attempt in 0..3 {
-        match post_json::<Value>(relay_client, &origin, "complete", completion.clone()).await {
+        match post_json::<Value>(relay_client, &origin, "complete", true, completion.clone()).await
+        {
             Ok(_) => {
                 acknowledged = true;
                 break;
