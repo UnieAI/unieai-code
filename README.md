@@ -32,6 +32,10 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.45** (2026-11-22) — `unieai mcp login <server> --remote`: finish an MCP server's
+OAuth sign-in from a browser on another machine, with PKCE and the token exchange
+staying on the machine that runs the CLI.
+
 **0.0.44** (2026-11-22) — `/usage` on a Rabi sign-in draws the plan's real 5-hour and
 weekly allowances, and the status line with them; the retired per-feature gauges are gone.
 

@@ -33,6 +33,27 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.45 — 2026-11-22
+
+### New
+
+- **`unieai mcp login` can finish an MCP server's OAuth sign-in when the
+  browser runs on another machine.** Add `--remote` and Code asks Rabi for a
+  short-lived rendezvous instead of listening on a localhost port: the terminal
+  prints one link, you authorize in any browser you already have open, and the
+  waiting command completes by itself — no pasting a callback URL, no SSH port
+  forwarding, no tunnel. The PKCE verifier, the state and issuer checks, the
+  token exchange and the stored MCP credential all stay in Code; Rabi only
+  carries the authorization code, and it never sees your account token or the
+  MCP request headers. One sign-in lasts at most 10 minutes, Ctrl-C cancels it,
+  and `--remote-url` points the rendezvous at a self-hosted Rabi. Without
+  `--remote` nothing changes.
+- Needs the matching Rabi build: `/api/mcp/oauth/remote/*`, and an MCP
+  authorization server that names `iss` in its authorization response and
+  supports dynamic client registration (or a client registered for the public
+  callback). Remote mode cannot be combined with
+  `--oauth-client-registration cimd`, and it says so instead of trying.
+
 ## 0.0.44 — 2026-11-22
 
 ### Improved
