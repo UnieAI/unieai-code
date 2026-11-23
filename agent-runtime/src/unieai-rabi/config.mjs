@@ -109,13 +109,72 @@ const RETRY_POLICY = {
 
 const yamlQuote = (value) => JSON.stringify(String(value));
 
+/**
+ * The reasoning ladder a gateway model accepts, as rabi's `reasoningEfforts`
+ * (level → the value written to `reasoning_effort`).
+ *
+ * rabi offers its ACP "Reasoning effort" option only for a model it believes
+ * reasons, so an undeclared DeepSeek model left the CLI with nothing to pick
+ * even though the gateway honours the parameter. The gateway's own model list
+ * wins when it names levels; until it does, DeepSeek V4 gets the ladder the
+ * gateway validates — it answers 400 "must be none, low, high, xhigh, max or an
+ * integer budget from 1 to 100 (minimal and medium aliases are accepted)" for
+ * anything else. `off` sends `none`: leaving it out would fall back to the
+ * provider default, which thinks. Models the gateway does not describe reason
+ * in get nothing, so the CLI hides the dial instead of sending a parameter the
+ * model ignores. `codex-rs/models-manager/src/model_info.rs`
+ * (`gateway_reasoning_ladder`) declares the same ladder to this client; keep
+ * the two in step.
+ */
+const DEEPSEEK_V4_REASONING_EFFORTS = Object.freeze([
+  ["off", "none"],
+  ["minimal", "minimal"],
+  ["low", "low"],
+  ["medium", "medium"],
+  ["high", "high"],
+  ["xhigh", "xhigh"],
+  ["max", "max"],
+]);
+
+/**
+ * A gateway model's reasoning efforts as `[level, wire value]` pairs in
+ * declared order (a plain object would hoist an integer budget to the front),
+ * or null when it has none.
+ */
+export function gatewayReasoningEfforts(model) {
+  const id = String((typeof model === "string" ? model : model?.id) ?? "");
+  const declared =
+    model?.reasoning_levels ?? model?.reasoningLevels ?? model?.reasoning_efforts ?? null;
+  if (Array.isArray(declared) && declared.length > 0) {
+    const efforts = [];
+    const seen = new Set();
+    for (const level of declared) {
+      const name = String(level).trim().toLowerCase();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      // rabi calls the level that sends nothing `off`; the gateway calls it
+      // `none`. Every other name is the same word on both sides (and an
+      // integer budget the gateway accepts passes through verbatim).
+      const wire = name === "off" ? "none" : name;
+      efforts.push([name === "none" ? "off" : name, wire]);
+    }
+    return efforts.length > 0 ? efforts : null;
+  }
+  return /^deepseek-v4/i.test(id) ? DEEPSEEK_V4_REASONING_EFFORTS.map((pair) => [...pair]) : null;
+}
+
 /** A gateway model as settings.yaml declares it. */
 export function gatewayModel(model) {
   const id = typeof model === "string" ? model : model?.id;
   const contextWindow = Number(model?.context_window ?? model?.contextWindow) || null;
   const declared = model?.input_modalities ?? model?.inputModalities ?? null;
   const input = Array.isArray(declared) ? declared.filter((m) => m === "text" || m === "image") : null;
-  return { id, contextWindow, input: input?.length ? input : null };
+  return {
+    id,
+    contextWindow,
+    input: input?.length ? input : null,
+    reasoningEfforts: gatewayReasoningEfforts(model),
+  };
 }
 
 /**
@@ -279,6 +338,13 @@ export function renderSettings({ baseUrl, models, defaultModel, defaultProvider 
     lines.push(`        - id: ${q(model.id)}`);
     if (model.contextWindow) lines.push(`          contextWindow: ${model.contextWindow}`);
     if (model.input) lines.push(`          input: [${model.input.join(", ")}]`);
+    if (model.reasoningEfforts) {
+      lines.push("          reasoningEfforts:");
+      for (const [level, wire] of model.reasoningEfforts) {
+        const key = /^[A-Za-z_][A-Za-z0-9_]*$/.test(level) ? level : yamlQuote(level);
+        lines.push(`            ${key}: ${yamlQuote(wire)}`);
+      }
+    }
   }
   // Local servers need no key; their windows are unknown, so a
   // conservative default keeps compaction ahead of the server's limit.
@@ -557,6 +623,16 @@ export function renderPatch({
     "  config:",
     "    maxConcurrentJobsPerOwner: 16",
   );
+  // Full-text search over earlier sessions of this workspace. rabi-base mounts
+  // the sqlite query index with `openAt: never` (the web sidebar then matches
+  // titles only) and the ACP profile ships no model-facing session tools.
+  // `first-search` builds a throwaway index from the persisted sessions when
+  // the agent first asks, so nothing extra has to be kept tidy on disk.
+  if (mode !== "minimal") {
+    // A patch row replaces the whole config object, so restate `path` (the
+    // row's only required key).
+    lines.push("- id: session-query-sqlite", "  config:", "    path: ':memory:'", "    openAt: first-search");
+  }
   // rabi's web_search needs a DeepSeek key uac does not have. unieai-web-search
   // replaces it (and owns this row); without that plugin, just turn it off.
   if (mode !== "minimal" && !plugins.some((plugin) => plugin.id === "unieai-web-search")) {
@@ -618,6 +694,22 @@ export function renderPatch({
   }
   if (artifacts) {
     inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
+  }
+  // Reading earlier sessions: what `rabi-experimental-session-search` bundles,
+  // spelled out so it shares the index opened above instead of mounting a
+  // second one in an isolated scope.
+  if (mode !== "minimal") {
+    inserts.push("    - id: tool-session-query", "      name: '@unieai/rabi-tool-session-query'");
+    // A loop the user asks for explicitly, one fresh agent per round. The
+    // bundle also mounts its own workflow engine; the ACP profile already has
+    // one over the same `spawn` provider, so only the tool is added.
+    inserts.push(
+      "    - id: tool-ralph",
+      "      name: '@unieai/rabi-tool-ralph'",
+      "      config:",
+      "        subagentProvider: spawn",
+      "        maxRounds: 64",
+    );
   }
   inserts.push(...parts.inserts, ...modeRows.inserts);
   lines.push("- insert:", ...inserts);

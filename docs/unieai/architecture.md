@@ -1,7 +1,11 @@
 # 架構
 
-UnieAI Code 把 OpenAI codex（Rust harness）接上 UnieAI 平台，並逐步把 agent
-迴圈收斂到與 UnieAI Studio 共用的 `unieai-agent-core`。
+UnieAI Code 把兩個 agent harness 接上 UnieAI 平台：OpenAI codex（Rust）與
+Rabi Harness（rabi，經 ACP 驅動）。面板與 `/engine` 可在兩者之間切換。
+
+> 名稱：對使用者顯示的是 **Rabi Harness**；程式碼裡的引擎 id 是 `uac`，實作目錄與
+> npm 套件仍叫 `unieai-agent-core`（`third_party/unieai-agent-core`）。三種寫法在
+> 指令與設定檔裡都接受（`/engine rabi`、`unieai-code.engine = uac`）。
 
 ## 全景
 
@@ -11,32 +15,36 @@ UnieAI Code 把 OpenAI codex（Rust harness）接上 UnieAI 平台，並逐步�
 └──────────┬──────────────────────┬───────────────────────────┘
            │                      │  面板可切換兩個引擎（unieai-code.engine）
            ▼                      ▼
-┌─ 引擎 A: codex ────────┐   ┌─ 引擎 B: agent-core ──────────────┐
+┌─ 引擎 A: codex ────────┐   ┌─ 引擎 B: Rabi Harness (uac) ──────┐
 │ Rust agent loop        │   │ unieai-agent-core（JS，submodule）│
-│ · sandbox (seatbelt/   │   │ · 純流程迴圈，與 Studio 共用       │
-│   landlock)            │   │ · doom-loop guard、soft-landing、  │
-│ · 互動核准             │   │   malformed 修復、compaction       │
-│ · app-server (JSON-RPC)│   │ · sandbox/核准 = 工具的事（注入）  │
-│ · IDE 整合             │   │ · <think> 剝離、stream idle-timeout│
+│ · sandbox (seatbelt/   │   │ · 起 rabi（`--profile acp`）再疊    │
+│   landlock)            │   │   本專案的 patch（config.mjs）     │
+│ · 互動核准             │   │ · ACP 通訊（JSON-RPC over stdio）  │
+│ · app-server (JSON-RPC)│   │ · 工具層 = rabi 的外掛＋本專案注入 │
+│ · IDE 整合             │   │ · 審批、排程、goal、rewind 在身上  │
 └──────────┬─────────────┘   └──────────┬────────────────────────┘
-           │  Responses API             │  Responses API (wireApi)
+           │  Responses API             │  openai-completions（rabi 代送）
            ▼                            ▼
         UnieAI gateway  /v1/responses  →  Qwen / GLM / MiniMax …
 ```
 
 ## 兩個引擎，為什麼並存
 
-| | codex（引擎 A） | agent-core（引擎 B） |
+| | codex（引擎 A） | Rabi Harness（引擎 B） |
 |---|---|---|
-| 語言 | Rust | JS |
-| 執行安全 | 內建 sandbox + 互動核准 + execpolicy | sandbox/核准由**工具層**負責（`bash` 包 `unieai sandbox`，被拒才走核准縫） |
-| 防呆韌性 | 基本（HTTP/串流重試） | doom-loop 偵測、soft-landing、malformed 修復、idle-timeout |
-| 周邊 | session、IDE 協定、review 模式 | 輕量嵌入式函式庫 |
+| 語言 | Rust | JS（rabi 本體）＋ Rust app-server 轉接 |
+| 執行安全 | 內建 sandbox + 互動核准 + execpolicy | rabi 自己的權限層，經 ACP 問 client；uac 決定誰回答（使用者或自動審查） |
+| 防呆韌性 | 基本（HTTP/串流重試） | doom-loop 偵測、soft-landing、malformed 修復、idle-timeout、回合結束守門 |
+| 周邊 | session、IDE 協定、review 模式 | 子代理、排程、goal、rewind／fork、artifacts |
 | 共用者 | 本 repo | 本 repo **＋ UnieAI Studio** |
 
-**收斂方向**：agent-core 是「一套流程，各處注入工具」——Studio 注入 kb/sql/bi
+**收斂方向**：Rabi Harness 是「一套流程，各處注入工具」——Studio 注入 kb/sql/bi
 （API 型工具，不需 sandbox），UnieAI Code 注入 shell/edit（sandbox 在工具內）。
-面板已可用 `unieai-code.engine = agent-core` 切到共用引擎；TUI 過渡期仍用 codex。
+面板與 `/engine uac` 已可切到共用引擎；預設就是它。
+
+引擎 B 只有 `standard` 與 `minimal` 兩個模式。曾經存在的 `ptc`（一次呼叫跑多個工具）
+與 `creator`（cordis 檢視）需要 rabi web app 才有的 `cordisInspect`，ACP 底下是空殼，
+因此從選單移除；手寫在模式檔裡仍然有效，但不受支援。
 
 ## Provider 與模型
 
@@ -47,7 +55,7 @@ UnieAI Code 把 OpenAI codex（Rust harness）接上 UnieAI 平台，並逐步�
 ## 開源模型 harness（治「宣告後停止」）
 
 codex 原版提示是 GPT 特調的 3 萬 tokens 長文，開源模型讀了容易「說要做卻停住」。
-Fork 對 gateway 模型換上精簡提示（由 agent-core 的 `buildSystemPrompt()` 生成，
+Fork 對 gateway 模型換上精簡提示（由 Rabi Harness 的 `buildSystemPrompt()` 生成，
 存為 `gateway_instructions.md`），第一條規則是 **act-don't-announce**。另外：
 
 - `tool_mode = Direct`（不切 code-mode）、不送 gateway 不認得的 reasoning 參數
@@ -61,7 +69,7 @@ Fork 對 gateway 模型換上精簡提示（由 agent-core 的 `buildSystemPromp
 
 - 預設 `~/.unieai`（`UNIEAI_HOME` 覆蓋；`CODEX_HOME` 相容保留）
 - 登入憑證 + 模型目錄：`~/.unieai/unieai.json`
-- agent-core session：`~/.unieai/agent-sessions/`；codex rollout：`~/.unieai/sessions/`
+- Rabi Harness session：`~/.unieai/agent-sessions/`；codex rollout：`~/.unieai/sessions/`
 - 專案層設定（codex engine）：`<project>/.unieai/`（`config.toml`、`skills/`、
   `rules/`、`agents/`、hooks）。`.unieai/` 不存在時才讀舊的 `<project>/.codex/`
   （legacy 相容）；兩者並存時只讀 `.unieai/`，並在啟動時警告 `.codex/` 被忽略。

@@ -522,7 +522,7 @@ pub async fn run_login_with_unieai_rabi(
             }
             eprintln!("Model relay: {}", credentials.gateway_base_url);
             eprintln!(
-                "UnieAI Rabi runs on the uac engine (unieai-agent-core); the codex engine is not available with this account."
+                "UnieAI Rabi runs on the uac engine (Rabi Harness); the codex engine is not available with this account."
             );
             if credentials.models().is_empty() {
                 eprintln!(

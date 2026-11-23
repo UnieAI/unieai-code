@@ -574,7 +574,7 @@ impl AuthModeWidget {
                         "  They run on the uac engine; codex can use them too with model_provider = \"{id}\"."
                     )
                 } else {
-                    "  They run on the uac engine (unieai-agent-core).".to_string()
+                    "  They run on the uac engine (Rabi Harness).".to_string()
                 };
                 let lines: Vec<Line> = vec![
                     format!("✓ Connected {label}").fg(Color::Green).into(),

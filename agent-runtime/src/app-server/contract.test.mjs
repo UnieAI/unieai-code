@@ -160,7 +160,8 @@ test("the union really does cover the methods we send", { skip }, () => {
   );
   for (const m of [
     "thread/started", "thread/status/changed", "turn/started", "turn/completed",
-    "item/started", "item/completed", "item/agentMessage/delta", "item/reasoning/textDelta", "error",
+    "item/started", "item/completed", "item/agentMessage/delta",
+    "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "error",
   ]) {
     assert.ok(methods.has(m), `${m} is not a method this protocol defines`);
   }

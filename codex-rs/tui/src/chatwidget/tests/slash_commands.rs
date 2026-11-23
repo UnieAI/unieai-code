@@ -2913,24 +2913,43 @@ async fn slash_archive_cancellation_keeps_task_running() {
 }
 
 #[tokio::test]
-async fn slash_memory_maintenance_reports_stubbed_feature() {
-    for command in [SlashCommand::MemoryDrop, SlashCommand::MemoryUpdate] {
-        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn slash_memory_drop_requests_a_reset() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-        chat.dispatch_command(command);
+    chat.dispatch_command(SlashCommand::MemoryDrop);
 
-        let event = rx.try_recv().expect("expected unsupported-feature error");
-        match event {
-            AppEvent::InsertHistoryCell(cell) => {
-                let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
-                assert!(rendered.contains("Memory maintenance: Not available in TUI yet."));
-            }
-            other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ResetMemories));
+}
+
+#[tokio::test]
+async fn slash_memory_update_reports_stubbed_feature() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::MemoryUpdate);
+
+    let event = rx.try_recv().expect("expected unsupported-feature error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(rendered.contains("Memory update: Not available in TUI yet."));
         }
-        assert!(
-            op_rx.try_recv().is_err(),
-            "expected no memory op to be sent"
-        );
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_loop_says_which_engine_serves_it() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Loop);
+
+    let event = rx.try_recv().expect("expected an explanation, not a prompt");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(rendered.contains("/loop needs the rabi engine"));
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
     }
 }
 

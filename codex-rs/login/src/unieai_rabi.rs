@@ -164,6 +164,9 @@ fn models_from_entitlements(models: Vec<EntitledModel>) -> Vec<UnieAIModel> {
             }),
             id: model.value,
             context_window: None,
+            // Rabi's desktop listing says nothing about reasoning effort; the
+            // ladder comes from the model id (see `gateway_reasoning_ladder`).
+            reasoning_levels: None,
         })
         .collect()
 }

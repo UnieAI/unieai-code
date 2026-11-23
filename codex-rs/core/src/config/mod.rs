@@ -4430,6 +4430,7 @@ impl Config {
                             &model.id,
                         ),
                         model.input_modalities.as_deref(),
+                        model.reasoning_levels.as_deref(),
                     )
                 })
                 // Beside self-hosted models, say which ones are the account's.

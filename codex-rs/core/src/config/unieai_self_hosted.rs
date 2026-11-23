@@ -55,6 +55,7 @@ pub(crate) fn self_hosted_catalog_models(
                             .unwrap_or(DEFAULT_SELF_HOSTED_CONTEXT_WINDOW),
                     ),
                     Some(&modalities),
+                    None,
                 );
                 // "OpenAI", "OpenRouter", …, or "Self-hosted: <name>".
                 info.description = Some(server.label());

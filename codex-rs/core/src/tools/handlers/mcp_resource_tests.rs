@@ -71,6 +71,65 @@ fn call_tool_result_from_content_marks_success() {
 }
 
 #[test]
+fn empty_resource_list_from_all_servers_explains_itself() {
+    let mut map = HashMap::new();
+    map.insert("space".to_string(), Vec::new());
+    map.insert("unieai_studio".to_string(), Vec::new());
+
+    let value = serde_json::to_value(ListResourcesPayload::from_all_servers(map))
+        .expect("serialize payload");
+
+    assert_eq!(value["resources"], json!([]));
+    let note = value["note"].as_str().expect("note present");
+    assert!(note.contains("space, unieai_studio"), "note was: {note}");
+    assert!(
+        note.contains("not evidence that MCP is unavailable"),
+        "note was: {note}"
+    );
+}
+
+#[test]
+fn non_empty_resource_list_carries_no_note() {
+    let mut map = HashMap::new();
+    map.insert("space".to_string(), vec![resource("memo://id", "memo")]);
+
+    let value = serde_json::to_value(ListResourcesPayload::from_all_servers(map))
+        .expect("serialize payload");
+
+    assert_eq!(value.get("note"), None);
+}
+
+#[test]
+fn empty_single_server_resource_list_names_that_server() {
+    let payload = ListResourcesPayload::from_single_server(
+        "space".to_string(),
+        ListResourcesResult::with_all_items(Vec::new()),
+    );
+    let value = serde_json::to_value(&payload).expect("serialize payload");
+
+    let note = value["note"].as_str().expect("note present");
+    assert!(note.contains("'space'"), "note was: {note}");
+    assert!(note.contains("tools without"), "note was: {note}");
+}
+
+#[test]
+fn empty_resource_template_list_explains_itself() {
+    let mut templates_by_server = HashMap::new();
+    templates_by_server.insert("space".to_string(), Vec::new());
+
+    let value =
+        serde_json::to_value(ListResourceTemplatesPayload::from_all_servers(templates_by_server))
+            .expect("serialize payload");
+
+    assert_eq!(value["resourceTemplates"], json!([]));
+    let note = value["note"].as_str().expect("note present");
+    assert!(
+        note.contains("resource templates"),
+        "note was: {note}"
+    );
+}
+
+#[test]
 fn parse_arguments_handles_empty_and_json() {
     assert!(
         parse_arguments(" \n\t").unwrap().is_none(),

@@ -40,12 +40,14 @@ fn entitlements_become_models_in_order_without_duplicates_or_custom_models() {
                 name: Some("qwen".to_string()),
                 context_window: None,
                 input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "glm".to_string(),
                 name: None,
                 context_window: None,
                 input_modalities: Some(vec!["text".to_string()]),
+                reasoning_levels: None,
             },
         ]
     );

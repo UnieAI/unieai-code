@@ -105,3 +105,6 @@ benchmarks/results/traj-*/
 
 # unieai-rabi-fork.mjs build output (default --out)
 agent-runtime/.rabi-fork/
+
+# Local agent scratch (MCP tokens, OAuth pending state, ad-hoc scripts).
+/.agents/

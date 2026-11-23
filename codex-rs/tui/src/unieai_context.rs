@@ -69,7 +69,7 @@ pub(crate) async fn fetch_context_usage(
     thread_id: ThreadId,
 ) -> Result<ContextUsage, String> {
     let AppServerRequestHandle::Remote(handle) = request_handle else {
-        return Err("/context needs the unieai-agent-core engine".to_string());
+        return Err("/context needs the Rabi Harness engine".to_string());
     };
     let response = handle
         .request_json_rpc(JSONRPCRequest {

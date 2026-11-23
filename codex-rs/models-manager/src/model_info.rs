@@ -5,6 +5,8 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
@@ -117,6 +119,7 @@ pub fn model_info_for_gateway_model(
     display_name: &str,
     context_window: Option<i64>,
     input_modalities: Option<&[String]>,
+    reasoning_levels: Option<&[String]>,
 ) -> ModelInfo {
     let mut info = base_model_info(slug);
     info.display_name = display_name.to_string();
@@ -127,6 +130,10 @@ pub fn model_info_for_gateway_model(
     // reasoning-summary parameter their gateways ignore.
     info.tool_mode = Some(ToolMode::Direct);
     info.supports_reasoning_summary_parameter = false;
+    let (default_reasoning_level, supported_reasoning_levels) =
+        gateway_reasoning_ladder(slug, reasoning_levels);
+    info.default_reasoning_level = default_reasoning_level;
+    info.supported_reasoning_levels = supported_reasoning_levels;
     info.model_messages
         .get_or_insert_with(local_model_messages)
         .instructions_template = Some(GATEWAY_BASE_INSTRUCTIONS.to_string());
@@ -151,6 +158,74 @@ pub fn model_info_for_gateway_model(
         }
     }
     info
+}
+
+/// Levels a DeepSeek V4 model on the UnieAI gateway accepts, shallow first.
+///
+/// Verified against the gateway: it answers 400 with "DeepSeek V4.1 reasoning
+/// effort must be none, low, high, xhigh, max or an integer budget from 1 to
+/// 100 (minimal and medium aliases are accepted)" for anything else, and the
+/// same prompt reasons visibly longer on `high` than on `low`.
+const GATEWAY_DEEPSEEK_V4_LEVELS: [(&str, &str); 7] = [
+    ("none", "Answer without deliberating first"),
+    ("minimal", "Think briefly"),
+    ("low", "Light reasoning"),
+    ("medium", "Balanced reasoning"),
+    ("high", "Deep reasoning"),
+    ("xhigh", "Very deep reasoning"),
+    ("max", "Deepest reasoning, slowest"),
+];
+
+/// The reasoning dial a gateway model offers, and where it starts.
+///
+/// The gateway's own model metadata wins when it names levels. Until a
+/// deployment publishes them, DeepSeek V4 reasoning models get the ladder the
+/// gateway validates on `reasoning_effort`; every other model offers nothing,
+/// so the picker and the shortcuts stay hidden instead of sending a parameter
+/// the model would ignore. `agent-runtime/src/unieai-rabi/config.mjs` declares
+/// the same ladder to the Rabi Harness; keep the two in step.
+pub fn gateway_reasoning_ladder(
+    slug: &str,
+    declared: Option<&[String]>,
+) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    let declared: Vec<String> = declared
+        .unwrap_or_default()
+        .iter()
+        .map(|level| level.trim().to_ascii_lowercase())
+        .filter(|level| !level.is_empty())
+        .collect();
+    let levels: Vec<(&str, String)> = if declared.is_empty() {
+        let slug = slug.to_ascii_lowercase();
+        if !slug.starts_with("deepseek-v4") {
+            return (None, Vec::new());
+        }
+        GATEWAY_DEEPSEEK_V4_LEVELS
+            .iter()
+            .map(|(level, description)| (*level, (*description).to_string()))
+            .collect()
+    } else {
+        // A level the gateway invented is still a level it accepts; it just
+        // carries no local description.
+        declared
+            .iter()
+            .map(|level| (level.as_str(), level.clone()))
+            .collect()
+    };
+    let presets: Vec<ReasoningEffortPreset> = levels
+        .iter()
+        .map(|(level, description)| ReasoningEffortPreset {
+            effort: level.parse().unwrap_or(ReasoningEffort::Medium),
+            description: description.clone(),
+        })
+        .collect();
+    // Start in the middle of whatever ladder the model offers: the gateway's
+    // own `medium` alias when present, else the midpoint of the list.
+    let default = presets
+        .iter()
+        .find(|preset| preset.effort == ReasoningEffort::Medium)
+        .or_else(|| presets.get(presets.len() / 2))
+        .map(|preset| preset.effort.clone());
+    (default, presets)
 }
 
 fn base_model_info(slug: &str) -> ModelInfo {

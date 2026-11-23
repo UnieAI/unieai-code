@@ -32,6 +32,11 @@ also used by UnieAI Studio.
 
 ## What's new
 
+**0.0.46** (2026-11-23) — reasoning effort is adjustable at last (`/model` ladder,
+`Alt+.`/`Alt+,`, `model_reasoning_effort`), the Thinking block shows what the model
+actually thought, the agent engine is named **Rabi Harness**, and uac can search your
+past sessions (`session_search`) and run long unattended work (`ralph`).
+
 **0.0.45** (2026-11-22) — `unieai mcp login <server> --remote`: finish an MCP server's
 OAuth sign-in from a browser on another machine, with PKCE and the token exchange
 staying on the machine that runs the CLI.

@@ -110,6 +110,10 @@ pub struct UnieAIModel {
     /// `/models` listing; `None` when the gateway did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
+    /// `reasoning_effort` levels the gateway declares for this model, shallow
+    /// first; `None` when it declares none and the client must infer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
 }
 
 impl UnieAICredentials {
@@ -127,6 +131,7 @@ impl UnieAICredentials {
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             })
             .collect()
     }
@@ -567,6 +572,7 @@ fn models_from_provider_config(config: &StudioProviderConfig) -> Option<Vec<Unie
                     .get("contextWindow")
                     .and_then(serde_json::Value::as_i64),
                 input_modalities: None,
+                reasoning_levels: None,
             })
             .collect()
     })
@@ -629,6 +635,15 @@ struct GatewayModelEntry {
     context_window: Option<i64>,
     #[serde(default)]
     modalities: Option<GatewayModelModalities>,
+    /// `reasoning_effort` levels the gateway advertises for this model. No
+    /// deployment publishes them yet, so this accepts the spellings a future
+    /// one is likely to use rather than betting on one.
+    #[serde(
+        default,
+        alias = "reasoning_efforts",
+        alias = "supported_reasoning_levels"
+    )]
+    reasoning_levels: Option<Vec<String>>,
     /// The gateway's own taxonomy: `custom_model` for a Studio custom model,
     /// `base_model` for a plain one. Studio's `/api/config` drops this, so the
     /// gateway listing is the only place the CLI can learn it.
@@ -744,6 +759,11 @@ fn apply_gateway_capabilities(models: &mut Vec<UnieAIModel>, capabilities: &[Gat
             && !modalities.input.is_empty()
         {
             model.input_modalities = Some(modalities.input.clone());
+        }
+        if let Some(levels) = &entry.reasoning_levels
+            && !levels.is_empty()
+        {
+            model.reasoning_levels = Some(levels.clone());
         }
     }
 }
@@ -954,24 +974,28 @@ mod tests {
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "vision-model".to_string(),
                 name: None,
                 context_window: Some(32_000),
                 input_modalities: None,
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "unlisted".to_string(),
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "my-agent".to_string(),
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             },
         ];
         let listing: GatewayModelList = serde_json::from_value(serde_json::json!({
@@ -1031,18 +1055,21 @@ mod tests {
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "sized".to_string(),
                 name: None,
                 context_window: Some(8_000),
                 input_modalities: None,
+                reasoning_levels: None,
             },
             UnieAIModel {
                 id: "unsized".to_string(),
                 name: None,
                 context_window: None,
                 input_modalities: None,
+                reasoning_levels: None,
             },
         ];
         apply_studio_model_sizes(&mut models, &sizes);
@@ -1118,6 +1145,7 @@ mod tests {
                 name: Some("Model One".to_string()),
                 context_window: Some(131_072),
                 input_modalities: None,
+                reasoning_levels: None,
             }]),
         };
         save_unieai_credentials(dir.path(), &credentials).expect("save");

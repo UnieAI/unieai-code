@@ -197,22 +197,33 @@ struct ListResourcesPayload {
     resources: Vec<ResourceWithServer<Resource>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    /// Set only when the listing came back empty: an empty resource list is not
+    /// evidence that MCP is unavailable, and models were reading it that way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 impl ListResourcesPayload {
     fn from_single_server(server: String, result: ListResourcesResult) -> Self {
+        let note = result
+            .resources
+            .is_empty()
+            .then(|| no_resources_on_server_note(&server));
         Self {
             resources: ResourceWithServer::from_server(&server, result.resources),
             server: Some(server),
             next_cursor: result.next_cursor,
+            note,
         }
     }
 
     fn from_all_servers(resources_by_server: HashMap<String, Vec<Resource>>) -> Self {
+        let note = no_resources_anywhere_note(&resources_by_server);
         Self {
             server: None,
             resources: ResourceWithServer::from_all_servers(resources_by_server),
             next_cursor: None,
+            note,
         }
     }
 }
@@ -225,24 +236,88 @@ struct ListResourceTemplatesPayload {
     resource_templates: Vec<ResourceWithServer<ResourceTemplate>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 impl ListResourceTemplatesPayload {
     fn from_single_server(server: String, result: ListResourceTemplatesResult) -> Self {
+        let note = result
+            .resource_templates
+            .is_empty()
+            .then(|| no_resource_templates_on_server_note(&server));
         Self {
             resource_templates: ResourceWithServer::from_server(&server, result.resource_templates),
             server: Some(server),
             next_cursor: result.next_cursor,
+            note,
         }
     }
 
     fn from_all_servers(templates_by_server: HashMap<String, Vec<ResourceTemplate>>) -> Self {
+        let note = (templates_by_server
+            .values()
+            .all(|templates| templates.is_empty()))
+        .then(|| {
+            no_resources_anywhere_note_with(
+                "resource templates",
+                sorted_server_names(templates_by_server.keys()),
+            )
+        });
         Self {
             server: None,
             resource_templates: ResourceWithServer::from_all_servers(templates_by_server),
             next_cursor: None,
+            note,
         }
     }
+}
+
+fn sorted_server_names<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+    let mut names: Vec<&str> = names.map(String::as_str).collect();
+    names.sort_unstable();
+    names
+}
+
+fn no_resources_on_server_note(server: &str) -> String {
+    format!(
+        "MCP server '{server}' exposes no resources. A server can provide tools without providing \
+         resources, so this is not evidence that the server is unusable."
+    )
+}
+
+fn no_resource_templates_on_server_note(server: &str) -> String {
+    format!(
+        "MCP server '{server}' exposes no resource templates. A server can provide tools and \
+         resources without providing parameterized templates."
+    )
+}
+
+fn no_resources_anywhere_note(resources_by_server: &HashMap<String, Vec<Resource>>) -> Option<String> {
+    resources_by_server
+        .values()
+        .all(|resources| resources.is_empty())
+        .then(|| {
+            no_resources_anywhere_note_with(
+                "resources",
+                sorted_server_names(resources_by_server.keys()),
+            )
+        })
+}
+
+fn no_resources_anywhere_note_with(what: &str, servers: Vec<&str>) -> String {
+    if servers.is_empty() {
+        return format!(
+            "No MCP servers are connected, so there are no {what} to list. This does not tell you \
+             whether MCP servers are configured."
+        );
+    }
+    format!(
+        "None of the connected MCP servers ({}) exposes {what}. A server can provide tools without \
+         providing {what}, so an empty listing is not evidence that MCP is unavailable; check the \
+         available tools (or `unieai mcp list`) before concluding that.",
+        servers.join(", ")
+    )
 }
 
 #[derive(Debug, Serialize)]

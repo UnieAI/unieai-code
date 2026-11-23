@@ -2,7 +2,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { billingFailureOf, billingMessage, describeTurnError, formatResetTime, isBillingFailure } from "./unieai-billing.mjs";
+import {
+  authMessage,
+  billingFailureOf,
+  billingMessage,
+  describeTurnError,
+  formatResetTime,
+  isAuthFailure,
+  isBillingFailure,
+} from "./unieai-billing.mjs";
 
 const now = new Date(2026, 9, 20, 12, 0, 0);
 const at = (hours) => new Date(now.getTime() + hours * 3600_000).toISOString();
@@ -52,4 +60,48 @@ test("a turn error is described as a usage limit only for billing refusals", () 
     codexErrorInfo: "usageLimitExceeded",
   });
   assert.deepEqual(describeTurnError("boom", { studioUrl: "https://s.example" }), { message: "boom", codexErrorInfo: null });
+});
+
+test("a rejected key is recognized the way rabi reports it", () => {
+  // Exactly what the TUI showed: rabi's wrapper, the status, the gateway's code.
+  assert.equal(isAuthFailure('Internal error: turn failed: 401 "invalid_api_key"'), true);
+  assert.equal(isAuthFailure('401 {"error":"invalid_api_key","status":401}'), true);
+  assert.equal(isAuthFailure("401 Unauthorized"), true);
+  assert.equal(isAuthFailure("authentication_error"), true);
+  // A billing refusal and an unrelated 401 stay out of it.
+  assert.equal(isAuthFailure('402 {"error":{"code":"insufficient_balance"}}'), false);
+  assert.equal(isAuthFailure("model call failed (HTTP 400): bad grammar"), false);
+  assert.equal(isAuthFailure(undefined), false);
+});
+
+test("the rejected-key message names the gateway and the login that fixes it", () => {
+  const studioUrl = "https://studio.corp.example/";
+  // Studio key against Rabi's gateway: the mix-up a `login --rabi` resolves.
+  assert.match(
+    authMessage({ baseUrl: "https://rabi.unieai.com/api/desktop/v1", account: "studio", studioUrl }),
+    /is Rabi's, and this machine is signed in to UnieAI Studio[\s\S]*unieai login --rabi/,
+  );
+  // Rabi key against Rabi's gateway: the key itself is stale.
+  assert.match(
+    authMessage({ baseUrl: "https://rabi.unieai.com/api/desktop/v1", account: "rabi", studioUrl }),
+    /Rabi's gateway at https:\/\/rabi\.unieai\.com\/api\/desktop\/v1 rejected[\s\S]*unieai login --rabi/,
+  );
+  // The usual case: the gateway key moved on and this machine kept the old one.
+  const studio = authMessage({ baseUrl: "https://api.unieai.com/v1/", account: "studio", studioUrl });
+  assert.match(studio, /The UnieAI gateway at https:\/\/api\.unieai\.com\/v1 rejected/);
+  assert.match(studio, /unieai login sync/);
+  assert.match(studio, /https:\/\/studio\.corp\.example\/settings/);
+  // No stored gateway still reads as a sentence.
+  assert.match(authMessage({ baseUrl: "", account: "studio" }), /^The UnieAI gateway rejected/);
+});
+
+test("a turn error explains a rejected key and keeps rabi's own words", () => {
+  const raw = 'Internal error: turn failed: 401 "invalid_api_key"';
+  const described = describeTurnError(raw, {
+    studioUrl: "https://s.example",
+    credentials: { gatewayBaseUrl: "https://api.unieai.com/v1", accountId: "studio|https://api.unieai.com/v1|u@example.com" },
+  });
+  assert.equal(described.codexErrorInfo, null, "a rejected key is not a usage limit");
+  assert.match(described.message, /^The UnieAI gateway at https:\/\/api\.unieai\.com\/v1 rejected/);
+  assert.ok(described.message.endsWith(raw), "the original failure stays for a report");
 });

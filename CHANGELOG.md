@@ -33,6 +33,64 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
+## 0.0.46 — 2026-11-23
+
+### New
+
+- **思考強度（reasoning effort）現在真的調得動。** 選到支援的模型時，`/model`
+  會多一層七個等級（`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`），
+  也可以在對話中按 `Alt+.`／`Shift+↑` 提高、`Alt+,`／`Shift+↓` 降低，或寫進
+  `~/.unieai/config.toml` 的 `model_reasoning_effort`。以前這個旋鈕完全不出現：
+  沒有任何一層告訴模型清單「這個模型有哪些等級」，rabi 就不提供這個選項。
+  現在 gateway 有宣告就用它宣告的（`reasoning_levels`／`reasoning_efforts`），
+  沒宣告時 DeepSeek V4 系列按家族補上；其他模型仍然不顯示，而不是送一個會被
+  忽略的參數。選到模型沒有的等級時，engine 只寫一行 log 並保留原本的等級，
+  不會讓整個 turn 失敗。說明見 [docs/unieai/reasoning.md](docs/unieai/reasoning.md)。
+- **uac 的「Thinking」區塊現在有內容了。** rabi 一直都在送思考文字，但被放進
+  reasoning 項目的 `content` 欄位——那是只有 `show_raw_agent_reasoning = true`
+  才顯示的原始 CoT 通道（預設關），而畫面上收合的 Thinking 區塊讀的是 `summary`
+  與 `item/reasoning/summaryTextDelta`。現在思考文字走 `summary`，模型在回合中間
+  的旁白仍照舊即時出現在工具卡上方。
+- **找得回以前的對話：跨 session 全文搜尋。** uac 多了六個工具——
+  `session_search`（同一個 workspace 裡的歷史對話，每個 session 回一個最相符的事件與標題）、
+  `session_event_search`／`session_event_read`／`session_event_trace`（單一
+  session 內的事件與血緣）與 `session_trace`。索引是第一次搜尋時才對既有的
+  session 檔現建的（`openAt: first-search`），平常不佔記憶體，也不會在你的
+  session 目錄留下額外檔案；範圍限於同一個 workspace。問「上次那個
+  callback 是怎麼修的」不必再自己翻記錄。
+- **`ralph`：可以放著長跑的工作流。** 給它一個不變的目標，它會一輪一輪
+  開全新的子代理去做（每輪換一個乾淨的 context，共享的只有 workspace，
+  最多 64 輪），直到某個子代理回報完成、回報卡住、或到達上限才停；中途
+  每一步都照常出現在對話裡，也能隨時打斷。適合「跑到測試全綠」這類
+  沒有固定步驟的收尾工作；同一個 session 內的長跑仍用 goal 系列。
+- **`/debug-m-drop` 真的會清掉記憶。** 以前只印一行空殼訊息；現在兩個引擎都
+  走 `memory/reset`，成功時回「Reset local memories.」，失敗時把原因說出來。
+
+### uac engine
+
+- **`none` 現在真的等於「不要思考」。** codex 的等級名稱 `none` 會轉成 rabi 的
+  `off`，送給 gateway 的值是 `"none"`。在這之前 uac 把 `off` 當成「這個參數不要
+  送」，等於用供應商預設值 —— 模型照樣會想。
+- **引擎改名為 Rabi Harness。** `/engine` 選單、`/context` 與狀態列一律顯示
+  `Rabi Harness (uac)`，說明文字改成 `rabi-harness over ACP`。引擎 id 仍是
+  `uac`，`rabi`、`rabi-harness`、`unieai-agent-core` 也都還能打。
+- **`ptc` 與 `creator`（cordis）從引擎選單移除。** 這兩個模式要有 rabi web app
+  的 cordis 檢視才有意義，走 ACP 時只有一個空殼；手動寫在模式檔裡仍然有效。
+  舊設定停留在這兩個模式時會自動回到 `standard`，不會卡住。
+
+### Improved
+
+- MCP 的說明改指向本專案自己的 [docs/unieai/mcp.md](docs/unieai/mcp.md)
+  （原本指向上游 codex 的文件，內容對 `~/.unieai/` 不成立）；`unieai mcp list`
+  在完全沒有設定 server 時會直接說怎麼加第一個。
+- 在 codex 引擎打 `/loop` 不會再被當成一句普通訊息送給模型：它會說明這個
+  指令要 rabi 引擎（`/engine` 切換）。uac 上不受影響。
+- **401 不再是只有一句 `invalid_api_key`。** 當 gateway 拒絕這台機器的 key
+  （`401 invalid_api_key`／`invalid_token`），uac 會先說清楚是哪一個 gateway
+  拒絕、這台機器登入的是哪個產品、該跑哪一個指令修好（`unieai login sync`、
+  `unieai login`，或把 Studio 的 key 送到 Rabi 端點時要 `unieai login --rabi`），
+  再附上 rabi 原本的錯誤字串供回報；它不會被當成用量上限，也不會假裝會重試。
+
 ## 0.0.45 — 2026-11-22
 
 ### New

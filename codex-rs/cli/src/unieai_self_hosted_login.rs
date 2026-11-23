@@ -120,7 +120,7 @@ pub fn added_api_lines(added: &AddedApi) -> Vec<String> {
         ));
     } else {
         lines.push(
-            "Runs on the uac engine (unieai-agent-core); the codex engine needs the Responses API, which this API does not reliably serve."
+            "Runs on the uac engine (Rabi Harness); the codex engine needs the Responses API, which this API does not reliably serve."
                 .to_string(),
         );
     }
@@ -295,7 +295,7 @@ mod tests {
         assert!(lines.contains("the first 2 of 468 listed"), "{lines}");
         assert!(lines.contains("openrouter/m0"), "{lines}");
         assert!(
-            lines.contains("Runs on the uac engine (unieai-agent-core)"),
+            lines.contains("Runs on the uac engine (Rabi Harness)"),
             "{lines}"
         );
         assert!(!lines.contains("sk-never-printed"), "{lines}");

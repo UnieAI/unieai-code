@@ -274,6 +274,7 @@ fn gateway_declared_modalities_override_the_image_default() {
         "DeepSeek",
         Some(128_000),
         Some(&["text".to_string()]),
+        None,
     );
     assert_eq!(text_only.input_modalities, vec![InputModality::Text]);
     assert_eq!(text_only.context_window, Some(128_000));
@@ -283,12 +284,55 @@ fn gateway_declared_modalities_override_the_image_default() {
         "VLM",
         None,
         Some(&["text".to_string(), "image".to_string()]),
+        None,
     );
     assert_eq!(
         vision.input_modalities,
         vec![InputModality::Text, InputModality::Image]
     );
 
-    let undeclared = model_info_for_gateway_model("x", "x", None, None);
+    let undeclared = model_info_for_gateway_model("x", "x", None, None, None);
     assert_eq!(undeclared.input_modalities, default_input_modalities());
+}
+
+#[test]
+fn deepseek_v4_gateway_models_offer_the_reasoning_ladder() {
+    let info = model_info_for_gateway_model(
+        "DeepSeek-V4.1-Flash-1017",
+        "DeepSeek V4.1 Flash",
+        Some(131_072),
+        None,
+        None,
+    );
+    let levels: Vec<&str> = info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.as_str())
+        .collect();
+    assert_eq!(
+        levels,
+        vec!["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Medium));
+    // The summary parameter is still not sent: the gateway takes the effort
+    // itself, not OpenAI's `reasoning.summary`.
+    assert!(!info.supports_reasoning_summary_parameter);
+}
+
+#[test]
+fn a_gateway_level_list_wins_and_other_models_offer_nothing() {
+    let declared = ["low".to_string(), "high".to_string()];
+    let info = model_info_for_gateway_model("mystery", "Mystery", None, None, Some(&declared));
+    let levels: Vec<&str> = info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.as_str())
+        .collect();
+    assert_eq!(levels, vec!["low", "high"]);
+    // No `medium` among them: start in the middle of what is on offer.
+    assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::High));
+
+    let plain = model_info_for_gateway_model("Qwen3.6-35B-A3B", "Qwen", None, None, None);
+    assert!(plain.supported_reasoning_levels.is_empty());
+    assert_eq!(plain.default_reasoning_level, None);
 }

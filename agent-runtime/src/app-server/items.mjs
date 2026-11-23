@@ -186,16 +186,22 @@ export const agentMessageItem = (id, text) => ({
 /**
  * The model's reasoning, streamed as deltas then completed.
  *
- * An `item/reasoning/textDelta` names an item that must already have been
- * opened, and carries a `contentIndex`. Sending deltas with neither — as this
- * bridge did — leaves the client with a stream of text belonging to nothing,
- * which it drops.
+ * The text goes in `summary`, not `content`. `content` is the raw reasoning,
+ * which the client only shows with `show_raw_agent_reasoning`; `summary` is
+ * what its "Thinking" block draws, and it is also what
+ * `item/reasoning/summaryTextDelta` appends to. rabi hands over one text per
+ * reasoning block with no summary of its own, so that text is the summary —
+ * put in `content` instead it reached the client and was dropped.
+ *
+ * A delta names an item that must already have been opened, and carries its
+ * index. Sending deltas with neither — as this bridge did — leaves the client
+ * with a stream of text belonging to nothing, which it drops.
  */
-export const reasoningItem = (id, content = "") => ({
+export const reasoningItem = (id, text = "") => ({
   type: "reasoning",
   id,
-  summary: [],
-  content: content ? [content] : [],
+  summary: text ? [text] : [],
+  content: [],
 });
 
 /** Echo of what the user asked — the Rust server emits this before working. */

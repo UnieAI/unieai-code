@@ -755,13 +755,17 @@ export function createRabiEngine({
   /** The reasoning effort asked for, when the selected model offers it. */
   const selectEffort = async (acp) => {
     if (!effort) return;
+    // codex names the level that sends no effort at all `none`; rabi calls it
+    // `off`. Every other level is the same word on both sides, and rabi
+    // reports "provider default" as the empty string.
+    const wanted = effort === "none" ? "off" : effort;
     const option = configOptions?.find((entry) => entry?.id === "reasoning_effort");
-    if (!option || option.currentValue === effort) return;
-    if (!option.options?.some((choice) => choice?.value === effort)) {
-      onLog(`${model ?? "the model"} offers no reasoning effort "${effort}"; keeping ${option.currentValue}`);
+    if (!option || option.currentValue === wanted) return;
+    if (!option.options?.some((choice) => choice?.value === wanted)) {
+      onLog(`${model ?? "the model"} offers no reasoning effort "${wanted}"; keeping ${option.currentValue}`);
       return;
     }
-    await setOption(acp, "reasoning_effort", effort);
+    await setOption(acp, "reasoning_effort", wanted);
   };
 
   const selectModel = async (acp, offered) => {

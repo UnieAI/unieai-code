@@ -1,7 +1,7 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 //! Which agent engine a new session runs on, and how to reach the non-default one.
 //!
-//! `codex` is the embedded Rust engine. `uac` (unieai-agent-core) is served by
+//! `codex` is the embedded Rust engine. `uac` (Rabi Harness) is served by
 //! `agent-runtime/bin/unieai-uac-server.mjs`, which answers the app-server protocol's
 //! engine methods by driving rabi-harness (`rabi`) over ACP and forwards every
 //! other method to the Rust app-server. The TUI reaches it as a local daemon on
@@ -45,7 +45,7 @@ impl EngineKind {
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "codex" => Some(Self::Codex),
-            "uac" | "unieai-agent-core" => Some(Self::Uac),
+            "uac" | "rabi" | "rabi-harness" | "unieai-agent-core" => Some(Self::Uac),
             _ => None,
         }
     }
@@ -61,34 +61,34 @@ impl EngineKind {
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "codex",
-            Self::Uac => "unieai-agent-core (uac)",
+            Self::Uac => "Rabi Harness (uac)",
         }
     }
 
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Codex => "built-in Rust engine",
-            Self::Uac => "unieai-agent-core engine (rabi-harness over ACP)",
+            Self::Uac => "Rabi Harness engine (rabi-harness over ACP)",
         }
     }
 }
 
-/// rabi's agent modes, as its web app names them.
+/// The rabi modes the CLI offers.
+///
+/// rabi's web app also has `ptc` (tools presented as a TypeScript SDK the model
+/// drives with one `run_code` program, instead of one round trip per tool) and
+/// `cordis`, its `creator` mode. Those stay in rabi's own web app: over ACP,
+/// `cordis` needs the `cordisInspect` host runner that only that app mounts, and
+/// `ptc` replaces how the `tools` row is presented. Offering either here means
+/// showing first that it works over the ACP profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UacMode {
     Standard,
-    Ptc,
-    Cordis,
     Minimal,
 }
 
 impl UacMode {
-    pub(crate) const ALL: [UacMode; 4] = [
-        UacMode::Standard,
-        UacMode::Ptc,
-        UacMode::Cordis,
-        UacMode::Minimal,
-    ];
+    pub(crate) const ALL: [UacMode; 2] = [UacMode::Standard, UacMode::Minimal];
 
     /// Accepts the mode id, with or without a `uac-` / `uac:` prefix.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
@@ -99,8 +99,6 @@ impl UacMode {
             .unwrap_or(&raw);
         match raw {
             "standard" => Some(Self::Standard),
-            "ptc" => Some(Self::Ptc),
-            "cordis" | "creator" => Some(Self::Cordis),
             "minimal" => Some(Self::Minimal),
             _ => None,
         }
@@ -110,8 +108,6 @@ impl UacMode {
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Standard => "standard",
-            Self::Ptc => "ptc",
-            Self::Cordis => "cordis",
             Self::Minimal => "minimal",
         }
     }
@@ -119,8 +115,6 @@ impl UacMode {
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Standard => "standard",
-            Self::Ptc => "PTC",
-            Self::Cordis => "creator (cordis)",
             Self::Minimal => "minimal",
         }
     }
@@ -128,10 +122,6 @@ impl UacMode {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Standard => "the full coding agent: shell, files, search, web, skills, subagents",
-            Self::Ptc => {
-                "tools as a TypeScript SDK; the model chains steps in one run_code program"
-            }
-            Self::Cordis => "standard, plus inspecting and extending the harness itself",
             Self::Minimal => "one persistent shell and nothing else",
         }
     }

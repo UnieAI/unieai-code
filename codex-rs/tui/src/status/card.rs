@@ -147,7 +147,7 @@ struct StatusHistoryCell {
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
     /// Which engine runs the turns, and in which mode: the one thing that
-    /// says whether this session is codex or unieai-agent-core.
+    /// says whether this session is codex or Rabi Harness.
     engine: String,
     remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,

@@ -444,7 +444,13 @@ impl ChatWidget {
             }
             // The uac engine answers a bare /loop with what is scheduled.
             SlashCommand::Loop => {
-                self.submit_user_message("/loop".to_string().into());
+                if crate::unieai_engine::session_is_uac() {
+                    self.submit_user_message("/loop".to_string().into());
+                } else {
+                    self.add_error_message(
+                        "/loop needs the rabi engine; switch engines with /engine".to_string(),
+                    );
+                }
             }
             SlashCommand::Peer => {
                 self.add_error_message(PEER_USAGE.to_string());
@@ -579,7 +585,7 @@ impl ChatWidget {
             SlashCommand::Context => {
                 if !crate::unieai_engine::session_is_uac() {
                     self.add_info_message(
-                        "/context shows the context breakdown on the unieai-agent-core engine."
+                        "/context shows the context breakdown on the Rabi Harness engine."
                             .to_string(),
                         Some("Switch with /engine, or use /status for token usage.".to_string()),
                     );
@@ -663,10 +669,14 @@ impl ChatWidget {
                 self.clean_background_terminals();
             }
             SlashCommand::MemoryDrop => {
-                self.add_app_server_stub_message("Memory maintenance");
+                // The whole path already exists — app-server `memory/reset`
+                // clears the store and the App layer reports the outcome.
+                self.app_event_tx.send(AppEvent::ResetMemories);
             }
             SlashCommand::MemoryUpdate => {
-                self.add_app_server_stub_message("Memory maintenance");
+                // Nothing to call yet: the protocol has `memory/status` and
+                // `memory/reset` but no way to ask for a consolidation.
+                self.add_app_server_stub_message("Memory update");
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly);
@@ -1537,7 +1547,7 @@ impl ChatWidget {
     }
 }
 
-const ENGINE_USAGE: &str = "Usage: /engine [codex|uac|standard|ptc|cordis|minimal]";
+const ENGINE_USAGE: &str = "Usage: /engine [codex|uac|standard|minimal]";
 
 const PEER_USAGE: &str =
     "Usage: /peer <handle> <message>  (run /peers to see handles, for example `api [k2f8]`)";

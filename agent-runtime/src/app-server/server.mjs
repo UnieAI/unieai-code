@@ -463,7 +463,9 @@ export function createHandlers({
         emitItem("item/started", { item: reasoningItem(reasoningSegment.id), startedAtMs: Date.now() });
       }
       reasoningSegment.text += delta;
-      emitItem("item/reasoning/textDelta", { itemId: reasoningSegment.id, delta, contentIndex: 0 });
+      // The summary channel, not the raw one: the client's "Thinking" block is
+      // fed by summaryTextDelta and needs the item's id to attach to.
+      emitItem("item/reasoning/summaryTextDelta", { itemId: reasoningSegment.id, delta, summaryIndex: 0 });
     };
     const closeText = () => {
       if (reasoningSegment) {

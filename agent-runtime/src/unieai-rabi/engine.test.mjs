@@ -97,6 +97,49 @@ test("a turn streams text and thoughts and maps tool calls to engine events", as
   assert.deepEqual(engine.messages, [{ role: "user", content: "hello" }, { role: "assistant", content: "done" }]);
 });
 
+const REASONING_OPTIONS = [
+  ...MODEL_OPTIONS,
+  {
+    id: "reasoning_effort",
+    type: "select",
+    currentValue: "",
+    options: [
+      { value: "", name: "Provider default" },
+      { value: "off", name: "Off" },
+      { value: "low", name: "Low" },
+      { value: "high", name: "High" },
+    ],
+  },
+];
+
+/** Run one turn with `effort`, returning the config calls and the log lines. */
+async function runWithEffort(effort) {
+  const { client, calls } = fakeAgent(async ({ method }) => {
+    if (method === "session/new") return { sessionId: "s1", configOptions: REASONING_OPTIONS };
+    if (method === "session/set_config_option") return { configOptions: REASONING_OPTIONS };
+    if (method === "session/prompt") return { stopReason: "end_turn" };
+    return {};
+  });
+  const logs = [];
+  const host = createRabiHost({ connect: async () => client });
+  await createRabiEngine({ host, workspace: "/w", model: "MiniMax-M2", effort, onLog: (line) => logs.push(line) }).send("hi");
+  const efforts = calls
+    .filter((call) => call.params?.configId === "reasoning_effort")
+    .map((call) => call.params.value);
+  return { efforts, logs };
+}
+
+test("the reasoning effort reaches rabi under rabi's own level name", async () => {
+  // codex's `none` is rabi's `off`; a level rabi says the model lacks is
+  // skipped rather than sent (rabi rejects an unknown one), and the user is
+  // told which level stayed selected.
+  assert.deepEqual((await runWithEffort("none")).efforts, ["off"]);
+  assert.deepEqual((await runWithEffort("high")).efforts, ["high"]);
+  const { efforts, logs } = await runWithEffort("ultra");
+  assert.deepEqual(efforts, []);
+  assert.match(logs.join("\n"), /offers no reasoning effort "ultra"; keeping/);
+});
+
 test("permission requests go through requestApproval and fail closed", async () => {
   const decisions = ["decline", "acceptForSession"];
   const asked = [];
@@ -189,6 +232,45 @@ test("helpers: args, diffs, model options, config rendering", () => {
   assert.match(settings, /baseURL: "https:\/\/gw\/v1"/);
   assert.match(settings, /- id: "B"/);
   assert.match(settings, /agent-default-model:\n {2}provider: unieai\n {2}model: "A"/);
+  // A gateway model's reasoning ladder, so rabi offers its effort option at
+  // all: DeepSeek V4 gets the levels the gateway validates, and `off` maps to
+  // the wire word `none` instead of sending nothing (which would think).
+  const ladder = renderSettings({
+    baseUrl: "https://gw/v1",
+    models: [
+      "DeepSeek-V4.1-Flash-1017",
+      { id: "Qwen3.6-35B-A3B" },
+      { id: "declared", reasoning_levels: ["None", "low", "3"] },
+    ],
+    defaultModel: "DeepSeek-V4.1-Flash-1017",
+  });
+  assert.match(
+    ladder,
+    new RegExp(
+      [
+        '- id: "DeepSeek-V4\\.1-Flash-1017"',
+        " {10}reasoningEfforts:",
+        ' {12}off: "none"',
+        ' {12}minimal: "minimal"',
+        ' {12}low: "low"',
+        ' {12}medium: "medium"',
+        ' {12}high: "high"',
+        ' {12}xhigh: "xhigh"',
+        ' {12}max: "max"',
+      ].join("\n"),
+    ),
+    "a DeepSeek V4 gateway model offers the ladder the gateway accepts",
+  );
+  assert.doesNotMatch(
+    ladder.split('- id: "Qwen3.6-35B-A3B"')[1].split('- id: "declared"')[0],
+    /reasoningEfforts/,
+    "a model with no reasoning gets no dial rather than a parameter it ignores",
+  );
+  assert.match(
+    ladder.split('- id: "declared"')[1],
+    / {10}reasoningEfforts:\n {12}off: "none"\n {12}low: "low"\n {12}"3": "3"/,
+    "what the gateway declares wins, and an integer budget passes through",
+  );
   const base = renderPatch({ defaultModel: "A" });
   assert.ok(base.startsWith('- id: acp\n  config:\n    provider: unieai\n    model: "A"\n'));
   assert.match(base, /- id: system-prompt\n {2}config:\n {4}includeHarnessIdentity: false/);

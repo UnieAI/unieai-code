@@ -11,7 +11,9 @@ fn parse_accepts_ids_and_full_name() {
         EngineKind::parse("unieai-agent-core"),
         Some(EngineKind::Uac)
     );
-    assert_eq!(EngineKind::parse("rabi"), None);
+    assert_eq!(EngineKind::parse("rabi"), Some(EngineKind::Uac));
+    assert_eq!(EngineKind::parse("rabi-harness"), Some(EngineKind::Uac));
+    assert_eq!(EngineKind::parse("rabi web"), None);
 }
 
 #[test]
@@ -26,19 +28,26 @@ fn engine_file_round_trips_and_defaults_to_uac() {
 
 #[test]
 fn uac_mode_parses_round_trips_and_defaults_to_standard() {
-    assert_eq!(UacMode::parse(" PTC\n"), Some(UacMode::Ptc));
     assert_eq!(UacMode::parse("uac-minimal"), Some(UacMode::Minimal));
-    assert_eq!(UacMode::parse("uac:creator"), Some(UacMode::Cordis));
+    assert_eq!(UacMode::parse("uac:standard"), Some(UacMode::Standard));
+    // rabi's web-app-only modes are not offered here, and a mode file left
+    // behind by an older release falls back to standard.
+    assert_eq!(UacMode::parse(" PTC\n"), None);
+    assert_eq!(UacMode::parse("uac:creator"), None);
+    assert_eq!(UacMode::parse("cordis"), None);
     assert_eq!(UacMode::parse("codex"), None);
     let home = tempfile::tempdir().expect("tempdir");
     assert_eq!(configured_uac_mode(home.path()), UacMode::Standard);
-    write_uac_mode(home.path(), UacMode::Cordis).expect("write");
-    assert_eq!(configured_uac_mode(home.path()), UacMode::Cordis);
+    write_uac_mode(home.path(), UacMode::Minimal).expect("write");
+    assert_eq!(configured_uac_mode(home.path()), UacMode::Minimal);
     // The file the uac server reads (agent-runtime configuredUacMode).
     assert_eq!(
         std::fs::read_to_string(home.path().join("uac").join("mode")).expect("read"),
-        "cordis\n"
+        "minimal\n"
     );
+    // A stale `ptc`/`cordis` mode file predates this release.
+    std::fs::write(home.path().join("uac").join("mode"), "cordis\n").expect("write stale");
+    assert_eq!(configured_uac_mode(home.path()), UacMode::Standard);
 }
 
 #[test]
@@ -170,7 +179,7 @@ fn an_old_node_gets_install_advice() {
         uac_unavailable_warning(home.path(), &node_too_old(Some(20), /*unieai_node*/ None));
     assert_eq!(
         warning,
-        "unieai-agent-core (uac), the default engine, needs Node.js 22 or newer; the node on PATH is Node 20, \
+        "Rabi Harness (uac), the default engine, needs Node.js 22 or newer; the node on PATH is Node 20, \
          so this session runs on codex. Install Node.js 22 (for example `nvm install 22` or `brew install node@22`) \
          and restart UnieAI Code; if Node 22 is installed somewhere unusual, set UNIEAI_NODE to its path."
     );

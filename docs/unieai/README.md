@@ -6,8 +6,11 @@ UnieAI Code 是以 [openai/codex](https://github.com/openai/codex)（Rust）為�
 
 | 文件 | 內容 |
 |---|---|
-| [architecture.md](architecture.md) | 整體架構：CLI/TUI、雙引擎、agent-core 收斂、開源模型 harness |
+| [architecture.md](architecture.md) | 整體架構：CLI/TUI、雙引擎（codex 與 Rabi Harness）、開源模型 harness |
+| [gaps.md](gaps.md) | 盤點：rabi／DSH 有但還沒接出來的能力、Agent Teams 現況、ACP 這道門漏掉的、slash command 的空殼 |
 | [login.md](login.md) | UnieAI Studio 登入（device flow、公司/地端、gateway 憑證） |
+| [mcp.md](mcp.md) | MCP server 設定與 OAuth 授權（`~/.unieai/config.toml`、loopback／`--remote` 中繼、疑難排解） |
+| [reasoning.md](reasoning.md) | 思考強度（reasoning effort）：七個等級、三個入口、雙引擎怎麼傳、為什麼有時候看不到旋鈕 |
 | [kube.md](kube.md) | `unieai kube`：以 Studio 登入換取 vCluster 的 15 分鐘 kubectl 憑證（exec 外掛、快取、CI 機器身分） |
 | [usage-api.md](usage-api.md) | 方案用量與計費 API 契約（`/api/usage/me`、Extra usage、402/429 錯誤碼） |
 | [vscode-extension.md](vscode-extension.md) | VS Code 聊天面板：安裝、雙引擎、功能 |
@@ -19,7 +22,7 @@ UnieAI Code 是以 [openai/codex](https://github.com/openai/codex)（Rust）為�
 ```
 UnieAI/unieai-code            ← 這個 repo（codex 基底的 CLI/TUI/VS Code 插件）
   └─ third_party/
-       unieai-agent-core      ← submodule（純流程迴圈，與 UnieAI Studio 共用）
+       unieai-agent-core      ← submodule（對外叫 Rabi Harness，引擎 id `uac`；起 rabi --profile acp）
 UnieAI/Unieai-Code-Publish    ← VS Code 擴充的 vscode-v* releases；CLI 的 cli-v* 停在 0.0.15，之後改走 npm
 ```
 
