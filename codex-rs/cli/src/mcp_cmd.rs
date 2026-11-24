@@ -230,6 +230,13 @@ pub struct LoginArgs {
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
     pub scopes: Vec<String>,
 
+    /// Seconds to wait for the OAuth callback before giving up (default 300).
+    ///
+    /// Raise this when you sign in on another machine, where approving and
+    /// copying the callback back takes longer than five minutes.
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    pub timeout_secs: Option<u64>,
+
     /// OAuth client-registration strategy for this login only.
     #[arg(
         long = "oauth-client-registration",
@@ -492,6 +499,7 @@ async fn run_add(config: &Config, add_args: AddArgs) -> Result<()> {
                     .as_deref()
                     .or(config.mcp_oauth_callback_url.as_deref()),
                 config.mcp_oauth_callback_url.as_deref(),
+                config.mcp_oauth_login_timeout_secs.map(|secs| secs as i64),
                 http_client,
                 McpLoginMode::Browser,
             )
@@ -558,8 +566,13 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
         remote,
         remote_url,
         scopes,
+        timeout_secs,
         oauth_client_registration,
     } = login_args;
+    // The flag wins so one slow login can be extended without editing config.
+    let login_timeout_secs = timeout_secs
+        .or(config.mcp_oauth_login_timeout_secs)
+        .map(|secs| secs as i64);
     let client_registration = oauth_client_registration
         .map(McpOAuthClientRegistration::from)
         .unwrap_or_default();
@@ -648,6 +661,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
         server.oauth_callback_port(config.mcp_oauth_callback_port),
         callback_url.as_deref(),
         config.mcp_oauth_callback_url.as_deref(),
+        login_timeout_secs,
         http_client,
         mode,
     )

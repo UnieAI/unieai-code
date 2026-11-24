@@ -328,6 +328,7 @@ async fn new_config(
         mcp_oauth_credentials_store_mode,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
+        mcp_oauth_login_timeout_secs: None,
         mcp_optional_startup_grace: std::time::Duration::from_secs(1),
         model_providers,
         project_doc_max_bytes: 32 * 1024,

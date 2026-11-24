@@ -971,6 +971,11 @@ pub struct Config {
     /// to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).
     pub mcp_oauth_callback_url: Option<String>,
 
+    /// Seconds to wait for the MCP OAuth callback during `mcp login`.
+    ///
+    /// Unset means the login's own default window (300 seconds).
+    pub mcp_oauth_login_timeout_secs: Option<u64>,
+
     /// How long to wait for optional MCP servers while building the initial tool catalog.
     pub mcp_optional_startup_grace: Duration,
 
@@ -1956,6 +1961,7 @@ impl Config {
             auth_keyring_backend_kind: self.auth_keyring_backend_kind(),
             mcp_oauth_callback_port: self.mcp_oauth_callback_port,
             mcp_oauth_callback_url: self.mcp_oauth_callback_url.clone(),
+            mcp_oauth_login_timeout_secs: self.mcp_oauth_login_timeout_secs,
             optional_mcp_startup_grace: self.mcp_optional_startup_grace,
             skill_mcp_dependency_install_enabled: self
                 .features
@@ -4754,6 +4760,7 @@ impl Config {
             ),
             mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
             mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
+            mcp_oauth_login_timeout_secs: cfg.mcp_oauth_login_timeout_secs,
             mcp_optional_startup_grace: cfg
                 .mcp_optional_startup_grace_ms
                 .map(Duration::from_millis)

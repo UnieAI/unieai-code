@@ -147,6 +147,10 @@ pub struct McpConfig {
     pub mcp_oauth_callback_port: Option<u16>,
     /// Optional OAuth redirect URI override for MCP login.
     pub mcp_oauth_callback_url: Option<String>,
+    /// Seconds to wait for the MCP OAuth callback before giving up.
+    ///
+    /// Unset keeps each login's own default window (300 seconds).
+    pub mcp_oauth_login_timeout_secs: Option<u64>,
     /// How long a tool catalog capture waits for optional MCP servers to initialize.
     ///
     /// A zero duration disables the shared grace and waits for each server's

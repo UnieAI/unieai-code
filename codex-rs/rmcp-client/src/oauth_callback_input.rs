@@ -42,6 +42,7 @@ pub async fn perform_oauth_login_with_callback_input<F>(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     global_callback_url: Option<&str>,
+    timeout_secs: Option<i64>,
     http_client: Arc<dyn HttpClient>,
     read_callback: impl FnOnce(String) -> F,
 ) -> Result<()>
@@ -69,7 +70,7 @@ where
         callback_port,
         callback_url,
         global_callback_url,
-        /*timeout_secs*/ None,
+        timeout_secs,
     )
     .await?;
     let authorization_url = flow.authorization_url();

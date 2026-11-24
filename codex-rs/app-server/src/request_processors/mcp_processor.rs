@@ -322,7 +322,9 @@ impl McpRequestProcessor {
                 server.oauth.as_ref(),
                 client_registration,
                 server.oauth_resource.as_deref(),
-                timeout_secs,
+                timeout_secs.or(mcp_config
+                    .mcp_oauth_login_timeout_secs
+                    .map(|secs| secs as i64)),
                 server.oauth_callback_port(mcp_config.mcp_oauth_callback_port),
                 callback_url.as_deref(),
                 mcp_config.mcp_oauth_callback_url.as_deref(),

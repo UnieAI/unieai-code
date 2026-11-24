@@ -61,6 +61,7 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     global_callback_url: Option<&str>,
+    timeout_secs: Option<i64>,
     http_client: Arc<dyn HttpClient>,
     mode: McpLoginMode,
 ) -> Result<()> {
@@ -90,6 +91,7 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
                         callback_port,
                         callback_url,
                         global_callback_url,
+                        timeout_secs,
                         Arc::clone(&http_client),
                     )
                     .await
@@ -122,6 +124,7 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
                         callback_port,
                         callback_url,
                         global_callback_url,
+                        timeout_secs,
                         Arc::clone(&http_client),
                         move |authorization_url| read_callback(authorization_url, input),
                     )

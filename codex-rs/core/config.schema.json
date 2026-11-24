@@ -8223,6 +8223,12 @@
       "default": null,
       "description": "Preferred backend for storing MCP OAuth credentials. keyring: Use an OS-specific keyring service. https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2 file: Use a file in the UnieAI home directory. auto (default): Use the OS-specific keyring service if available, otherwise use a file."
     },
+    "mcp_oauth_login_timeout_secs": {
+      "description": "Seconds to wait for the MCP OAuth browser callback during `mcp login`.\n\nDefaults to 300. Raise this when authorizing on another machine, where approving and copying the callback back can take longer than five minutes.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "mcp_optional_startup_grace_ms": {
       "description": "Milliseconds to wait for optional MCP servers while building the initial tool catalog.\n\nDefaults to 1000. Set to 0 to disable the shared grace and wait for each server's configured `startup_timeout_sec` instead.",
       "format": "uint64",

@@ -67,6 +67,27 @@ Rabi 只短暫交接授權碼。PKCE verifier、state 與 issuer 驗證、token 
 MCP 憑證儲存都在 Code 完成；不會把既有 Code 帳號 token 或 MCP 認證 headers
 交給 Rabi。遠端模式不會啟動本地 callback listener，並使用原本的 MCP 憑證儲存設定。
 
+### 手動 callback（`--no-browser`）要點
+
+`--no-browser` 會自己開本地 callback listener，同時接受貼回完整 callback URL。
+瀏覽器不在執行 `unieai` 的那台機器時，`127.0.0.1:<port>` 連到的是瀏覽器自己的
+電腦，頁面會連不上；此時請改用 SSH port forwarding，讓瀏覽器那一端真的打到 listener：
+
+```bash
+# 在遠端主機固定 callback port，再從本機轉送
+unieai -c mcp_oauth_callback_port=17123 mcp login space --no-browser
+# 本機另一個終端
+ssh -L 17123:127.0.0.1:17123 <ssh-host>
+```
+
+授權頁按下同意後，瀏覽器會直接完成，不必複製任何網址。
+
+- `mcp login --timeout-secs <秒>`（或 `-c mcp_oauth_login_timeout_secs=<秒>`）
+  調整等待 callback 的時間，預設 300 秒。跨機器授權、貼回 callback 較慢時可調高。
+- callback 頁面只有在 `state` 與本次登入相符時才顯示完成；其他來源或被取代的
+  callback 會顯示失敗頁（HTTP 400），終端也會出現對應錯誤，不會出現「網頁說完成、
+  終端說失敗」的矛盾。
+
 ## TUI onboarding
 
 第一次啟動（`~/.unieai` 無憑證）會走互動式登入：

@@ -125,6 +125,7 @@ pub async fn perform_oauth_login(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     global_callback_url: Option<&str>,
+    timeout_secs: Option<i64>,
     http_client: Arc<dyn HttpClient>,
 ) -> Result<()> {
     perform_oauth_login_with_browser_output(
@@ -141,6 +142,7 @@ pub async fn perform_oauth_login(
         callback_port,
         callback_url,
         global_callback_url,
+        timeout_secs,
         http_client,
         /*emit_browser_url*/ true,
         StreamableHttpRedirectMode::Legacy,
@@ -163,6 +165,7 @@ pub async fn perform_oauth_login_silent(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     global_callback_url: Option<&str>,
+    timeout_secs: Option<i64>,
     http_client: Arc<dyn HttpClient>,
     redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<()> {
@@ -180,6 +183,7 @@ pub async fn perform_oauth_login_silent(
         callback_port,
         callback_url,
         global_callback_url,
+        timeout_secs,
         http_client,
         /*emit_browser_url*/ false,
         redirect_mode,
@@ -202,6 +206,7 @@ async fn perform_oauth_login_with_browser_output(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     global_callback_url: Option<&str>,
+    timeout_secs: Option<i64>,
     http_client: Arc<dyn HttpClient>,
     emit_browser_url: bool,
     redirect_mode: StreamableHttpRedirectMode,
@@ -228,7 +233,7 @@ async fn perform_oauth_login_with_browser_output(
         callback_port,
         callback_url,
         global_callback_url,
-        /*timeout_secs*/ None,
+        timeout_secs,
     )
     .await?
     .finish(emit_browser_url)
@@ -290,6 +295,7 @@ fn spawn_callback_server(
     server: Arc<Server>,
     tx: oneshot::Sender<CallbackResult>,
     expected_callback_path: String,
+    expected_state: Option<String>,
     closed: tokio_util::sync::CancellationToken,
 ) {
     tokio::task::spawn_blocking(move || {
@@ -304,9 +310,19 @@ fn spawn_callback_server(
                     state,
                     issuer,
                 }) => {
-                    let response = Response::from_string(
-                        "Authentication complete. You may close this window.",
-                    );
+                    // Never tell the browser the login succeeded unless this callback
+                    // is the one this login asked for. The flow performs the same state
+                    // check before exchanging the code; this keeps the page honest when
+                    // a callback from another (or an older) login lands here.
+                    let state_matches = expected_state
+                        .as_deref()
+                        .is_none_or(|expected| expected == state);
+                    let response = if state_matches {
+                        Response::from_string("Authentication complete. You may close this window.")
+                    } else {
+                        Response::from_string(CALLBACK_STATE_MISMATCH_PAGE)
+                            .with_status_code(/*status_code*/ 400)
+                    };
                     if let Err(err) = request.respond(response) {
                         eprintln!("Failed to respond to OAuth callback: {err}");
                     }
@@ -343,6 +359,9 @@ fn spawn_callback_server(
         }
     });
 }
+
+const CALLBACK_STATE_MISMATCH_PAGE: &str = "Authentication failed: this callback does not match the login in progress.\n\
+     Return to your terminal, read the error there, and start the login again.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OauthCallbackResult {
@@ -773,6 +792,7 @@ impl OauthLoginFlow {
             "resource",
             oauth_resource,
         );
+        let expected_callback_state = authorization_state(&auth_url);
         let timeout_secs = timeout_secs.unwrap_or(DEFAULT_OAUTH_TIMEOUT_SECS).max(1);
         let timeout = Duration::from_secs(timeout_secs as u64);
         // No fallible work or suspension after spawning: every callback worker
@@ -780,7 +800,13 @@ impl OauthLoginFlow {
         let (tx, rx) = oneshot::channel();
         let callback_closed = tokio_util::sync::CancellationToken::new();
         if let Some(server) = server {
-            spawn_callback_server(server, tx, callback_path, callback_closed.clone());
+            spawn_callback_server(
+                server,
+                tx,
+                callback_path,
+                expected_callback_state,
+                callback_closed.clone(),
+            );
         } else {
             drop(tx);
             callback_closed.cancel();
@@ -971,6 +997,16 @@ async fn start_authorization(
     })
 }
 
+/// CSRF state this login expects back, read from the authorization URL that carries it.
+fn authorization_state(authorization_url: &str) -> Option<String> {
+    Url::parse(authorization_url)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .filter(|state| !state.is_empty())
+}
+
 fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
     let Some(value) = value else {
         return url.to_string();
@@ -1031,6 +1067,7 @@ mod tests {
     use super::StreamableHttpRedirectMode;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
+    use super::authorization_state;
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
@@ -1426,6 +1463,7 @@ mod tests {
             /*callback_port*/ None,
             /*callback_url*/ None,
             /*global_callback_url*/ None,
+            /*timeout_secs*/ None,
             http_client.clone(),
         )
         .await
@@ -1451,6 +1489,7 @@ mod tests {
             /*callback_port*/ None,
             /*callback_url*/ None,
             /*global_callback_url*/ None,
+            /*timeout_secs*/ None,
             http_client.clone(),
             StreamableHttpRedirectMode::Legacy,
         )
@@ -1641,5 +1680,105 @@ mod tests {
         let url = append_query_param("not a url", "resource", Some("api/resource"));
 
         assert_eq!(url, "not a url?resource=api%2Fresource");
+    }
+
+    #[test]
+    fn authorization_state_reads_the_login_state() {
+        assert_eq!(
+            authorization_state("https://space.example/oauth/authorize?client_id=abc&state=xyz"),
+            Some("xyz".to_string())
+        );
+        assert_eq!(
+            authorization_state("https://space.example/oauth/authorize?client_id=abc"),
+            None
+        );
+        assert_eq!(
+            authorization_state("https://space.example/oauth/authorize?state="),
+            None
+        );
+    }
+
+    fn send_callback_request(port: u16, path: &str) -> anyhow::Result<(String, String)> {
+        let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        let mut parts = response.splitn(2, "\r\n\r\n");
+        Ok((
+            parts.next().unwrap_or_default().to_string(),
+            parts.next().unwrap_or_default().to_string(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn callback_page_confirms_only_the_matching_login() -> anyhow::Result<()> {
+        let server =
+            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("start callback listener"));
+        let port = server
+            .server_addr()
+            .to_ip()
+            .expect("resolve callback listener address")
+            .port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        super::spawn_callback_server(
+            Arc::clone(&server),
+            tx,
+            "/callback".to_string(),
+            Some("expected-state".to_string()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let (head, body) = tokio::task::spawn_blocking(move || {
+            send_callback_request(port, "/callback?code=the-code&state=expected-state")
+        })
+        .await??;
+
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(body.contains("Authentication complete"), "{body}");
+        // A matching callback reaches the flow so it can exchange the code.
+        assert!(matches!(
+            rx.await?,
+            super::CallbackResult::Success(super::OauthCallbackResult { code, .. })
+                if code == "the-code"
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn callback_page_refuses_to_confirm_another_logins_callback() -> anyhow::Result<()> {
+        let server =
+            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("start callback listener"));
+        let port = server
+            .server_addr()
+            .to_ip()
+            .expect("resolve callback listener address")
+            .port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        super::spawn_callback_server(
+            Arc::clone(&server),
+            tx,
+            "/callback".to_string(),
+            Some("expected-state".to_string()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let (head, body) = tokio::task::spawn_blocking(move || {
+            send_callback_request(port, "/callback?code=the-code&state=stale-state")
+        })
+        .await??;
+
+        assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+        assert!(body.contains("does not match the login"), "{body}");
+        assert!(!body.contains("Authentication complete"), "{body}");
+        // The callback still reaches the flow so the terminal reports the real
+        // state error instead of waiting for the login to time out.
+        assert!(matches!(
+            rx.await?,
+            super::CallbackResult::Success(super::OauthCallbackResult { .. })
+        ));
+        Ok(())
     }
 }

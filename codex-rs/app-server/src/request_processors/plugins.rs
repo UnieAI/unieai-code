@@ -1921,6 +1921,7 @@ impl PluginRequestProcessor {
 
             let store_mode = config.mcp_oauth_credentials_store_mode;
             let keyring_backend_kind = config.auth_keyring_backend_kind();
+            let login_timeout_secs = config.mcp_oauth_login_timeout_secs.map(|secs| secs as i64);
             let callback_port = server.oauth_callback_port(config.mcp_oauth_callback_port);
             let callback_url = match resolve_oauth_callback(
                 &server,
@@ -1958,6 +1959,7 @@ impl PluginRequestProcessor {
                     callback_port,
                     callback_url.as_deref(),
                     global_callback_url.as_deref(),
+                    login_timeout_secs,
                     Arc::clone(&http_client),
                     redirect_mode,
                 )
@@ -1979,6 +1981,7 @@ impl PluginRequestProcessor {
                             callback_port,
                             callback_url.as_deref(),
                             global_callback_url.as_deref(),
+                            login_timeout_secs,
                             http_client,
                             redirect_mode,
                         )

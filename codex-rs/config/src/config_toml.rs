@@ -322,6 +322,12 @@ pub struct ConfigToml {
     /// to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).
     pub mcp_oauth_callback_url: Option<String>,
 
+    /// Seconds to wait for the MCP OAuth browser callback during `mcp login`.
+    ///
+    /// Defaults to 300. Raise this when authorizing on another machine, where
+    /// approving and copying the callback back can take longer than five minutes.
+    pub mcp_oauth_login_timeout_secs: Option<u64>,
+
     /// Milliseconds to wait for optional MCP servers while building the initial tool catalog.
     ///
     /// Defaults to 1000. Set to 0 to disable the shared grace and wait for each
