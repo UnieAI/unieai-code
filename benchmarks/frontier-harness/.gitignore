@@ -1,0 +1,4 @@
+# Copyright (c) 2026 UnieAI. All rights reserved.
+# Benchmark outputs (trajectories, logs) stay local.
+runs/
+__pycache__/

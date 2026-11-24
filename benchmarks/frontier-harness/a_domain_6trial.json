@@ -1,0 +1,440 @@
+{
+ "finance": {
+  "domain": "finance",
+  "tasks": [
+   "terminal-bench/financial-document-processor",
+   "terminal-bench/portfolio-optimization"
+  ],
+  "trials": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "per_task": {
+   "terminal-bench/financial-document-processor": {
+    "dsh-unieai": {
+     "pass": 6,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 2428070,
+     "median_tokens": 397204.0
+    },
+    "dsh-unieai-fix": {
+     "pass": 6,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 3041381,
+     "median_tokens": 518481.5
+    }
+   },
+   "terminal-bench/portfolio-optimization": {
+    "dsh-unieai": {
+     "pass": 6,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 2407782,
+     "median_tokens": 358968.5
+    },
+    "dsh-unieai-fix": {
+     "pass": 6,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 2116497,
+     "median_tokens": 343076.5
+    }
+   }
+  },
+  "matched": {
+   "terminal-bench/financial-document-processor": [
+    [
+     1,
+     "PASS",
+     "PASS"
+    ],
+    [
+     2,
+     "PASS",
+     "PASS"
+    ],
+    [
+     3,
+     "PASS",
+     "PASS"
+    ],
+    [
+     4,
+     "PASS",
+     "PASS"
+    ],
+    [
+     5,
+     "PASS",
+     "PASS"
+    ],
+    [
+     6,
+     "PASS",
+     "PASS"
+    ]
+   ],
+   "terminal-bench/portfolio-optimization": [
+    [
+     1,
+     "PASS",
+     "PASS"
+    ],
+    [
+     2,
+     "PASS",
+     "PASS"
+    ],
+    [
+     3,
+     "PASS",
+     "PASS"
+    ],
+    [
+     4,
+     "PASS",
+     "PASS"
+    ],
+    [
+     5,
+     "PASS",
+     "PASS"
+    ],
+    [
+     6,
+     "PASS",
+     "PASS"
+    ]
+   ]
+  },
+  "mcnemar": {
+   "n_pairs": 12,
+   "base_only": 0,
+   "fix_only": 0,
+   "discordant": [],
+   "p_two": 1.0,
+   "p_one_base_gt_fix": 1.0
+  },
+  "arm_total_tokens": {
+   "dsh-unieai": 4835852,
+   "dsh-unieai-fix": 5157878
+  },
+  "arm_median_tokens": {
+   "dsh-unieai": 361813.5,
+   "dsh-unieai-fix": 368463.5
+  },
+  "overall": {
+   "dsh-unieai": {
+    "passed": 12,
+    "valid": 12,
+    "all": 12,
+    "pass_valid": 1.0,
+    "pass_all": 1.0
+   },
+   "dsh-unieai-fix": {
+    "passed": 12,
+    "valid": 12,
+    "all": 12,
+    "pass_valid": 1.0,
+    "pass_all": 1.0
+   }
+  }
+ },
+ "medbio": {
+  "domain": "medbio",
+  "tasks": [
+   "terminal-bench/dna-assembly",
+   "terminal-bench/dna-insert",
+   "terminal-bench/protein-assembly",
+   "terminal-bench/sam-cell-seg"
+  ],
+  "trials": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "per_task": {
+   "terminal-bench/dna-assembly": {
+    "dsh-unieai": {
+     "pass": 2,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 17674745,
+     "median_tokens": 3142332.5
+    },
+    "dsh-unieai-fix": {
+     "pass": 2,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 18564123,
+     "median_tokens": 2718601.5
+    }
+   },
+   "terminal-bench/dna-insert": {
+    "dsh-unieai": {
+     "pass": 0,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 10940325,
+     "median_tokens": 1766145.5
+    },
+    "dsh-unieai-fix": {
+     "pass": 2,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 11992537,
+     "median_tokens": 1886158.5
+    }
+   },
+   "terminal-bench/protein-assembly": {
+    "dsh-unieai": {
+     "pass": 1,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 16600443,
+     "median_tokens": 2669442.0
+    },
+    "dsh-unieai-fix": {
+     "pass": 1,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 19559144,
+     "median_tokens": 2736577.0
+    }
+   },
+   "terminal-bench/sam-cell-seg": {
+    "dsh-unieai": {
+     "pass": 4,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 14534396,
+     "median_tokens": 2307256.5
+    },
+    "dsh-unieai-fix": {
+     "pass": 5,
+     "trials_valid": 6,
+     "trials_all": 6,
+     "sum_tokens": 13033862,
+     "median_tokens": 2162947.5
+    }
+   }
+  },
+  "matched": {
+   "terminal-bench/dna-assembly": [
+    [
+     1,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     2,
+     "PASS",
+     "PASS"
+    ],
+    [
+     3,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     4,
+     "PASS",
+     "FAIL"
+    ],
+    [
+     5,
+     "FAIL",
+     "PASS"
+    ],
+    [
+     6,
+     "FAIL",
+     "FAIL"
+    ]
+   ],
+   "terminal-bench/dna-insert": [
+    [
+     1,
+     "FAIL",
+     "PASS"
+    ],
+    [
+     2,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     3,
+     "FAIL",
+     "PASS"
+    ],
+    [
+     4,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     5,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     6,
+     "FAIL",
+     "FAIL"
+    ]
+   ],
+   "terminal-bench/protein-assembly": [
+    [
+     1,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     2,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     3,
+     "FAIL",
+     "PASS"
+    ],
+    [
+     4,
+     "FAIL",
+     "FAIL"
+    ],
+    [
+     5,
+     "PASS",
+     "FAIL"
+    ],
+    [
+     6,
+     "FAIL",
+     "FAIL"
+    ]
+   ],
+   "terminal-bench/sam-cell-seg": [
+    [
+     1,
+     "PASS",
+     "FAIL"
+    ],
+    [
+     2,
+     "PASS",
+     "PASS"
+    ],
+    [
+     3,
+     "PASS",
+     "PASS"
+    ],
+    [
+     4,
+     "FAIL",
+     "PASS"
+    ],
+    [
+     5,
+     "PASS",
+     "PASS"
+    ],
+    [
+     6,
+     "FAIL",
+     "PASS"
+    ]
+   ]
+  },
+  "mcnemar": {
+   "n_pairs": 24,
+   "base_only": 3,
+   "fix_only": 6,
+   "discordant": [
+    [
+     "terminal-bench/dna-assembly",
+     4,
+     "base"
+    ],
+    [
+     "terminal-bench/dna-assembly",
+     5,
+     "fix"
+    ],
+    [
+     "terminal-bench/dna-insert",
+     1,
+     "fix"
+    ],
+    [
+     "terminal-bench/dna-insert",
+     3,
+     "fix"
+    ],
+    [
+     "terminal-bench/protein-assembly",
+     3,
+     "fix"
+    ],
+    [
+     "terminal-bench/protein-assembly",
+     5,
+     "base"
+    ],
+    [
+     "terminal-bench/sam-cell-seg",
+     1,
+     "base"
+    ],
+    [
+     "terminal-bench/sam-cell-seg",
+     4,
+     "fix"
+    ],
+    [
+     "terminal-bench/sam-cell-seg",
+     6,
+     "fix"
+    ]
+   ],
+   "p_two": 0.5078125,
+   "p_one_base_gt_fix": 0.25390625
+  },
+  "arm_total_tokens": {
+   "dsh-unieai": 59749909,
+   "dsh-unieai-fix": 63149666
+  },
+  "arm_median_tokens": {
+   "dsh-unieai": 2307256.5,
+   "dsh-unieai-fix": 2434798.0
+  },
+  "overall": {
+   "dsh-unieai": {
+    "passed": 7,
+    "valid": 24,
+    "all": 24,
+    "pass_valid": 0.2916666666666667,
+    "pass_all": 0.2916666666666667
+   },
+   "dsh-unieai-fix": {
+    "passed": 10,
+    "valid": 24,
+    "all": 24,
+    "pass_valid": 0.4166666666666667,
+    "pass_all": 0.4166666666666667
+   }
+  }
+ }
+}

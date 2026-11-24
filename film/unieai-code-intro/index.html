@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>UnieAI Code — intro</title>
+<style>
+  @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400;
+               src: url(src/inter.woff2) format('woff2'); }
+  @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600;
+               src: url(src/inter.woff2) format('woff2'); }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #000; }
+  #stage {
+    position: relative; width: 1920px; height: 1080px; overflow: hidden;
+    background: #000; font-kerning: none; -webkit-font-smoothing: antialiased;
+  }
+  /* ---------- camera ---------- */
+  #camera {
+    position: absolute; inset: 0;
+    perspective: 3400px; perspective-origin: 50% 50%;
+  }
+  .plane {
+    position: absolute; left: 0; top: 0;
+    transform-origin: var(--fx) var(--fy);
+    will-change: transform;
+  }
+  /* crop window: holds the full slab, but only the part that can be seen */
+  .win {
+    position: absolute; left: 0; top: 0; overflow: hidden;
+  }
+  .slab {
+    position: relative; overflow: hidden;
+    width: 74.242em; height: 38.4em;
+    padding: 1.2em 1.6em;
+    border-radius: 0.7em;
+    background: #0b0b0f;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 15px;
+    line-height: 1.5em;
+    color: #c9ccd2;
+    white-space: pre;
+    tab-size: 4;
+  }
+  /* light pool that follows the focal point, in UI space */
+  .pool {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(circle var(--pool-r) at var(--px) var(--py),
+      rgba(255,255,255,0.115), rgba(255,255,255,0.038) 42%, rgba(255,255,255,0) 72%);
+  }
+  /* ---------- terminal ---------- */
+  .row { white-space: pre; height: 1.5em; }
+  .view { position: relative; height: 27em; overflow: hidden; }
+  .tx { position: relative; left: 0; top: 0; width: 100%; will-change: transform;
+        min-height: 27em;
+        display: flex; flex-direction: column; justify-content: flex-end; }
+  .hdr-mark { color: #63a8f8; }
+  .hdr-name { color: #f0f0ec; }
+  .hdr-path { color: #82868d; }
+  .user { color: #f0f0ec; font-weight: bold; }
+  .ans { color: #eceee9; }
+  .dim { color: #8b8e94; }
+  .faint { color: #565961; }
+  .accent { color: #63a8f8; }
+  .bold { color: #f0f0ec; font-weight: bold; }
+  .cmd { color: #d5d8dd; }
+  .code { color: #a6aab1; }
+  .green { color: #7ecf9b; }
+  .add { color: #7fd69c; }
+  .del { color: #e88a92; }
+  .lnum { color: #4a4d54; }
+  .caret { display: inline-block; width: 0.13em; height: 1.1em; vertical-align: -0.2em;
+           background: #dfe2e7; margin-left: 0.06em; }
+  /* stipple reveal */
+  .rv { position: relative; display: inline-block; }
+  .rv > .t { opacity: calc(var(--p) * var(--p)); filter: blur(calc((1 - var(--p)) * 1.6px)); }
+  .rv::before {
+    content: attr(data-s); position: absolute; left: 0; top: 0;
+    -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0.44px, transparent 0.6px);
+    -webkit-mask-size: var(--ms) var(--ms);
+    -webkit-mask-position: var(--mp);
+    opacity: calc(var(--p) * (1 - var(--p)) * 2.6);
+  }
+  /* ---------- overlays above the composer ---------- */
+  .pop { position: absolute; left: 1.6em; right: 1.6em; bottom: 5.7em; z-index: 6; }
+  .ov {
+    width: 40em; margin: 0 auto; padding: 0.55em 0.95em 0.65em;
+    background: #101017; border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 0.45em; box-shadow: 0 1.2em 2.4em rgba(0,0,0,0.62);
+    white-space: pre;
+  }
+  .ovt { color: #f0f0ec; margin-bottom: 0.35em; }
+  .ovc { color: #a6aab1; margin-bottom: 0.5em; }
+  .ovi { color: #8b8e94; }
+  .ovi .cur { color: #63a8f8; }
+  .ovi.sel { background: rgba(99,168,248,0.13); border-radius: 0.24em; }
+  .mn {
+    width: 47em; margin: 0 auto; padding: 0.45em 0.6em;
+    background: #101017; border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 0.45em; box-shadow: 0 1.2em 2.4em rgba(0,0,0,0.62);
+    white-space: pre;
+  }
+  .mni { display: flex; gap: 1.6em; padding: 0 0.35em; }
+  .mni.sel { background: rgba(99,168,248,0.13); border-radius: 0.24em; }
+  .mnc { width: 15em; color: #d5d8dd; }
+  .mni.sel .mnc { color: #f0f0ec; }
+  .mnd { color: #8b8e94; }
+  /* ---------- screen space ---------- */
+  #vignette {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 78% 68% at 50% 50%, rgba(0,0,0,0) 40%, rgba(0,0,0,0.52) 100%);
+  }
+  #outro {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-family: "Inter", "DejaVu Sans", sans-serif; color: #fff; visibility: hidden;
+  }
+  #copy { display: flex; align-items: baseline; gap: 0.42em; font-size: 82px;
+          letter-spacing: -0.024em; font-weight: 600; opacity: 0; white-space: pre; }
+  #copy .tag { font-weight: 400; font-size: 0.61em; letter-spacing: -0.004em; color: #b4b8bf;
+               opacity: 0; }
+  #install { margin-top: 56px; text-align: center;
+             font-family: "DejaVu Sans Mono", monospace; font-size: 24px; color: #d8dbdf;
+             letter-spacing: 0.01em; opacity: 0; }
+  #install .p { color: #6c727b; }
+  #install .v { color: #9ba1a9; font-size: 16.5px; margin-left: 16px; }
+  #logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+          height: 107px; opacity: 0; }
+  #logo img { height: 100%; display: block; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="camera"><div id="stack"></div></div>
+  <div id="vignette"></div>
+  <div id="outro">
+    <div id="copy"><span class="name">UnieAI Code</span><span class="tag">Any model. One terminal.</span></div>
+    <div id="install"><span class="p">$ </span>npm i -g @unieai/code@latest<span class="v">v0.0.37</span></div>
+    <div id="logo"><img src="src/logo-mark.png" alt=""></div>
+  </div>
+</div>
+<script src="src/film.js"></script>
+<script>
+  window.__film = new Film(document.getElementById('stage'));
+  window.renderFrame = (t) => window.__film.render(t);
+  window.renderFrame(0);
+  window.__ready = true;
+</script>
+</body>
+</html>

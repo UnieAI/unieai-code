@@ -1,0 +1,2 @@
+terminal-bench/gcode-to-text
+terminal-bench/kv-store-grpc

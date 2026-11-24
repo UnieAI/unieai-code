@@ -1,0 +1,1009 @@
+{
+  "count": 66,
+  "rows": [
+    {
+      "task": "atrx-vep-crispr",
+      "category": "Science",
+      "subcategory": "Biology",
+      "tags": [
+        "genomics",
+        "ensembl-vep",
+        "hgvs",
+        "spcas9"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "batched-eval-parity",
+      "category": "ML",
+      "subcategory": "Evaluation",
+      "tags": [
+        "evaluation",
+        "batching",
+        "python",
+        "debugging"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "biped-contact-dynamics",
+      "category": "Science",
+      "subcategory": "Robotics",
+      "tags": [
+        "pydrake",
+        "trajectory-optimization",
+        "contact-dynamics",
+        "debugging"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "bun-sourcemap-leak",
+      "category": "Software",
+      "subcategory": "Systems",
+      "tags": [
+        "bun",
+        "source-maps",
+        "release-security"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "cad-model",
+      "category": "Hardware",
+      "subcategory": "CAD",
+      "tags": [
+        "cad",
+        "mechanical-engineering",
+        "3d-modeling"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "cargo-flight-dispatch",
+      "category": "Operations",
+      "subcategory": "Logistics",
+      "tags": [
+        "aviation",
+        "python",
+        "flight-planning",
+        "weight-balance",
+        "fuel-planning"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "coq-block-bound",
+      "category": "Science",
+      "subcategory": "Math",
+      "tags": [
+        "coq",
+        "theorem-proving",
+        "formal-mathematics",
+        "combinatorics",
+        "imo"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "ctr-optimization",
+      "category": "Operations",
+      "subcategory": "Marketing",
+      "tags": [
+        "advertising",
+        "optimization",
+        "fraud-detection",
+        "exploration-exploitation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "cumulative-layout-shift",
+      "category": "Software",
+      "subcategory": "Frontend",
+      "tags": [
+        "layout-shift",
+        "next.js",
+        "performance",
+        "multi-container"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "data-anonymization",
+      "category": "Software",
+      "subcategory": "Data engineering",
+      "tags": [
+        "python",
+        "data processing",
+        "privacy",
+        "anonymization",
+        "csv",
+        "databases"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "distributed-dedup",
+      "category": "Software",
+      "subcategory": "Systems",
+      "tags": [
+        "spark",
+        "scala",
+        "distributed_systems",
+        "deduplication",
+        "minhash",
+        "lsh",
+        "connected_components",
+        "performance",
+        "data_engineering"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 16384
+    },
+    {
+      "task": "embedding-drift-monitor",
+      "category": "ML",
+      "subcategory": "Inference",
+      "tags": [
+        "python",
+        "numpy",
+        "scipy",
+        "drift-detection",
+        "ml-monitoring",
+        "statistics"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "fin-saccr-rwa",
+      "category": "Operations",
+      "subcategory": "Finance",
+      "tags": [
+        "sa-ccr",
+        "bcbs-279",
+        "counterparty-credit-risk"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "foodstuff-beta-activity",
+      "category": "Science",
+      "subcategory": "Chemistry",
+      "tags": [
+        "chemistry",
+        "radiochemistry",
+        "liquid_scintillation_counting"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "formal-crypto",
+      "category": "Security",
+      "subcategory": "Cryptography",
+      "tags": [
+        "cryptanalysis",
+        "formal methods"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 4096
+    },
+    {
+      "task": "fp8-rmsnorm-gemm",
+      "category": "ML",
+      "subcategory": "Kernels",
+      "tags": [
+        "cuda",
+        "gpu",
+        "performance-engineering",
+        "fp8",
+        "kernel-optimization"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 16384
+    },
+    {
+      "task": "freecad-impeller",
+      "category": "Hardware",
+      "subcategory": "CAD",
+      "tags": [
+        "cad",
+        "freecad",
+        "parametric",
+        "geometry",
+        "python",
+        "impeller"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "freecad-platform-drawing",
+      "category": "Hardware",
+      "subcategory": "CAD",
+      "tags": [
+        "cad",
+        "freecad",
+        "parametric",
+        "geometry",
+        "python",
+        "drawing",
+        "vision"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "freecad-spring-clip",
+      "category": "Hardware",
+      "subcategory": "CAD",
+      "tags": [
+        "cad",
+        "freecad",
+        "parametric",
+        "geometry",
+        "python",
+        "spring_clip"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "freight-dispatch-shift",
+      "category": "Operations",
+      "subcategory": "Logistics",
+      "tags": [
+        "dispatch",
+        "logistics",
+        "stateful-cli",
+        "planning",
+        "driver-hours",
+        "dangerous-goods",
+        "optimization"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "glycan-ms2-elucidation",
+      "category": "Science",
+      "subcategory": "Chemistry",
+      "tags": [
+        "mass-spectrometry",
+        "glycomics",
+        "tandem-ms",
+        "structural-elucidation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "gsea-proteomics",
+      "category": "Science",
+      "subcategory": "Biology",
+      "tags": [
+        "proteomics",
+        "GSEA",
+        "mass-spectrometry",
+        "differential-expression",
+        "TMT"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 4096
+    },
+    {
+      "task": "heat-pump-warranty",
+      "category": "Operations",
+      "subcategory": "Claims",
+      "tags": [
+        "warranty",
+        "heat-pumps",
+        "after-sales",
+        "asset-lineage",
+        "ocr",
+        "manufacturing",
+        "compliance",
+        "domain-reasoning"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "hof-topology-interpenetration",
+      "category": "Science",
+      "subcategory": "Chemistry",
+      "tags": [
+        "crystallography",
+        "supramolecular-chemistry",
+        "topology",
+        "hydrogen-bonding",
+        "interpenetration"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "html-js-filter",
+      "category": "Security",
+      "subcategory": "AppSec",
+      "tags": [
+        "xss",
+        "html-sanitization",
+        "web-security"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "interleaved-vigenere",
+      "category": "Security",
+      "subcategory": "Cryptography",
+      "tags": [
+        "cryptography",
+        "cryptanalysis",
+        "vigenere",
+        "autokey-cipher",
+        "python",
+        "security",
+        "cli"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 4096
+    },
+    {
+      "task": "intrastat-meldung",
+      "category": "Operations",
+      "subcategory": "Compliance",
+      "tags": [
+        "intrastat",
+        "german-compliance",
+        "statistical-filing",
+        "multi-service",
+        "workflow",
+        "api",
+        "erp"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "jax-speedrun-gpu",
+      "category": "ML",
+      "subcategory": "Training",
+      "tags": [
+        "jax",
+        "gpu",
+        "pretraining",
+        "llm",
+        "transformer",
+        "h100",
+        "optimization"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 16,
+      "mem": 32768
+    },
+    {
+      "task": "ks-solver-cpp",
+      "category": "Science",
+      "subcategory": "Physics",
+      "tags": [
+        "pde",
+        "cpp",
+        "bessel-functions",
+        "spectral-methods",
+        "numerical-analysis",
+        "kuramoto-sivashinsky"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "kv-live-surgery",
+      "category": "Software",
+      "subcategory": "Systems",
+      "tags": [
+        "networking",
+        "performance",
+        "live-surgery",
+        "c",
+        "linux",
+        "ptrace"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "lake-temp-glm",
+      "category": "Science",
+      "subcategory": "Earth",
+      "tags": [
+        "scientific-computing",
+        "time-series",
+        "process-modeling",
+        "pytorch"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 8192
+    },
+    {
+      "task": "layout-config-recreation",
+      "category": "Media",
+      "subcategory": "Design",
+      "tags": [
+        "layout-analysis",
+        "graphic-design",
+        "layout-reconstruction",
+        "editable-layout",
+        "typography",
+        "vector-graphics",
+        "pixel-matching",
+        "config-generation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "layout-config-recreation2",
+      "category": "Media",
+      "subcategory": "Design",
+      "tags": [
+        "layout-analysis",
+        "template-matching",
+        "reverse-engineering",
+        "computer-vision",
+        "config-generation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "legacy-utility-triage",
+      "category": "Operations",
+      "subcategory": "Claims",
+      "tags": [
+        "computer-use",
+        "legacy-gui",
+        "utility-billing",
+        "meter-data",
+        "tariffs",
+        "vnc",
+        "domain-reasoning"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "live-database-cutover",
+      "category": "Software",
+      "subcategory": "Databases",
+      "tags": [
+        "databases",
+        "sql",
+        "migration",
+        "zero-downtime",
+        "live-system",
+        "cdc",
+        "binlog",
+        "postgresql",
+        "mysql"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 16,
+      "mem": 16384
+    },
+    {
+      "task": "math-eval-grader",
+      "category": "ML",
+      "subcategory": "Evaluation",
+      "tags": [
+        "llm-eval",
+        "sympy",
+        "symbolic-math",
+        "grader",
+        "benchmark-construction"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 16384
+    },
+    {
+      "task": "medical-claims-processing",
+      "category": "Operations",
+      "subcategory": "Claims",
+      "tags": [
+        "medical-billing",
+        "debugging",
+        "cross-referencing",
+        "multi-modal",
+        "document-verification",
+        "browser",
+        "playwright"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 16384
+    },
+    {
+      "task": "mp-checkpoint-consolidation",
+      "category": "ML",
+      "subcategory": "Inference",
+      "tags": [
+        "distributed-training",
+        "checkpoint-conversion",
+        "tensor-parallelism",
+        "pipeline-parallelism",
+        "mixture-of-experts",
+        "megatron"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 4096
+    },
+    {
+      "task": "music-harmony",
+      "category": "Media",
+      "subcategory": "Music",
+      "tags": [
+        "satb",
+        "harmony",
+        "voice-leading"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "mvcc-lsm-compaction",
+      "category": "Software",
+      "subcategory": "Databases",
+      "tags": [
+        "storage-engine",
+        "rocksdb",
+        "mvcc",
+        "lsm",
+        "compaction",
+        "debugging"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "nextjs-performance",
+      "category": "Software",
+      "subcategory": "Frontend",
+      "tags": [
+        "nextjs",
+        "performance",
+        "react",
+        "frontend"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "ontology-kg-querying",
+      "category": "Software",
+      "subcategory": "Data engineering",
+      "tags": [
+        "rdf",
+        "owl",
+        "sparql",
+        "knowledge-graphs",
+        "reasoning",
+        "data-integration"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "payments-pipeline-fix",
+      "category": "Software",
+      "subcategory": "Systems",
+      "tags": [
+        "kafka",
+        "distributed-systems",
+        "cold-start",
+        "state",
+        "latency"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "photonic-waveguide-routing",
+      "category": "Software",
+      "subcategory": "Algorithms",
+      "tags": [
+        "routing",
+        "pathfinding",
+        "geometry",
+        "optimization",
+        "spatial-reasoning"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "pretrain-shard-corruption",
+      "category": "ML",
+      "subcategory": "Training",
+      "tags": [
+        "debugging",
+        "distributed-training",
+        "data-pipeline",
+        "litdata",
+        "pytorch"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "production-planning",
+      "category": "Operations",
+      "subcategory": "Supply chain",
+      "tags": [
+        "production planning",
+        "data engineering",
+        "ERP",
+        "MES",
+        "WMS"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "protein-autointerp-disulfide",
+      "category": "Science",
+      "subcategory": "Biology",
+      "tags": [
+        "bioinformatics",
+        "protein-structure",
+        "feature-interpretation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "react-lead-form",
+      "category": "Software",
+      "subcategory": "Frontend",
+      "tags": [
+        "react",
+        "typescript",
+        "forms",
+        "validation",
+        "crm"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "retro-console-soc",
+      "category": "Hardware",
+      "subcategory": "RTL",
+      "tags": [
+        "verilog",
+        "cpu",
+        "retro-console",
+        "digital-design",
+        "system-on-chip"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "risk-scorer-replay",
+      "category": "ML",
+      "subcategory": "Evaluation",
+      "tags": [
+        "model-risk",
+        "ml-platform",
+        "black-box-parity",
+        "offline-evaluation",
+        "audit-provenance"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "roy-polymorph-cn",
+      "category": "Science",
+      "subcategory": "Chemistry",
+      "tags": [
+        "cheminformatics",
+        "spectroscopy",
+        "data-analysis",
+        "physical-chemistry"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "rs-archive-clone",
+      "category": "Software",
+      "subcategory": "Algorithms",
+      "tags": [
+        "reimplementation",
+        "reed-solomon",
+        "list-decoding",
+        "algorithms"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 4096
+    },
+    {
+      "task": "satb-audio-transcription",
+      "category": "Media",
+      "subcategory": "Music",
+      "tags": [
+        "music",
+        "audio-transcription",
+        "AMT",
+        "MusicXML",
+        "SATB",
+        "chorale"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 8192
+    },
+    {
+      "task": "session-window-debug",
+      "category": "Software",
+      "subcategory": "Systems",
+      "tags": [
+        "stream-processing",
+        "session-windows",
+        "watermarks",
+        "event-time",
+        "aggregation"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "sglang-qwen-burst",
+      "category": "ML",
+      "subcategory": "Inference",
+      "tags": [
+        "speculative-decoding",
+        "sglang",
+        "qwen3-coder",
+        "tool-calling",
+        "streaming"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "shadow-relay",
+      "category": "Security",
+      "subcategory": "Forensics",
+      "tags": [
+        "forensics",
+        "reverse-engineering",
+        "cryptography",
+        "network-analysis",
+        "virtual-machine",
+        "custom-protocol"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 4096
+    },
+    {
+      "task": "sound-change-cascade",
+      "category": "Science",
+      "subcategory": "Linguistics",
+      "tags": [
+        "phonology",
+        "inverse-problem",
+        "rule-induction",
+        "string-rewriting",
+        "historical-linguistics"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "takens-embedding-lean",
+      "category": "Science",
+      "subcategory": "Math",
+      "tags": [
+        "lean4",
+        "mathematics",
+        "theorem-proving",
+        "formal-verification"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 4,
+      "mem": 16384
+    },
+    {
+      "task": "telecom-entity-resolution",
+      "category": "Software",
+      "subcategory": "Data engineering",
+      "tags": [
+        "administrative-data",
+        "panel-construction",
+        "applied-microeconomics",
+        "household-consumption",
+        "data-linkage",
+        "entity-resolution"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "uefi-bootkit",
+      "category": "Security",
+      "subcategory": "Forensics",
+      "tags": [
+        "firmware",
+        "uefi",
+        "bootkit",
+        "qemu",
+        "incident-response",
+        "x86_64"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 16384
+    },
+    {
+      "task": "vba-userform-port",
+      "category": "Software",
+      "subcategory": "Frontend",
+      "tags": [
+        "vba",
+        "excel",
+        "userform",
+        "migration",
+        "react",
+        "fastapi",
+        "sqlite",
+        "playwright",
+        "legacy-modernization"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "vf2-speedup-networkx",
+      "category": "Software",
+      "subcategory": "Algorithms",
+      "tags": [
+        "graph-algorithms",
+        "optimization",
+        "compiled-extensions",
+        "python"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "vllm-deepseek-streaming",
+      "category": "ML",
+      "subcategory": "Inference",
+      "tags": [
+        "vllm",
+        "streaming",
+        "deepseek-r1",
+        "reasoning-model"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "vpp-loss-divergence",
+      "category": "ML",
+      "subcategory": "Training",
+      "tags": [
+        "distributed-training",
+        "pytorch",
+        "debugging"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 8192
+    },
+    {
+      "task": "wal-recovery-ordering",
+      "category": "Software",
+      "subcategory": "Databases",
+      "tags": [
+        "python",
+        "wal",
+        "recovery",
+        "concurrency",
+        "storage-engine"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 2,
+      "mem": 4096
+    },
+    {
+      "task": "wdm-design",
+      "category": "Science",
+      "subcategory": "Physics",
+      "tags": [
+        "photonics",
+        "inverse-design",
+        "meep",
+        "fdtd",
+        "topology-optimization",
+        "wdm"
+      ],
+      "agent_t": 28800.0,
+      "cpus": 8,
+      "mem": 16384
+    }
+  ]
+}

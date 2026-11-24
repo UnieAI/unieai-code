@@ -1,0 +1,5 @@
+# Domain A/B: medical/biotech (histopathology segmentation + molecular biology)
+terminal-bench/sam-cell-seg
+terminal-bench/dna-assembly
+terminal-bench/dna-insert
+terminal-bench/protein-assembly

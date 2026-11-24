@@ -1,0 +1,6 @@
+terminal-bench/crack-7z-hash
+terminal-bench/feal-linear-cryptanalysis
+terminal-bench/path-tracing
+terminal-bench/path-tracing-reverse
+terminal-bench/write-compressor
+terminal-bench/extract-elf

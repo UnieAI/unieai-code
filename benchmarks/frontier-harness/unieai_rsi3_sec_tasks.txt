@@ -1,0 +1,8 @@
+# Copyright (c) 2026 UnieAI. All rights reserved.
+# Focused security subset — rsi-iter3 security-skill A/B.
+# 3 hard/discriminating tasks + 2 already-passing crypto/recovery tasks (regression check).
+terminal-bench/qemu-alpine-ssh
+terminal-bench/db-wal-recovery
+terminal-bench/path-tracing
+terminal-bench/path-tracing-reverse
+terminal-bench/feal-linear-cryptanalysis

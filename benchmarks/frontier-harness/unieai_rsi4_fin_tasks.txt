@@ -1,0 +1,3 @@
+# Domain A/B: financial-document processing + numerical/portfolio optimization
+terminal-bench/financial-document-processor
+terminal-bench/portfolio-optimization

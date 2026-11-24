@@ -1,0 +1,4 @@
+terminal-bench/constraints-scheduling
+terminal-bench/db-wal-recovery
+terminal-bench/dna-insert
+terminal-bench/extract-elf

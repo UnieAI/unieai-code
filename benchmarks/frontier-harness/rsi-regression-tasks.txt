@@ -1,0 +1,3 @@
+terminal-bench/constraints-scheduling
+terminal-bench/db-wal-recovery
+terminal-bench/sanitize-git-repo

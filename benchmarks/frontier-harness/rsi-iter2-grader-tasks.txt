@@ -1,0 +1,3 @@
+terminal-bench/dna-insert
+terminal-bench/extract-elf
+terminal-bench/gcode-to-text
