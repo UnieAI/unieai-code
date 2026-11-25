@@ -102,7 +102,7 @@ impl App {
         let current = unieai_engine::configured_uac_mode(&codex_home);
         if let Err(err) = unieai_engine::write_uac_mode(&codex_home, mode) {
             self.chat_widget
-                .add_error_message(format!("Failed to save the uac mode: {err}"));
+                .add_error_message(format!("Failed to save the Rabi Harness mode: {err}"));
             return false;
         }
         if self.running_engine() == EngineKind::Uac && mode == current {

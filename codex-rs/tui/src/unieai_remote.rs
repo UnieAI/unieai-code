@@ -45,7 +45,7 @@ const VIEWER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const QUIET_ZONE: usize = 2;
 
 pub(crate) const ONLY_UAC: &str =
-    "Remote Control works on the Rabi Harness (uac) engine only.";
+    "Remote Control works on the Rabi Harness engine only.";
 
 /// The bridge's state, as `unieai/remote/start` and `/status` report it.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]

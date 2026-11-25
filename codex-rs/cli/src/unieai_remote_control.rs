@@ -120,7 +120,7 @@ async fn start(remote: &UacRemoteControl, args: StartArgs) -> anyhow::Result<()>
         .await
         .map_err(anyhow::Error::msg)?;
     let Some(link) = info.link.as_deref() else {
-        anyhow::bail!("the uac server did not return a pairing link");
+        anyhow::bail!("the Rabi Harness server did not return a pairing link");
     };
     println!("Open this link (or scan the code) on your phone or browser:\n\n  {link}\n");
     print!("{}", codex_tui::qr_ansi(link));
@@ -131,7 +131,7 @@ async fn start(remote: &UacRemoteControl, args: StartArgs) -> anyhow::Result<()>
     );
     if args.detach {
         println!(
-            "Remote Control runs while the uac server does (it stops when no UnieAI Code session is open)."
+            "Remote Control runs while the Rabi Harness server does (it stops when no UnieAI Code session is open)."
         );
         return Ok(());
     }
