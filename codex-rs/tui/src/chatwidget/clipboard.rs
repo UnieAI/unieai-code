@@ -3,8 +3,15 @@
 
 use super::*;
 use crate::clipboard_copy::worker::CopyResult;
+use crate::clipboard_paste::PasteImageError;
 
-pub(super) const IMAGE_PASTE_REPEAT_WINDOW: Duration = Duration::from_millis(/*millis*/ 250);
+const IMAGE_PASTE_REPEAT_WINDOW: Duration = Duration::from_millis(/*millis*/ 250);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardPasteContext {
+    Composer,
+    DraftHandoff,
+}
 
 pub(super) enum PendingCopy {
     Message(u64, String),
@@ -12,9 +19,62 @@ pub(super) enum PendingCopy {
 }
 
 impl ChatWidget {
-    pub(crate) fn paste_image(&mut self) -> Result<(), crate::clipboard_paste::PasteImageError> {
+    /// Recognize image paste shortcuts, including presses consumed by repeat suppression.
+    pub(super) fn image_paste_key_action(
+        &mut self,
+        key: KeyEvent,
+        context: ClipboardPasteContext,
+    ) -> Option<KeyEventAction> {
+        let shift_insert = cfg!(windows) && key_hint::shift(KeyCode::Insert).is_press(key);
+        let image_paste = key.kind == KeyEventKind::Press
+            && ((matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&'v'))
+                && key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
+                || shift_insert);
+        if !image_paste {
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Release) {
+                self.suppress_image_paste_until = Instant::now();
+            }
+            return None;
+        }
+        let now = Instant::now();
+        let suppressed = now < self.suppress_image_paste_until;
+        self.suppress_image_paste_until = now + IMAGE_PASTE_REPEAT_WINDOW;
+        if suppressed {
+            return Some(KeyEventAction::None);
+        }
+        let local_linux = cfg!(target_os = "linux")
+            && !crate::terminal_capabilities::is_ssh_session()
+            && !crate::terminal_capabilities::is_wsl_session();
+        let text_fallback = (shift_insert
+            || (key.modifiers == KeyModifiers::CONTROL && (cfg!(windows) || local_linux)))
+            .then_some(key.code);
+        if text_fallback.is_some() && context == ClipboardPasteContext::Composer {
+            self.bottom_pane.prepare_composer_clipboard_paste();
+        }
+        Some(KeyEventAction::PasteImage {
+            text_fallback,
+            context,
+        })
+    }
+
+    pub(crate) fn paste_image(
+        &mut self,
+        context: ClipboardPasteContext,
+        text_fallback: Option<KeyCode>,
+    ) -> Result<(), PasteImageError> {
         let result = paste_image_to_temp_png();
         self.suppress_image_paste_until = Instant::now() + IMAGE_PASTE_REPEAT_WINDOW;
+        if context == ClipboardPasteContext::DraftHandoff
+            && text_fallback.is_some()
+            && result
+                .as_ref()
+                .is_err_and(PasteImageError::allows_text_fallback)
+        {
+            // Settle typing before capturing the asynchronous text target.
+            self.bottom_pane.prepare_composer_clipboard_paste();
+        }
         let (path, info) = result?;
         tracing::debug!(
             "pasted image size={}x{} format={}",
@@ -22,8 +82,17 @@ impl ChatWidget {
             info.height,
             info.encoded_format.label()
         );
-        self.attach_image(path);
+        self.attach_image(path, context);
         Ok(())
+    }
+
+    pub(crate) fn show_paste_pending(&mut self) {
+        self.bottom_pane.show_footer_flash(
+            "Paste pending. Review the draft before sending."
+                .dim()
+                .into(),
+            Duration::from_secs(/*secs*/ 3),
+        );
     }
 
     pub(super) fn show_clipboard_flash(&mut self, result: &CopyResult) {

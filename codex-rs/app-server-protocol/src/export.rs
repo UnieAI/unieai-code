@@ -51,12 +51,17 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "BedrockEnvironmentCredential",
     "EnvironmentShellInfo",
     "EnvironmentStatusKind",
+    "GuardianAssessmentOutcome",
+    "GuardianRootEvidenceMessage",
+    "GuardianRootEvidence",
     "RemoteControlClient",
     "RemoteControlClientsListOrder",
     "ThreadBackgroundTerminal",
+    "ThreadGuardianAssessment",
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
     "TurnSettingsUpdateStatus",
+    "UserVerificationBiometricType",
     "UserVerificationProof",
     "UserVerificationCancellationReason",
     "UserVerificationErrorDetails",
@@ -129,10 +134,12 @@ pub fn generate_ts_with_options(
     ensure_dir(out_dir)?;
     ensure_dir(&v2_out_dir)?;
 
+    crate::StartupGatewayOAuthChangedNotification::export_all_to(out_dir)?;
     ClientRequest::export_all_to(out_dir)?;
     export_client_responses(out_dir)?;
     ClientNotification::export_all_to(out_dir)?;
     crate::UserVerificationRpcError::export_all_to(out_dir)?;
+    crate::ModelProviderError::export_all_to(out_dir)?;
 
     ServerRequest::export_all_to(out_dir)?;
     export_server_responses(out_dir)?;
@@ -233,6 +240,13 @@ pub fn generate_json_with_experimental(out_dir: &Path, experimental_api: bool) -
     schemas.push(write_json_schema::<crate::UserVerificationRpcError>(
         out_dir,
         "v2::UserVerificationRpcError",
+    )?);
+    schemas.push(write_json_schema::<
+        crate::StartupGatewayOAuthChangedNotification,
+    >(out_dir, "v2::StartupGatewayOAuthChangedNotification")?);
+    schemas.push(write_json_schema::<crate::ModelProviderError>(
+        out_dir,
+        "v2::ModelProviderError",
     )?);
     schemas.extend(export_client_param_schemas(out_dir)?);
     schemas.extend(export_client_response_schemas(out_dir)?);
@@ -1365,6 +1379,14 @@ where
         } else if file_stem == "ServerNotification" {
             strip_v1_server_notification_variants_from_json_schema(&mut schema_value);
             add_server_notification_emitted_at_to_json_schema(&mut schema_value)?;
+        } else if file_stem == "DynamicToolCallResponse" {
+            // The untagged variants validate values. Require exactly one result key
+            // by presence so even a malformed second key cannot slip through.
+            schema_value["oneOf"] = serde_json::json!([
+                {"required": ["contentItems"]},
+                {"required": ["structuredContent"]},
+                {"required": ["errorMessage"]},
+            ]);
         }
         if let Some(Value::Object(error_schema)) =
             schema_value.pointer_mut("/definitions/CodexErrorInfo")
@@ -2199,6 +2221,16 @@ mod tests {
             "params?: GetAccountRateLimitsParams | undefined, }"
         );
         assert!(client_request_ts.contains(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST));
+        const LEGACY_GATEWAY_READ_REQUEST: &str = concat!(
+            "{ \"method\": \"account/gatewayOAuth/read\", id: RequestId, ",
+            "params?: GatewayOAuthReadParams | null | undefined, }"
+        );
+        assert!(client_request_ts.contains(LEGACY_GATEWAY_READ_REQUEST));
+        const LEGACY_GATEWAY_LOGIN_REQUEST: &str = concat!(
+            "{ \"method\": \"account/gatewayOAuth/login\", id: RequestId, ",
+            "params?: GatewayOAuthLoginParams | null | undefined, }"
+        );
+        assert!(client_request_ts.contains(LEGACY_GATEWAY_LOGIN_REQUEST));
         let account_usage_response_ts = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("v2/GetAccountTokenUsageResponse.ts"))
@@ -2211,13 +2243,12 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("missing MCP login completion fixture"))?,
         )?;
         assert!(mcp_login_completion_ts.contains("loginId?: string | null"));
-        let server_request_ts = std::str::from_utf8(
+        let mcp_status_update_ts = std::str::from_utf8(
             fixture_tree
-                .get(Path::new("ServerRequest.ts"))
-                .ok_or_else(|| anyhow::anyhow!("missing ServerRequest.ts fixture"))?,
+                .get(Path::new("v2/McpServerStatusUpdatedNotification.ts"))
+                .ok_or_else(|| anyhow::anyhow!("missing MCP status update fixture"))?,
         )?;
-        assert_eq!(server_request_ts.contains("currentTime/read"), false);
-        assert_eq!(server_request_ts.contains("CurrentTimeReadParams"), false);
+        assert!(mcp_status_update_ts.contains("durationMs?: number | null"));
         let typescript_index = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("index.ts"))
@@ -2239,14 +2270,6 @@ mod tests {
             false
         );
         assert_eq!(
-            fixture_tree.contains_key(Path::new("v2/CurrentTimeReadParams.ts")),
-            false
-        );
-        assert_eq!(
-            fixture_tree.contains_key(Path::new("v2/CurrentTimeReadResponse.ts")),
-            false
-        );
-        assert_eq!(
             fixture_tree.contains_key(Path::new("v2/RemoteControlClient.ts")),
             false
         );
@@ -2262,14 +2285,14 @@ mod tests {
                 continue;
             }
 
-            // Only allow "?: T | null" in objects representing JSON-RPC requests,
-            // which we assume are called "*Params".
+            // Allow "?: T | null" in JSON-RPC request objects and nested request types.
             let allow_optional_nullable = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .is_some_and(|stem| {
                     stem.ends_with("Params")
                         || stem == "InitializeCapabilities"
+                        || stem == "AdditionalContextEntry"
                         || matches!(
                             stem,
                             "CollabAgentRef"
@@ -2283,18 +2306,22 @@ mod tests {
                 });
 
             let contents = std::str::from_utf8(contents)?;
-            // Both stable usage RPCs originally required `params: undefined`. Preserve that
+            // These existing RPCs originally required `params: undefined`. Preserve that
             // source compatibility only for these exact envelopes, not arbitrary new fields.
             let checked_contents = if path == Path::new("ClientRequest.ts") {
                 contents
                     .replace(LEGACY_ACCOUNT_USAGE_REQUEST, "")
                     .replace(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST, "")
+                    .replace(LEGACY_GATEWAY_READ_REQUEST, "")
+                    .replace(LEGACY_GATEWAY_LOGIN_REQUEST, "")
             } else {
                 contents.to_owned()
             };
             if checked_contents.contains("| undefined") {
                 undefined_offenders.push(path.clone());
             }
+            // The exact gateway envelopes above also accept legacy null params.
+            let contents = checked_contents.as_str();
 
             const SKIP_PREFIXES: &[&str] = &[
                 "const ",
@@ -2407,12 +2434,26 @@ mod tests {
                 // These are only allowed in *Params types, except additive stable fields
                 // that older servers omit and newer servers may return as null.
                 let legacy_optional_nullable_field = (path
-                    == Path::new("v2/GetAccountTokenUsageResponse.ts")
-                    && field_prefix.trim() == "threadUsage?")
+                    == Path::new("v2/FsGetMetadataResponse.ts")
+                    && field_prefix.trim() == "sizeBytes?")
+                    || (path == Path::new("v2/GetAccountTokenUsageResponse.ts")
+                        && field_prefix.trim() == "threadUsage?")
+                    || (path == Path::new("v2/ThreadUsage.ts")
+                        && field_prefix.trim() == "nativeUsageUsdMicros?")
+                    || (path == Path::new("v2/ThreadItem.ts")
+                        && matches!(field_prefix.trim(), "startedAtMs?" | "completedAtMs?"))
                     || (path == Path::new("v2/McpServerOauthLoginCompletedNotification.ts")
                         && field_prefix.trim() == "loginId?")
+                    || (path == Path::new("v2/McpServerStatusUpdatedNotification.ts")
+                        && field_prefix.trim() == "durationMs?")
+                    || (path == Path::new("v2/McpServerStatus.ts")
+                        && field_prefix.trim() == "environmentId?")
+                    || (path == Path::new("v2/ProcessExitedNotification.ts")
+                        && field_prefix.trim() == "outputDrainTimedOut?")
                     || (path == Path::new("v2/MisalignmentErrorDetails.ts")
-                        && field_prefix.trim() == "reviewTarget?");
+                        && field_prefix.trim() == "reviewTarget?")
+                    || (path == Path::new("v2/ItemCompletedNotification.ts")
+                        && field_prefix.trim() == "contentTokenCount?");
                 if field_prefix.chars().rev().find(|c| !c.is_whitespace()) == Some('?')
                     && !allow_optional_nullable
                     && !legacy_optional_nullable_field

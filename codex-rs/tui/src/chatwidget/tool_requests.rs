@@ -4,6 +4,7 @@
 //! that block on user decisions.
 
 use super::*;
+use codex_app_server_protocol::CommandExecutionApprovalKind;
 
 impl ChatWidget {
     pub(super) fn on_exec_approval_request(&mut self, _id: String, ev: ExecApprovalRequestEvent) {
@@ -282,9 +283,14 @@ impl ChatWidget {
 
     pub(crate) fn handle_exec_approval_now(&mut self, ev: ExecApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
-        let command = shlex::try_join(ev.command.iter().map(String::as_str))
-            .unwrap_or_else(|_| ev.command.join(" "));
-        self.notify(Notification::ExecApprovalRequested { command });
+        let subject = if ev.kind == CommandExecutionApprovalKind::WriteStdin {
+            "send terminal input".to_string()
+        } else if let Some(network) = &ev.network_approval_context {
+            format!("network access to {}", network.host)
+        } else {
+            strip_bash_lc_and_escape(&ev.command)
+        };
+        self.notify(Notification::ExecApprovalRequested { subject });
 
         let available_decisions = ev.effective_available_decisions();
         let request = ApprovalRequest::Exec(ExecApprovalRequest {
@@ -301,10 +307,6 @@ impl ChatWidget {
         });
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
@@ -322,10 +324,6 @@ impl ChatWidget {
         });
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
         self.notify(Notification::EditApprovalRequested {
             cwd: self.config.cwd.to_path_buf(),
@@ -349,6 +347,7 @@ impl ChatWidget {
         if let Some(params) = crate::bottom_pane::AppLinkViewParams::from_url_app_server_request(
             thread_id,
             &params.server_name,
+            params.environment_id.as_deref(),
             request_id.clone(),
             &params.request,
         ) {
@@ -367,6 +366,7 @@ impl ChatWidget {
                         thread_id,
                         thread_label: None,
                         server_name: params.server_name,
+                        environment_id: params.environment_id,
                         request_id,
                         message,
                     });
@@ -381,6 +381,7 @@ impl ChatWidget {
                         crate::bottom_pane::user_verification::UserVerificationRequest {
                             thread_label: None,
                             server_name: params.server_name,
+                            environment_id: params.environment_id,
                             request_id,
                             title,
                             description,
@@ -401,20 +402,12 @@ impl ChatWidget {
                 }
             }
         }
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
     pub(crate) fn push_approval_request(&mut self, request: ApprovalRequest) {
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
@@ -426,10 +419,6 @@ impl ChatWidget {
         // Inactive-thread prompts must leave the foreground stream and command activity intact.
         self.bottom_pane
             .push_user_verification_request(thread_id, request);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
@@ -439,10 +428,6 @@ impl ChatWidget {
     ) {
         self.bottom_pane
             .push_mcp_server_elicitation_request(request);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
@@ -457,10 +442,6 @@ impl ChatWidget {
         };
         self.notify(Notification::PlanModePrompt { title });
         self.bottom_pane.push_user_input_request(ev);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 
@@ -476,10 +457,6 @@ impl ChatWidget {
         });
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
-        self.set_ambient_pet_notification(
-            crate::pets::PetNotificationKind::Waiting,
-            /*body*/ None,
-        );
         self.request_redraw();
     }
 }

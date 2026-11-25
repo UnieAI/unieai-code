@@ -3,6 +3,8 @@
 use super::ChatWidget;
 use super::session_model_selection::AstraModelPickerAction;
 use super::slash_command_args;
+use crate::app_event::AppEvent;
+use crate::history_cell;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -21,7 +23,8 @@ struct ModelCommand {
 }
 
 fn parse_model_command_args(args: &str) -> Result<ModelCommandArgs, String> {
-    let parsed = slash_command_args::parse(args, &["--reasoning", "--speed"], &[], &[])?;
+    let parsed =
+        slash_command_args::parse_settings(args, crate::slash_command::SlashCommand::Model)?;
     if let Some(unexpected) = parsed.positionals.get(1) {
         return Err(format!(
             "Unexpected argument '{unexpected}'. Use '--reasoning=<level>' or '--speed=<tier>'."
@@ -124,12 +127,15 @@ fn resolve_model_command(chat: &ChatWidget, args: &str) -> Result<ModelCommand, 
                 .into(),
         );
     }
+    if let Some(message) = chat.model_picker_unavailable() {
+        return Err(message);
+    }
     let model_name = args
         .model
         .clone()
-        .unwrap_or_else(|| chat.current_model().to_owned());
+        .unwrap_or_else(|| chat.selected_model().to_owned());
     let Some(model) =
-        chat.model_catalog.models.iter().find(|model| {
+        chat.model_catalog.models().iter().find(|model| {
             model.model == model_name && (args.model.is_none() || model.show_in_picker)
         })
     else {
@@ -161,15 +167,19 @@ impl ChatWidget {
         let warning = self.ultra_reasoning_concurrency_warning(&effort);
         let thread_id = self.sparkle_thread_for_picker_action(&model);
         self.set_queue_autosend_suppressed(/*suppressed*/ true);
-        self.app_event_tx.send(
+        let scoped = self.scope_model_picker_event();
+        self.app_event_tx.send(scoped(
             AstraModelPickerAction::SelectSessionModel {
                 effort: Some(effort),
                 service_tier,
             }
             .into_picker_event(thread_id, model),
-        );
+        ));
         if let Some(warning) = warning {
-            self.add_warning_message(warning);
+            self.app_event_tx
+                .send(scoped(AppEvent::InsertHistoryCell(Box::new(
+                    history_cell::new_warning_event(warning),
+                ))));
         }
     }
 }

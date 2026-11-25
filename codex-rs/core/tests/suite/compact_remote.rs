@@ -1,11 +1,14 @@
 //! Exercises streamed remote compaction, including the retained checkpoint and continuing history.
 
+use super::audio_duration_store::TestAudioDurationStore;
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use codex_core::RequestCountry;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_core::TurnStartOptions;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
@@ -19,9 +22,14 @@ use codex_model_provider_info::GCP_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::image_close_tag_text;
+use codex_protocol::models::image_open_tag_text;
+use codex_protocol::models::input_text;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -124,7 +132,6 @@ async fn start_realtime_conversation(codex: &codex_core::CodexThread) -> Result<
             voice_session_id: None,
             transport: None,
             version: None,
-            voice: None,
         }))
         .await?;
 
@@ -306,6 +313,7 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
 
     let builder = || test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let initial = builder()
+        .with_request_country(RequestCountry::from_iso_code("DE")?)
         .with_pre_build_hook(|home| {
             fs::write(
                 home.join("config.toml"),
@@ -328,12 +336,26 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
     let resumed = builder()
         .resume(&server, home, rollout_path.clone())
         .await?;
+    resumed
+        .codex
+        .update_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+            request_country: Some(RequestCountry::UNKNOWN),
+            ..Default::default()
+        })
+        .await?;
     resumed.codex.submit(Op::Compact).await?;
     wait_for_turn_complete(&resumed.codex).await;
     resumed.submit_turn("continue after compaction").await?;
     resumed.codex.shutdown_and_wait().await?;
 
     let requests = response_mock.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json().get("request_country").cloned())
+            .collect::<Vec<_>>(),
+        vec![Some(json!("DE")), Some(Value::Null), Some(Value::Null)]
+    );
     let compact_request = &requests[1];
     assert_eq!(
         compact_request.inputs_of_type("compaction_trigger").len(),
@@ -433,11 +455,7 @@ async fn remote_compact_v2_retains_only_client_developer_messages_when_enabled(
         .context("remote compaction should persist a checkpoint")?;
     let retained_client_developers = replacement_history
         .iter()
-        .filter(|item| {
-            item.metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.client_authored)
-        })
+        .filter(|item| item.is_always_retained())
         .count();
     assert_eq!(retained_client_developers, usize::from(enabled));
     Ok(())
@@ -457,13 +475,15 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
     .await?;
     let codex = &harness.test().codex;
     let rollout_path = codex.rollout_path().context("rollout path")?;
+    let mut sample =
+        responses::ev_completed_with_tokens("before-compact", /*total_tokens*/ 500);
+    sample["response"]["input_transformations"] = json!([{
+        "type": "reasoning", "id": "rs-1", "action": "removed", "reason": "prefix_mismatch",
+    }]);
     let responses_mock = responses::mount_sse_sequence(
         harness.server(),
         vec![
-            sse(vec![responses::ev_completed_with_tokens(
-                "before-compact",
-                /*total_tokens*/ 500,
-            )]),
+            sse(vec![sample]),
             sse(vec![
                 json!({
                     "type": "response.output_item.done",
@@ -522,6 +542,11 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
         1,
         "the accepted prompt should be saved exactly once after compaction fails"
     );
+    assert_eq!(
+        codex.last_sampling_cot_removed().await,
+        Some(true),
+        "a failed compaction should preserve the last sampling report",
+    );
     codex.shutdown_and_wait().await?;
 
     let record = fs::read_to_string(&rollout_path)?
@@ -539,24 +564,53 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
 }
 
 enum CompactionProvider {
+    OpenAi,
     AmazonBedrock,
     Gcp,
 }
 
-#[test_case(CompactionProvider::AmazonBedrock; "bedrock")]
-#[test_case(CompactionProvider::Gcp; "gcp")]
+#[test_case(CompactionProvider::AmazonBedrock, AMAZON_BEDROCK_GPT_5_5_MODEL_ID, false, true; "bedrock")]
+#[test_case(CompactionProvider::Gcp, "gpt-6.1-sol", false, true; "gcp")]
+#[test_case(CompactionProvider::AmazonBedrock, AMAZON_BEDROCK_GPT_5_5_MODEL_ID, true, true; "bedrock with output schema")]
+#[test_case(CompactionProvider::Gcp, "gpt-6.1-sol", true, true; "gcp with output schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-6.2-sol", true, true; "current model preserves compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "codex-auto-review", true, true; "guardian alias preserves compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5", true, false; "original legacy model omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5-mini", true, false; "original legacy variant omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.1", true, false; "previous legacy model omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.1-2025-11-13", true, false; "previous legacy snapshot omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.2", true, false; "legacy model omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.2-2025-12-11", true, false; "legacy snapshot omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.2-pro", true, false; "legacy pro omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.2-codex", true, true; "codex variant preserves compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.4-nano", true, false; "legacy nano omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.4-nano-2026-03-17", true, false; "legacy nano snapshot omits compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "gpt-5.20-sol", true, true; "future version preserves compaction schema")]
+#[test_case(CompactionProvider::OpenAi, "unknown-model", true, true; "unknown model preserves compaction schema")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_automatic_compaction_uses_v2_responses_endpoint(
     provider: CompactionProvider,
+    expected_model: &str,
+    with_output_schema: bool,
+    preserve_compaction_schema: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let auth_fixture;
-    let (builder, expected_model, expected_path, expected_auth) = match provider {
+    let (builder, expected_path, expected_auth) = match provider {
+        CompactionProvider::OpenAi => (
+            test_codex().with_config(|config| {
+                config
+                    .features
+                    .enable(Feature::RemoteCompactionV2)
+                    .expect("enable remote compaction");
+            }),
+            "/v1/responses",
+            "Bearer dummy",
+        ),
         CompactionProvider::AmazonBedrock => (
             amazon_bedrock_test_codex(),
-            AMAZON_BEDROCK_GPT_5_5_MODEL_ID,
             "/v1/responses",
             "Bearer bedrock-test-api-key",
         ),
@@ -569,24 +623,26 @@ async fn provider_automatic_compaction_uses_v2_responses_endpoint(
             ));
             provider.auth = Some(auth_fixture.auth());
             (
-                test_codex()
-                    .with_model("gpt-6.1-sol")
-                    .with_config(move |config| {
-                        config.model_provider_id = GCP_PROVIDER_ID.to_string();
-                        config.model_provider = provider;
-                        config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
-                        config
-                            .features
-                            .enable(Feature::RemoteCompactionV2)
-                            .expect("test config should allow feature update");
-                    }),
-                "gpt-6.1-sol",
+                test_codex().with_config(move |config| {
+                    config.model_provider_id = GCP_PROVIDER_ID.to_string();
+                    config.model_provider = provider;
+                    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+                    config
+                        .features
+                        .enable(Feature::IncrementalToolsLegacyGcp)
+                        .expect("enable incremental tools on Vertex");
+                    config
+                        .features
+                        .enable(Feature::RemoteCompactionV2)
+                        .expect("test config should allow feature update");
+                }),
                 "/v1/projects/example-project/locations/global/publishers/openai/v1/responses",
                 "Bearer vertex-access-token",
             )
         }
     };
     let test = builder
+        .with_model(expected_model)
         .with_config(|config| {
             config.model_auto_compact_token_limit = Some(200);
         })
@@ -596,7 +652,10 @@ async fn provider_automatic_compaction_uses_v2_responses_endpoint(
         &server,
         vec![
             sse(vec![
-                responses::ev_assistant_message("message-1", "before automatic compaction"),
+                responses::ev_assistant_message(
+                    "message-1",
+                    r#"{"result":"before automatic compaction"}"#,
+                ),
                 responses::ev_completed_with_tokens("response-1", /*total_tokens*/ 500),
             ]),
             sse(vec![
@@ -610,18 +669,78 @@ async fn provider_automatic_compaction_uses_v2_responses_endpoint(
                 responses::ev_completed("response-compact"),
             ]),
             sse(vec![
-                responses::ev_assistant_message("message-2", "after automatic compaction"),
+                responses::ev_assistant_message(
+                    "message-2",
+                    r#"{"result":"after automatic compaction"}"#,
+                ),
                 responses::ev_completed("response-2"),
             ]),
         ],
     )
     .await;
 
-    test.submit_turn("before automatic compact").await?;
-    test.submit_turn("after automatic compact").await?;
+    let output_schema = with_output_schema.then(|| {
+        json!({
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+            "additionalProperties": false,
+        })
+    });
+    for text in ["before automatic compact", "after automatic compact"] {
+        test.codex
+            .start_or_steer_turn(
+                TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: text.to_string(),
+                    text_elements: Vec::new(),
+                }])
+                .on_start(TurnStartOptions {
+                    final_output_json_schema: output_schema.clone(),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        wait_for_turn_complete(&test.codex).await;
+    }
 
     let response_requests = response_mock.requests();
     assert_eq!(response_requests.len(), 3);
+    let expected_format = output_schema.map_or(Value::Null, |schema| {
+        json!({
+            "type": "json_schema",
+            "name": "codex_output_schema",
+            "strict": true,
+            "schema": schema,
+        })
+    });
+    assert_eq!(
+        response_requests
+            .iter()
+            .map(|request| request.body_json()["text"]["format"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            expected_format.clone(),
+            if preserve_compaction_schema {
+                expected_format.clone()
+            } else {
+                Value::Null
+            },
+            expected_format,
+        ],
+        "only known legacy compaction models must omit the final-answer format"
+    );
+    let cache_key = response_requests[0].body_json()["prompt_cache_key"]
+        .as_str()
+        .expect("session cache key")
+        .to_string();
+    assert_eq!(
+        response_requests
+            .iter()
+            .map(|request| request.body_json()["prompt_cache_key"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(cache_key); 3],
+        "compaction must preserve the session cache key"
+    );
     assert!(
         response_requests
             .iter()
@@ -633,6 +752,7 @@ async fn provider_automatic_compaction_uses_v2_responses_endpoint(
         Some(expected_auth)
     );
     match provider {
+        CompactionProvider::OpenAi => {}
         CompactionProvider::AmazonBedrock => assert_eq!(
             compact_request
                 .header("x-amzn-mantle-client-agent")
@@ -646,7 +766,7 @@ async fn provider_automatic_compaction_uses_v2_responses_endpoint(
                     request.header("x-openai-internal-codex-responses-lite"),
                     None
                 );
-                assert!(request.inputs_of_type("additional_tools").is_empty());
+                assert!(!request.inputs_of_type("additional_tools").is_empty());
             }
         }
     }
@@ -853,6 +973,162 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             let _ = append_mock.single_request();
         }
     }
+    Ok(())
+}
+
+#[test_case(None, 3, false; "audio_only")]
+#[test_case(None, 3, true; "mixed_media_boundary")]
+#[test_case(Some(false), 3, false; "metadata_unavailable")]
+#[test_case(Some(true), 1, false; "with_partial_metadata")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_budgets_persisted_file_audio_atomically(
+    measure_short_clips: Option<bool>,
+    first_retained: u32,
+    older_image: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config
+                .features
+                .set_enabled(Feature::CompactionImageBudget, /*enabled*/ false)
+                .expect("disable image budgeting for this test");
+        })
+        .with_model_info_override("gpt-5.5", |model| {
+            model.input_modalities.push(InputModality::Audio);
+        });
+    let builder = if let Some(measure_short_clips) = measure_short_clips {
+        builder.with_image_store(Arc::new(TestAudioDurationStore {
+            measure_short_clips,
+            ..Default::default()
+        }))
+    } else {
+        builder
+    };
+    let harness = TestCodexHarness::with_builder(builder).await?;
+    // A 64k budget fits five unknown files. Measuring the other two clips at
+    // 30 seconds each leaves room to retain all seven.
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let initial_history = (1..=6)
+        .map(|number| {
+            let mut content = Vec::new();
+            if older_image && number == 3 {
+                // The file fits, then the older text exhausts the remaining budget.
+                content.extend([
+                    input_text(image_open_tag_text()),
+                    ContentItem::InputImage {
+                        image: ImageReference::Inline {
+                            image_url: image_url.to_string(),
+                        },
+                        detail: None,
+                    },
+                    input_text(image_close_tag_text()),
+                    input_text("older context ".repeat(4000)),
+                ]);
+            }
+            content.extend([
+                input_text(format!("recording {number}")),
+                ContentItem::InputAudio {
+                    audio: AudioReference::File {
+                        file_id: format!("file_audio_{number}"),
+                    },
+                },
+            ]);
+            RolloutItem::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content,
+                    status: None,
+                    phase: None,
+                    encrypted_content: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let codex = harness
+        .test()
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            initial_history: InitialHistory::Forked(initial_history),
+            ..StartThreadOptions::new(harness.test().config.clone())
+        })
+        .await?
+        .thread;
+    let responses = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                responses::ev_assistant_message("first", "heard it"),
+                responses::ev_completed("first"),
+            ]),
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "AUDIO_BUDGET_SUMMARY"
+                    },
+                }),
+                responses::ev_completed("compact-audio"),
+            ]),
+            sse(vec![
+                responses::ev_assistant_message("after-audio", "done"),
+                responses::ev_completed("after-audio"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Audio {
+            audio: AudioReference::File {
+                file_id: "file_audio_7".into(),
+            },
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue after audio compaction".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    if older_image {
+        assert_eq!(requests[0].message_input_image_urls("user").len(), 1);
+        assert!(requests[2].message_input_image_urls("user").is_empty());
+    }
+    assert_eq!(
+        requests[0].message_input_audio_file_ids("user"),
+        (1..=7)
+            .map(|number| format!("file_audio_{number}"))
+            .collect::<Vec<_>>()
+    );
+    let retained: Vec<_> = requests[2]
+        .input()
+        .into_iter()
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .filter(|part| part["type"] == "input_audio")
+        .collect();
+    assert_eq!(
+        retained,
+        (first_retained..=7)
+            .map(|number| json!({"type":"input_audio", "file_id": format!("file_audio_{number}")}))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        requests[2].inputs_of_type("compaction")[0]["encrypted_content"],
+        "AUDIO_BUDGET_SUMMARY"
+    );
     Ok(())
 }
 

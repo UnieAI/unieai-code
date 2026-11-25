@@ -24,6 +24,50 @@ fn bedrock_model_presets() -> Vec<ModelPreset> {
 }
 
 #[tokio::test]
+async fn queued_model_choice_expires_when_the_default_provider_changes() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let (mut server, requests, proxy) =
+        Box::pin(session_lifecycle_requests::start_recording_app_server(
+            &app.config,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+        ))
+        .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let started = server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    let original = app.chat_widget.current_model().to_string();
+    while events.try_recv().is_ok() {}
+    // An old row may arrive after a local switch, or after a different chat became active.
+    for (origin, switched) in [(thread_id, true), (ThreadId::new(), false)] {
+        *app.model_catalog.provider_write.lock().await = switched;
+        let queued = AppEvent::ScopedModelPicker {
+            backend: server.backend_id(),
+            thread_id: Some(origin),
+            event: Box::new(AppEvent::SelectSessionModel {
+                model: "foreign-only".into(),
+                effort: None,
+                service_tier: None,
+            }),
+        };
+        Box::pin(app.handle_event(&mut tui, &mut server, queued)).await?;
+        assert_eq!(app.chat_widget.current_model(), original);
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::InsertHistoryCell(_)))
+        );
+    }
+    assert!(
+        session_lifecycle_requests::recorded_params(&requests, "thread/settings/update").is_empty()
+    );
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn model_picker_refresh_updates_app_catalog_from_app_server() -> Result<()> {
     let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server = start_config_write_test_app_server(&app).await?;
@@ -91,6 +135,7 @@ async fn model_picker_refresh_updates_app_catalog_from_app_server() -> Result<()
             .then(|| ServiceTier::Fast.request_value().to_string());
         model.available_access_programs =
             Some(codex_protocol::openai_models::ModelAccessPrograms {
+                daybreak_availability: Default::default(),
                 cyber: vec![codex_protocol::turn_input::CyberAccessProgram::Standard],
             });
     }
@@ -149,6 +194,31 @@ async fn model_picker_refresh_updates_app_catalog_from_app_server() -> Result<()
     ))
     .await?;
     assert_eq!(app.model_catalog.try_list_models()?, stripped);
+
+    // Refreshing a resumed provider changes the picker, but not the defaults used below.
+    let mut other = test_thread_session(ThreadId::new(), test_path_buf("/tmp/other"));
+    other.model_provider_id = "alternate".into();
+    app.chat_widget.handle_thread_session(other);
+    let request_id = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::FetchModels { request_id } => Some(request_id),
+            _ => None,
+        })
+        .expect("provider-scoped model refresh");
+    let mut alternate = stripped[0].clone();
+    alternate.model = "alternate-only".into();
+    alternate.default_service_tier = None;
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ApiKeyCompatModelsLoaded {
+            request_id,
+            result: Ok(vec![alternate.clone()]),
+        },
+    ))
+    .await?;
+    assert_eq!(app.model_catalog.models(), vec![alternate]);
+
     let mut config = app.config.clone();
     config.service_tier = None;
     config.features.enable(Feature::FastMode)?;

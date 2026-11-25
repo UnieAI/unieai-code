@@ -44,7 +44,6 @@ pub struct RealtimeSessionConfig {
     pub event_parser: RealtimeEventParser,
     pub session_mode: RealtimeSessionMode,
     pub output_modality: RealtimeOutputModality,
-    pub voice: RealtimeVoice,
 }
 
 #[derive(Debug, Clone, Serialize)]

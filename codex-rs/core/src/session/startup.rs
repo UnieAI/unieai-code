@@ -62,7 +62,11 @@ impl SessionStartup {
         }
     }
 
-    pub(crate) async fn cleanup(&self) {
+    pub(crate) fn cleanup(&self) -> BoxFuture<'_, ()> {
+        Box::pin(self.cleanup_inner())
+    }
+
+    async fn cleanup_inner(&self) {
         let mut teardown = self.lock_teardown().take();
         if let Some(teardown) = teardown.as_mut()
             && let Some(session) = self.session.get()
@@ -86,6 +90,11 @@ impl SessionStartup {
         } else {
             if let Some(session) = self.session.get() {
                 super::handlers::shutdown_session_runtime(session).await;
+                // The session loop never started, so it cannot close the trace itself.
+                session
+                    .services
+                    .rollout_thread_trace
+                    .record_ended(codex_rollout_trace::RolloutStatus::Aborted);
             }
             let mut persistence = std::mem::take(&mut *self.persistence.lock().await);
             if let Err(error) = persistence.discard().await {

@@ -8,15 +8,19 @@ use crate::app::tests::session_lifecycle_requests::start_recording_remote_app_se
 use crate::chatwidget::commit_realtime_history_events;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use crate::local_settings::LocalSettings;
+use app_test_support::ChatGptAuthFixture;
+use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
+use codex_login::AuthCredentialsStoreMode;
 use codex_protocol::models::MessagePhase;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -45,8 +49,9 @@ fn voice_snapshot_directory_keeps_header_width_for_windows_paths() {
     );
 }
 
-fn test_agent_message(id: &str, text: &str) -> ThreadItem {
-    ThreadItem::AgentMessage {
+fn test_agent_message(id: &str, text: &str) -> ThreadItemPayload {
+    ThreadItemPayload::AgentMessage {
+        moderation: None,
         id: id.into(),
         text: text.into(),
         phase: Some(MessagePhase::FinalAnswer),
@@ -56,8 +61,8 @@ fn test_agent_message(id: &str, text: &str) -> ThreadItem {
     }
 }
 
-fn test_user_message(id: &str, text: &str) -> ThreadItem {
-    ThreadItem::UserMessage {
+fn test_user_message(id: &str, text: &str) -> ThreadItemPayload {
+    ThreadItemPayload::UserMessage {
         id: id.into(),
         client_id: None,
         content: vec![UserInput::Text {
@@ -83,30 +88,71 @@ enum ItemEventKind {
     Completed,
 }
 
-#[tokio::test]
-async fn remote_voice_start_routes_v3_offer_and_effective_preference() -> Result<()> {
-    use super::session_lifecycle_requests::HistoryCapabilities;
-    for (capabilities, expected_voice) in [
-        (HistoryCapabilities::Current, Some("juniper")),
-        (HistoryCapabilities::ConfigReadUnsupported(-32601), None),
-        (HistoryCapabilities::Current, Some("cove")),
-        (HistoryCapabilities::VoiceCatalogCustom, Some("maple")),
-        (HistoryCapabilities::ConfigReadUnknownVoice, None),
-    ] {
-        check_remote_voice_start(capabilities, expected_voice).await?;
-    }
+pub(super) fn use_local_voice_account(
+    config: &mut crate::legacy_core::config::Config,
+    backend: &str,
+) {
+    config.chatgpt_base_url = format!("{backend}/backend-api");
+    config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    write_chatgpt_auth(
+        &config.codex_home,
+        ChatGptAuthFixture::new("local-voice-token").account_id("local-voice-account"),
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("write local ChatGPT voice account");
+}
+
+fn configure_voice_settings_server(
+    config: &mut crate::legacy_core::config::Config,
+    backend: &str,
+) -> Result<()> {
+    config.chatgpt_base_url = format!("{backend}/backend-api");
+    config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    write_chatgpt_auth(
+        &config.codex_home,
+        ChatGptAuthFixture::new("server-token").account_id("server-account"),
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("write server ChatGPT login");
+    std::fs::write(
+        config.codex_home.join("config.toml"),
+        format!(
+            "chatgpt_base_url = '{backend}/backend-api'\ncli_auth_credentials_store = 'file'\n"
+        ),
+    )?;
     Ok(())
 }
 
-async fn check_remote_voice_start(
-    capabilities: super::session_lifecycle_requests::HistoryCapabilities,
-    expected_voice: Option<&str>,
-) -> Result<()> {
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+async fn next_voice_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Result<AppEvent> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(event) = events.recv().await {
+            if matches!(
+                event,
+                AppEvent::RealtimeCallCreated { .. }
+                    | AppEvent::RealtimeVoicesLoaded { .. }
+                    | AppEvent::PersistRealtimeVoiceSelection { .. }
+                    | AppEvent::RealtimeVoiceSaved { .. }
+            ) {
+                return Ok(event);
+            }
+        }
+        color_eyre::eyre::bail!("app event channel closed during voice request");
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn remote_voice_start_routes_v3_offer_and_effective_preference() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let mut remote = make_test_app().await;
+    let settings_backend = wiremock::MockServer::start().await;
+    configure_voice_settings_server(&mut remote.config, &settings_backend.uri())?;
     let (mut app_server, requests, proxy) =
         super::session_lifecycle_requests::start_recording_app_server_with_realtime_speech(
-            &app.config,
-            capabilities,
+            &remote.config,
+            super::session_lifecycle_requests::HistoryCapabilities::ConfigReadFails,
             /*blocked_thread_list*/ None,
             /*failed_thread_name*/ None,
             crate::app_server_session::ThreadParamsMode::Remote,
@@ -114,58 +160,132 @@ async fn check_remote_voice_start(
             codex_config::LoaderOverrides::default(),
         )
         .await?;
-    let thread_id = ThreadId::new();
+    let calls = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(
+            "/backend-api/codex/realtime/calls",
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(201)
+                .insert_header("Location", "/realtime/calls/rtc_tui")
+                .set_body_string("v=answer\r\n"),
+        )
+        .mount(&calls)
+        .await;
+    use_local_voice_account(&mut app.config, &calls.uri());
+    app.config.experimental_realtime_webrtc_call_base_url = Some(format!("{}/v1", calls.uri()));
+    app.config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
+    let started = app_server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
     app.active_thread_id = Some(thread_id);
-    app.chat_widget
-        .handle_thread_session_quiet(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
+    app.chat_widget.handle_thread_session_quiet(started.session);
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.config.model_provider.requires_openai_auth = false;
+    app.config.model_provider.http_headers =
+        Some([("x-test-provider".into(), "custom".into())].into());
+    app.config.model_provider.query_params =
+        Some([("provider_option".into(), "custom".into())].into());
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer server-token",
+        ))
+        .and(wiremock::matchers::path("/backend-api/settings/voices"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"selected": "juniper", "voices": [{"voice":"juniper"}]}),
+        ))
+        .mount(&settings_backend)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer server-token",
+        ))
+        .and(wiremock::matchers::path(
+            "/backend-api/settings/account_user_setting",
+        ))
+        .and(wiremock::matchers::query_param("value", "juniper"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&settings_backend)
+        .await;
+    Box::pin(app.handle_event(&mut tui, &mut app_server, AppEvent::OpenRealtimeVoices)).await?;
     Box::pin(app.handle_event(
         &mut tui,
         &mut app_server,
-        AppEvent::PersistRealtimeVoiceSelection {
-            voice: codex_protocol::protocol::RealtimeVoice::Juniper,
-        },
+        next_voice_event(&mut events).await?,
     ))
     .await?;
-    if capabilities == super::session_lifecycle_requests::HistoryCapabilities::Current {
-        assert_eq!(
-            (
-                app.config.realtime.voice,
-                app.chat_widget.config_ref().realtime.voice
-            ),
-            (
-                Some(codex_protocol::protocol::RealtimeVoice::Juniper),
-                Some(codex_protocol::protocol::RealtimeVoice::Juniper)
-            )
-        );
-    }
-    assert_eq!(
-        recorded_params(&requests, "config/batchWrite")[0]["edits"],
-        serde_json::json!([{"keyPath": "realtime.voice", "value": "juniper", "mergeStrategy": "replace"}]),
-    );
-    if expected_voice != Some("juniper") {
-        std::fs::write(
-            app.config.codex_home.join("config.toml"),
-            "[realtime]\ntype = \"conversational\"\n",
-        )?;
-    }
-    // A reconnected TUI can retain a different local preference from its server.
-    app.config.realtime.voice = Some(codex_protocol::protocol::RealtimeVoice::Maple);
     app.chat_widget
-        .on_realtime_voice_saved(codex_protocol::protocol::RealtimeVoice::Maple);
+        .handle_key_event(KeyEvent::from(KeyCode::Home));
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Enter));
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        next_voice_event(&mut events).await?,
+    ))
+    .await?;
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        next_voice_event(&mut events).await?,
+    ))
+    .await?;
+    crate::chatwidget::start_voice_attempt_for_test(
+        &mut app.chat_widget,
+        thread_id,
+        /*attempt_id*/ 1,
+    );
     Box::pin(app.handle_event(
         &mut tui,
         &mut app_server,
         AppEvent::CodexOp(Op::RealtimeConversationStart {
             thread_id,
+            attempt_id: 1,
             offer_sdp: String::from("v=0\r\n").into(),
         }),
     ))
     .await?;
 
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        next_voice_event(&mut events).await?,
+    ))
+    .await?;
+    let calls = calls.received_requests().await.unwrap();
+    assert_eq!(calls.len(), 1);
+    for request in &calls {
+        assert!(!request.headers.contains_key("x-test-provider"));
+        assert!(
+            !request
+                .url
+                .query_pairs()
+                .any(|(key, _)| key == "provider_option")
+        );
+    }
+    let call = &calls[0];
+    assert_eq!(call.headers["thread-id"], thread_id.to_string());
+    assert_eq!(call.headers["session-id"], thread_id.to_string());
+    assert_eq!(call.headers["chatgpt-account-id"], "local-voice-account");
+    assert_eq!(call.headers["authorization"], "Bearer local-voice-token");
+    let voice_session_id = call.headers["voice-session-id"].to_str()?;
+    let uuid = uuid::Uuid::parse_str(voice_session_id)?;
+    assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
+    assert_eq!(uuid.to_string(), voice_session_id);
+    assert_ne!(voice_session_id, thread_id.to_string());
+    let body = call.body_json::<serde_json::Value>()?;
+    assert_eq!(body["sdp"], "v=0\r\n");
+    assert!(body["session"].get("model").is_none());
+    assert!(body["session"].pointer("/audio/output/voice").is_none());
+    assert!(recorded_params(&requests, "thread/realtime/listVoices").is_empty());
     let starts = recorded_params(&requests, "thread/realtime/start");
     assert_eq!(starts.len(), 1);
     let start = &starts[0];
+    assert!(start.get("voice").is_none());
+    assert_eq!(start["realtimeSessionId"], "rtc_tui");
+    assert_eq!(start["voiceSessionId"], voice_session_id);
     assert_eq!(
         serde_json::json!({
             "threadId": start["threadId"],
@@ -173,7 +293,6 @@ async fn check_remote_voice_start(
             "includeStartupContext": start["includeStartupContext"],
             "outputModality": start["outputModality"],
             "version": start["version"],
-            "voice": start["voice"],
             "transport": start["transport"],
         }),
         serde_json::json!({
@@ -182,12 +301,114 @@ async fn check_remote_voice_start(
             "includeStartupContext": false,
             "outputModality": "audio",
             "version": "v3",
-            "voice": expected_voice,
-            "transport": {"type": "webrtc", "sdp": "v=0\r\n"},
+            "transport": {"type": "existingCall", "callId": "rtc_tui"},
         })
     );
     app_server.shutdown().await?;
     proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn voice_cancel_restart_only_attaches_the_new_attempt() -> Result<()> {
+    // Hold the provider response or the resulting UI event across a same-thread restart.
+    for cancel_before_response in [true, false] {
+        let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+        let (request_tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend = format!("http://{}", listener.local_addr()?);
+        use_local_voice_account(&mut app.config, &backend);
+        let provider = axum::Router::new().route(
+            "/backend-api/codex/realtime/calls",
+            axum::routing::post(move || {
+                let request_tx = request_tx.clone();
+                async move {
+                    let (tx, rx) = tokio::sync::oneshot::channel::<&'static str>();
+                    request_tx.send(tx).unwrap();
+                    (
+                        axum::http::StatusCode::CREATED,
+                        [("Location", rx.await.unwrap())],
+                        "v=answer",
+                    )
+                }
+            }),
+        );
+        let provider = tokio::spawn(async move { axum::serve(listener, provider).await });
+        let (mut server, rpc, proxy) = start_recording_realtime_speech_app_server(
+            &app.config,
+            RealtimeRequestBehavior::AcceptStart,
+        )
+        .await?;
+        let started = server.start_thread(&app.config).await?;
+        let thread_id = started.session.thread_id;
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget.handle_thread_session_quiet(started.session);
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        let mut start = async |app: &mut App,
+                               tui: &mut crate::tui::Tui,
+                               server: &mut AppServerSession,
+                               attempt_id| {
+            crate::chatwidget::start_voice_attempt_for_test(
+                &mut app.chat_widget,
+                thread_id,
+                attempt_id,
+            );
+            let command = AppEvent::CodexOp(Op::RealtimeConversationStart {
+                thread_id,
+                attempt_id,
+                offer_sdp: String::from("v=0").into(),
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Box::pin(app.handle_event(tui, server, command)),
+            )
+            .await??;
+            Ok::<_, color_eyre::Report>(
+                tokio::time::timeout(std::time::Duration::from_secs(10), requests.recv())
+                    .await?
+                    .unwrap(),
+            )
+        };
+        let first = start(&mut app, &mut tui, &mut server, /*attempt_id*/ 1).await?;
+        let (pending, queued) = if cancel_before_response {
+            (Some(first), None)
+        } else {
+            first.send("/realtime/calls/rtc_old").unwrap();
+            (None, Some(next_voice_event(&mut events).await?))
+        };
+        Box::pin(app.handle_event(
+            &mut tui,
+            &mut server,
+            AppEvent::VoiceControl {
+                thread_id: Some(thread_id),
+                control: crate::app_event::VoiceControl::Stop,
+            },
+        ))
+        .await?;
+        assert_eq!(app.voice_owner_thread_id(), None);
+        assert!(
+            !std::iter::from_fn(|| ops.try_recv().ok())
+                .any(|op| matches!(op, Op::RealtimeConversationStop { .. })),
+            "Core has no call to stop yet",
+        );
+
+        let second = start(&mut app, &mut tui, &mut server, /*attempt_id*/ 2).await?;
+        if let Some(response) = pending {
+            let _ = response.send("/realtime/calls/rtc_old");
+        }
+        if let Some(stale) = queued {
+            Box::pin(app.handle_event(&mut tui, &mut server, stale)).await?;
+        }
+        second.send("/realtime/calls/rtc_new").unwrap();
+        Box::pin(app.handle_event(&mut tui, &mut server, next_voice_event(&mut events).await?))
+            .await?;
+        let starts = recorded_params(&rpc, "thread/realtime/start");
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["transport"]["callId"], "rtc_new");
+        server.shutdown().await?;
+        proxy.await??;
+        provider.abort();
+    }
     Ok(())
 }
 
@@ -300,7 +521,7 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
             turn: Turn {
                 id: turn_id.into(),
                 root_turn_id: None,
-                items: vec![answer.clone()],
+                items: vec![ThreadItem::untimed(answer.clone())],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -315,13 +536,12 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
         matches!(speech, Op::RealtimeConversationSpeech { .. }),
         "{speech:?}"
     );
-    let mut source_channel = ThreadEventChannel::new_with_session(
+    let source_channel = ThreadEventChannel::new_with_session(
         THREAD_EVENT_CHANNEL_CAPACITY,
         test_thread_session(source, app.config.cwd.to_path_buf()),
         Vec::new(),
     );
     source_channel.store.lock().await.active = true;
-    app.active_thread_rx = source_channel.receiver.take();
     app.thread_event_channels.insert(source, source_channel);
     // Routed to the active channel, but not yet delivered to the old widget.
     app.enqueue_thread_notification(
@@ -668,11 +888,11 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
         id: "voice-turn".into(),
         root_turn_id: None,
         items: vec![
-            test_user_message(
+            ThreadItem::untimed(test_user_message(
                 "voice-user",
                 "<realtime_delegation><input>show &lt;code&gt; &amp; tests</input></realtime_delegation>",
-            ),
-            test_agent_message("voice-answer", "spoken answer"),
+            )),
+            ThreadItem::untimed(test_agent_message("voice-answer", "spoken answer")),
         ],
         items_view: TurnItemsView::Summary,
         status: TurnStatus::Completed,
@@ -683,7 +903,10 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
     };
     let typed = Turn {
         id: "typed-turn".into(),
-        items: vec![test_user_message("typed-user", "typed words")],
+        items: vec![ThreadItem::untimed(test_user_message(
+            "typed-user",
+            "typed words",
+        ))],
         ..voice.clone()
     };
     app.replay_thread_snapshot(
@@ -703,12 +926,11 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
             AppEvent::InsertHistoryCell(cell) => Some(
                 cell.transcript_lines(/*width*/ 80)
                     .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                    .map(|line| line.to_string()),
             ),
             _ => None,
         })
+        .flatten()
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(rendered.matches("show <code> & tests").count(), 2);
@@ -738,7 +960,8 @@ async fn retained_caption_consumes_only_one_matching_answer_fallback_on_reattach
         }]
         .into(),
     );
-    let answer = |id: &str, text: &str| ThreadItem::AgentMessage {
+    let answer = |id: &str, text: &str| ThreadItemPayload::AgentMessage {
+        moderation: None,
         id: id.into(),
         text: text.into(),
         phase: Some(MessagePhase::FinalAnswer),
@@ -838,7 +1061,7 @@ async fn buffered_voice_items_reconcile_captions_after_thread_switch() {
         .collect(),
     );
     let items = [
-        ThreadItem::UserMessage {
+        ThreadItemPayload::UserMessage {
             id: "user-item".into(),
             client_id: None,
             content: vec![UserInput::Text {
@@ -853,12 +1076,13 @@ async fn buffered_voice_items_reconcile_captions_after_thread_switch() {
         .into_iter()
         .map(|item| {
             ThreadBufferedEvent::Notification(Box::new(ServerNotification::ItemCompleted(
-                ItemCompletedNotification {
+                ItemCompletedNotification::new(
+                    source.to_string(),
+                    "buffered-turn".into(),
                     item,
-                    thread_id: source.to_string(),
-                    turn_id: "buffered-turn".into(),
-                    completed_at_ms: 0,
-                },
+                    /*started_at_ms*/ None,
+                    /*completed_at_ms*/ 0,
+                ),
             )))
         })
         .collect();
@@ -917,7 +1141,7 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
         })
         .collect(),
     );
-    let user_item = |id: &str, text: &str| ThreadItem::UserMessage {
+    let user_item = |id: &str, text: &str| ThreadItemPayload::UserMessage {
         id: id.into(),
         client_id: None,
         content: vec![UserInput::Text {
@@ -925,14 +1149,14 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
             text_elements: Vec::new(),
         }],
     };
-    let completion = |turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>| {
+    let completion = |turn_id: &str, status: TurnStatus, items: Vec<ThreadItemPayload>| {
         ThreadBufferedEvent::Notification(Box::new(ServerNotification::TurnCompleted(
             TurnCompletedNotification {
                 thread_id: source.to_string(),
                 turn: Turn {
                     id: turn_id.into(),
                     root_turn_id: None,
-                    items,
+                    items: items.into_iter().map(ThreadItem::untimed).collect(),
                     items_view: TurnItemsView::Summary,
                     status,
                     error: None,
@@ -950,12 +1174,12 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
             turns: Vec::new(),
             events: vec![
                 ThreadBufferedEvent::Notification(Box::new(ServerNotification::ItemStarted(
-                    ItemStartedNotification {
-                        item: user_item("started-user", "started only"),
-                        thread_id: source.to_string(),
-                        turn_id: "started".into(),
-                        started_at_ms: 0,
-                    },
+                    ItemStartedNotification::new(
+                        source.to_string(),
+                        "started".into(),
+                        user_item("started-user", "started only"),
+                        /*started_at_ms*/ 0,
+                    ),
                 ))),
                 completion(
                     "evicted",
@@ -1064,7 +1288,10 @@ async fn completed_voice_caption_survives_repeated_thread_replacement() {
         let mut snapshot = empty_thread_snapshot(&app, source);
         snapshot.turns.push(Turn {
             id: "earlier-typed-turn".into(),
-            items: vec![test_agent_message("earlier-answer", "Earlier answer")],
+            items: vec![ThreadItem::untimed(test_agent_message(
+                "earlier-answer",
+                "Earlier answer",
+            ))],
             ..typed.clone()
         });
         snapshot.turns.push(typed.clone());
@@ -1076,12 +1303,11 @@ async fn completed_voice_caption_survives_repeated_thread_replacement() {
                 AppEvent::InsertHistoryCell(cell) => Some(
                     cell.transcript_lines(/*width*/ 80)
                         .into_iter()
-                        .map(|line| line.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+                        .map(|line| line.to_string()),
                 ),
                 _ => None,
             })
+            .flatten()
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(rendered.matches("spoken complete").count(), 1);
@@ -1216,7 +1442,7 @@ async fn rejected_realtime_speech_restores_the_delegated_final_answer() -> Resul
             turn: Turn {
                 id: "rejected-turn".to_string(),
                 root_turn_id: None,
-                items: vec![answer],
+                items: vec![ThreadItem::untimed(answer)],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -1316,7 +1542,7 @@ async fn switching_threads_retains_undelivered_voice_answer_after_replay_evictio
             turn: Turn {
                 id: "switched-turn".to_string(),
                 root_turn_id: None,
-                items: vec![answer],
+                items: vec![ThreadItem::untimed(answer)],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -1385,7 +1611,7 @@ async fn switching_threads_retains_undelivered_voice_answer_after_replay_evictio
     assert_eq!(restored, 1);
     let replayed_item = test_agent_message("replayed-final", "Already in the thread snapshot.");
     let mut older_item = replayed_item.clone();
-    if let ThreadItem::AgentMessage { text, .. } = &mut older_item {
+    if let ThreadItemPayload::AgentMessage { text, .. } = &mut older_item {
         *text = "Older pending text.".to_string();
     }
     app.pending_realtime_speech_replay
@@ -1397,7 +1623,7 @@ async fn switching_threads_retains_undelivered_voice_answer_after_replay_evictio
             turns: vec![Turn {
                 id: "replayed-turn".to_string(),
                 root_turn_id: None,
-                items: vec![replayed_item],
+                items: vec![ThreadItem::untimed(replayed_item)],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -1518,22 +1744,25 @@ fn send_item(
     app: &mut App,
     thread_id: ThreadId,
     turn_id: &str,
-    item: ThreadItem,
+    item: ThreadItemPayload,
     kind: ItemEventKind,
 ) {
     let notification = match kind {
-        ItemEventKind::Started => ServerNotification::ItemStarted(ItemStartedNotification {
-            thread_id: thread_id.to_string(),
-            turn_id: turn_id.to_string(),
+        ItemEventKind::Started => ServerNotification::ItemStarted(ItemStartedNotification::new(
+            thread_id.to_string(),
+            turn_id.to_string(),
             item,
-            started_at_ms: 0,
-        }),
-        ItemEventKind::Completed => ServerNotification::ItemCompleted(ItemCompletedNotification {
-            thread_id: thread_id.to_string(),
-            turn_id: turn_id.to_string(),
-            item,
-            completed_at_ms: 0,
-        }),
+            /*started_at_ms*/ 0,
+        )),
+        ItemEventKind::Completed => {
+            ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+                thread_id.to_string(),
+                turn_id.to_string(),
+                item,
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            ))
+        }
     };
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(notification)));
 }
@@ -1600,7 +1829,7 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
             turn: Turn {
                 id: turn_id.to_string(),
                 root_turn_id: None,
-                items: vec![answer],
+                items: vec![ThreadItem::untimed(answer)],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -1678,7 +1907,7 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
             turn: Turn {
                 id: second_turn.to_string(),
                 root_turn_id: None,
-                items: vec![second_answer],
+                items: vec![ThreadItem::untimed(second_answer)],
                 items_view: TurnItemsView::Summary,
                 status: TurnStatus::Completed,
                 error: None,
@@ -1732,359 +1961,89 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
 }
 
 #[tokio::test]
-async fn rejected_voice_setting_preserves_current_selection() -> Result<()> {
-    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-    let (mut app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
-    let previous = (
-        app.config.realtime.voice,
-        app.chat_widget.config_ref().realtime.voice,
-    );
-    std::fs::write(app.config.codex_home.join("config.toml"), "realtime = [")?;
-    let mut tui = crate::tui::test_support::make_test_tui()?;
-    Box::pin(app.handle_event(
-        &mut tui,
-        &mut app_server,
-        AppEvent::PersistRealtimeVoiceSelection {
-            voice: codex_protocol::protocol::RealtimeVoice::Juniper,
-        },
-    ))
-    .await?;
-    assert_eq!(
-        (
-            app.config.realtime.voice,
-            app.chat_widget.config_ref().realtime.voice
-        ),
-        previous,
-    );
-    let messages = std::iter::from_fn(|| events.try_recv().ok())
-        .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => Some(
-                cell.display_lines(/*width*/ 80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(messages.contains("Failed to save voice"));
-    app_server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn remote_voice_config_read_failure_does_not_start_with_local_voice() -> Result<()> {
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
-    let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
-    std::fs::write(app.config.codex_home.join("config.toml"), "realtime = [")?;
-    let thread_id = ThreadId::new();
-    let error = app
-        .try_submit_active_thread_op_via_app_server(
-            &mut app_server,
-            thread_id,
-            &AppCommand::RealtimeConversationStart {
-                thread_id,
-                offer_sdp: String::from("v=0\r\n").into(),
-            },
-        )
-        .await
-        .expect_err("invalid server config must not fall back to local voice");
-    assert!(error.to_string().contains("config/read"));
-    assert!(recorded_params(&requests, "thread/realtime/start").is_empty());
-    app_server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn embedded_voice_settings_follow_project_after_thread_switch() -> Result<()> {
-    use codex_protocol::protocol::RealtimeVoice;
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
-    let projects = tempfile::tempdir()?;
-    for voice in [RealtimeVoice::Maple, RealtimeVoice::Sol] {
-        let cwd = projects.path().join(voice.wire_name());
-        std::fs::create_dir_all(cwd.join(".codex"))?;
-        std::fs::write(
-            cwd.join(".codex/config.toml"),
-            format!("[realtime]\nvoice = \"{}\"\n", voice.wire_name()),
-        )?;
-        crate::legacy_core::config::set_project_trust_level(
-            &app.config.codex_home,
-            &cwd,
-            codex_protocol::config_types::TrustLevel::Trusted,
-        )
-        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
-    }
-    app.config.realtime.voice = Some(RealtimeVoice::Maple);
-    let (mut server, requests, proxy) = start_recording_realtime_speech_app_server(
-        &app.config,
-        RealtimeRequestBehavior::AcceptStart,
-    )
-    .await?;
-    let mut tui = crate::tui::test_support::make_test_tui()?;
-    for voice in [
-        RealtimeVoice::Maple,
-        RealtimeVoice::Sol,
-        RealtimeVoice::Maple,
-    ] {
-        let thread_id = ThreadId::new();
-        let cwd = projects.path().join(voice.wire_name());
-        app.thread_event_channels.insert(
-            thread_id,
-            ThreadEventChannel::new_with_session(
-                THREAD_EVENT_CHANNEL_CAPACITY,
-                test_thread_session(thread_id, cwd),
-                Vec::new(),
-            ),
-        );
-        Box::pin(app.select_agent_thread(&mut tui, &mut server, thread_id)).await?;
-        app.open_realtime_voices(&server).await;
-        let popup = crate::chatwidget::tests::helpers::render_bottom_popup(
-            &app.chat_widget,
-            /*width*/ 80,
-        );
-        assert!(
-            popup.contains(&format!("{} (current)", voice.wire_name())),
-            "{popup}"
-        );
-        app.try_submit_active_thread_op_via_app_server(
-            &mut server,
-            thread_id,
-            &AppCommand::RealtimeConversationStart {
-                thread_id,
-                offer_sdp: String::from("v=0\r\n").into(),
-            },
-        )
-        .await?;
-        assert_eq!(
-            recorded_params(&requests, "thread/realtime/start")
-                .last()
-                .unwrap()["voice"],
-            serde_json::json!(voice),
-        );
-    }
-    server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn remote_voice_picker_reads_server_preference() -> Result<()> {
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
-    std::fs::write(
-        app.config.codex_home.join("config.toml"),
-        "[realtime]\nvoice = \"sol\"\n",
-    )?;
-    app.chat_widget
-        .set_realtime_voice(Some(codex_protocol::protocol::RealtimeVoice::Maple));
-    let (server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
-    app.open_realtime_voices(&server).await;
-    assert_eq!(
-        recorded_params(&requests, "thread/realtime/listVoices").len(),
-        1
-    );
-    insta::assert_snapshot!(
-        "remote_voice_picker",
-        crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_widget, /*width*/ 80)
-    );
-    server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
 async fn remote_voice_catalog_success_and_failure() -> Result<()> {
-    use super::session_lifecycle_requests::HistoryCapabilities;
-    for (capabilities, expected_catalog) in [
-        (HistoryCapabilities::VoiceCatalogCustom, true),
-        (HistoryCapabilities::VoiceCatalogUnavailable, false),
-    ] {
-        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-        let (mut server, requests, proxy) =
-            super::session_lifecycle_requests::start_recording_app_server_with_realtime_speech(
-                &app.config,
-                capabilities,
-                /*blocked_thread_list*/ None,
-                /*failed_thread_name*/ None,
-                crate::app_server_session::ThreadParamsMode::Remote,
-                RealtimeRequestBehavior::Forward,
-                codex_config::LoaderOverrides::default(),
-            )
-            .await?;
-        while events.try_recv().is_ok() {}
-        app.open_realtime_voices(&server).await;
-        let popup = crate::chatwidget::tests::helpers::render_bottom_popup(
-            &app.chat_widget,
-            /*width*/ 80,
-        );
-        assert_eq!(popup.contains("1. maple (current)"), expected_catalog);
-        assert!(!popup.contains("  3. spruce"));
-        if expected_catalog {
-            insta::assert_snapshot!("remote_voice_picker_server_default", popup);
-        }
-        assert_eq!(
-            recorded_params(&requests, "thread/realtime/listVoices").len(),
-            1
-        );
-        if !expected_catalog {
-            assert!(!app.chat_widget.has_active_view());
-            for phase in ["picker", "save", "start"] {
-                match phase {
-                    "save" => {
-                        let previous = (
-                            app.config.realtime.voice,
-                            app.chat_widget.config_ref().realtime.voice,
-                        );
-                        app.persist_realtime_voice(
-                            &server,
-                            codex_protocol::protocol::RealtimeVoice::Juniper,
-                        )
-                        .await;
-                        assert_eq!(
-                            (
-                                app.config.realtime.voice,
-                                app.chat_widget.config_ref().realtime.voice,
-                            ),
-                            previous,
-                        );
-                        let saved: toml::Value = toml::from_str(&std::fs::read_to_string(
-                            app.config.codex_home.join("config.toml"),
-                        )?)?;
-                        assert_eq!(saved["realtime"]["voice"].as_str(), Some("juniper"));
-                    }
-                    "start" => {
-                        let thread_id = ThreadId::new();
-                        app.chat_widget
-                            .handle_thread_session_quiet(test_thread_session(
-                                thread_id,
-                                app.config.cwd.to_path_buf(),
-                            ));
-                        app.active_thread_id = Some(thread_id);
-                        crate::chatwidget::activate_voice_for_thread(
-                            &mut app.chat_widget,
-                            thread_id,
-                        );
-                        assert!(app.chat_widget.may_receive_realtime_transcripts());
-                        let mut tui = crate::tui::test_support::make_test_tui()?;
-                        Box::pin(app.handle_event(
-                            &mut tui,
-                            &mut server,
-                            AppEvent::CodexOp(Op::RealtimeConversationStart {
-                                thread_id,
-                                offer_sdp: String::from("v=0\r\n").into(),
-                            }),
-                        ))
-                        .await?;
-                        assert!(!app.chat_widget.may_receive_realtime_transcripts());
-                        assert!(recorded_params(&requests, "thread/realtime/start").is_empty());
-                    }
-                    _ => {}
-                }
-                let messages = std::iter::from_fn(|| events.try_recv().ok())
-                    .filter_map(|event| match event {
-                        AppEvent::InsertHistoryCell(cell) => Some(
-                            cell.display_lines(/*width*/ 80)
-                                .into_iter()
-                                .map(|line| line.to_string())
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                insta::assert_snapshot!(format!("voice_catalog_failure_{phase}"), messages);
-            }
-        }
-        server.shutdown().await?;
-        proxy.await??;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn overridden_voice_save_keeps_effective_voice() -> Result<()> {
-    for project_override in [false, true] {
-        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-        let project = tempfile::tempdir()?;
-        let overrides = if project_override {
-            std::fs::create_dir_all(project.path().join(".codex"))?;
-            std::fs::write(
-                project.path().join(".codex/config.toml"),
-                "[realtime]\nvoice = \"maple\"\n",
-            )?;
-            crate::legacy_core::config::set_project_trust_level(
-                &app.config.codex_home,
-                project.path(),
-                codex_protocol::config_types::TrustLevel::Trusted,
-            )
-            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
-            app.config.cwd = AbsolutePathBuf::from_absolute_path(project.path())?;
-            app.chat_widget
-                .handle_thread_session_quiet(test_thread_session(
-                    ThreadId::new(),
-                    project.path().to_path_buf(),
-                ));
-            Vec::new()
-        } else {
-            vec![(
-                "realtime.voice".to_string(),
-                toml::Value::String("maple".to_string()),
-            )]
-        };
-        let client = crate::start_embedded_app_server(
-            codex_arg0::Arg0DispatchPaths::default(),
-            app.config.clone(),
-            overrides,
-            codex_config::LoaderOverrides::without_managed_config_for_tests(),
-            /*strict_config*/ false,
-            codex_config::CloudConfigBundleLoader::default(),
-            codex_feedback::CodexFeedback::new(),
-            /*log_db*/ None,
-            /*state_db*/ None,
-            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-            Default::default(),
-        )
-        .await?;
-        let server = AppServerSession::new(
-            crate::backend_id::BackendId::new(),
-            codex_app_server_client::AppServerClient::InProcess(client),
-            crate::app_server_session::ThreadParamsMode::Embedded,
-        );
-        while events.try_recv().is_ok() {}
-        app.persist_realtime_voice(&server, codex_protocol::protocol::RealtimeVoice::Juniper)
+    for status in [200, 403] {
+        let (mut app, mut events, _) = make_test_app_with_channels().await;
+        let backend = wiremock::MockServer::start().await;
+        configure_voice_settings_server(&mut app.config, &backend.uri())?;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/backend-api/settings/voices"))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(
+                serde_json::json!({
+                    "selected": "glimmer",
+                    "voices": [
+                        {"voice": "glimmer", "name": "Sol"},
+                        {"voice": "xiaoman", "name": "Xiaoman"}
+                    ]
+                }),
+            ))
+            .mount(&backend)
             .await;
-        assert_eq!(
-            (
-                app.config.realtime.voice,
-                app.chat_widget.config_ref().realtime.voice
-            ),
-            (
-                Some(codex_protocol::protocol::RealtimeVoice::Maple),
-                Some(codex_protocol::protocol::RealtimeVoice::Maple)
-            ),
-        );
-        let message = std::iter::from_fn(|| events.try_recv().ok())
-            .filter_map(|event| match event {
-                AppEvent::InsertHistoryCell(cell) => Some(
-                    cell.display_lines(/*width*/ 80)
-                        .into_iter()
-                        .map(|line| line.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(message.contains("saved but not applied"));
-        if !project_override {
-            insta::assert_snapshot!("overridden_voice_save", message);
+
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        futures::FutureExt::now_or_never(Box::pin(app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::OpenRealtimeVoices,
+        )))
+        .expect("opening the picker must return before the catalog responds")?;
+        Box::pin(app.handle_event(
+            &mut tui,
+            &mut app_server,
+            next_voice_event(&mut events).await?,
+        ))
+        .await?;
+        if status == 200 {
+            let popup = crate::chatwidget::tests::helpers::render_bottom_popup(
+                &app.chat_widget,
+                /*width*/ 80,
+            );
+            insta::assert_snapshot!("remote_voice_picker_server_default", popup);
+            wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+                .and(wiremock::matchers::path(
+                    "/backend-api/settings/account_user_setting",
+                ))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(403).set_body_string("backend details"),
+                )
+                .mount(&backend)
+                .await;
+            app.chat_widget
+                .handle_key_event(KeyEvent::from(KeyCode::Home));
+            app.chat_widget
+                .handle_key_event(KeyEvent::from(KeyCode::Enter));
+            let selection = next_voice_event(&mut events).await?;
+            futures::FutureExt::now_or_never(Box::pin(app.handle_event(
+                &mut tui,
+                &mut app_server,
+                selection,
+            )))
+            .expect("selecting a voice must return before the save responds")?;
+            Box::pin(app.handle_event(
+                &mut tui,
+                &mut app_server,
+                next_voice_event(&mut events).await?,
+            ))
+            .await?;
+            assert_eq!(next_history_message(&mut events), "■ Failed to save voice");
+            assert!(
+                backend
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.headers["chatgpt-account-id"] == "server-account")
+            );
+        } else {
+            assert!(!app.chat_widget.has_active_view());
+            assert_eq!(
+                next_history_message(&mut events),
+                "■ Failed to read voice settings"
+            );
         }
-        server.shutdown().await?;
+        app_server.shutdown().await?;
     }
     Ok(())
 }

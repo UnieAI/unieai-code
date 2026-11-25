@@ -38,6 +38,62 @@ async fn remote_windows_agent_permission_uses_server_selection() {
 }
 
 #[tokio::test]
+async fn diff_profile_requires_a_matching_local_daemon_workspace() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+        PermissionProfile::read_only(),
+        ActivePermissionProfile::new("project"),
+    ))
+    .unwrap();
+    let cwd = chat.session_cwd().clone();
+    let mut environments = [codex_app_server_protocol::ThreadEnvironment {
+        environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.into(),
+        cwd: cwd.clone().into(),
+        runtime_workspace_roots: vec![cwd.clone().into()],
+    }];
+    chat.primary_environment_cwd = crate::session_state::primary_environment_cwd(&environments);
+    assert_eq!(chat.diff_permission_profile(), None);
+
+    chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
+        address: "local".into(),
+        version: None,
+        is_local_daemon: true,
+        is_managed_daemon: false,
+    });
+    chat.thread_settings_confirmed = false;
+    assert_eq!(chat.diff_permission_profile(), None);
+    chat.thread_settings_confirmed = true;
+    assert_eq!(chat.diff_permission_profile().as_deref(), Some("project"));
+
+    environments[0]
+        .runtime_workspace_roots
+        .push(cwd.join("nested").unwrap().into());
+    chat.primary_environment_cwd = crate::session_state::primary_environment_cwd(&environments);
+    assert_eq!(chat.diff_permission_profile(), None);
+
+    environments[0].runtime_workspace_roots.pop();
+    environments[0].environment_id = "remote".into();
+    chat.primary_environment_cwd = crate::session_state::primary_environment_cwd(&environments);
+    assert_eq!(chat.diff_permission_profile(), None);
+    environments[0].environment_id = codex_exec_server::LOCAL_ENVIRONMENT_ID.into();
+    chat.primary_environment_cwd = crate::session_state::primary_environment_cwd(&environments);
+    chat.config.config_layer_stack = codex_config::ConfigLayerStack::new(
+        vec![codex_config::ConfigLayerEntry::new(
+            codex_config::ConfigLayerSource::SessionFlags,
+            toml::from_str(
+                r#"[permissions.project.filesystem]
+":root" = "read""#,
+            )
+            .unwrap(),
+        )],
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(chat.diff_permission_profile(), None);
+}
+
+#[tokio::test]
 async fn permission_discovery_uses_server_catalog_for_remote_custom_selection() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.explicit_permission_profile_mode = false;
@@ -1162,6 +1218,9 @@ async fn required_windows_sandbox_setup_defers_configured_initial_prompt() {
         create_initial_user_message(Some(initial_prompt.clone()), Vec::new(), Vec::new());
 
     chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),
@@ -1175,7 +1234,7 @@ async fn required_windows_sandbox_setup_defers_configured_initial_prompt() {
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::workspace_write(),
         active_permission_profile: None,
-        cwd: test_project_path().abs(),
+        cwd: test_project_path().abs().into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
@@ -1612,6 +1671,9 @@ async fn permissions_selection_marks_auto_review_current_after_session_configure
         .set_enabled(Feature::GuardianApproval, /*enabled*/ true);
 
     chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),
@@ -1625,7 +1687,7 @@ async fn permissions_selection_marks_auto_review_current_after_session_configure
         approvals_reviewer: ApprovalsReviewer::AutoReview,
         permission_profile: PermissionProfile::workspace_write(),
         active_permission_profile: None,
-        cwd: test_project_path().abs(),
+        cwd: test_project_path().abs().into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
@@ -1666,6 +1728,9 @@ async fn permissions_selection_marks_auto_review_current_with_custom_workspace_w
     let permission_profile = app_server_workspace_write_profile(extra_root);
 
     chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),
@@ -1679,7 +1744,7 @@ async fn permissions_selection_marks_auto_review_current_with_custom_workspace_w
         approvals_reviewer: ApprovalsReviewer::AutoReview,
         permission_profile,
         active_permission_profile: None,
-        cwd,
+        cwd: cwd.into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,

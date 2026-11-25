@@ -67,7 +67,7 @@ fn rendered_selection_preserves_unicode_links_and_the_selected_revision() {
 #[test]
 fn release_copy_and_cross_surface_drags_use_only_visible_text() {
     let status = Rect::new(
-        /*x*/ 0, /*y*/ 0, /*width*/ 7, /*height*/ 1,
+        /*x*/ 0, /*y*/ 0, /*width*/ 8, /*height*/ 1,
     );
     let footer = Rect { y: 1, ..status };
     let mut buffer = Buffer::empty(status.union(footer));
@@ -79,6 +79,8 @@ fn release_copy_and_cross_surface_drags_use_only_visible_text() {
     selection.register(footer, /*invalidate*/ false);
     // Registration retains geometry only: select the final painted cells, not earlier content.
     "commit…".render(status, &mut buffer);
+    let padding = (status.right() - 1, status.y);
+    buffer[padding].bg = ratatui::style::Color::DarkGray;
     selection.handle_event(&mouse(Down(Left), /*column*/ 0, /*row*/ 0), &buffer);
     selection.handle_event(&mouse(Drag(Left), /*column*/ 19, /*row*/ 1), &buffer);
     let Some(RegionAction::Selection(ViewAction::CopyOnSelect(text))) =
@@ -87,6 +89,8 @@ fn release_copy_and_cross_surface_drags_use_only_visible_text() {
         panic!("release must copy the selected status row");
     };
     assert_eq!(text, "commit…");
+    selection.render(&mut buffer);
+    assert_eq!(buffer[padding].bg, ratatui::style::Color::DarkGray);
     assert!(selection.view.has_selection_range());
     // Collapsing the range keeps keyboard ownership, including Enter, with the footer.
     for _ in text.chars() {
@@ -150,15 +154,24 @@ fn stationary_clicks_are_deferred_but_dragging_back_does_not_activate() {
         selection.handle_event(&mouse(Up(Left), /*column*/ 5, /*row*/ 0), &buffer),
         Some(RegionAction::Click(_))
     ));
-    // A stationary click after a selection releases the frozen revision.
-    for event in [
-        mouse(Down(Left), /*column*/ 0, /*row*/ 0),
-        mouse(Drag(Left), /*column*/ 3, /*row*/ 0),
-        mouse(Up(Left), /*column*/ 3, /*row*/ 0),
-    ] {
-        selection.handle_event(&event, &buffer);
-    }
+    // Losing capture cancels a deferred click, even if its release arrives late.
+    selection.handle_event(&mouse(Down(Left), /*column*/ 8, /*row*/ 0), &buffer);
+    selection.end_drag();
+    assert!(
+        selection
+            .handle_event(&mouse(Up(Left), /*column*/ 8, /*row*/ 0), &buffer)
+            .is_none()
+    );
+
+    selection.handle_event(&mouse(Down(Left), /*column*/ 0, /*row*/ 0), &buffer);
+    selection.handle_event(&mouse(Drag(Left), /*column*/ 3, /*row*/ 0), &buffer);
     assert!(selection.view.has_selection_range());
+    let selected = selection.view.selected_text(&selection.cells);
+    selection.end_drag();
+    selection.handle_event(&mouse(Up(Left), /*column*/ 9, /*row*/ 0), &buffer);
+    assert_eq!(selection.view.selected_text(&selection.cells), selected);
+
+    // A stationary click after a selection releases the frozen revision.
     selection.handle_event(&mouse(Down(Left), /*column*/ 10, /*row*/ 0), &buffer);
     assert!(matches!(
         selection.handle_event(&mouse(Up(Left), /*column*/ 10, /*row*/ 0), &buffer),

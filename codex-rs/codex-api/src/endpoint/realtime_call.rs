@@ -307,7 +307,6 @@ mod tests {
     use codex_client::TransportError;
     use codex_protocol::protocol::ConversationTextParams;
     use codex_protocol::protocol::ConversationTextRole;
-    use codex_protocol::protocol::RealtimeVoice;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
     use std::sync::Mutex;
@@ -396,14 +395,12 @@ mod tests {
             event_parser: RealtimeEventParser::V1,
             session_mode: RealtimeSessionMode::Conversational,
             output_modality: RealtimeOutputModality::Audio,
-            voice: RealtimeVoice::Cove,
         }
     }
 
     fn realtime_v2_session_config(session_id: &str) -> RealtimeSessionConfig {
         RealtimeSessionConfig {
             event_parser: RealtimeEventParser::RealtimeV2,
-            voice: RealtimeVoice::Marin,
             ..realtime_session_config(session_id)
         }
     }
@@ -566,11 +563,9 @@ mod tests {
             Arc::new(DummyAuth),
         );
 
+        let session_config = frameless_bidi_session_config("sess-api");
         let response = client
-            .create_with_session(
-                "v=offer\r\n".to_string(),
-                frameless_bidi_session_config("sess-api"),
-            )
+            .create_with_session("v=offer\r\n".to_string(), session_config)
             .await
             .expect("request should succeed");
 
@@ -585,6 +580,13 @@ mod tests {
         assert!(body.contains("\"model\":\"gpt-realtime\""));
         assert!(body.contains("\"delegation\":{\"type\":\"client\"}"));
         assert!(!body.contains("\"id\":\"sess-api\""));
+        let session: Value = serde_json::from_str(
+            body.lines()
+                .find(|line| line.starts_with('{'))
+                .expect("multipart body should contain session JSON"),
+        )
+        .expect("session should be JSON");
+        assert!(session.pointer("/audio/output/voice").is_none());
     }
 
     #[tokio::test]
@@ -730,6 +732,7 @@ mod tests {
             panic!("backend request body should be JSON");
         };
         assert_eq!(body["session"]["delegation"]["type"], "client");
+        assert!(body.pointer("/session/audio/output/voice").is_none());
         assert!(body["session"].get("id").is_none());
         assert_eq!(
             body["session"]["initial_items"],

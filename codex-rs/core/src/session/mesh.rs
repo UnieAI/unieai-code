@@ -160,7 +160,10 @@ async fn session_permission_mode(session: &Session) -> PermissionMode {
     let state = session.state.lock().await;
     let configuration = &state.session_configuration;
     permission_mode_of(
-        &configuration.sandbox_policy(&[]),
+        &codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
+            &configuration.permission_profile(),
+            configuration.cwd().as_path(),
+        ),
         &configuration.step_settings.approval_policy.value(),
     )
 }
@@ -190,7 +193,15 @@ pub(crate) fn permission_mode_of(
 pub(crate) fn turn_permission_mode(
     turn: &crate::session::turn_context::TurnContext,
 ) -> PermissionMode {
-    permission_mode_of(&turn.sandbox_policy(), &turn.approval_policy())
+    #[allow(deprecated)]
+    let cwd = turn.cwd.as_path();
+    permission_mode_of(
+        &codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
+            &turn.permission_profile(),
+            cwd,
+        ),
+        &turn.approval_policy(),
+    )
 }
 
 /// Publishes this session to the machine-local mesh, if it should be.

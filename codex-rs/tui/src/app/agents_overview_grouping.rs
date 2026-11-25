@@ -3,6 +3,7 @@
 
 use super::super::App;
 use super::super::agents_overview::AgentsOverviewState;
+use super::super::agents_overview_discovery::matches_query;
 use super::AgentsOverviewView;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
@@ -53,7 +54,7 @@ impl AgentsOverviewView {
             .is_some_and(|ranks| ranks.contains_key(&self.rows[index].thread_id))
     }
 
-    pub(super) fn visible_indices(&self) -> Vec<usize> {
+    pub(in crate::app) fn visible_indices(&self) -> Vec<usize> {
         let state = self.state();
         let search = state.search.to_lowercase();
         let (_, status_group) = super::command_center::TASK_FILTERS[state.status_filter];
@@ -62,42 +63,42 @@ impl AgentsOverviewView {
             .iter()
             .enumerate()
             .filter_map(|(index, row)| {
-                let searchable = format!(
-                    "{} {} {}",
-                    row.thread.name.as_deref().unwrap_or_default(),
-                    row.thread.preview,
-                    row.thread.cwd.display(),
-                )
-                .to_lowercase();
-                ((search.is_empty() || searchable.contains(&search))
-                    && (state.rename_target == Some(row.thread_id)
-                        || status_group.is_none_or(|group| group == row.group)))
+                (state.rename_target == Some(row.thread_id)
+                    || (state.includes_row(row)
+                        && (search.is_empty() || matches_query(&row.thread, &search))
+                        && status_group.is_none_or(|group| group == row.group)))
                 .then_some(index)
             })
             .partition(|index| self.is_pinned(*index));
         if let Some(ranks) = &self.pinned_thread_ranks {
             pinned.sort_by_key(|index| ranks.get(&self.rows[*index].thread_id).copied());
         }
+        let date_key = |index: usize| {
+            let thread = &self.rows[index].thread;
+            std::cmp::Reverse(if state.searching {
+                state.search_sort.timestamp(thread)
+            } else {
+                thread.updated_at
+            })
+        };
         match state.grouping {
-            AgentsOverviewGrouping::Project => visible.sort_by_key(|index| {
-                (
-                    &self.project_groups[*index].key,
-                    std::cmp::Reverse(self.rows[*index].thread.updated_at),
-                )
-            }),
-            AgentsOverviewGrouping::Directory => visible.sort_by_key(|index| {
-                (
-                    &self.directory_group_keys[*index],
-                    std::cmp::Reverse(self.rows[*index].thread.updated_at),
-                )
-            }),
-            AgentsOverviewGrouping::Status => {}
-            AgentsOverviewGrouping::Model => visible.sort_by_key(|index| {
-                (
-                    model_name(&self.rows[*index].thread),
-                    std::cmp::Reverse(self.rows[*index].thread.updated_at),
-                )
-            }),
+            AgentsOverviewGrouping::Project => {
+                visible.sort_by_key(|index| (&self.project_groups[*index].key, date_key(*index)))
+            }
+            AgentsOverviewGrouping::Directory => {
+                visible.sort_by_key(|index| (&self.directory_group_keys[*index], date_key(*index)))
+            }
+            AgentsOverviewGrouping::Status => {
+                if state.searching {
+                    visible.sort_by_key(|index| date_key(*index));
+                }
+                pinned.extend(visible);
+                // Stable grouping preserves pin order, then the supplied newest-first order.
+                pinned.sort_by_key(|index| self.rows[*index].group);
+                return pinned;
+            }
+            AgentsOverviewGrouping::Model => visible
+                .sort_by_key(|index| (model_name(&self.rows[*index].thread), date_key(*index))),
         }
         pinned.extend(visible);
         pinned
@@ -109,17 +110,17 @@ impl AgentsOverviewView {
         left: usize,
         right: usize,
     ) -> bool {
-        if self.is_pinned(left) || self.is_pinned(right) {
-            return self.is_pinned(left) && self.is_pinned(right);
-        }
         match grouping {
+            AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
+            _ if self.is_pinned(left) || self.is_pinned(right) => {
+                self.is_pinned(left) && self.is_pinned(right)
+            }
             AgentsOverviewGrouping::Project => {
                 self.project_groups[left].key == self.project_groups[right].key
             }
             AgentsOverviewGrouping::Directory => {
                 self.directory_group_keys[left] == self.directory_group_keys[right]
             }
-            AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
             AgentsOverviewGrouping::Model => {
                 model_name(&self.rows[left].thread) == model_name(&self.rows[right].thread)
             }

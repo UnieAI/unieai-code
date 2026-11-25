@@ -51,10 +51,11 @@ async fn invocation_for_payload(payload: ToolPayload) -> ToolInvocation {
         turn,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-        call_id: "call-apply-patch".to_string(),
+        call_id: "call-apply-patch".into(),
         tool_name: codex_tools::ToolName::plain("apply_patch"),
         source: crate::tools::context::ToolCallSource::Direct,
         payload,
+        native_call: None,
         environments: Default::default(),
     }
 }
@@ -90,6 +91,7 @@ async fn post_tool_use_payload_uses_patch_input_and_tool_output() {
     assert_eq!(
         handler.post_tool_use_payload(&invocation, &output),
         Some(PostToolUsePayload {
+            tool_cwd: None,
             tool_name: HookToolName::apply_patch(),
             tool_use_id: "call-apply-patch".to_string(),
             tool_input: json!({ "command": patch }),

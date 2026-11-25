@@ -173,7 +173,7 @@ async fn resolve_session_target(
         &[super::resume_source_kinds(
             /*include_non_interactive*/ false,
         )],
-        /*model_provider*/ None,
+        /*model_providers*/ None,
     )
     .await?
     {
@@ -343,6 +343,7 @@ pub(super) async fn start_app_server_for_session_command(
         &bootstrap_config,
         codex_home.as_path(),
         &embedded_network_policy,
+        /*resolution*/ None,
     )
     .await?;
 

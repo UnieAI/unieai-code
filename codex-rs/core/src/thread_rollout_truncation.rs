@@ -3,7 +3,7 @@
 //! In core, "user turns" are detected by scanning `ResponseItem::Message` items and
 //! interpreting them via `event_mapping::parse_turn_item(...)`.
 
-use crate::context_manager::is_user_turn_boundary;
+use crate::context_manager::is_instruction_turn_boundary;
 use crate::event_mapping;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::build_turns_from_rollout_items;
@@ -21,12 +21,12 @@ pub(crate) fn initial_history_has_prior_user_turns(conversation_history: &Initia
 
 fn rollout_item_is_user_turn_boundary(item: &RolloutItem) -> bool {
     match item {
-        RolloutItem::ResponseItem(item) => is_user_turn_boundary(item),
+        RolloutItem::ResponseItem(item) => is_instruction_turn_boundary(item),
         RolloutItem::Compacted(checkpoint) => checkpoint
             .replacement_history
             .iter()
             .flatten()
-            .any(|item| is_user_turn_boundary(item)),
+            .any(is_instruction_turn_boundary),
         RolloutItem::InterAgentCommunication(_) => true,
         _ => false,
     }
@@ -45,7 +45,11 @@ pub(crate) fn user_message_positions_in_rollout(items: &[RolloutItem]) -> Vec<us
     for (idx, item) in items.iter().enumerate() {
         match item {
             RolloutItem::ResponseItem(item)
-                if matches!(&item.item, ResponseItem::Message { .. })
+                if !item
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.realtime_session_end_input)
+                    && matches!(&item.item, ResponseItem::Message { .. })
                     && matches!(
                         event_mapping::parse_turn_item(&item.item),
                         Some(TurnItem::UserMessage(_))
@@ -53,7 +57,10 @@ pub(crate) fn user_message_positions_in_rollout(items: &[RolloutItem]) -> Vec<us
             {
                 user_positions.push(idx);
             }
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+            RolloutItem::EventMsg {
+                event: EventMsg::ThreadRolledBack(rollback),
+                ..
+            } => {
                 let num_turns = usize::try_from(rollback.num_turns).unwrap_or(usize::MAX);
                 let new_len = user_positions.len().saturating_sub(num_turns);
                 user_positions.truncate(new_len);
@@ -118,7 +125,7 @@ pub fn truncate_rollout_after_turn_id(
         .position(|item| {
             matches!(
                 item,
-                RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                RolloutItem::EventMsg { event: EventMsg::TurnStarted(event), .. }
                     if event.turn_id == last_turn_id
             )
         })
@@ -139,7 +146,14 @@ pub fn truncate_rollout_after_turn_id(
         .enumerate()
         .skip(target_start_index.saturating_add(1))
         .find_map(|(index, item)| {
-            matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))).then_some(index)
+            matches!(
+                item,
+                RolloutItem::EventMsg {
+                    event: EventMsg::TurnStarted(_),
+                    ..
+                }
+            )
+            .then_some(index)
         })
         .unwrap_or(items.len());
     items.truncate(cut_index);
@@ -154,7 +168,7 @@ pub fn truncate_rollout_before_turn_id(
     let cut_index = items.iter().position(|item| {
         matches!(
             item,
-            RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+            RolloutItem::EventMsg { event: EventMsg::TurnStarted(event), .. }
                 if event.turn_id == before_turn_id
         )
     });
@@ -176,12 +190,17 @@ pub fn truncate_rollout_before_turn_id(
     };
 
     // A persisted turn boundary proves the turn exists unless a later rollback removes it.
-    if items[cut_index + 1..]
+    if items[cut_index + 1..].iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg {
+                event: EventMsg::ThreadRolledBack(_),
+                ..
+            }
+        )
+    }) && !build_turns_from_rollout_items(&items)
         .iter()
-        .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
-        && !build_turns_from_rollout_items(&items)
-            .iter()
-            .any(|turn| turn.id == before_turn_id)
+        .any(|turn| turn.id == before_turn_id)
     {
         return Err(CodexErr::InvalidRequest(format!(
             "beforeTurnId '{before_turn_id}' was not found in the source thread"

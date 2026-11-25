@@ -22,6 +22,7 @@ fn first_screen_stage_ignores_notices_and_hides_instead_of_shrinking() {
         );
         assert_eq!(
             animation.render_first_screen(
+                screen,
                 free,
                 &mut buffer,
                 Some(ComposerState::Empty),
@@ -39,6 +40,7 @@ fn first_screen_stage_ignores_notices_and_hides_instead_of_shrinking() {
     // Content which reaches the center must win; it must not move the stage down.
     let free = Rect::new(screen.x, /*y*/ 20, screen.width, /*height*/ 24);
     animation.render_first_screen(
+        screen,
         free,
         &mut buffer,
         Some(ComposerState::Empty),
@@ -50,6 +52,7 @@ fn first_screen_stage_ignores_notices_and_hides_instead_of_shrinking() {
         let screen = Rect::new(/*x*/ 7, /*y*/ 3, width, height);
         let mut buffer = Buffer::empty(screen);
         animation.render_first_screen(
+            screen,
             screen,
             &mut buffer,
             Some(ComposerState::Empty),
@@ -75,7 +78,7 @@ fn first_screen_single_click_replays_the_visible_blossom() {
     };
     let draw = |animation: &mut EmptyStateAnimation, buffer: &mut Buffer, composer| {
         buffer.reset();
-        animation.render_first_screen(screen, buffer, composer, MotionMode::Animated)
+        animation.render_first_screen(screen, screen, buffer, composer, MotionMode::Animated)
     };
     assert_eq!(
         draw(&mut animation, &mut buffer, Some(ComposerState::Empty)),
@@ -199,6 +202,7 @@ fn first_screen_single_click_replays_the_visible_blossom() {
     buffer.reset();
     animation.render_first_screen(
         screen,
+        screen,
         &mut buffer,
         Some(ComposerState::Empty),
         MotionMode::Reduced,
@@ -281,6 +285,31 @@ fn loop_closes_and_light_themes_preserve_coverage() {
             "light-theme ink must contrast with the background"
         );
     }
+}
+
+#[test]
+fn background_only_keeps_logo_visible_and_composer_shaded() {
+    let colors = terminal_palette::DefaultColors {
+        fg: None,
+        bg: (210, 221, 235),
+    };
+    terminal_palette::with_test_palette(Some(colors), || {
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 48, /*height*/ 17,
+        );
+        let mut buffer = Buffer::empty(area);
+        let mut animation = EmptyStateAnimation::default();
+        animation.start_fresh();
+        animation.render_in(area, &mut buffer, Presentation::Animated);
+        let ink = buffer
+            .content
+            .iter()
+            .filter(|cell| cell.symbol() != " ")
+            .map(|cell| cell.fg)
+            .collect::<std::collections::HashSet<_>>();
+        let fill = crate::style::user_message_style().bg;
+        insta::assert_snapshot!(format!("Logo {ink:?}, composer {fill:?}"), @"Logo {Reset}, composer Some(Rgb(201, 212, 225))");
+    });
 }
 
 #[test]
@@ -461,6 +490,14 @@ fn onboarding_keeps_full_color_after_budget_and_pause() {
             );
             let start = Instant::now();
             let mut animation = EmptyStateAnimation::default();
+            // At 2x density, 22 × 51 physical pixels per cell are 11 × 25.5 logical pixels.
+            animation.renderer.get_or_insert_default().window_size =
+                Some(crossterm::terminal::WindowSize {
+                    columns: 80,
+                    rows: 40,
+                    width: 880,
+                    height: 1020,
+                });
             animation.start_fresh();
             let mut buffer = Buffer::empty(area);
             animation.render_in_at(area, &mut buffer, Presentation::Animated, start);

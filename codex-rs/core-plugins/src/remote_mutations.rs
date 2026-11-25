@@ -106,7 +106,9 @@ impl PluginsManager {
         }
         remote::validate_remote_plugin_id(&remote_plugin_id)
             .map_err(|err| unresolved(Error::InvalidRequest(err.message)))?;
-        let service = config.remote_plugin_service_config();
+        let service = self
+            .remote_plugin_service_config(config)
+            .for_current_account();
         let detail = remote::fetch_remote_plugin_detail_with_download_urls(
             &service,
             auth,
@@ -141,7 +143,7 @@ impl PluginsManager {
             &detail.marketplace_name,
             &detail.summary.name,
             detail.release_version.as_deref(),
-            detail.bundle_download_url.as_deref(),
+            &detail.archive_download,
             detail.app_manifest.clone(),
         )
         .map_err(|err| resolved(Error::Bundle(err)))?;
@@ -162,6 +164,7 @@ impl PluginsManager {
         // Materialize first: a failed download must never leave a backend installation behind.
         let installed = remote_bundle::download_and_install_remote_plugin_bundle(
             &service,
+            auth,
             self.codex_home.clone(),
             bundle,
         )
@@ -232,7 +235,7 @@ impl PluginsManager {
         }
         remote::validate_remote_plugin_id(remote_plugin_id)
             .map_err(|err| unresolved(Error::InvalidRequest(err.message)))?;
-        let service = config.remote_plugin_service_config();
+        let service = self.remote_plugin_service_config(config);
         let target =
             remote::resolve_remote_plugin_uninstall_target(&service, auth, remote_plugin_id)
                 .await

@@ -39,6 +39,9 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
     conversation: &CodexThread,
     token_usage_turn_id: String,
 ) {
+    if token_usage_turn_id.is_empty() {
+        return;
+    }
     let Some(info) = conversation.token_usage_info().await else {
         return;
     };
@@ -71,9 +74,15 @@ fn latest_token_usage_turn_id_from_rollout_items(
     rollout_items: &[RolloutItem],
     turns: &[Turn],
 ) -> Option<String> {
-    let token_count_index = rollout_items
-        .iter()
-        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_))))?;
+    let token_count_index = rollout_items.iter().rposition(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg {
+                event: EventMsg::TokenCount(_),
+                ..
+            }
+        )
+    })?;
     let mut builder = ThreadHistoryBuilder::new();
     for item in &rollout_items[..token_count_index] {
         builder.handle_rollout_item(item);
@@ -174,6 +183,7 @@ mod tests {
                 ..Default::default()
             })),
             RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "first answer".to_string(),
                 phase: None,
                 memory_citation: None,

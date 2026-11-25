@@ -83,6 +83,7 @@ impl AppLinkViewParams {
     pub(crate) fn from_url_app_server_request(
         thread_id: ThreadId,
         server_name: &str,
+        environment_id: Option<&str>,
         request_id: AppServerRequestId,
         request: &codex_app_server_protocol::McpServerElicitationRequest,
     ) -> Option<Self> {
@@ -95,7 +96,7 @@ impl AppLinkViewParams {
         else {
             return None;
         };
-        if server_name == MCP_CODEX_APPS_SERVER_NAME {
+        if server_name == MCP_CODEX_APPS_SERVER_NAME && environment_id.is_none() {
             let url = validate_external_url(url, /*require_chatgpt_host*/ true)?;
             return Self::from_codex_apps_auth_url_parts(
                 thread_id,
@@ -112,6 +113,7 @@ impl AppLinkViewParams {
         Some(Self::from_generic_url_parts(
             thread_id,
             server_name,
+            environment_id,
             request_id,
             message,
             url.as_str(),
@@ -178,6 +180,7 @@ impl AppLinkViewParams {
     fn from_generic_url_parts(
         thread_id: ThreadId,
         server_name: &str,
+        environment_id: Option<&str>,
         request_id: AppServerRequestId,
         message: &str,
         url: &str,
@@ -186,7 +189,13 @@ impl AppLinkViewParams {
         Self {
             app_id: elicitation_id.to_string(),
             title: "Action required".to_string(),
-            description: Some(format!("Server: {server_name}")),
+            description: Some(format!(
+                "Server: {}",
+                crate::app_server_approval_conversions::mcp_server_label(
+                    server_name,
+                    environment_id
+                )
+            )),
             instructions: "Complete the requested action in your browser, then return here."
                 .to_string(),
             url: url.to_string(),
@@ -478,6 +487,16 @@ impl AppLinkView {
         }
     }
 
+    fn push_suggest_reason(&self, lines: &mut Vec<Line<'static>>, width: usize) {
+        let reason = self.suggest_reason.as_deref().unwrap_or_default().trim();
+        if !reason.is_empty() {
+            for line in wrap(reason, width) {
+                lines.push(Line::from(line.into_owned().italic()));
+            }
+            lines.push(Line::from(""));
+        }
+    }
+
     fn link_content_lines(&self, width: u16) -> Vec<Line<'static>> {
         let usable_width = width.max(1) as usize;
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -495,17 +514,7 @@ impl AppLinkView {
         }
 
         lines.push(Line::from(""));
-        if let Some(suggest_reason) = self
-            .suggest_reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|suggest_reason| !suggest_reason.is_empty())
-        {
-            for line in wrap(suggest_reason, usable_width) {
-                lines.push(Line::from(line.into_owned().italic()));
-            }
-            lines.push(Line::from(""));
-        }
+        self.push_suggest_reason(&mut lines, usable_width);
         let is_browser_action_suggestion = self.is_browser_action_suggestion();
         if self.is_installed && !is_browser_action_suggestion {
             for line in wrap("Use $ to insert this app into the prompt.", usable_width) {
@@ -594,6 +603,7 @@ impl AppLinkView {
                 lines.push(Line::from(line.into_owned()));
             }
         } else if is_external_action_suggestion {
+            self.push_suggest_reason(&mut lines, usable_width);
             for line in wrap(
                 "Complete the requested action in the browser window that just opened.",
                 usable_width,
@@ -954,6 +964,7 @@ mod tests {
         let params = AppLinkViewParams::from_url_app_server_request(
             target.thread_id,
             &target.server_name,
+            /*environment_id*/ None,
             target.request_id.clone(),
             &request,
         )
@@ -982,6 +993,7 @@ mod tests {
         let params = AppLinkViewParams::from_url_app_server_request(
             target.thread_id,
             &target.server_name,
+            /*environment_id*/ None,
             target.request_id.clone(),
             &request,
         )
@@ -1018,6 +1030,7 @@ mod tests {
             let params = AppLinkViewParams::from_url_app_server_request(
                 target.thread_id,
                 &target.server_name,
+                /*environment_id*/ None,
                 target.request_id.clone(),
                 &request,
             );
@@ -1041,6 +1054,7 @@ mod tests {
             let params = AppLinkViewParams::from_url_app_server_request(
                 target.thread_id,
                 &target.server_name,
+                /*environment_id*/ None,
                 target.request_id.clone(),
                 &request,
             );
@@ -1264,6 +1278,7 @@ mod tests {
         let params = AppLinkViewParams::from_url_app_server_request(
             target.thread_id,
             &target.server_name,
+            /*environment_id*/ None,
             target.request_id.clone(),
             &request,
         )
@@ -1709,6 +1724,7 @@ mod tests {
         let params = AppLinkViewParams::from_url_app_server_request(
             target.thread_id,
             &target.server_name,
+            Some("env-b"),
             target.request_id.clone(),
             &request,
         )
@@ -1731,13 +1747,14 @@ mod tests {
         let target = generic_url_target();
         let request = codex_app_server_protocol::McpServerElicitationRequest::Url {
             meta: None,
-            message: "Review the payment details to continue.".to_string(),
+            message: "Enter code ABCD-1234 to confirm the payment.".to_string(),
             url: "https://payments.example/checkout/123".to_string(),
             elicitation_id: "payment-123".to_string(),
         };
         let params = AppLinkViewParams::from_url_app_server_request(
             target.thread_id,
             &target.server_name,
+            /*environment_id*/ None,
             target.request_id.clone(),
             &request,
         )

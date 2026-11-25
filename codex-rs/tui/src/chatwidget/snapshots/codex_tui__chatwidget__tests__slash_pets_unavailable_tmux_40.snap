@@ -3,11 +3,10 @@ source: tui/src/chatwidget/tests/slash_commands.rs
 expression: "render_bottom_popup(&chat, 40)"
 ---
   Pets unavailable
-  Pets are disabled in tmux. Terminal
-  images don’t stay pane-local in tmux
-  and can corrupt scrollback or move
-  between panes. Run UnieAI Code
-  outside tmux to use pets.
+  Pets are unavailable in this tmux
+  pane. Use fullscreen UnieAI Code
+  with allow-passthrough all, or run
+  UnieAI Code outside tmux.
 
 
 › 1. Close

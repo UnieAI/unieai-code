@@ -91,7 +91,10 @@ fn prompt_header_tracks_reading_and_yields_to_visible_prompts_and_short_screens(
 #[test]
 fn header_sanitizes_controls_and_truncates_by_display_width() {
     let cells = vec![user("\x1b[31m界 café\r\nnext question"), cell("answer")];
-    let (line, _) = line(&cells, /*first*/ 1, /*width*/ 18).unwrap();
+    let (line, _) = line(
+        &cells, /*first*/ 1, /*width*/ 18, /*detailed*/ false,
+    )
+    .unwrap();
     assert!(line.width() <= 18);
     insta::assert_snapshot!(line.to_string());
 }
@@ -216,6 +219,31 @@ fn paused_header_reservation_survives_copy_until_scroll_or_resize() {
         user("Second question"),
         cell("done 10:16 AM"),
     ];
+    let mut view = TranscriptView::default();
+    let before = render(&mut view, &cells, /*width*/ 40, /*height*/ 7);
+    assert!(view.begin_select_mode(&cells));
+    view.scroll(&cells, /*rows*/ 100);
+    render(&mut view, &cells, /*width*/ 40, /*height*/ 7);
+    for _ in 0..7 {
+        if view.selection.as_ref().unwrap().start.key == EntryKey::cell(&cells[1]) {
+            break;
+        }
+        assert!(matches!(
+            view.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &cells),
+            Some(ViewAction::Changed)
+        ));
+        assert_eq!(
+            text(&render(
+                &mut view, &cells, /*width*/ 40, /*height*/ 7
+            )),
+            text(&before)
+        );
+    }
+    assert_eq!(
+        view.selection.as_ref().unwrap().start.key,
+        EntryKey::cell(&cells[1])
+    );
+    assert_eq!(view.position, Position::Latest);
     for scroll in [false, true] {
         let mut view = TranscriptView::default();
         let before = render(&mut view, &cells, /*width*/ 40, /*height*/ 7);
@@ -245,8 +273,16 @@ fn paused_header_reservation_survives_copy_until_scroll_or_resize() {
                 render(&mut view, &cells, /*width*/ 40, /*height*/ 7),
                 view.is_following(),
             ),
-            (before, false)
+            (before.clone(), false)
         );
+        assert!(view.begin_select_mode(&cells));
+        assert_eq!(
+            text(&render(
+                &mut view, &cells, /*width*/ 40, /*height*/ 7
+            )),
+            text(&before)
+        );
+        view.end_select_mode();
         let height = if scroll {
             view.scroll(&cells, /*rows*/ -1);
             7

@@ -3,6 +3,7 @@
 //! Spawn and reload share live runtime policy; role and model precedence, full-history
 //! inheritance, and validation messages remain the same for each multi-agent version.
 
+use crate::agent::host::AgentRuntimeServices;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 use crate::config::Config;
@@ -13,12 +14,13 @@ use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 
-pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 16;
 
 pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
@@ -41,9 +43,12 @@ pub(crate) struct SpawnConfigOptions<'a> {
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) service_tier: Option<String>,
 }
 
 pub(crate) struct PreparedSpawnConfig {
+    /// The explicit choice for this child. Config retains the tier it would otherwise inherit.
+    pub(crate) service_tier: Option<String>,
     pub(crate) config: Config,
     pub(crate) role_name: Option<String>,
 }
@@ -68,6 +73,19 @@ pub(crate) async fn prepare_agent_spawn_config(
         options.reasoning_effort,
     )
     .await?;
+    let shares_service_tier = match &session.agent_runtime {
+        AgentRuntimeServices::Controller => true,
+        AgentRuntimeServices::Host(services) => services.service_tier.is_some(),
+    };
+    if !shares_service_tier
+        && turn
+            .initial_settings
+            .spawn_service_tier_override()
+            .is_none()
+    {
+        // Inherit the parent's thread preference before applying child role overrides.
+        config.service_tier = session.thread_settings_snapshot().await.service_tier;
+    }
     if !options.full_history_fork
         || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
     {
@@ -81,7 +99,12 @@ pub(crate) async fn prepare_agent_spawn_config(
                 .clone_from(&turn.developer_instructions);
         }
     }
-    apply_spawn_agent_service_tier(session, &mut config).await?;
+    let requested_tier = options
+        .service_tier
+        .filter(|_| turn.config.multi_agent_v2.expose_spawn_agent_service_tier);
+    if shares_service_tier || requested_tier.is_some() {
+        apply_spawn_agent_service_tier(session, &mut config, requested_tier.as_deref()).await?;
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
@@ -97,7 +120,11 @@ pub(crate) async fn prepare_agent_spawn_config(
             .then_some(DEFAULT_ROLE_NAME)
         })
         .map(str::to_owned);
-    Ok(PreparedSpawnConfig { config, role_name })
+    Ok(PreparedSpawnConfig {
+        config,
+        role_name,
+        service_tier: requested_tier,
+    })
 }
 
 /// Builds the base config snapshot for a newly spawned sub-agent.
@@ -132,6 +159,10 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, St
 fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
+    // Both spawn and resume need the ordinary tier, even when the caller uses its own.
+    if let Some(tier) = turn.initial_settings.spawn_service_tier_override() {
+        config.service_tier.clone_from(&tier.inherited_service_tier);
+    }
     if config
         .features
         .enabled(Feature::SubagentDefaultContextLimits)
@@ -142,6 +173,12 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     // Preserve activation for history forks without freezing the parent's model-owned prompts.
     // Fresh child startup restores configured preferences from the retained snapshot.
     config.token_budget = turn.configured_token_budget.clone();
+    if let Some(thread_namespaces) = &turn.overridden_direct_only_tool_namespaces {
+        config
+            .code_mode
+            .direct_only_tool_namespaces
+            .clone_from(thread_namespaces);
+    }
     config.model = Some(turn.model_info().slug.clone());
     config.model_provider = turn.provider.info().clone();
     config.model_reasoning_effort = turn
@@ -149,19 +186,19 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
         .or(turn.model_info().default_reasoning_level.as_ref())
         .cloned();
     config.model_reasoning_summary = Some(turn.reasoning_summary());
-    config.developer_instructions = turn.developer_instructions.clone();
-    if turn.multi_agent_version == MultiAgentVersion::V2
-        && let Some(developer_instructions) = turn
-            .config
-            .multi_agent_v2
-            .subagent_developer_instructions
-            .clone()
-    {
-        config.developer_instructions = Some(developer_instructions);
-    }
+    config.developer_instructions = inherited_developer_instructions(turn);
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
+}
+
+pub(crate) fn inherited_developer_instructions(turn: &TurnContext) -> Option<String> {
+    if turn.multi_agent_version == MultiAgentVersion::V2
+        && let Some(instructions) = &turn.config.multi_agent_v2.subagent_developer_instructions
+    {
+        return Some(instructions.clone());
+    }
+    turn.developer_instructions.clone()
 }
 
 fn reject_full_fork_agent_type_override(agent_type: Option<&str>) -> Result<(), String> {
@@ -242,7 +279,7 @@ async fn apply_requested_spawn_agent_model_overrides(
             )?;
             config.model_reasoning_effort = Some(reasoning_effort);
         } else {
-            config.model_reasoning_effort = selected_model_info.default_reasoning_level;
+            config.model_reasoning_effort = selected_model_info.default_reasoning_level.clone();
         }
 
         return Ok(());
@@ -263,13 +300,16 @@ async fn apply_requested_spawn_agent_model_overrides(
 pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
     config: &mut Config,
+    requested: Option<&str>,
 ) -> Result<(), String> {
-    let Some(service_tier) = session.services.agent_control.service_tier() else {
-        config.service_tier = None;
+    if requested.is_none() {
+        config.service_tier =
+            crate::agent::host::service_tier(session, config.service_tier.take()).await;
+    }
+    let Some(service_tier) = requested.or(config.service_tier.as_deref()) else {
         return Ok(());
     };
     if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE {
-        config.service_tier = Some(service_tier);
         return Ok(());
     }
 
@@ -282,9 +322,23 @@ pub(crate) async fn apply_spawn_agent_service_tier(
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
-    config.service_tier = model_info
-        .supports_service_tier(service_tier.as_str())
-        .then_some(service_tier);
+    let supported = model_info.supports_service_tier(service_tier);
+    if requested.is_some()
+        && (!supported
+            || !config.features.service_tier_enabled(service_tier)
+            || !crate::client_common::provider_allows_service_tier(
+                &config.model_provider,
+                &model_info,
+                service_tier,
+            ))
+    {
+        return Err(format!(
+            "Service tier `{service_tier}` is unavailable for model `{model}`. Omit service_tier to inherit the usual tier."
+        ));
+    }
+    if !supported {
+        config.service_tier = None;
+    }
     Ok(())
 }
 
@@ -312,7 +366,7 @@ async fn apply_spawn_agent_role(
         .models_manager
         .get_model_info(&model, &config.to_models_manager_config())
         .await;
-    if model_info.used_fallback_model_metadata {
+    if model_info.origin == ModelOrigin::Synthetic {
         return Ok(());
     }
 

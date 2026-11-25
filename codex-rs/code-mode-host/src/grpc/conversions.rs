@@ -1,5 +1,7 @@
+use codex_code_mode_protocol::CodeModeOutputTruncation;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeToolKind;
+use codex_code_mode_protocol::CodeModeToolResult;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::FunctionCallOutputContentItem;
 use codex_code_mode_protocol::ImageDetail;
@@ -27,6 +29,21 @@ pub(super) fn session_limits(
             .transpose()
             .map_err(|_| Status::invalid_argument("maximum heap size exceeds this platform"))?,
     })
+}
+
+pub(super) fn observation_budget(
+    max_output_tokens: Option<u64>,
+    output_truncation: CodeModeOutputTruncation,
+) -> Result<Option<usize>, Status> {
+    if output_truncation == CodeModeOutputTruncation::Client {
+        return Ok(None);
+    }
+    max_output_tokens
+        .map(|value| {
+            usize::try_from(value)
+                .map_err(|_| Status::invalid_argument("output budget is too large"))
+        })
+        .transpose()
 }
 
 pub(super) fn execute_request(request: proto::ExecuteRequest) -> Result<ExecuteRequest, Status> {
@@ -70,6 +87,17 @@ fn tool_definition(definition: proto::ToolDefinition) -> Result<ToolDefinition, 
         input_schema: json_field(definition.input_schema_json, "input schema")?,
         input_schema_max_bytes: None,
         output_schema: json_field(definition.output_schema_json, "output schema")?,
+    })
+}
+
+/// Prost defaults missing or unrecognized formats to plain JSON.
+pub(super) fn tool_result(result: &proto::ToolCallSucceeded) -> Result<CodeModeToolResult, Status> {
+    let value = serde_json::from_slice(&result.output_json).map_err(|error| {
+        Status::invalid_argument(format!("invalid code-mode tool output JSON: {error}"))
+    })?;
+    Ok(match result.result_format() {
+        proto::ToolResultFormat::Json => CodeModeToolResult::Json(value),
+        proto::ToolResultFormat::McpCallToolResult => CodeModeToolResult::McpCallToolResult(value),
     })
 }
 

@@ -407,9 +407,10 @@ fn exported_sandbox_denial_keeps_launch_identity_and_separate_exit_outcome() {
             let private_file = directory.path().join(PRIVATE_PAYLOAD);
             std::fs::write(&private_file, PRIVATE_PAYLOAD).expect("write test file");
             let cwd = PathUri::from_host_native_path(directory.path()).expect("cwd URI");
-            let sandbox = crate::FileSystemSandboxContext::from_legacy_sandbox_policy(
-                codex_protocol::protocol::SandboxPolicy::new_read_only_policy(), cwd.clone(),
-            ).expect("read-only sandbox");
+            let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
+                codex_protocol::models::PermissionProfile::read_only(),
+                cwd.clone(),
+            );
             for (index, span) in LAUNCH_SPANS.into_iter().enumerate() {
                 let process_id = format!("{PRIVATE_PAYLOAD}-{index}");
                 let launch = format!("00-{TRACE_ID}-{span}-00");
@@ -623,13 +624,13 @@ fn exported_logs(
         tls: None,
     };
     let otel = OtelProvider::try_new(&OtelSettings {
+        headers_helper: None,
         http_client_factory: codex_http_client::HttpClientFactory::new(
             codex_http_client::OutboundProxyPolicy::ReqwestDefault,
         ),
         environment: "test".to_string(),
         service_name: "codex-exec-server".to_string(),
         service_version: env!("CARGO_PKG_VERSION").to_string(),
-        codex_home: std::env::current_dir().expect("cwd"),
         exporter,
         trace_exporter: if export_traces {
             OtelExporter::OtlpHttp {
@@ -643,7 +644,7 @@ fn exported_logs(
         },
         metrics_exporter: OtelExporter::None,
         runtime_metrics: false,
-        span_attributes: BTreeMap::new(),
+        span_attributes: HashMap::new(),
         tracestate: BTreeMap::new(),
     })
     .expect("OTEL settings")

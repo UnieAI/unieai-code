@@ -12,20 +12,18 @@ use self::connection::Access;
 use self::options::LocalBoardOptions;
 use crate::AppendRequest;
 use crate::ChannelDescription;
-use crate::ChannelPermissions;
 use crate::ChannelSummary;
 use crate::CreateChannelRequest;
 use crate::MessageBoardHost;
-use crate::PostContent;
 use crate::PostDestination;
 use crate::PostMetadata;
 use crate::PostRequest;
-use crate::ReadPostRequest;
 use crate::SubscriptionChange;
 use crate::SubscriptionRequest;
 use crate::SubscriptionState;
 use crate::SubscriptionTarget;
 use crate::api::PostBehavior;
+use crate::validate_channel;
 use caseless::default_case_fold_str;
 use chrono::DateTime;
 use chrono::Utc;
@@ -45,28 +43,32 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
+mod catalog;
 pub(crate) mod connection;
+mod json_search;
 mod lifecycle;
 pub(crate) mod options;
 mod paging;
 mod pool;
 mod queries;
 pub(crate) mod setup;
+mod subscriptions;
 
 #[cfg(test)]
 #[path = "local/pools_tests.rs"]
 mod pools_tests;
 
 const MAX_POST_BYTES: usize = 64 * 1024;
-const MAX_CHANNEL_BYTES: usize = 128;
 const MAX_READ_CHARS: usize = 20_000;
 
 #[derive(Clone)]
 pub struct LocalAgentMessageBoard {
     identity: SessionId,
+    storage_namespace: Arc<str>,
     pool: Arc<SqlitePool>,
     host: Arc<dyn MessageBoardHost>,
     access: Option<Access>,
+    nested_json_pointer: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,9 +90,44 @@ impl LocalAgentMessageBoard {
         Ok(Self {
             identity,
             pool: pool::open(sqlite, options).await?,
+            storage_namespace: Arc::from(options.storage_namespace.as_str()),
             host,
             access: None,
+            nested_json_pointer: None,
         })
+    }
+
+    /// Opens a fresh read-write SQLite board with no backing file. Clones share its contents
+    /// until the last handle closes. A later open always creates an independent board.
+    pub async fn open_in_memory(
+        options: &LocalBoardOptions,
+        identity: SessionId,
+        host: Arc<dyn MessageBoardHost>,
+    ) -> Result<Self> {
+        options.validate()?;
+        let pool = SqliteConfig::open_in_memory_pool()
+            .await
+            .map_err(storage_error)?;
+        sqlx::raw_sql(pool::SCHEMA)
+            .execute(&pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(Self {
+            identity,
+            storage_namespace: Arc::from(options.storage_namespace.as_str()),
+            pool: Arc::new(pool),
+            host,
+            access: Some(Access::ReadWrite),
+            nested_json_pointer: None,
+        })
+    }
+
+    /// Reads the same live board and can change only the caller's subscriptions.
+    pub fn read_only_handle(&self) -> Self {
+        Self {
+            access: Some(Access::ReadOnly),
+            ..self.clone()
+        }
     }
 
     pub async fn create_channel(
@@ -122,7 +159,7 @@ impl LocalAgentMessageBoard {
             )
             .await?;
         }
-        let summary = self.channel_summary(&mut tx, &request.channel_name).await?;
+        let summary = catalog::channel_summary(self, &mut tx, &request.channel_name).await?;
         tx.commit().await.map_err(storage_error)?;
         Ok(summary)
     }
@@ -205,12 +242,15 @@ impl LocalAgentMessageBoard {
             return Ok(post.metadata);
         }
         drop(conn);
-        let mut recipients = HashSet::new();
-        if let PostBehavior::Discussion = behavior {
+        let notify_recipients = if behavior == PostBehavior::Discussion {
+            let mut recipients = HashSet::new();
             for path in &request.agents_to_notify {
                 recipients.insert(self.host.resolve_agent(path.clone()).await?);
             }
-        }
+            Some(recipients)
+        } else {
+            None
+        };
         let now = self.host.current_time(caller).await?;
         let mut tx = self.begin_write().await?;
         if let Some(post) = self
@@ -278,7 +318,9 @@ impl LocalAgentMessageBoard {
         };
         // Return one JSON array to avoid handing each subscriber row across
         // SQLite's worker thread while the write transaction is held.
-        if let PostBehavior::Discussion = behavior {
+        let subscribers: Vec<ThreadId> = if behavior == PostBehavior::SilentAppend {
+            Vec::new()
+        } else {
             let subscribed = sqlx::query_scalar::<_, String>(
                 "SELECT json_group_array(agent) FROM subscriptions WHERE board=? AND target=?",
             )
@@ -287,13 +329,8 @@ impl LocalAgentMessageBoard {
             .fetch_one(&mut *tx)
             .await
             .map_err(storage_error)?;
-            let subscribed: Vec<String> =
-                serde_json::from_str(&subscribed).map_err(storage_error)?;
-            for recipient in subscribed {
-                recipients.insert(ThreadId::from_string(&recipient).map_err(storage_error)?);
-            }
-        }
-        recipients.remove(&caller);
+            serde_json::from_str(&subscribed).map_err(storage_error)?
+        };
         let post = StoredPost {
             metadata: PostMetadata {
                 message_id: id,
@@ -316,9 +353,11 @@ impl LocalAgentMessageBoard {
         }
         tx.commit().await.map_err(storage_error)?;
 
-        if let PostBehavior::SilentAppend = behavior {
+        let Some(mut recipients) = notify_recipients else {
             return Ok(post.metadata);
-        }
+        };
+        recipients.extend(subscribers);
+        recipients.remove(&caller);
         // A committed post succeeds even if a best-effort notice cannot be delivered.
         let notice = paging::preview(post.clone(), /*max_chars*/ 150);
         futures::stream::iter(recipients)
@@ -350,8 +389,18 @@ impl LocalAgentMessageBoard {
         let mut tx = self.begin_write().await?;
         let (channel, root, last) = match &request.target {
             SubscriptionTarget::Channel(name) => {
-                let summary = self.channel_summary(&mut tx, name).await?;
-                (name.clone(), None, summary.last_message_id)
+                let last: Option<String> = sqlx::query_scalar(
+                    "SELECT (SELECT p.id FROM posts p WHERE p.board=c.board AND p.channel=c.name
+                             ORDER BY p.timestamp DESC,p.seq DESC LIMIT 1)
+                     FROM channels c WHERE c.board=? AND c.name=?",
+                )
+                .bind(self.identity.to_string())
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_error)?
+                .ok_or_else(|| invalid("channel not found in this board"))?;
+                (name.clone(), None, last)
             }
             SubscriptionTarget::Thread(root) => {
                 let post = self.load_post(&mut tx, *root).await?;
@@ -360,67 +409,23 @@ impl LocalAgentMessageBoard {
                 }
                 let last: String = sqlx::query_scalar("SELECT id FROM posts WHERE board=? AND root=? ORDER BY timestamp DESC, seq DESC LIMIT 1")
                     .bind(self.identity.to_string()).bind(root.to_string()).fetch_one(&mut *tx).await.map_err(storage_error)?;
-                (
-                    post.metadata.channel_name,
-                    Some(*root),
-                    Some(Uuid::parse_str(&last).map_err(storage_error)?),
-                )
+                (post.metadata.channel_name, Some(*root), Some(last))
             }
         };
-        let enabled = request.change == SubscriptionChange::Subscribe;
-        // Keep active subscriptions readable by older binaries. Opt-outs only
-        // prevent implicit subscription when this agent participates again.
-        let statements = match request.change {
-            SubscriptionChange::Subscribe => [
-                "DELETE FROM subscription_opt_outs WHERE board=? AND target=? AND agent=?",
-                "INSERT OR IGNORE INTO subscriptions(board,target,agent) VALUES(?,?,?)",
-            ],
-            SubscriptionChange::Unsubscribe => [
-                "DELETE FROM subscriptions WHERE board=? AND target=? AND agent=?",
-                "INSERT OR IGNORE INTO subscription_opt_outs(board,target,agent) VALUES(?,?,?)",
-            ],
-        };
-        for statement in statements {
-            sqlx::query(statement)
-                .bind(self.identity.to_string())
-                .bind(target_key(&request.target)?)
-                .bind(target_agent.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(storage_error)?;
-        }
+        let last_message_id = last
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(storage_error)?;
+        self.change_subscription(&mut tx, &request.target, target_agent, request.change)
+            .await?;
         tx.commit().await.map_err(storage_error)?;
         Ok(SubscriptionState {
             channel_name: channel,
             thread_id: root,
             target_agent: target_path,
-            enabled,
-            last_message_id: last,
-        })
-    }
-
-    pub async fn read_post(
-        &self,
-        caller: ThreadId,
-        request: ReadPostRequest,
-    ) -> Result<PostContent> {
-        self.host.agent_path(caller).await?;
-        let mut conn = self.pool.acquire().await.map_err(storage_error)?;
-        let post = self.load_post(&mut conn, request.message_id).await?;
-        let n_chars = post.text.chars().count();
-        let offset = (request.offset_chars as usize).min(n_chars);
-        let text: String = post
-            .text
-            .chars()
-            .skip(offset)
-            .take((request.limit_chars.get() as usize).min(MAX_READ_CHARS))
-            .collect();
-        let next_offset_chars = offset + text.chars().count();
-        Ok(PostContent {
-            metadata: post.metadata,
-            text,
-            n_chars,
-            next_offset_chars,
+            enabled: request.change == SubscriptionChange::Subscribe,
+            last_message_id,
         })
     }
 
@@ -438,18 +443,6 @@ impl LocalAgentMessageBoard {
             .await
             .map_err(storage_error)?;
         Ok(())
-    }
-
-    async fn load_post(&self, conn: &mut SqliteConnection, id: Uuid) -> Result<StoredPost> {
-        let payload: Option<String> =
-            sqlx::query_scalar("SELECT payload FROM posts WHERE board=? AND id=?")
-                .bind(self.identity.to_string())
-                .bind(id.to_string())
-                .fetch_optional(conn)
-                .await
-                .map_err(storage_error)?;
-        serde_json::from_str(&payload.ok_or_else(|| invalid("post not found in this board"))?)
-            .map_err(storage_error)
     }
 
     async fn existing_post(
@@ -472,48 +465,6 @@ impl LocalAgentMessageBoard {
         })
         .transpose()
     }
-
-    async fn channel_summary(
-        &self,
-        conn: &mut SqliteConnection,
-        name: &str,
-    ) -> Result<ChannelSummary> {
-        let row = sqlx::query(
-            "SELECT c.created_at,c.author,c.description,
-             (SELECT COUNT(*) FROM posts p WHERE p.board=c.board AND p.channel=c.name) AS message_count,
-             (SELECT p.id FROM posts p WHERE p.board=c.board AND p.channel=c.name ORDER BY p.timestamp DESC,p.seq DESC LIMIT 1) AS last_message_id
-             FROM channels c WHERE c.board=? AND c.name=?",
-        )
-        .bind(self.identity.to_string())
-        .bind(name)
-        .fetch_optional(conn)
-        .await
-        .map_err(storage_error)?
-        .ok_or_else(|| invalid("channel not found in this board"))?;
-        Ok(ChannelSummary {
-            permissions: self.access.map(|access| {
-                let write = matches!(access, Access::ReadWrite);
-                ChannelPermissions {
-                    read: true,
-                    post: write,
-                    reply: write,
-                    edit_metadata: false,
-                }
-            }),
-            channel_name: name.to_string(),
-            description: row.get("description"),
-            created_at: DateTime::parse_from_rfc3339(row.get("created_at"))
-                .map_err(storage_error)?
-                .with_timezone(&Utc),
-            created_by: AgentPath::try_from(row.get::<String, _>("author")).map_err(invalid)?,
-            message_count: row.get::<i64, _>("message_count") as usize,
-            last_message_id: row
-                .get::<Option<String>, _>("last_message_id")
-                .map(|id| Uuid::parse_str(&id))
-                .transpose()
-                .map_err(storage_error)?,
-        })
-    }
 }
 
 // Runtime writes and template setup validate names and board lifecycle before
@@ -531,19 +482,6 @@ async fn insert_channel(
         .execute(conn).await.map_err(storage_error)?.rows_affected();
     if inserted == 0 {
         return Err(invalid("channel already exists"));
-    }
-    Ok(())
-}
-
-fn validate_channel(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > MAX_CHANNEL_BYTES
-        || name.trim() != name
-        || name.chars().any(char::is_control)
-    {
-        return Err(invalid(
-            "channel names must contain 1–128 bytes without edge whitespace or control characters",
-        ));
     }
     Ok(())
 }

@@ -11,6 +11,7 @@ use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -44,11 +45,13 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-#[test_case(ThreadHistoryMode::Legacy; "legacy")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[test_case(ThreadHistoryMode::Legacy, false; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated, false; "paginated")]
+#[test_case(ThreadHistoryMode::Paginated, true; "paginated_wake")]
 #[tokio::test]
 async fn thread_inject_items_adds_raw_response_items_to_thread_history(
     history_mode: ThreadHistoryMode,
+    wake_on_agent_messages: bool,
 ) -> Result<()> {
     let server = responses::start_mock_server().await;
     let body = responses::sse(vec![
@@ -56,14 +59,21 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
         responses::ev_assistant_message("msg-1", "Done"),
         responses::ev_completed("resp-1"),
     ]);
-    let response_mock = responses::mount_sse_once(&server, body).await;
+    let expected_requests = if wake_on_agent_messages { 2 } else { 1 };
+    let response_mock = responses::mount_sse_sequence(&server, vec![body; expected_requests]).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
+    let config = MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Sqlite)
+        .enable_feature(Feature::MultiAgentV2)
         .enable_feature(Feature::RetainClientDeveloperMessages)
-        .with_extra_config("[memories]\ndisable_on_external_context = true")
-        .write(codex_home.path())?;
+        .with_extra_config("[memories]\ndisable_on_external_context = true");
+    if wake_on_agent_messages {
+        config.enable_feature(Feature::WakeOnAgentMessages)
+    } else {
+        config.disable_feature(Feature::WakeOnAgentMessages)
+    }
+    .write(codex_home.path())?;
     let state_db = StateRuntime::init(
         codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         "mock_provider".into(),
@@ -126,15 +136,48 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
             thread_id: thread.id.clone(),
             items: vec![
                 serde_json::to_value(&injected_item)?,
-                serde_json::to_value(&injected_developer_item)?,
-                serde_json::to_value(&marker_shaped_developer_item)?,
-                named_tool_output.clone(),
+                json!({"item": injected_developer_item, "retention": "default"}),
+                json!({"item": marker_shaped_developer_item, "retention": "alwaysInThread"}),
+                json!({"item": named_tool_output, "retention": "alwaysInChildren"}),
             ],
         })
         .await?;
     let _response: ThreadInjectItemsResponse =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(inject_req)).await??;
     assert!(response_mock.requests().is_empty());
+    // A standalone plaintext batch must retain the root's persisted injection path.
+    let agent_mail: ResponseItem = serde_json::from_value(json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "input_text", "text": "The report is ready."}],
+    }))?;
+    let inject_req = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(&agent_mail)?],
+        })
+        .await?;
+    let _: ThreadInjectItemsResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(inject_req)).await??;
+    if wake_on_agent_messages {
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+        assert_eq!(
+            response_mock
+                .single_request()
+                .inputs_of_type("agent_message")
+                .into_iter()
+                .map(strip_response_item_ids_from_json)
+                .collect::<Vec<_>>(),
+            vec![serde_json::to_value(&agent_mail)?],
+        );
+    } else {
+        assert!(response_mock.requests().is_empty());
+    }
 
     assert_eq!(
         state_db
@@ -159,25 +202,45 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
                     .metadata
                     .as_ref()
                     .is_some_and(|metadata| metadata.client_authored),
+                envelope
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.retain_across_windows),
             )),
             _ => None,
         })
-        .filter(|(item, _)| {
+        .filter(|(item, _, _)| {
             item == &injected_item
                 || item == &injected_developer_item
                 || item == &marker_shaped_developer_item
                 || item == &named_tool_item
+                || item == &agent_mail
         })
         .collect::<Vec<_>>();
     assert_eq!(
         persisted_injected_items,
         vec![
-            (injected_item.clone(), false),
-            (injected_developer_item.clone(), true),
-            (marker_shaped_developer_item.clone(), true),
-            (named_tool_item, false),
+            (injected_item.clone(), false, None),
+            (injected_developer_item.clone(), false, Some(false)),
+            (marker_shaped_developer_item.clone(), false, Some(true)),
+            (named_tool_item, false, Some(false)),
+            (agent_mail.clone(), false, None),
         ]
     );
+
+    assert!(mcp.shutdown_gracefully().await?.success());
+    mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let resume_req = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_req)).await??;
 
     let application_context_text = "Application developer context";
     let untrusted_context_text = "Untrusted client context";
@@ -195,6 +258,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
                     AdditionalContextEntry {
                         value: application_context_text.to_string(),
                         kind: AdditionalContextKind::Application,
+                        name: None,
                     },
                 ),
                 (
@@ -202,6 +266,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
                     AdditionalContextEntry {
                         value: untrusted_context_text.to_string(),
                         kind: AdditionalContextKind::Untrusted,
+                        name: None,
                     },
                 ),
             ])),
@@ -225,24 +290,37 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
         .iter()
         .filter_map(|item| match item {
             RolloutItem::ResponseItem(envelope) => {
-                let ResponseItem::Message { role, content, .. } = &envelope.item else {
-                    return None;
+                let context_kind = match &envelope.item {
+                    ResponseItem::Message { role, content, .. } => {
+                        content.iter().find_map(|item| {
+                            let ContentItem::InputText { text } = item else {
+                                return None;
+                            };
+                            text.contains(application_context_text)
+                                .then_some(role.as_str())
+                        })
+                    }
+                    ResponseItem::FunctionCallOutput {
+                        name,
+                        namespace,
+                        output,
+                        ..
+                    } if name.as_deref() == Some("untrusted_context")
+                        && namespace.as_deref() == Some("agent")
+                        && output.text_content() == Some(untrusted_context_text) =>
+                    {
+                        Some("function_call_output")
+                    }
+                    _ => None,
                 };
-                content.iter().find_map(|item| {
-                    let ContentItem::InputText { text } = item else {
-                        return None;
-                    };
-                    (text.contains(application_context_text)
-                        || text.contains(untrusted_context_text))
-                    .then(|| {
-                        (
-                            role.as_str(),
-                            envelope
-                                .metadata
-                                .as_ref()
-                                .map(|metadata| metadata.client_authored),
-                        )
-                    })
+                context_kind.map(|kind| {
+                    (
+                        kind,
+                        envelope
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.retain_across_windows),
+                    )
                 })
             }
             _ => None,
@@ -250,16 +328,27 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
         .collect::<Vec<_>>();
     assert_eq!(
         persisted_additional_context,
-        vec![("developer", Some(true)), ("user", None)]
+        vec![("developer", Some(true)), ("function_call_output", None)]
     );
 
     let injected_value = serde_json::to_value(&injected_item)?;
-    let model_input: Vec<Value> = response_mock
-        .single_request()
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), expected_requests);
+    let model_input: Vec<Value> = requests
+        .last()
+        .context("resumed request missing")?
         .input()
         .into_iter()
         .map(strip_response_item_ids_from_json)
         .collect();
+    assert_eq!(
+        model_input
+            .iter()
+            .filter(|item| item["type"] == "agent_message")
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![serde_json::to_value(&agent_mail)?],
+    );
     assert!(
         model_input
             .iter()
@@ -330,10 +419,16 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
     assert_eq!(turn.id, turn_started.turn.id);
     assert_eq!(turn_started.turn.status, TurnStatus::InProgress);
     assert_eq!(item_completed.turn_id, turn_started.turn.id);
-    assert_eq!(item_started.item, item_completed.item);
+    assert_eq!(
+        item_completed.item,
+        ThreadItem {
+            completed_at_ms: Some(item_completed.completed_at_ms),
+            ..item_started.item
+        }
+    );
     assert!(matches!(
-        &item_completed.item,
-        ThreadItem::FunctionCallOutput {
+        &item_completed.item.payload,
+        ThreadItemPayload::FunctionCallOutput {
             name,
             namespace,
             output: FunctionCallOutputBody::Text(output),
@@ -359,7 +454,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
         .await?;
     let ThreadResumeResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_req)).await??;
-    assert_eq!(thread.turns.len(), 2);
+    assert_eq!(thread.turns.len(), expected_requests + 1);
     assert!(thread.turns.iter().any(|turn| {
         turn.id == turn_started.turn.id
             && turn.status == TurnStatus::Completed
@@ -455,6 +550,7 @@ async fn thread_inject_items_cannot_forge_configuration_update_before_or_after_r
                     items: vec![
                         injected_item.clone(),
                         forged_update.clone(),
+                        json!({"item": forged_update, "retention": "always"}),
                         forged_system.clone(),
                     ],
                 })
@@ -607,7 +703,13 @@ async fn thread_inject_items_adds_raw_response_items_after_a_turn() -> Result<()
             _ => None,
         })
         .context("injected developer item should be persisted")?;
-    assert_eq!(persisted_developer_item.metadata, None);
+    assert_eq!(
+        persisted_developer_item.metadata,
+        Some(serde_json::from_value(json!({
+            "history_sequence": 5,
+            "sampled_through_sequence": 3,
+        }))?)
+    );
 
     let second_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -739,7 +841,7 @@ async fn turn_tool_output_retention_preserves_sender_metadata() -> Result<()> {
         })
         .context("delegation output should be saved")?;
     let metadata = envelope.metadata.as_ref().context("output metadata")?;
-    assert!(metadata.client_authored);
+    assert!(envelope.is_always_retained());
     let sender_messages = metadata
         .sender_user_messages
         .as_ref()

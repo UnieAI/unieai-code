@@ -12,6 +12,7 @@ use crate::ReviewRequest;
 use codex_analytics::GuardianReviewAnalyticsResult;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::SynchronousApprovalReviewer;
+use codex_guardian_context::CachedApprovalContext;
 use codex_protocol::approvals::GuardianReviewReason;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -42,6 +43,7 @@ pub trait ReviewHost: Clone + Send + Sync + 'static {
     fn servicing_turn(&self) -> impl Future<Output = Option<(String, Arc<ModelInfo>)>> + Send;
     /// Returns the owning turn and optional target item after validating the action.
     fn validate_action(&self) -> Result<(&str, Option<&str>), ReviewDecision>;
+    /// Prepares evidence and accounting, with a client event only for supported actions.
     fn prepare(
         &self,
         approval_id: &str,
@@ -62,11 +64,11 @@ pub trait ReviewHost: Clone + Send + Sync + 'static {
             Option<Self::Evidence>,
         ),
     > + Send;
-    /// Revalidates the original action and history lifetime before using cached approval.
-    fn cached_approval_is_current(
+    /// Returns current evidence only while the original action and history remain valid.
+    fn cached_approval_context(
         &self,
         prepared: &Self::Prepared,
-    ) -> impl Future<Output = bool> + Send;
+    ) -> impl Future<Output = Option<CachedApprovalContext>> + Send;
     fn emit(&self, event: EventMsg) -> impl Future<Output = ()> + Send;
     fn record_evidence(
         &self,
@@ -96,7 +98,7 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
     fn review<'a>(
         &'a self,
         reason: GuardianReviewReason,
-        async_approval: Option<ExtensionFuture<'a, ()>>,
+        async_approval: Option<ExtensionFuture<'a, CachedApprovalContext>>,
     ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
         Box::pin(async move {
             if async_approval.is_none() {
@@ -106,18 +108,23 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                     &[("route", "required_sync"), ("reason", reason.into())],
                 );
             }
-            let deadline = ReviewDeadline::from_timeout(self.timeout);
+            let host_deadline = self.host_deadline;
+            let deadline =
+                host_deadline.unwrap_or_else(|| ReviewDeadline::from_timeout(self.timeout));
             let (prepared, report) = match self
                 .host
                 .prepare(self.approval_id, reason, deadline, &self.cancellation)
                 .await
             {
                 Ok(prepared) => prepared,
+                Err(_) if host_deadline.is_some_and(ReviewDeadline::is_elapsed) => {
+                    return Some(ReviewDecision::TimedOut);
+                }
                 Err(decision) => return Some(decision),
             };
-            self.host
-                .emit(EventMsg::GuardianAssessment(report.started_event()))
-                .await;
+            if let Some(event) = report.started_event() {
+                self.host.emit(EventMsg::GuardianAssessment(event)).await;
+            }
             let prepared = Arc::new(prepared);
             let cancellation = self.cancellation.child_token();
             let attempts = Arc::new(AtomicI64::new(/*v*/ 0));
@@ -137,7 +144,12 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                         Some(&telemetry),
                         |deadline| {
                             attempts.fetch_add(/*val*/ 1, Ordering::Relaxed);
-                            host.attempt(&prepared, deadline, &cancellation)
+                            // A cached approval can cancel and move the attempt to a cleanup task.
+                            crate::with_root_evidence_limits(
+                                host_deadline,
+                                &cancellation,
+                                host.attempt(&prepared, deadline, &cancellation),
+                            )
                         },
                     )
                     .await
@@ -147,7 +159,7 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                 tokio::select! {
                     biased;
                     result = &mut review => result,
-                    () = async_approval => {
+                    scored = async_approval => {
                         cancellation.cancel();
                         let analytics = if let Some(runtime) = self.thread_store.get::<crate::ReviewerTasks>() {
                             // Keep driving the same attempt: its pool reservation stays held
@@ -163,7 +175,7 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                             let (_, analytics, _) = review.await;
                             analytics
                         };
-                        let outcome = if !self.host.cached_approval_is_current(&prepared).await
+                        let outcome = if self.host.cached_approval_context(&prepared).await != Some(scored)
                             || self.cancellation.is_cancelled() {
                             GuardianReviewOutcome::Error(GuardianReviewError::Cancelled)
                         } else if deadline.is_elapsed() {
@@ -177,6 +189,17 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
             } else {
                 review.await
             };
+            // A timed-out second sample can still return the first denial.
+            let denied = matches!(&outcome, GuardianReviewOutcome::Completed(assessment)
+                if assessment.outcome == GuardianAssessmentOutcome::Deny);
+            // Provider reads stopped during prompt building or validation lose the stop reason.
+            let outcome = if host_deadline.is_some() && self.cancellation.is_cancelled() {
+                GuardianReviewOutcome::Error(GuardianReviewError::Cancelled)
+            } else if !denied && host_deadline.is_some_and(ReviewDeadline::is_elapsed) {
+                GuardianReviewOutcome::Error(GuardianReviewError::Timeout)
+            } else {
+                outcome
+            };
             let completed_at_ms = codex_analytics::now_unix_millis();
             let cached_approval = matches!(outcome, GuardianReviewOutcome::CachedApproval);
             let (completed, elapsed) = report.complete(
@@ -186,9 +209,32 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                 analytics,
                 completed_at_ms.try_into().unwrap_or_default(),
             );
-            if self.log_assessments && !cached_approval {
+            tracing::event!(
+                target: "codex_otel.log_only",
+                tracing::Level::INFO,
+                event.name = "codex.guardian_probe_comparison",
+                stage = "sync_guardian",
+                thread_id = %self.thread_id,
+                turn_id = self.turn_id,
+                call_id = self.tool_call_id,
+                review_id = self.approval_id,
+                model = self.sampling_model,
+                guardian_context_mode = completed.analytics.guardian_context_mode.unwrap_or("not_reported"),
+                sync_outcome = if cached_approval { "async_approval" } else if completed.assessment_outcome.is_some() { "completed" } else { "failure" },
+                sync_decision = match completed.assessment_outcome {
+                    Some(GuardianAssessmentOutcome::Allow) => "allow",
+                    Some(GuardianAssessmentOutcome::Deny) => "deny",
+                    None => "not_reported",
+                },
+                failure_reason = ?completed.analytics.failure_reason,
+                "Guardian probe comparison"
+            );
+            if self.log_assessments
+                && !cached_approval
+                && let Some(event) = &completed.event
+            {
                 self.telemetry
-                    .guardian_assessment(&completed.event, completed.assessment_outcome);
+                    .guardian_assessment(event, completed.assessment_outcome);
             }
             report.track(
                 self.telemetry,
@@ -204,14 +250,13 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
             }
             if completed.assessment_outcome.is_some()
                 && let Some(evidence) = evidence
+                && let Some(event) = &completed.event
             {
-                self.host
-                    .record_evidence(&prepared, evidence, &completed.event)
-                    .await;
+                self.host.record_evidence(&prepared, evidence, event).await;
             }
-            self.host
-                .emit(EventMsg::GuardianAssessment(completed.event))
-                .await;
+            if let Some(event) = completed.event {
+                self.host.emit(EventMsg::GuardianAssessment(event)).await;
+            }
             if cached_approval {
                 return Some(self.cached_approval().await);
             }

@@ -74,7 +74,7 @@ impl ToolOutput for ListPeersOutput {
         tool_output_response_item(call_id, payload, self, Some(true), "list_peers")
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> codex_code_mode::CodeModeToolResult {
         tool_output_code_mode_result(self, "list_peers")
     }
 }

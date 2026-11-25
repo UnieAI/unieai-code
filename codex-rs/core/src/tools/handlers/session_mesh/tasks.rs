@@ -146,7 +146,7 @@ impl<T: serde::Serialize + Send + Sync> ToolOutput for TaskOutput<T> {
         )
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> codex_code_mode::CodeModeToolResult {
         tool_output_code_mode_result(&self.result, self.name)
     }
 }

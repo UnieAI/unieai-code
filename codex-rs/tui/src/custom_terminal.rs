@@ -23,8 +23,12 @@
 // SOFTWARE.
 use std::io;
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crossterm::cursor::MoveTo;
+use crossterm::cursor::RestorePosition;
+use crossterm::cursor::SavePosition;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::queue;
 use crossterm::style::Colored;
@@ -51,11 +55,14 @@ use ratatui::widgets::WidgetRef;
 
 mod cursor;
 
+// Panic and handoff cleanup cannot access the Terminal. Only the stdout TUI sets this flag.
+pub(crate) static STDOUT_CURSOR_STYLED: AtomicBool = AtomicBool::new(false);
+
 #[cfg(test)]
 #[path = "custom_terminal_test_support.rs"]
 pub(crate) mod test_support;
 
-fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
+pub(crate) fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
     let content = symbol.strip_prefix("\x1b]8;;")?;
     let destination_end = content.find('\x07')?;
     let destination = &content[..destination_end];
@@ -82,8 +89,8 @@ pub struct Frame<'a> {
     /// The buffer that is used to draw the current frame
     pub(crate) buffer: &'a mut Buffer,
 
-    /// Fullscreen graphics to send after text, before the synchronized frame is committed.
-    pub(crate) transcript_images: Vec<crate::transcript_image::ImagePlacement>,
+    /// Frame graphics to send after text, before the synchronized frame is committed.
+    pub(crate) image_placements: Vec<crate::transcript_image::ImagePlacement>,
 }
 
 impl Frame<'_> {
@@ -139,6 +146,7 @@ where
 {
     /// The backend used to interface with the terminal
     backend: B,
+    pub(crate) virtual_image_base: Option<u32>,
     /// Holds the results of the current and previous draw calls. The two are compared at the end
     /// of each draw pass to output the necessary updates to the terminal
     buffers: [Buffer; 2],
@@ -148,6 +156,9 @@ where
     pub hidden_cursor: bool,
     /// Last cursor style sent successfully, so ordinary redraws do not repaint its repair anchor.
     last_cursor_style: Option<SetCursorStyle>,
+    /// Once we set a shape, keep the existing reset behavior even across cache invalidation.
+    cursor_style_changed: bool,
+    pub(crate) tracks_stdout_cursor: bool,
     /// Area of the viewport
     pub viewport_area: Rect,
     /// Last known size of the terminal. Used to detect if the internal buffers have to be resized.
@@ -166,17 +177,21 @@ where
     B: Backend<Error = io::Error>,
     B: Write,
 {
-    #[allow(clippy::print_stderr)]
     fn drop(&mut self) {
         // Attempt to restore the cursor state
-        if let Err(err) = self.reset_cursor_style() {
-            eprintln!("Failed to reset the cursor style: {err}");
+        if self.cursor_style_changed
+            && let Err(err) = self.reset_cursor_style()
+        {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "Failed to reset the cursor style: {err}"
+            );
         }
 
         if self.hidden_cursor
             && let Err(err) = self.show_cursor()
         {
-            eprintln!("Failed to show the cursor: {err}");
+            let _ = writeln!(io::stderr().lock(), "Failed to show the cursor: {err}");
         }
     }
 }
@@ -224,10 +239,13 @@ where
     ) -> Self {
         Self {
             backend,
+            virtual_image_base: None,
             buffers: [Buffer::empty(Rect::ZERO), Buffer::empty(Rect::ZERO)],
             current: 0,
             hidden_cursor: false,
             last_cursor_style: None,
+            cursor_style_changed: false,
+            tracks_stdout_cursor: false,
             viewport_area: Rect::new(
                 /*x*/ 0,
                 cursor_pos.y,
@@ -257,7 +275,7 @@ where
     /// Get a Frame object which provides a consistent view into the terminal state for rendering.
     pub fn get_frame(&mut self) -> Frame<'_> {
         Frame {
-            transcript_images: Vec::new(),
+            image_placements: Vec::new(),
             cursor_position: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
             viewport_area: self.viewport_area,
@@ -353,6 +371,28 @@ where
         self.draw_with_size(screen_size, &mut Vec::new(), render_callback)
     }
 
+    /// Remove graphics on the screen that owns them before switching buffers or yielding the terminal.
+    pub(crate) fn clear_frame_images(
+        &mut self,
+        images: &mut Vec<crate::transcript_image::ImagePlacement>,
+    ) -> io::Result<()> {
+        if images.is_empty() {
+            return Ok(());
+        }
+        let text = self.previous_buffer().clone();
+        let cursor = (!self.hidden_cursor).then_some(self.last_known_cursor_pos);
+        let style = self
+            .last_cursor_style
+            .unwrap_or(SetCursorStyle::DefaultUserShape);
+        self.draw_with_size(self.last_known_screen_size, images, |frame| {
+            *frame.buffer = text;
+            if let Some(cursor) = cursor {
+                frame.set_cursor_position(cursor);
+                frame.set_cursor_style(style);
+            }
+        })
+    }
+
     /// Draws a single frame using a screen size already obtained by the caller.
     pub(crate) fn draw_with_size<F>(
         &mut self,
@@ -375,58 +415,129 @@ where
         // Buffer. Thus, we're taking the important data out of the Frame and dropping it.
         let cursor_position = frame.cursor_position;
         let cursor_style = frame.cursor_style;
-        let images = std::mem::take(&mut frame.transcript_images);
-        let changed = *retained_images != images;
-        if changed {
-            // Remove old graphics before text painting, including when switching to overlays.
-            for (index, placement) in retained_images.iter().enumerate() {
-                match placement.image.protocol {
-                    crate::pets::ImageProtocol::Kitty
-                    | crate::pets::ImageProtocol::KittyLocalFile => {
-                        let id = crate::transcript_image::FIRST_IMAGE_ID + index as u32;
-                        self.backend
-                            .write_all(crate::pets::kitty_delete_image(id).as_bytes())?;
-                    }
-                    crate::pets::ImageProtocol::Sixel => self.invalidate_viewport(),
+        let mut images = std::mem::take(&mut frame.image_placements);
+        let first_id = if let Some(base) = self.virtual_image_base {
+            images.truncate(254); // The last two pane IDs belong to the pet and picker.
+            base
+        } else {
+            crate::transcript_image::FIRST_IMAGE_ID
+        };
+        let virtual_placements = self.virtual_image_base.is_some();
+        // Virtual placements retain placeholder cells, so keep their existing positional IDs and redraw
+        // behavior. Native Kitty can keep the same ID and pixels as other images change.
+        if !virtual_placements || *retained_images == images {
+            for image in &mut images {
+                if let Some(index) = retained_images.iter().position(|old| old == image) {
+                    *image = retained_images.swap_remove(index);
+                }
+            }
+        } else if !retained_images.is_empty() {
+            self.invalidate_viewport();
+        }
+        let mut moved = Vec::new();
+        if !virtual_placements && crate::terminal_capabilities::images::retains_image_data() {
+            for (index, image) in images.iter_mut().enumerate() {
+                if image.terminal_id.is_none()
+                    && image.image.protocol != crate::pets::ImageProtocol::Sixel
+                    && let Some(previous) = retained_images.iter().position(|old| {
+                        std::sync::Arc::ptr_eq(&old.image, &image.image)
+                            && old.first_row == image.first_row
+                            && old.area.as_size() == image.area.as_size()
+                    })
+                {
+                    let mut old = retained_images.swap_remove(previous);
+                    old.area = image.area;
+                    *image = old;
+                    moved.push(index);
                 }
             }
         }
+        for old in retained_images.drain(..) {
+            match old.image.protocol {
+                crate::pets::ImageProtocol::Kitty | crate::pets::ImageProtocol::KittyLocalFile => {
+                    if let Some(id) = old.terminal_id {
+                        self.backend
+                            .write_all(crate::pets::kitty_delete_image(id).as_bytes())?;
+                    }
+                }
+                crate::pets::ImageProtocol::Sixel => self.invalidate_viewport(),
+            }
+        }
 
-        // Not every terminal or multiplexer hides intermediate cursor moves inside a
-        // synchronized update, especially when the frame spans multiple writes.
+        // A text clear, focus highlight, or full repaint can erase an otherwise stable image.
         let updates = diff_buffers(self.previous_buffer(), self.current_buffer());
-        // A text clear, focus highlight, or full repaint may erase an otherwise stable image.
-        let repaint_images = changed
-            || updates.iter().any(|update| {
-                images.iter().any(|placement| match update {
-                    DrawCommand::Put { x, y, .. } => placement.area.contains((*x, *y).into()),
+        let mut redraw = Vec::new();
+        let mut next_id = first_id;
+        for index in 0..images.len() {
+            let image = &images[index];
+            if image.terminal_id.is_none() {
+                while images
+                    .iter()
+                    .any(|other| other.terminal_id == Some(next_id))
+                {
+                    next_id += 1;
+                }
+                images[index].terminal_id = Some(next_id);
+                redraw.push(index);
+                next_id += 1;
+            } else if !moved.contains(&index)
+                && updates.iter().any(|update| match update {
+                    DrawCommand::Put { x, y, .. } => image.area.contains((*x, *y).into()),
                     DrawCommand::ClearToEnd { x, y, .. } => {
-                        *y >= placement.area.y
-                            && *y < placement.area.bottom()
-                            && *x < placement.area.right()
+                        (image.area.y..image.area.bottom()).contains(y) && *x < image.area.right()
                     }
                 })
-            });
+            {
+                redraw.push(index);
+            }
+        }
         if !updates.is_empty() && !self.hidden_cursor {
             self.hide_cursor()?;
         }
         self.flush_updates(updates)?;
-        if repaint_images {
-            *retained_images = images;
-            for (index, placement) in retained_images.iter_mut().enumerate() {
-                let id = crate::transcript_image::FIRST_IMAGE_ID + index as u32;
-                placement.file = placement
-                    .image
-                    .draw(&mut self.backend, placement.area, placement.first_row, id)
-                    .map_err(io::Error::other)?;
-            }
+        *retained_images = images;
+        for index in moved {
+            let image = &retained_images[index];
+            let id = image
+                .terminal_id
+                .ok_or_else(|| io::Error::other("missing terminal ID for image"))?;
+            queue!(
+                self.backend,
+                SavePosition,
+                MoveTo(image.area.x, image.area.y)
+            )?;
+            self.backend
+                .write_all(crate::pets::kitty_move_image(id, image.area).as_bytes())?;
+            queue!(self.backend, RestorePosition)?;
+        }
+        for index in redraw {
+            let placement = &mut retained_images[index];
+            let id = placement
+                .terminal_id
+                .ok_or_else(|| io::Error::other("missing terminal ID for placement"))?;
+            let kitty_placement = if virtual_placements {
+                crate::pets::KittyPlacement::Virtual(id)
+            } else {
+                crate::pets::KittyPlacement::Cursor(id)
+            };
+            placement.file = placement
+                .image
+                .draw(
+                    &mut self.backend,
+                    placement.area,
+                    placement.first_row,
+                    kitty_placement,
+                )
+                .map_err(io::Error::other)?;
         }
 
         match cursor_position {
             None if !self.hidden_cursor => self.hide_cursor()?,
             None => {}
             Some(position) => {
-                self.set_cursor_style_with_repair(cursor_style)?;
+                if self.cursor_style_changed || cursor_style != SetCursorStyle::DefaultUserShape {
+                    self.set_cursor_style_with_repair(cursor_style)?;
+                }
                 self.set_cursor_position(position)?;
                 self.show_cursor()?;
             }
@@ -455,7 +566,17 @@ where
 
     /// Sets the visible terminal cursor style.
     pub fn set_cursor_style(&mut self, style: SetCursorStyle) -> io::Result<()> {
+        let first_override =
+            !self.cursor_style_changed && style != SetCursorStyle::DefaultUserShape;
+        // Publish the first override under the same stdout lock as panic cleanup.
+        let _lock = (first_override && self.tracks_stdout_cursor).then(|| io::stdout().lock());
         queue!(self.backend, style)?;
+        if first_override {
+            self.cursor_style_changed = true;
+            if self.tracks_stdout_cursor {
+                STDOUT_CURSOR_STYLED.store(true, Ordering::Relaxed);
+            }
+        }
         self.last_cursor_style = Some(style);
         Ok(())
     }
@@ -496,6 +617,18 @@ where
         // Reset the back buffer to make sure the next update will redraw everything.
         self.invalidate_viewport();
         Ok(())
+    }
+
+    // The pet draws after the text frame. Mark its placeholder cells so the next diff
+    // restores the underlying text when the sprite moves or disappears.
+    pub(crate) fn mark_pet_placeholders(&mut self, request: Option<&crate::pets::AmbientPetDraw>) {
+        if self.virtual_image_base.is_some()
+            && let Some(sprite) = request
+        {
+            for pos in sprite.area().intersection(self.viewport_area).positions() {
+                self.previous_buffer_mut()[pos].set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+        }
     }
 
     /// Force the next draw pass to repaint the entire viewport after raw terminal
@@ -785,20 +918,18 @@ impl ModifierDiff {
         if removed.contains(Modifier::REVERSED) {
             queue!(w, SetAttribute(CAttribute::NoReverse))?;
         }
-        if removed.contains(Modifier::BOLD) {
+        let intensity = Modifier::BOLD | Modifier::DIM;
+        let mut added = self.to - self.from;
+        if removed.intersects(intensity) {
+            // SGR 22 clears both intensities, including one the next cell may retain.
             queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
-            if self.to.contains(Modifier::DIM) {
-                queue!(w, SetAttribute(CAttribute::Dim))?;
-            }
+            added |= self.to & intensity;
         }
         if removed.contains(Modifier::ITALIC) {
             queue!(w, SetAttribute(CAttribute::NoItalic))?;
         }
         if removed.contains(Modifier::UNDERLINED) {
             queue!(w, SetAttribute(CAttribute::NoUnderline))?;
-        }
-        if removed.contains(Modifier::DIM) {
-            queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
         }
         if removed.contains(Modifier::CROSSED_OUT) {
             queue!(w, SetAttribute(CAttribute::NotCrossedOut))?;
@@ -807,7 +938,6 @@ impl ModifierDiff {
             queue!(w, SetAttribute(CAttribute::NoBlink))?;
         }
 
-        let added = self.to - self.from;
         if added.contains(Modifier::REVERSED) {
             queue!(w, SetAttribute(CAttribute::Reverse))?;
         }
@@ -899,16 +1029,23 @@ mod tests {
         image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 110, 200, 255]))
             .save(&path)
             .unwrap();
-        for protocol in [
-            crate::pets::ImageProtocol::Kitty,
-            crate::pets::ImageProtocol::KittyLocalFile,
+        for (protocol, tmux_base) in [
+            (crate::pets::ImageProtocol::Kitty, None),
+            (crate::pets::ImageProtocol::KittyLocalFile, None),
+            (crate::pets::ImageProtocol::Kitty, Some(0x80_0100)),
         ] {
             let image = std::sync::Arc::new(
-                crate::transcript_image::TranscriptImage::load(&path, /*width*/ 40, protocol)
-                    .unwrap(),
+                crate::transcript_image::TranscriptImage::load(
+                    &path,
+                    /*width*/ 40,
+                    protocol,
+                    crate::transcript_image::PreviewKind::Inspected,
+                )
+                .unwrap(),
             );
             let mut terminal =
                 Terminal::with_options(CaptureBackend::new(/*width*/ 40, /*height*/ 12)).unwrap();
+            terminal.virtual_image_base = tmux_base;
             let size = terminal.last_known_screen_size;
             terminal.set_viewport_area(Rect::new(
                 /*x*/ 0,
@@ -931,7 +1068,7 @@ mod tests {
                             frame.buffer_mut(),
                         );
                         frame
-                            .transcript_images
+                            .image_placements
                             .push(crate::transcript_image::ImagePlacement {
                                 image: std::sync::Arc::clone(&image),
                                 area: Rect::new(
@@ -942,6 +1079,7 @@ mod tests {
                                 ),
                                 first_row: 0,
                                 file: None,
+                                terminal_id: None,
                             });
                     })
                     .unwrap();
@@ -949,6 +1087,15 @@ mod tests {
             let output = terminal.backend().output();
             assert_eq!(output.matches("_Ga=T").count(), 2);
             assert_eq!(output.matches("_Ga=d").count(), 0);
+            if tmux_base.is_some() {
+                assert!(output.contains("i=8388864,U=1"));
+                let (_, grid) = output.split_once("\x1b[38;2;128;1;0m").unwrap();
+                let (grid, _) = grid.split_once("\x1b[39m").unwrap();
+                insta::assert_snapshot!(
+                    "fullscreen_tmux_image_cells",
+                    grid.replace('\x1b', "\nESC").trim()
+                );
+            }
             if protocol == crate::pets::ImageProtocol::KittyLocalFile {
                 assert!(output.contains("t=f") && output.contains("C=1"));
                 assert!(retained[0].file.as_ref().unwrap().path().exists());
@@ -961,6 +1108,75 @@ mod tests {
             assert_eq!(terminal.backend().output().matches("_Ga=d").count(), 1);
             assert!(retained.is_empty());
         }
+    }
+
+    #[test]
+    fn native_kitty_moves_an_image_without_resending_other_visible_images() {
+        use crate::pets::ImageProtocol;
+        use crate::transcript_image::ImagePlacement;
+        use crate::transcript_image::TranscriptImage;
+        use std::sync::Arc;
+
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 40, /*height*/ 12)).unwrap();
+        let size = terminal.last_known_screen_size;
+        terminal.set_viewport_area(size.into());
+        let raster = Arc::new(TranscriptImage {
+            protocol: ImageProtocol::Kitty,
+            columns: 2,
+            rows: 2,
+            pixels: image::RgbaImage::from_pixel(16, 32, image::Rgba([10, 110, 200, 255])),
+            cell_width: 8,
+            cell_height: 16,
+        });
+        let fixed = ImagePlacement {
+            image: Arc::clone(&raster),
+            area: Rect::new(
+                /*x*/ 2, /*y*/ 2, /*width*/ 2, /*height*/ 2,
+            ),
+            first_row: 0,
+            file: None,
+            terminal_id: None,
+        };
+        let mut moving = fixed.registration();
+        moving.area.x = 16;
+        let mut retained = Vec::new();
+        terminal
+            .draw_with_size(size, &mut retained, |frame| {
+                frame
+                    .image_placements
+                    .extend([fixed.registration(), moving.registration()]);
+            })
+            .unwrap();
+        let original_ids: Vec<_> = retained.iter().map(|image| image.terminal_id).collect();
+        assert_eq!(terminal.backend().output().matches("_Ga=T").count(), 2);
+
+        moving.area.x += 2;
+        terminal
+            .draw_with_size(size, &mut retained, |frame| {
+                frame
+                    .image_placements
+                    .extend([fixed.registration(), moving.registration()]);
+            })
+            .unwrap();
+        let output = terminal.backend().output();
+        assert_eq!(output.matches("_Ga=T").count(), 2);
+        assert_eq!(output.matches("_Ga=p").count(), 1);
+        assert_eq!(
+            retained
+                .iter()
+                .map(|image| image.terminal_id)
+                .collect::<Vec<_>>(),
+            original_ids
+        );
+
+        terminal
+            .draw_with_size(size, &mut retained, |frame| {
+                frame.image_placements.push(moving.registration());
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().output().matches("_Ga=T").count(), 2);
+        assert_eq!(retained[0].terminal_id, original_ids[1]);
     }
 
     impl Backend for CaptureBackend {

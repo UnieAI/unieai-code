@@ -1,7 +1,8 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-use app_test_support::DISABLE_PLUGIN_STARTUP_TASKS_ARG;
+use app_test_support::DEFAULT_APP_SERVER_TEST_ARGS;
+use app_test_support::MockResponsesConfig;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use base64::Engine;
@@ -14,21 +15,29 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::MESSAGE_BOARD_CLIENT_NAME;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_core::config::set_project_trust_level;
+use codex_features::Feature;
 use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpResponse;
 use codex_protocol::config_types::TrustLevel;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call_with_namespace;
+use core_test_support::responses::sse;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_streaming_sse_server;
 use futures::SinkExt;
 use futures::StreamExt;
 use hmac::Hmac;
 use hmac::Mac;
 use http::StatusCode;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use sha2::Sha256;
 use std::net::SocketAddr;
@@ -450,6 +459,66 @@ async fn websocket_transport_rejects_unauthenticated_non_loopback_startup() -> R
 }
 
 #[tokio::test]
+async fn websocket_disconnect_cancels_guardian_review_and_releases_thread() -> Result<()> {
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let (guardian, _) = start_streaming_sse_server(vec![vec![StreamingSseChunk {
+        gate: Some(gate),
+        body: sse(vec![ev_completed("review")]),
+    }]])
+    .await;
+    let home = TempDir::new()?;
+    app_test_support::MockResponsesConfig::new(guardian.uri())
+        .with_approval_policy("on-request")
+        .with_root_config("approvals_reviewer = \"auto_review\"")
+        .with_extra_config("[auto_review]\ntimeout_ms = 0")
+        .write(home.path())?;
+    let (mut process, addr) = spawn_websocket_server(home.path()).await?;
+    let mut owner = connect_websocket(addr).await?;
+    let mut observer = connect_websocket(addr).await?;
+    for client in [&mut owner, &mut observer] {
+        send_request(
+            client,
+            "initialize",
+            /*id*/ 1,
+            Some(json!({
+                "clientInfo": {"name":"guardian-test","version":"1"},
+                "capabilities": {"experimentalApi":true}
+            })),
+        )
+        .await?;
+        read_response_for_id(client, /*id*/ 1).await?;
+    }
+    let thread_id = start_thread(&mut owner, /*id*/ 2).await?;
+    send_request(&mut owner, "thread/guardianReview", /*id*/ 4, Some(json!({
+        "threadId":thread_id, "toolCall":{
+            "type":"function_call","name":"exec_command","call_id":"review",
+            "arguments":r#"{"cmd":"touch marker","sandbox_permissions":"require_escalated","justification":"create the marker"}"#
+        }
+    }))).await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        guardian.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
+    owner.close(None).await?;
+    drop(owner);
+
+    send_request(&mut observer, "thread/inject_items", /*id*/ 5, Some(json!({
+        "threadId":thread_id, "items":[{"type":"function_call_output","call_id":"review","output":"recorded"}]
+    }))).await?;
+    // Disconnect must release the thread before the 30-second connection drain timeout.
+    let response = timeout(
+        Duration::from_secs(10),
+        read_response_for_id(&mut observer, /*id*/ 5),
+    )
+    .await??;
+    assert_eq!(response.result, json!({}));
+    drop(release);
+    process.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn websocket_disconnect_keeps_last_subscribed_thread_loaded_until_idle_timeout() -> Result<()>
 {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
@@ -487,6 +556,75 @@ async fn websocket_disconnect_keeps_last_subscribed_thread_loaded_until_idle_tim
     Ok(())
 }
 
+#[tokio::test]
+async fn idle_child_unloads_while_message_board_stays_connected() -> Result<()> {
+    let done = app_test_support::create_final_assistant_message_sse_response("Ready.")?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        sse(vec![
+            ev_function_call_with_namespace(
+                "spawn-worker",
+                "collaboration",
+                "spawn_agent",
+                r#"{"task_name":"worker","message":"Say ready.","fork_turns":"none"}"#,
+            ),
+            ev_completed("spawn"),
+        ]),
+        done.clone(),
+        done,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::MultiAgentV2)
+        .disable_feature(Feature::CodeMode)
+        .disable_feature(Feature::CodeModeOnly)
+        .with_root_config("thread_unload_delay_secs = 0")
+        .write(codex_home.path())?;
+    let (mut process, address) = spawn_websocket_server(codex_home.path()).await?;
+    let mut owner = connect_websocket(address).await?;
+    send_initialize_request(&mut owner, /*id*/ 1, "ws_thread_owner").await?;
+    read_response_for_id(&mut owner, /*id*/ 1).await?;
+    let parent = start_thread(&mut owner, /*id*/ 2).await?;
+    let mut board = connect_websocket(address).await?;
+    send_initialize_request(&mut board, /*id*/ 1, MESSAGE_BOARD_CLIENT_NAME).await?;
+    read_response_for_id(&mut board, /*id*/ 1).await?;
+
+    send_request(
+        &mut owner,
+        "turn/start",
+        /*id*/ 3,
+        Some(json!({"threadId": parent, "input": [{"type": "text", "text": "Spawn a worker."}]})),
+    )
+    .await?;
+    let mut child = None;
+    for _ in 0..2 {
+        let completed = read_notification_for_method(&mut owner, "turn/completed").await?;
+        let params = completed.params.context("turn completion")?;
+        assert_eq!(params["turn"]["status"], "completed");
+        if params["threadId"] != parent {
+            child = Some(params["threadId"].as_str().context("child ID")?.to_owned());
+        }
+    }
+    let child = child.context("child turn must complete")?;
+    send_request(
+        &mut owner,
+        "thread/unsubscribe",
+        /*id*/ 4,
+        Some(json!({"threadId": child})),
+    )
+    .await?;
+    let (reply, closed) =
+        read_response_and_notification_for_method(&mut owner, /*id*/ 4, "thread/closed")
+            .await
+            .context("idle child should unload with the board still connected")?;
+    assert_eq!(reply.result, json!({"status": "unsubscribed"}));
+    assert_eq!(closed.params, Some(json!({"threadId": child})));
+    // Query over the original board socket to rule out a disconnect causing the unload.
+    assert_loaded_threads(&mut board, /*id*/ 2, &[&parent]).await?;
+    process.kill().await?;
+    Ok(())
+}
+
 pub(super) async fn spawn_websocket_server(codex_home: &Path) -> Result<(Child, SocketAddr)> {
     spawn_websocket_server_with_args(codex_home, "ws://127.0.0.1:0", &[]).await
 }
@@ -496,12 +634,21 @@ pub(super) async fn spawn_websocket_server_with_args(
     listen_url: &str,
     extra_args: &[String],
 ) -> Result<(Child, SocketAddr)> {
+    spawn_websocket_server_with_env(codex_home, listen_url, extra_args, &[]).await
+}
+
+pub(super) async fn spawn_websocket_server_with_env(
+    codex_home: &Path,
+    listen_url: &str,
+    extra_args: &[String],
+    env_overrides: &[(&str, &std::ffi::OsStr)],
+) -> Result<(Child, SocketAddr)> {
     let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
         .context("should find app-server binary")?;
     let mut cmd = Command::new(program);
     cmd.arg("--listen")
         .arg(listen_url)
-        .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
+        .args(DEFAULT_APP_SERVER_TEST_ARGS)
         .args(extra_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -509,6 +656,9 @@ pub(super) async fn spawn_websocket_server_with_args(
         .env("CODEX_HOME", codex_home)
         .env("RUST_LOG", "warn")
         .env("OTEL_METRIC_EXPORT_INTERVAL", "200");
+    for (key, value) in env_overrides {
+        cmd.env(key, value);
+    }
 
     let mut process = cmd
         .kill_on_drop(true)
@@ -639,7 +789,7 @@ async fn run_websocket_server_to_completion_with_args(
     let mut cmd = Command::new(program);
     cmd.arg("--listen")
         .arg(listen_url)
-        .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
+        .args(DEFAULT_APP_SERVER_TEST_ARGS)
         .args(extra_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -719,7 +869,7 @@ pub(super) async fn send_initialize_request(
     .await
 }
 
-async fn start_thread(stream: &mut WsClient, id: i64) -> Result<String> {
+pub(super) async fn start_thread(stream: &mut WsClient, id: i64) -> Result<String> {
     send_request(
         stream,
         "thread/start",

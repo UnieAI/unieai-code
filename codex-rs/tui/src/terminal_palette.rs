@@ -1,35 +1,22 @@
 use crate::color::perceptual_distance;
-use codex_terminal_detection::TerminalName;
-use codex_terminal_detection::terminal_info;
+pub use crate::terminal_capabilities::StdoutColorLevel;
 use ratatui::style::Color;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum StdoutColorLevel {
-    TrueColor,
-    Ansi256,
-    Ansi16,
-    Unknown,
+/// An explicit UNIEAI/CODEX_FORCE_COLOR_LEVEL override, which wins over the
+/// terminal probe so the whole level-aware pipeline (diff backgrounds, table
+/// separators, best_color) can be forced for testing and for terminals that
+/// misreport their capabilities.
+fn forced_stdout_color_level() -> Option<StdoutColorLevel> {
+    crate::color_support::forced_level().map(|forced| match forced {
+        crate::color_support::ColorLevel::TrueColor => StdoutColorLevel::TrueColor,
+        crate::color_support::ColorLevel::Ansi256 => StdoutColorLevel::Ansi256,
+        crate::color_support::ColorLevel::Basic => StdoutColorLevel::Ansi16,
+        crate::color_support::ColorLevel::None => StdoutColorLevel::Unknown,
+    })
 }
 
 pub fn stdout_color_level() -> StdoutColorLevel {
-    // An explicit UNIEAI/CODEX_FORCE_COLOR_LEVEL override wins over the
-    // supports-color probe, so the whole level-aware pipeline (diff
-    // backgrounds, table separators, best_color) can be forced for testing
-    // and for terminals that misreport their capabilities.
-    if let Some(forced) = crate::color_support::forced_level() {
-        return match forced {
-            crate::color_support::ColorLevel::TrueColor => StdoutColorLevel::TrueColor,
-            crate::color_support::ColorLevel::Ansi256 => StdoutColorLevel::Ansi256,
-            crate::color_support::ColorLevel::Basic => StdoutColorLevel::Ansi16,
-            crate::color_support::ColorLevel::None => StdoutColorLevel::Unknown,
-        };
-    }
-    match supports_color::on_cached(supports_color::Stream::Stdout) {
-        Some(level) if level.has_16m => StdoutColorLevel::TrueColor,
-        Some(level) if level.has_256 => StdoutColorLevel::Ansi256,
-        Some(_) => StdoutColorLevel::Ansi16,
-        None => StdoutColorLevel::Unknown,
-    }
+    forced_stdout_color_level().unwrap_or_else(crate::terminal_capabilities::stdout_color_level)
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -53,37 +40,13 @@ pub fn best_color_for_level(target: (u8, u8, u8), color_level: StdoutColorLevel)
 }
 
 pub(crate) fn effective_stdout_color_level() -> StdoutColorLevel {
+    // A scoped probe result fixes the test terminal at truecolor, including a failed probe.
     #[cfg(test)]
     if TEST_DEFAULT_COLORS.with(|colors| colors.get().is_some()) {
         return StdoutColorLevel::TrueColor;
     }
 
-    stdout_color_level_for_terminal(
-        stdout_color_level(),
-        terminal_info().name,
-        std::env::var_os("WT_SESSION").is_some(),
-        std::env::var_os("FORCE_COLOR").is_some(),
-    )
-}
-
-fn stdout_color_level_for_terminal(
-    stdout_level: StdoutColorLevel,
-    terminal_name: TerminalName,
-    has_wt_session: bool,
-    has_force_color_override: bool,
-) -> StdoutColorLevel {
-    if has_wt_session && !has_force_color_override {
-        return StdoutColorLevel::TrueColor;
-    }
-
-    if stdout_level == StdoutColorLevel::Ansi16
-        && terminal_name == TerminalName::WindowsTerminal
-        && !has_force_color_override
-    {
-        StdoutColorLevel::TrueColor
-    } else {
-        stdout_level
-    }
+    forced_stdout_color_level().unwrap_or_else(crate::terminal_capabilities::terminal_color_level)
 }
 
 fn best_color_for_color_level(target: (u8, u8, u8), color_level: StdoutColorLevel) -> Color {
@@ -100,15 +63,25 @@ fn best_color_for_color_level(target: (u8, u8, u8), color_level: StdoutColorLeve
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DefaultColors {
-    fg: (u8, u8, u8),
-    bg: (u8, u8, u8),
+    pub(crate) fg: Option<(u8, u8, u8)>,
+    pub(crate) bg: (u8, u8, u8),
+}
+
+#[cfg(any(windows, test))]
+impl From<crate::terminal_probe::DefaultColors> for DefaultColors {
+    fn from(colors: crate::terminal_probe::DefaultColors) -> Self {
+        Self {
+            fg: Some(colors.fg),
+            bg: colors.bg,
+        }
+    }
 }
 
 #[cfg(test)]
 thread_local! {
-    static TEST_DEFAULT_COLORS: std::cell::Cell<Option<DefaultColors>> = const {
+    static TEST_DEFAULT_COLORS: std::cell::Cell<Option<Option<DefaultColors>>> = const {
         std::cell::Cell::new(None)
     };
 }
@@ -116,23 +89,25 @@ thread_local! {
 pub fn default_colors() -> Option<DefaultColors> {
     #[cfg(test)]
     if let Some(colors) = TEST_DEFAULT_COLORS.with(std::cell::Cell::get) {
-        return Some(colors);
+        return colors;
     }
 
     imp::default_colors()
 }
 
-/// Scope a truecolor terminal palette to the current test thread while rendering a real widget.
+/// Scope a terminal palette (or its absence) to the current test thread while rendering a widget.
 #[cfg(test)]
 pub(crate) fn with_test_default_colors<T>(
-    colors: crate::terminal_probe::DefaultColors,
+    colors: impl Into<Option<crate::terminal_probe::DefaultColors>>,
     render: impl FnOnce() -> T,
 ) -> T {
+    with_test_palette(colors.into().map(DefaultColors::from), render)
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_palette<T>(colors: Option<DefaultColors>, render: impl FnOnce() -> T) -> T {
     TEST_DEFAULT_COLORS.with(|override_colors| {
-        let previous = override_colors.replace(Some(DefaultColors {
-            fg: colors.fg,
-            bg: colors.bg,
-        }));
+        let previous = override_colors.replace(Some(colors));
         let result = render();
         override_colors.set(previous);
         result
@@ -140,7 +115,7 @@ pub(crate) fn with_test_default_colors<T>(
 }
 
 pub fn default_fg() -> Option<(u8, u8, u8)> {
-    default_colors().map(|c| c.fg)
+    default_colors().and_then(|c| c.fg)
 }
 
 pub fn default_bg() -> Option<(u8, u8, u8)> {
@@ -148,9 +123,7 @@ pub fn default_bg() -> Option<(u8, u8, u8)> {
 }
 
 #[cfg(any(unix, windows))]
-pub(crate) fn set_default_colors_from_startup_probe(
-    colors: Option<crate::terminal_probe::DefaultColors>,
-) {
+pub(crate) fn set_default_colors_from_startup_probe(colors: Option<DefaultColors>) {
     imp::set_default_colors_from_startup_probe(colors);
 }
 
@@ -195,14 +168,9 @@ mod imp {
         cache.get_or_init_with(query_default_colors)
     }
 
-    pub(super) fn set_default_colors_from_startup_probe(
-        colors: Option<crate::terminal_probe::DefaultColors>,
-    ) {
+    pub(super) fn set_default_colors_from_startup_probe(colors: Option<DefaultColors>) {
         if let Ok(mut cache) = default_colors_cache().lock() {
-            cache.value = colors.map(|colors| DefaultColors {
-                fg: colors.fg,
-                bg: colors.bg,
-            });
+            cache.value = colors;
             cache.attempted = true;
         }
     }
@@ -216,10 +184,6 @@ mod imp {
         crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
             .ok()
             .flatten()
-            .map(|colors| DefaultColors {
-                fg: colors.fg,
-                bg: colors.bg,
-            })
     }
 }
 
@@ -232,10 +196,7 @@ mod imp {
     }
 
     #[cfg(any(unix, windows))]
-    pub(super) fn set_default_colors_from_startup_probe(
-        _colors: Option<crate::terminal_probe::DefaultColors>,
-    ) {
-    }
+    pub(super) fn set_default_colors_from_startup_probe(_colors: Option<DefaultColors>) {}
 }
 
 /// The subset of Xterm colors that are usually consistent across terminals.
@@ -524,45 +485,6 @@ mod tests {
         assert_eq!(
             best_color_for_color_level((12, 34, 56), StdoutColorLevel::Ansi16),
             Color::Reset
-        );
-    }
-
-    #[test]
-    fn windows_terminal_wt_session_promotes_to_truecolor() {
-        assert_eq!(
-            stdout_color_level_for_terminal(
-                StdoutColorLevel::Ansi16,
-                TerminalName::Unknown,
-                /*has_wt_session*/ true,
-                /*has_force_color_override*/ false,
-            ),
-            StdoutColorLevel::TrueColor
-        );
-    }
-
-    #[test]
-    fn windows_terminal_name_promotes_ansi16_to_truecolor() {
-        assert_eq!(
-            stdout_color_level_for_terminal(
-                StdoutColorLevel::Ansi16,
-                TerminalName::WindowsTerminal,
-                /*has_wt_session*/ false,
-                /*has_force_color_override*/ false,
-            ),
-            StdoutColorLevel::TrueColor
-        );
-    }
-
-    #[test]
-    fn force_color_keeps_reported_stdout_level() {
-        assert_eq!(
-            stdout_color_level_for_terminal(
-                StdoutColorLevel::Ansi16,
-                TerminalName::WindowsTerminal,
-                /*has_wt_session*/ true,
-                /*has_force_color_override*/ true,
-            ),
-            StdoutColorLevel::Ansi16
         );
     }
 }

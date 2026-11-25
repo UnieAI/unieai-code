@@ -244,13 +244,20 @@ async fn mailbox_preemption_drains_websocket(scenario: MailboxDrain) -> anyhow::
                     "output": "aborted before dispatch",
                 }),
             );
+            // A deferred item must keep its ID even if the completion omits it.
+            let mut buffered =
+                responses::ev_reasoning_item("buffered", &["Already completed"], &[]);
+            buffered["item"]
+                .as_object_mut()
+                .expect("reasoning item")
+                .remove("id");
             vec![
                 json!({"type": "response.interrupt.accepted", "response_id": "first"}),
                 responses::ev_reasoning_item_added("buffered", &[]),
-                responses::ev_reasoning_item("buffered", &["Already completed"], &[]),
+                buffered,
                 call,
                 responses::ev_reasoning_item_added("discarded", &[]),
-                responses::ev_reasoning_summary_text_delta("Unfinished reasoning"),
+                responses::ev_reasoning_text_delta("Unfinished reasoning"),
                 json!({"type": "response.output_item.interrupted", "item_id": "discarded", "output_index": 3}),
                 completed,
             ]
@@ -309,7 +316,16 @@ async fn mailbox_preemption_drains_websocket(scenario: MailboxDrain) -> anyhow::
         );
         release_drain.send(()).expect("release mailbox drain");
     }
-    finish_mailbox_preemption(test).await?;
+    let completed_ids = finish_mailbox_preemption(test).await?;
+    if matches!(
+        scenario,
+        MailboxDrain::BufferedItems | MailboxDrain::UserSteering
+    ) {
+        assert_eq!(
+            completed_ids.iter().filter(|id| *id == "buffered").count(),
+            1
+        );
+    }
 
     let requests = server.single_connection();
     assert_eq!(requests[0].body_json()["generate"], false);
@@ -329,6 +345,120 @@ async fn mailbox_preemption_drains_websocket(scenario: MailboxDrain) -> anyhow::
         follow_up["input"].clone(),
     ));
     assert_eq!(input, json!(expected));
+    server.shutdown().await;
+    Ok(())
+}
+
+#[test_case(false, "The answer is ready."; "queue_only_mail_waits_for_next_turn")]
+#[test_case(false, ""; "empty_final_defers_queue_only_mail")]
+#[test_case(true, "The answer is ready."; "user_steering_still_reopens_turn")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mailbox_preemption_retains_final_without_reopening_for_queue_only_mail(
+    steer_during_drain: bool,
+    final_text: &str,
+) -> anyhow::Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+
+    let boundary = responses::ev_reasoning_item("boundary", &["Preparing the answer"], &[]);
+    let acknowledgement = json!({"type": "response.interrupt.accepted", "response_id": "first"});
+    let mut exchanges = mailbox_initial_responses(&boundary);
+    let mut final_answer = responses::ev_assistant_message("retained-final", final_text);
+    final_answer["item"]["phase"] = json!("final_answer");
+    exchanges.push(vec![
+        acknowledgement.clone(),
+        final_answer,
+        responses::ev_completed("first"),
+    ]);
+    if !steer_during_drain {
+        // Mail carried into a new user turn is delivered at that turn's next
+        // sampling boundary, rather than ahead of the initial user input.
+        exchanges.push(vec![
+            responses::ev_response_created("next-boundary"),
+            responses::ev_reasoning_item("next-reasoning", &["Reading the new request"], &[]),
+            responses::ev_completed("next-boundary"),
+        ]);
+    }
+    exchanges.push(vec![
+        responses::ev_response_created("next"),
+        responses::ev_assistant_message("next-final", "The new request is answered."),
+        responses::ev_completed("next"),
+    ]);
+    let server = responses::start_websocket_server(vec![exchanges]).await;
+    let release = server.gate_response_event(&boundary);
+    let release_drain = steer_during_drain.then(|| server.gate_response_event(&acknowledgement));
+    let test = start_mailbox_preemption(&server, release).await?;
+    let next_prompt = "Use both worker updates.";
+    if let Some(release_drain) = release_drain {
+        server
+            .wait_for_request(/*connection_index*/ 0, /*request_index*/ 2)
+            .await;
+        let submission = test
+            .codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![super::text(next_prompt)]))
+            .await?;
+        assert!(matches!(submission, TurnInputSubmission::Steered { .. }));
+        release_drain.send(()).expect("release retained final");
+    }
+    let mut completed_messages = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        assert!(
+            !matches!(event, EventMsg::Error(_) | EventMsg::StreamError(_)),
+            "{event:?}"
+        );
+        if let EventMsg::ItemCompleted(item) = event
+            && let codex_protocol::items::TurnItem::AgentMessage(message) = &item.item
+        {
+            completed_messages.push(message.id.clone());
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    if steer_during_drain {
+        assert_eq!(completed_messages, vec!["retained-final", "next-final"]);
+    } else {
+        assert_eq!(completed_messages, vec!["retained-final"]);
+        assert_eq!(server.single_connection().len(), 3);
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![super::text(next_prompt)]))
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    let requests = server.single_connection();
+    assert_eq!(requests.len(), if steer_during_drain { 4 } else { 5 });
+    assert_eq!(
+        requests[2].body_json(),
+        json!({
+            "type": "response.interrupt", "response_id": "first", "mode": "discard_partial_items",
+        }),
+    );
+    let input = responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(
+        requests.last().expect("mail delivery request").body_json()["input"].clone(),
+    ));
+    let input = input.as_array().expect("next request input");
+    assert_eq!(
+        input
+            .iter()
+            .filter(|item| item["type"] == "agent_message")
+            .cloned()
+            .collect::<Vec<_>>(),
+        expected_mailbox_input(),
+    );
+    let first_next_input = requests[3].body_json()["input"].clone();
+    assert!(
+        first_next_input
+            .as_array()
+            .expect("next user input")
+            .iter()
+            .any(|item| {
+                item["role"] == "user"
+                    && item["content"] == json!([{"type": "input_text", "text": next_prompt}])
+            })
+    );
+    test.codex.shutdown_and_wait().await?;
     server.shutdown().await;
     Ok(())
 }
@@ -544,7 +674,7 @@ async fn start_mailbox_preemption(
     Ok(test)
 }
 
-async fn finish_mailbox_preemption(test: TestCodex) -> anyhow::Result<()> {
+async fn finish_mailbox_preemption(test: TestCodex) -> anyhow::Result<Vec<String>> {
     let mut started_items = Vec::new();
     let mut completed_items = Vec::new();
     wait_for_event(&test.codex, |event| {
@@ -559,7 +689,7 @@ async fn finish_mailbox_preemption(test: TestCodex) -> anyhow::Result<()> {
         match event {
             EventMsg::ItemStarted(item) => started_items.push(item.item.id()),
             EventMsg::ItemCompleted(item) => completed_items.push(item.item.id()),
-            EventMsg::ReasoningContentDelta(delta) => assert_ne!(delta.item_id, "discarded"),
+            EventMsg::ReasoningRawContentDelta(delta) => assert_ne!(delta.item_id, "discarded"),
             _ => {}
         }
         matches!(event, EventMsg::TurnComplete(_))
@@ -569,5 +699,5 @@ async fn finish_mailbox_preemption(test: TestCodex) -> anyhow::Result<()> {
     completed_items.retain(|id| id != "boundary");
     assert_eq!(started_items, completed_items);
     test.codex.shutdown_and_wait().await?;
-    Ok(())
+    Ok(completed_items)
 }

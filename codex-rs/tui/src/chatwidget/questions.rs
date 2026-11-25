@@ -3,9 +3,25 @@
 
 use super::*;
 use crate::bottom_pane::QuestionSubmission;
+use crate::tui::MouseCapture;
 use codex_protocol::items::AsyncUserInputQuestion;
 
 impl ChatWidget {
+    pub(crate) fn mouse_capture(&self, owned_screen: bool) -> MouseCapture {
+        if owned_screen
+            && !self.bottom_pane.has_active_modal()
+            && self
+                .bottom_pane
+                .questions
+                .as_ref()
+                .is_some_and(|q| q.expanded)
+        {
+            MouseCapture::Disabled
+        } else {
+            MouseCapture::Inherit
+        }
+    }
+
     pub(super) fn take_question_drafts(&mut self) -> Option<Vec<String>> {
         if matches!(
             self.pending_notification,
@@ -14,6 +30,25 @@ impl ChatWidget {
             self.pending_notification = None;
         }
         self.bottom_pane.take_question_drafts()
+    }
+
+    pub(crate) fn needs_question_answer_history(&self) -> bool {
+        self.bottom_pane
+            .questions
+            .as_ref()
+            .is_some_and(|questions| questions.unanswered_count() > 0)
+            || self.has_queued_question_answer()
+    }
+
+    fn has_queued_question_answer(&self) -> bool {
+        self.input_queue
+            .queued_user_messages
+            .iter()
+            .any(|message| message.source == UserMessageSource::QuestionAnswer)
+            || self
+                .input_queue
+                .rejected_steer_sources
+                .contains(&UserMessageSource::QuestionAnswer)
     }
 
     pub(super) fn add_async_questions(
@@ -162,6 +197,8 @@ impl ChatWidget {
                     let cursor = main.cursor;
                     self.restore_composer_state(ThreadComposerState {
                         text: main.text,
+                        shell_mode: None,
+                        disconnected_command: None,
                         text_elements: main.text_elements,
                         local_images: main.local_images,
                         remote_image_urls: main.remote_image_urls,

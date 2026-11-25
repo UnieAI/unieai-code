@@ -34,6 +34,7 @@ use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde_json::json;
@@ -137,8 +138,8 @@ impl TaskMonitor {
                 let Some((process_id, _)) = background_command(&completed.item) else {
                     return false;
                 };
-                let (exit_code, failed) = match &completed.item {
-                    ThreadItem::CommandExecution {
+                let (exit_code, failed) = match &completed.item.payload {
+                    ThreadItemPayload::CommandExecution {
                         exit_code, status, ..
                     } => (
                         *exit_code,
@@ -360,8 +361,8 @@ impl TaskMonitor {
 
 /// A command left running: its process id and command line.
 fn background_command(item: &ThreadItem) -> Option<(&str, &str)> {
-    match item {
-        ThreadItem::CommandExecution {
+    match &item.payload {
+        ThreadItemPayload::CommandExecution {
             command,
             process_id: Some(process_id),
             source: CommandExecutionSource::UnifiedExecStartup,

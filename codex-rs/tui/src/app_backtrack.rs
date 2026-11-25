@@ -35,8 +35,6 @@ use crate::bottom_pane::LocalImageAttachment;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::mention_bindings_from_user_inputs;
-#[cfg(test)]
-use crate::history_cell::AgentMessageCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::sanitize_user_text;
@@ -44,7 +42,7 @@ use crate::pager_overlay::Overlay;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::tui;
 use crate::tui::TuiEvent;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
@@ -62,6 +60,8 @@ pub(crate) const SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
 pub(crate) struct BacktrackState {
+    /// Hold terminal input between confirming a prompt edit and dispatching its revert.
+    pub(crate) revert_queued: bool,
     /// True when Esc has primed backtrack mode in the main view.
     pub(crate) primed: bool,
     /// Session id of the base thread whose transcript is being inspected.
@@ -75,7 +75,41 @@ pub(crate) struct BacktrackState {
     pub(crate) nth_user_message: usize,
     /// True when the transcript overlay is showing a backtrack preview.
     pub(crate) overlay_preview_active: bool,
+    /// Consume held-key input after a fresh press acts on transcript select mode.
+    pub(crate) select_exit_key: Option<crate::key_hint::KeyBinding>,
+    /// Preserve the initiating key while a select-and-follow copy is pending.
+    pub(crate) pending_select_exit_key: Option<(u64, crate::key_hint::KeyBinding)>,
     origin: Option<browsing::BrowsingOrigin>,
+}
+
+impl BacktrackState {
+    pub(crate) fn observe_pending_select_exit_key(&mut self, event: KeyEvent) {
+        if event.kind == KeyEventKind::Release
+            && self.pending_select_exit_key.is_some_and(|(_, binding)| {
+                binding.parts() == crate::key_hint::KeyBinding::from_event(event).parts()
+            })
+        {
+            self.pending_select_exit_key = None;
+        }
+    }
+
+    pub(crate) fn finish_pending_select_exit_key(
+        &mut self,
+        completed_id: u64,
+        select_mode_closed: bool,
+    ) -> Option<crate::key_hint::KeyBinding> {
+        match self.pending_select_exit_key {
+            Some((id, key)) if id == completed_id => {
+                self.pending_select_exit_key = None;
+                select_mode_closed.then_some(key)
+            }
+            Some((id, _)) if id < completed_id => {
+                self.pending_select_exit_key = None;
+                None
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A user-visible backtrack choice that can be reopened in the current thread.
@@ -137,6 +171,7 @@ impl App {
         else {
             return;
         };
+        self.backtrack.revert_queued = true;
         self.app_event_tx
             .send(AppEvent::RevertSessionForPromptEdit {
                 thread_id: selection.thread_id,
@@ -159,6 +194,11 @@ impl App {
     /// Show detailed history in the owned viewport or the inline session's transcript overlay.
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         if tui.is_owned_screen() {
+            if self.scrollback_has_older_history
+                && !self.transcript_view.history.has_unloaded_history()
+            {
+                self.transcript_view.history = TranscriptHistoryState::Partial;
+            }
             self.transcript_view.set_presentation(
                 /*detailed*/ true,
                 self.chat_widget.history_render_mode(),
@@ -171,8 +211,7 @@ impl App {
             Overlay::new_transcript(
                 self.transcript_cells.clone(),
                 self.keymap.pager.clone(),
-                self.local_settings
-                    .copy_on_select(&codex_terminal_detection::terminal_info()),
+                self.local_settings.copy_on_select(),
                 self.local_settings
                     .tui
                     .mouse_scroll_speed
@@ -358,6 +397,10 @@ impl App {
     /// source of truth for the active cell and its cache invalidation key, and because `App` owns
     /// overlay lifecycle and frame scheduling for animations.
     fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+        let hud = self
+            .key_chord_matcher
+            .guide(&self.keymap.chords, &tui.frame_requester());
+        let select_exit_key = Self::transcript_select_exit_key(&event);
         if matches!(
             &event,
             TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
@@ -379,7 +422,9 @@ impl App {
             ))
             && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
-            tui.set_overlay_input(tui::OverlayInput::Transcript)?;
+            let was_select_mode = t.is_select_mode();
+            let pending_follow_before = t.pending_follow_id();
+            tui.set_mouse_capture(tui::MouseCapture::Enabled)?;
             t.motion = crate::motion::MotionMode::from_animations_enabled(
                 self.local_settings.tui.animations && self.local_settings.tui.effects.shimmer,
             );
@@ -403,19 +448,42 @@ impl App {
                 }
             });
             // Refresh visible rows before selection captures this live revision.
-            let result =
-                if input { t.draw(tui) } else { Ok(()) }.and_then(|()| t.handle_event(tui, event));
+            let result = tui.with_shortcut_hud(hud, |tui| {
+                if input { t.draw(tui) } else { Ok(()) }.and_then(|()| t.handle_event(tui, event))
+            });
             if result.is_err() {
-                let _ = tui.set_overlay_input(tui::OverlayInput::Default);
+                let _ = tui.set_mouse_capture(tui::MouseCapture::Inherit);
             }
-            result?;
-            let close_overlay = t.is_done();
+            let completed_copy = result?;
+            let thread_link = t.pending_thread_link.take();
+            let close_overlay = t.is_done() || thread_link.is_some();
+            let select_mode_closed = was_select_mode && (!t.is_select_mode() || close_overlay);
+            let pending_follow_id = t.pending_follow_id();
+            if let Some(thread_id) = thread_link {
+                self.app_event_tx
+                    .send(AppEvent::OpenThreadLink { thread_id });
+            }
             if !close_overlay
                 && active_key.is_some_and(|key| key.animation_tick.is_some())
                 && t.is_scrolled_to_bottom()
             {
                 tui.frame_requester()
                     .schedule_frame_in(std::time::Duration::from_millis(50));
+            }
+            if pending_follow_id != pending_follow_before
+                && let (Some(id), Some(key)) = (pending_follow_id, select_exit_key)
+            {
+                self.backtrack.pending_select_exit_key = Some((id, key));
+            }
+            let completed_exit_key = completed_copy.and_then(|completed_id| {
+                self.backtrack
+                    .finish_pending_select_exit_key(completed_id, select_mode_closed)
+            });
+            if select_mode_closed {
+                self.backtrack.select_exit_key = select_exit_key.or(completed_exit_key);
+                if select_exit_key.is_some() {
+                    self.backtrack.pending_select_exit_key = None;
+                }
             }
             if close_overlay {
                 self.close_transcript_overlay(tui);
@@ -425,7 +493,7 @@ impl App {
         }
 
         if let Some(overlay) = &mut self.overlay {
-            overlay.handle_event(tui, event)?;
+            tui.with_shortcut_hud(hud, |tui| overlay.handle_event(tui, event))?;
             if overlay.is_done() {
                 self.close_transcript_overlay(tui);
                 tui.frame_requester().schedule_frame();
@@ -540,12 +608,12 @@ pub(crate) fn backtrack_revert_before_turn_id(
                     &previous.items
                 };
                 is_hidden_nested_review_turn(previous, turn)
-                    && previous_items
-                        .iter()
-                        .any(|item| matches!(item, ThreadItem::EnteredReviewMode { .. }))
-                    && previous_items
-                        .iter()
-                        .any(|item| matches!(item, ThreadItem::ExitedReviewMode { .. }))
+                    && previous_items.iter().any(|item| {
+                        matches!(&item.payload, ThreadItemPayload::EnteredReviewMode { .. })
+                    })
+                    && previous_items.iter().any(|item| {
+                        matches!(&item.payload, ThreadItemPayload::ExitedReviewMode { .. })
+                    })
             });
         let first_item = if turn_index == start_turn {
             start_item
@@ -554,21 +622,22 @@ pub(crate) fn backtrack_revert_before_turn_id(
         };
         // Clipped items affect whether an input is a steer, but were never displayed and
         // therefore must not change the transcript's review visibility or prompt ordinals.
-        let mut user_messages_in_turn = turn.items[..first_item]
-            .iter()
-            .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
+        let mut user_messages_in_turn = turn
+            .item_payloads()
+            .take(first_item)
+            .filter(|item| matches!(item, ThreadItemPayload::UserMessage { .. }))
             .count();
-        for item in &turn.items[first_item..] {
+        for item in turn.item_payloads().skip(first_item) {
             let content = match item {
-                ThreadItem::EnteredReviewMode { .. } => {
+                ThreadItemPayload::EnteredReviewMode { .. } => {
                     review_mode = true;
                     continue;
                 }
-                ThreadItem::ExitedReviewMode { .. } => {
+                ThreadItemPayload::ExitedReviewMode { .. } => {
                     review_mode = false;
                     continue;
                 }
-                ThreadItem::UserMessage { content, .. } => content,
+                ThreadItemPayload::UserMessage { content, .. } => content,
                 _ => continue,
             };
             let is_steer = user_messages_in_turn > 0;
@@ -626,19 +695,17 @@ pub(crate) fn is_hidden_nested_review_turn(previous: &Turn, turn: &Turn) -> bool
         || turn.status != TurnStatus::Interrupted
         || turn.completed_at.is_some()
         || !previous
-            .items
-            .iter()
-            .any(|item| matches!(item, ThreadItem::EnteredReviewMode { .. }))
+            .item_payloads()
+            .any(|item| matches!(item, ThreadItemPayload::EnteredReviewMode { .. }))
         || !previous
-            .items
-            .iter()
-            .any(|item| matches!(item, ThreadItem::ExitedReviewMode { .. }))
+            .item_payloads()
+            .any(|item| matches!(item, ThreadItemPayload::ExitedReviewMode { .. }))
     {
         return false;
     }
 
-    let mut user_messages = turn.items.iter().filter_map(|item| match item {
-        ThreadItem::UserMessage { content, .. } => Some(content),
+    let mut user_messages = turn.item_payloads().filter_map(|item| match item {
+        ThreadItemPayload::UserMessage { content, .. } => Some(content),
         _ => None,
     });
     matches!(
@@ -690,39 +757,12 @@ fn user_positions_iter(
 }
 
 #[cfg(test)]
-fn agent_group_count(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> usize {
-    agent_group_positions_iter(cells).count()
-}
-
-#[cfg(test)]
-fn agent_group_positions_iter(
-    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
-) -> impl Iterator<Item = usize> + '_ {
-    let session_start_type = TypeId::of::<SessionInfoCell>();
-    let type_of = |cell: &Arc<dyn crate::history_cell::HistoryCell>| cell.as_any().type_id();
-
-    let start = cells
-        .iter()
-        .rposition(|cell| type_of(cell) == session_start_type)
-        .map_or(0, |idx| idx + 1);
-
-    cells
-        .iter()
-        .enumerate()
-        .skip(start)
-        .filter_map(move |(idx, cell)| {
-            let is_agent = cell.as_any().downcast_ref::<AgentMessageCell>().is_some();
-            let is_copy_source_group = is_agent && !cell.is_stream_continuation();
-            is_copy_source_group.then_some(idx)
-        })
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::bottom_pane::MentionBinding;
     use crate::history_cell::AgentMessageCell;
     use crate::history_cell::HistoryCell;
+    use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::UserInput;
     use pretty_assertions::assert_eq;
     use ratatui::prelude::Line;
@@ -741,12 +781,44 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn pending_select_exit_key_ends_on_completion_or_release() {
+        let key = crate::key_hint::KeyBinding::from_event(KeyCode::Enter.into());
+        let mut state = BacktrackState {
+            pending_select_exit_key: Some((7, key)),
+            ..BacktrackState::default()
+        };
+
+        assert_eq!(
+            state.finish_pending_select_exit_key(
+                /*completed_id*/ 7, /*select_mode_closed*/ false,
+            ),
+            None
+        );
+        assert_eq!(state.pending_select_exit_key, None);
+        state.pending_select_exit_key = Some((8, key));
+        state.observe_pending_select_exit_key(KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(state.pending_select_exit_key, None);
+        state.pending_select_exit_key = Some((9, key));
+        assert_eq!(
+            state.finish_pending_select_exit_key(
+                /*completed_id*/ 9, /*select_mode_closed*/ true,
+            ),
+            Some(key)
+        );
+        assert_eq!(state.pending_select_exit_key, None);
+    }
+
     fn turn(turn_id: &str, status: TurnStatus, user_messages: usize) -> Turn {
         Turn {
             id: turn_id.to_string(),
             root_turn_id: None,
             items: (0..user_messages)
-                .map(|index| ThreadItem::UserMessage {
+                .map(|index| ThreadItemPayload::UserMessage {
                     id: format!("user-{index}"),
                     client_id: None,
                     content: vec![UserInput::Text {
@@ -754,6 +826,7 @@ mod tests {
                         text_elements: Vec::new(),
                     }],
                 })
+                .map(ThreadItem::untimed)
                 .collect(),
             items_view: codex_app_server_protocol::TurnItemsView::Full,
             status,
@@ -777,7 +850,7 @@ mod tests {
     #[test]
     fn backtrack_revert_before_turn_id_resolves_first_and_later_prompts() {
         let mut hidden = turn("hidden", TurnStatus::Completed, /*user_messages*/ 1);
-        let ThreadItem::UserMessage { content, .. } = &mut hidden.items[0] else {
+        let ThreadItemPayload::UserMessage { content, .. } = &mut hidden.items[0].payload else {
             unreachable!()
         };
         *content = vec![UserInput::Text {
@@ -918,15 +991,17 @@ mod tests {
         );
         review_turn.items.insert(
             /*index*/ 0,
-            ThreadItem::EnteredReviewMode {
+            ThreadItem::untimed(ThreadItemPayload::EnteredReviewMode {
                 id: "review-start".to_string(),
                 review: "changes against main".to_string(),
-            },
+            }),
         );
-        review_turn.items.push(ThreadItem::ExitedReviewMode {
-            id: "review-end".to_string(),
-            review: "review complete".to_string(),
-        });
+        review_turn
+            .items
+            .push(ThreadItem::untimed(ThreadItemPayload::ExitedReviewMode {
+                id: "review-end".to_string(),
+                review: "review complete".to_string(),
+            }));
         let turns = vec![
             turn("turn-1", TurnStatus::Completed, /*user_messages*/ 1),
             review_turn,
@@ -964,14 +1039,14 @@ mod tests {
             "Review the current code changes (staged, unstaged, and untracked files).";
         let review_turn = Turn {
             items: vec![
-                ThreadItem::EnteredReviewMode {
+                ThreadItem::untimed(ThreadItemPayload::EnteredReviewMode {
                     id: "review-start".to_string(),
                     review: review_hint.to_string(),
-                },
-                ThreadItem::ExitedReviewMode {
+                }),
+                ThreadItem::untimed(ThreadItemPayload::ExitedReviewMode {
                     id: "review-end".to_string(),
                     review: "review complete".to_string(),
-                },
+                }),
             ],
             ..turn(
                 "turn-review",
@@ -981,7 +1056,7 @@ mod tests {
         };
         let review_child_turn = Turn {
             items: (0..2)
-                .map(|index| ThreadItem::UserMessage {
+                .map(|index| ThreadItemPayload::UserMessage {
                     id: format!("review-prompt-{index}"),
                     client_id: None,
                     content: vec![UserInput::Text {
@@ -989,6 +1064,7 @@ mod tests {
                         text_elements: Vec::new(),
                     }],
                 })
+                .map(ThreadItem::untimed)
                 .collect(),
             ..turn(
                 "turn-review-child",
@@ -1030,7 +1106,7 @@ mod tests {
     #[test]
     fn backtrack_revert_before_turn_id_restores_canonical_mention_bindings() {
         let mut selected_turn = turn("turn-2", TurnStatus::Completed, /*user_messages*/ 1);
-        selected_turn.items = vec![ThreadItem::UserMessage {
+        selected_turn.items = vec![ThreadItem::untimed(ThreadItemPayload::UserMessage {
             id: "selected-prompt".to_string(),
             client_id: None,
             content: vec![
@@ -1051,7 +1127,7 @@ mod tests {
                     path: "app://google_calendar".to_string(),
                 },
             ],
-        }];
+        })];
         let turns = vec![
             turn("turn-1", TurnStatus::Completed, /*user_messages*/ 1),
             selected_turn,
@@ -1091,26 +1167,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_count_ignores_context_compacted_marker() {
-        let cells: Vec<Arc<dyn HistoryCell>> = vec![
-            Arc::new(AgentMessageCell::new(
-                vec![Line::from("first")],
-                /*is_first_line*/ true,
-            )) as Arc<dyn HistoryCell>,
-            Arc::new(crate::history_cell::new_info_event(
-                "Context compacted".to_string(),
-                /*hint*/ None,
-            )) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(
-                vec![Line::from("second")],
-                /*is_first_line*/ true,
-            )) as Arc<dyn HistoryCell>,
-        ];
-
-        assert_eq!(agent_group_count(&cells), 2);
-    }
-
-    #[test]
     fn backtrack_target_requires_user_message() {
         let mut cells: Vec<Arc<dyn HistoryCell>> = vec![
             Arc::new(AgentMessageCell::new(
@@ -1126,7 +1182,7 @@ mod tests {
         assert!(!has_backtrack_target(&cells));
 
         cells.push(Arc::new(UserHistoryCell {
-            spoken: false,
+            presentation: Default::default(),
             message: "hello".to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),

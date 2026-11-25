@@ -33,6 +33,7 @@ use codex_config::ConfigLayerStack;
 use codex_plugin::ExecutorPluginHookSource;
 use codex_plugin::PluginHookSource;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookExecutionMode;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
@@ -262,6 +263,17 @@ impl Hooks {
         self.engine.max_permission_request_timeout()
     }
 
+    /// Check the same names used by PostToolUse before preparing a large tool response.
+    pub fn has_post_tool_use_match(&self, name: &str, aliases: &[String]) -> bool {
+        let inputs = crate::events::common::matcher_inputs(name, aliases);
+        !crate::engine::dispatcher::select_handlers_for_matcher_inputs(
+            &self.engine.handlers,
+            HookEventName::PostToolUse,
+            &inputs,
+        )
+        .is_empty()
+    }
+
     pub fn preview_post_tool_use(
         &self,
         request: &PostToolUseRequest,
@@ -380,8 +392,12 @@ impl Hooks {
     pub async fn run_model_request(
         &self,
         request: crate::ModelRequestHookInput,
-    ) -> Vec<codex_protocol::protocol::HookCompletedEvent> {
-        crate::events::model_request::run(&self.engine, request).await
+        on_completed: impl FnMut(&HookCompletedEvent) + Send,
+    ) -> (
+        Vec<codex_protocol::protocol::HookCompletedEvent>,
+        crate::ModelRequestHookOutcome,
+    ) {
+        crate::events::model_request::run(&self.engine, request, on_completed).await
     }
 }
 

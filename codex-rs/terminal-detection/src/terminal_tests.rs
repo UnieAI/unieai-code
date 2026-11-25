@@ -33,11 +33,30 @@ fn terminal_info(
     multiplexer: Option<Multiplexer>,
 ) -> TerminalInfo {
     TerminalInfo {
+        backend: None,
         name,
         term_program: term_program.map(ToString::to_string),
         version: version.map(ToString::to_string),
         term: term.map(ToString::to_string),
         multiplexer,
+    }
+}
+
+#[test]
+fn dev_container_requires_vscode_and_an_enabled_container_marker() {
+    for (program, marker, expected) in [
+        ("vscode", Some("true"), true),
+        ("VSCode", Some("true"), true),
+        ("vscode", None, false),
+        ("vscode", Some("false"), false),
+        ("kitty", Some("true"), false),
+    ] {
+        let mut env = FakeEnvironment::new().with_var("TERM_PROGRAM", program);
+        if let Some(marker) = marker {
+            env = env.with_var("REMOTE_CONTAINERS", marker);
+        }
+        let terminal = detect_terminal_info_from_env(&env);
+        assert_eq!(terminal.is_vscode_dev_container_in(&env), expected);
     }
 }
 
@@ -215,6 +234,54 @@ fn detects_ghostty() {
         "xterm-ghostty",
         "ghostty_term_user_agent"
     );
+    assert_eq!(color::ansi_color_level(&env), StdoutColorLevel::TrueColor);
+    for key in ["FORCE_COLOR", "CLICOLOR_FORCE"] {
+        let forced = FakeEnvironment::new()
+            .with_var("TERM", "xterm-ghostty")
+            .with_var(key, "1");
+        assert_eq!(color::ansi_color_level(&forced), StdoutColorLevel::Ansi16);
+    }
+    let generic = env
+        .with_var("TERM", "xterm")
+        .with_var("TERM_PROGRAM", "Ghostty");
+    assert_eq!(color::ansi_color_level(&generic), StdoutColorLevel::Ansi16);
+}
+
+#[test]
+fn windows_terminal_palette_respects_stdout_overrides() {
+    use StdoutColorLevel::*;
+
+    let palette = |level, env: &FakeEnvironment| {
+        color::color_level_for_terminal(level, detect_terminal_info_from_env(env).name, env)
+    };
+    let named = FakeEnvironment::new().with_var("TERM_PROGRAM", "WindowsTerminal");
+    assert_eq!(palette(Ansi16, &named), TrueColor);
+    assert_eq!(palette(Unknown, &named), Unknown);
+    assert_eq!(palette(Ansi16, &named.with_var("FORCE_COLOR", "1")), Ansi16);
+
+    let other = FakeEnvironment::new().with_var("TERM_PROGRAM", "WezTerm");
+    assert_eq!(palette(Ansi16, &other), Ansi16);
+    let session = other.with_var("WT_SESSION", "session");
+    assert_eq!(palette(Ansi16, &session), TrueColor);
+    assert_eq!(palette(Unknown, &session), TrueColor);
+    assert_eq!(
+        palette(Ansi256, &session.with_var("FORCE_COLOR", "2")),
+        Ansi256
+    );
+}
+
+#[test]
+fn detects_rex() {
+    for (key, value) in [("TERM_PROGRAM", "rex"), ("TERM", "xterm-rex")] {
+        let env = FakeEnvironment::new().with_var(key, value);
+        assert_eq!(detect_terminal_info_from_env(&env).name, TerminalName::Rex);
+    }
+}
+
+#[test]
+fn detects_orca() {
+    let env = FakeEnvironment::new().with_var("TERM_PROGRAM", "Orca");
+    assert_eq!(detect_terminal_info_from_env(&env).name, TerminalName::Orca);
 }
 
 #[test]
@@ -299,6 +366,7 @@ fn detects_zellij_multiplexer() {
     assert_eq!(
         terminal,
         TerminalInfo {
+            backend: None,
             name: TerminalName::Unknown,
             term_program: None,
             version: None,
@@ -665,13 +733,18 @@ fn detects_vte() {
     let terminal = detect_terminal_info_from_env(&env);
     assert_eq!(
         terminal,
-        terminal_info(
-            TerminalName::Vte,
-            /*term_program*/ None,
-            Some("7000"),
-            /*term*/ None,
-            /*multiplexer*/ None
-        ),
+        TerminalInfo {
+            backend: Some(TerminalBackend::Vte {
+                version: Some(7000)
+            }),
+            ..terminal_info(
+                TerminalName::Vte,
+                /*term_program*/ None,
+                Some("7000"),
+                /*term*/ None,
+                /*multiplexer*/ None
+            )
+        },
         "vte_version_info"
     );
     assert_eq!(
@@ -686,13 +759,18 @@ fn detects_vte() {
     let terminal = detect_terminal_info_from_env(&env);
     assert_eq!(
         terminal,
-        terminal_info(
-            TerminalName::Vte,
-            Some("VTE"),
-            Some("7000"),
-            /*term*/ None,
-            /*multiplexer*/ None
-        ),
+        TerminalInfo {
+            backend: Some(TerminalBackend::Vte {
+                version: Some(7000)
+            }),
+            ..terminal_info(
+                TerminalName::Vte,
+                Some("VTE"),
+                Some("7000"),
+                /*term*/ None,
+                /*multiplexer*/ None
+            )
+        },
         "vte_term_program_info"
     );
     assert_eq!(
@@ -705,13 +783,16 @@ fn detects_vte() {
     let terminal = detect_terminal_info_from_env(&env);
     assert_eq!(
         terminal,
-        terminal_info(
-            TerminalName::Vte,
-            /*term_program*/ None,
-            /*version*/ None,
-            /*term*/ None,
-            /*multiplexer*/ None
-        ),
+        TerminalInfo {
+            backend: Some(TerminalBackend::Vte { version: None }),
+            ..terminal_info(
+                TerminalName::Vte,
+                /*term_program*/ None,
+                /*version*/ None,
+                /*term*/ None,
+                /*multiplexer*/ None
+            )
+        },
         "vte_empty_info"
     );
     assert_eq!(terminal.user_agent_token(), "VTE", "vte_empty_user_agent");
@@ -859,6 +940,49 @@ fn tmux_preserves_safe_underlying_terminal_identifiers() {
                 }),
             ),
             "{variable}"
+        );
+    }
+}
+
+#[test]
+fn captures_vte_backend_when_gnome_identity_takes_precedence() {
+    let env = FakeEnvironment::new()
+        .with_var("GNOME_TERMINAL_SCREEN", "1")
+        .with_var("VTE_VERSION", "5204")
+        .with_var("TMUX", "session");
+    assert_eq!(
+        detect_terminal_info_from_env(&env),
+        TerminalInfo {
+            name: TerminalName::GnomeTerminal,
+            term_program: None,
+            version: None,
+            term: None,
+            multiplexer: Some(Multiplexer::Tmux { version: None }),
+            backend: Some(TerminalBackend::Vte {
+                version: Some(5204)
+            }),
+        }
+    );
+}
+
+#[test]
+fn raw_vte_version_takes_precedence_even_when_malformed() {
+    for (raw_version, version) in [("5204", Some(5204)), ("invalid", None), ("", None)] {
+        let env = FakeEnvironment::new()
+            .with_var("TERM_PROGRAM", "VTE")
+            .with_var("TERM_PROGRAM_VERSION", "7600")
+            .with_var("VTE_VERSION", raw_version);
+        assert_eq!(
+            detect_terminal_info_from_env(&env),
+            TerminalInfo {
+                name: TerminalName::Vte,
+                term_program: Some("VTE".to_string()),
+                version: Some("7600".to_string()),
+                term: None,
+                multiplexer: None,
+                backend: Some(TerminalBackend::Vte { version }),
+            },
+            "VTE_VERSION={raw_version:?}"
         );
     }
 }

@@ -10,6 +10,7 @@ use codex_core::config::RolloutBudgetConfig;
 use codex_core::context::GuardianContextMode;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
+use codex_guardian_context::MAX_TEXT_PART_ESTIMATED_TOKENS;
 use codex_history::RolloutItem;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ContentItem;
@@ -19,6 +20,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::ThreadIdle;
 use core_test_support::responses;
@@ -254,8 +256,8 @@ async fn review_respects_complete_context_budget(
                 .as_mut()
                 .expect("bundled reviewer model messages")
                 .auto_review = Some(AutoReviewMessages {
-                policy: Some("Review actions against user authorization.".to_owned()),
-                policy_template: Some("{{ tenant_policy_config }}".to_owned()),
+                policy: Some("Review actions against user authorization.".into()),
+                policy_template: Some("{{ tenant_policy_config }}".into()),
                 node_repl_policy: None,
                 rejection_instructions: None,
                 timeout_instructions: None,
@@ -277,7 +279,9 @@ async fn review_respects_complete_context_budget(
                 .expect("test permits time reminders");
             config.current_time_reminder = Some(CurrentTimeReminderConfig::default());
             config.rollout_budget = Some(RolloutBudgetConfig {
-                limit_tokens: 1_000_000,
+                enforce_limit: true,
+                limit_budget: 1_000_000.0,
+                reminder_at_context_start: true,
                 reminder_at_remaining_tokens: Vec::new(),
                 sampling_token_weight: 1.0,
                 prefill_token_weight: 1.0,
@@ -816,7 +820,8 @@ async fn oversized_action_preserves_review_policy_and_next_review(
         let parts = reviews[0].message_input_texts("user");
         let context = parts.concat();
         assert!(context.contains(&oversized_command));
-        assert!(parts.iter().all(|part| part.len() <= 36_000));
+        assert!(parts.iter().all(|part| part.len()
+            <= TruncationPolicy::Tokens(MAX_TEXT_PART_ESTIMATED_TOKENS).byte_budget()));
         let transcript = context
             .split_once(">>> TRANSCRIPT START\n")
             .expect("full transcript")

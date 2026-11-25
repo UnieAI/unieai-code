@@ -3,8 +3,12 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
+use crate::tools::executed_tool_calls::PendingResultBody;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use crate::unified_exec::output::CapturedStream;
 use crate::unified_exec::resolve_max_tokens;
+use codex_code_mode::CodeModeToolResult;
+use codex_extension_api::ToolCallOutcome;
 use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -12,24 +16,22 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::models::function_call_output_content_items_to_text;
+use codex_tool_call_id::ToolCallId;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolName;
-use codex_utils_audio::estimate_audio_token_count;
-use codex_utils_head_tail_buffer::format_output_omission_marker;
+use codex_utils_audio::estimate_tool_audio_tokens;
 use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::approx_token_count;
-use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_function_output_payload;
-use codex_utils_output_truncation::truncate_text;
 use codex_utils_output_truncation::with_serialization_allowance;
+use codex_utils_path_uri::PathUri;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -49,8 +51,10 @@ pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
 /// Delivery does not finish the call: post-tool hooks can still be cancelled.
 #[derive(Default)]
 pub(crate) struct ToolCallState {
-    pub(crate) terminal_outcome_reached: AtomicBool,
+    pub(crate) terminal_outcome: OnceLock<ToolCallOutcome>,
+    pub(crate) handler_started_at: OnceLock<Instant>,
     pub(crate) delivered_assistant_message: OnceLock<String>,
+    pub(crate) invocation: crate::agent::host::InvocationReservation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,10 +120,12 @@ pub struct ToolInvocation {
     pub(crate) step_context: Arc<StepContext>,
     pub cancellation_token: CancellationToken,
     pub tracker: SharedTurnDiffTracker,
-    pub call_id: String,
+    pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub source: ToolCallSource,
     pub payload: ToolPayload,
+    /// Original function-call evidence owned by this invocation, independent of live history.
+    pub native_call: Option<Arc<ResponseItem>>,
     /// Captured before PreToolUse and retained across input rewrites.
     pub(crate) environments: ToolEnvironments,
 }
@@ -153,7 +159,7 @@ impl ToolInvocation {
             .find_map(|item| match item {
                 ResponseItem::FunctionCall { id, call_id, .. }
                 | ResponseItem::CustomToolCall { id, call_id, .. }
-                    if call_id == &self.call_id =>
+                    if call_id == self.call_id.as_str() =>
                 {
                     id.clone()
                 }
@@ -172,12 +178,17 @@ pub struct McpToolOutput {
     pub tool_input: JsonValue,
     // Keep the original metadata for hooks; this flag only controls analytics capture.
     pub(crate) result_metadata_capture_allowed: bool,
+    pub(crate) result_capture: Option<Arc<PendingResultBody>>,
     pub wall_time: Duration,
     pub original_image_detail_supported: bool,
     pub truncation_policy: TruncationPolicy,
 }
 
 impl ToolOutput for McpToolOutput {
+    fn output_budget_applied(&self) -> bool {
+        true
+    }
+
     fn log_output(&self) -> String {
         // Logging has its own budget; do not first apply the model-context budget.
         let output = self.result.log_output();
@@ -205,15 +216,25 @@ impl ToolOutput for McpToolOutput {
         }
     }
 
-    fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, payload: &ToolPayload) -> CodeModeToolResult {
         self.result.code_mode_result(payload)
     }
 
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+    fn tool_result_metadata(&self) -> ToolResultMetadata {
         if !self.result_metadata_capture_allowed {
-            return None;
+            return ToolResultMetadata::default();
         }
-        self.result.meta.as_ref()
+        let result_id = self
+            .result_capture
+            .as_ref()
+            .filter(|_| self.result.success())
+            .and_then(|capture| capture.accept());
+        self.result
+            .meta
+            .as_ref()
+            .map(ToolResultMetadata::new)
+            .unwrap_or_default()
+            .with_result_id(result_id)
     }
 
     fn post_tool_use_input(&self, _payload: &ToolPayload) -> Option<JsonValue> {
@@ -252,7 +273,7 @@ impl McpToolOutput {
         truncate_function_output_payload(
             &mut payload,
             with_serialization_allowance(self.truncation_policy),
-            estimate_audio_token_count,
+            estimate_tool_audio_tokens,
         );
         payload
     }
@@ -382,8 +403,8 @@ impl ToolOutput for ApplyPatchToolOutput {
         Some(JsonValue::String(self.text.clone()))
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        JsonValue::Object(serde_json::Map::new())
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
+        CodeModeToolResult::from(JsonValue::Object(serde_json::Map::new()))
     }
 }
 
@@ -392,6 +413,10 @@ pub struct AbortedToolOutput {
 }
 
 impl ToolOutput for AbortedToolOutput {
+    fn was_aborted(&self) -> bool {
+        true
+    }
+
     fn log_output(&self) -> String {
         self.message.clone()
     }
@@ -425,28 +450,25 @@ pub struct ExecCommandToolOutput {
     pub event_call_id: String,
     pub chunk_id: String,
     pub wall_time: Duration,
-    /// Raw bytes returned for this unified exec call before any truncation.
-    pub raw_output: Vec<u8>,
+    /// Output retained by collection, before model-facing truncation.
+    pub(crate) raw_output: CapturedStream,
     pub truncation_policy: TruncationPolicy,
     pub max_output_tokens: Option<usize>,
     pub process_id: Option<i32>,
     pub exit_code: Option<i32>,
     pub original_token_count: Option<usize>,
-    /// Bytes omitted by the output collection cap before model-facing truncation.
-    pub output_omitted_bytes: Option<NonZeroUsize>,
     pub hook_command: Option<String>,
+    /// Local execution cwd retained for PostToolUse, independent of the collecting
+    /// turn. Remote commands leave this unset to retain the host hook cwd.
+    pub tool_cwd: Option<PathUri>,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
     fn log_output(&self) -> String {
         // The telemetry budget must not inherit the model's output-token limit.
-        let mut output = String::from_utf8_lossy(&self.raw_output).into_owned();
-        if let Some(omitted_bytes) = self.output_omitted_bytes {
-            let marker = format_output_omission_marker(omitted_bytes.get());
-            if !output.contains(&marker) {
-                output = format!("{marker}\n{output}");
-            }
-        }
+        let output = self
+            .raw_output
+            .render(/*policy*/ None, self.original_token_count);
         format!("{}\n{output}", self.response_header())
     }
 
@@ -479,6 +501,10 @@ impl ToolOutput for ExecCommandToolOutput {
             .map(|command| serde_json::json!({ "command": command }))
     }
 
+    fn post_tool_use_cwd(&self) -> Option<PathUri> {
+        self.tool_cwd.clone()
+    }
+
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
         if self.process_id.is_some() || self.hook_command.is_none() {
             return None;
@@ -489,7 +515,7 @@ impl ToolOutput for ExecCommandToolOutput {
         ))
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
         #[derive(Serialize)]
         struct UnifiedExecCodeModeResult {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -512,13 +538,14 @@ impl ToolOutput for ExecCommandToolOutput {
             original_token_count: self.original_token_count,
             output: match self.max_output_tokens {
                 Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
+                None => self.raw_output.text.clone(),
             },
         };
 
-        serde_json::to_value(result).unwrap_or_else(|err| {
+        let value = serde_json::to_value(result).unwrap_or_else(|err| {
             JsonValue::String(format!("failed to serialize exec result: {err}"))
-        })
+        });
+        CodeModeToolResult::from(value)
     }
 }
 
@@ -537,32 +564,8 @@ impl ExecCommandToolOutput {
     }
 
     fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
-        let text = String::from_utf8_lossy(&self.raw_output).to_string();
-        let Some(omitted_bytes) = self.output_omitted_bytes else {
-            return formatted_truncate_text(&text, policy);
-        };
-
-        let marker = format_output_omission_marker(omitted_bytes.get());
-        if text.len() <= policy.byte_budget() {
-            return if text.contains(&marker) {
-                text
-            } else {
-                format!("{marker}\n{text}")
-            };
-        }
-
-        let original_token_count = self
-            .original_token_count
-            .unwrap_or_else(|| approx_token_count(&text));
-        let truncated = truncate_text(&text, policy);
-        let omission_notice = if truncated.contains(&marker) {
-            String::new()
-        } else {
-            format!("{marker}\n")
-        };
-        format!(
-            "Warning: truncated output (original token count: {original_token_count})\n{omission_notice}\n{truncated}"
-        )
+        self.raw_output
+            .render(Some(policy), self.original_token_count)
     }
 
     fn response_header(&self) -> String {

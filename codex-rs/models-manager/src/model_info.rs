@@ -12,6 +12,7 @@ use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_utils_cached_str::CodexCachedStr;
 
 use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -49,20 +50,20 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 
     if let Some(base_instructions) = &config.base_instructions {
         let model_messages = model.model_messages.get_or_insert_default();
-        model_messages.instructions_template = Some(base_instructions.clone());
+        model_messages.instructions_template = Some(base_instructions.as_str().into());
     } else if config.personality == Some(Personality::None)
         && let Some(instructions_template) = model
             .model_messages
             .as_mut()
             .and_then(|messages| messages.instructions_template.as_mut())
     {
-        *instructions_template = strip_personality_section(std::mem::take(instructions_template));
+        strip_personality_section(instructions_template);
     }
 
     model
 }
 
-fn strip_personality_section(mut instructions: String) -> String {
+fn strip_personality_section(instructions: &mut CodexCachedStr) {
     let mut section_start = None;
     let mut section_end = None;
     let mut offset = 0;
@@ -85,10 +86,11 @@ fn strip_personality_section(mut instructions: String) -> String {
 
     if let Some(section_start) = section_start {
         let section_end = section_end.unwrap_or(instructions.len());
-        instructions.replace_range(section_start..section_end, "");
+        let mut text = String::with_capacity(instructions.len() - (section_end - section_start));
+        text.push_str(&instructions[..section_start]);
+        text.push_str(&instructions[section_end..]);
+        *instructions = text.into();
     }
-
-    instructions
 }
 
 fn is_h1_heading(line: &str) -> bool {
@@ -124,7 +126,6 @@ pub fn model_info_for_gateway_model(
     let mut info = base_model_info(slug);
     info.display_name = display_name.to_string();
     info.visibility = ModelVisibility::List;
-    info.used_fallback_model_metadata = false;
     // Open models speak plain function calling best: pin Direct so feature
     // flags can't switch them into code-mode, and don't send the OpenAI
     // reasoning-summary parameter their gateways ignore.
@@ -136,7 +137,7 @@ pub fn model_info_for_gateway_model(
     info.supported_reasoning_levels = supported_reasoning_levels;
     info.model_messages
         .get_or_insert_with(local_model_messages)
-        .instructions_template = Some(GATEWAY_BASE_INSTRUCTIONS.to_string());
+        .instructions_template = Some(GATEWAY_BASE_INSTRUCTIONS.into());
     if let Some(context_window) = context_window {
         info.context_window = Some(context_window);
         info.max_context_window = Some(context_window);
@@ -264,7 +265,6 @@ fn base_model_info(slug: &str) -> ModelInfo {
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
-        used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
@@ -277,12 +277,13 @@ fn base_model_info(slug: &str) -> ModelInfo {
         tool_mode: None,
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
+        multi_agent_tools_in_code_mode: None,
     }
 }
 
 fn local_model_messages() -> ModelMessages {
     ModelMessages {
-        instructions_template: Some(BASE_INSTRUCTIONS.to_string()),
+        instructions_template: Some(BASE_INSTRUCTIONS.into()),
         ..Default::default()
     }
 }

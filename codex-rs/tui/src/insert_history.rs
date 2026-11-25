@@ -14,6 +14,7 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::decorate_spans;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_wrapped_line;
+use crate::width::physical_row_count;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::line_contains_url_like;
@@ -263,7 +264,7 @@ pub(crate) fn wrap_history_hyperlink_lines(
         };
         wrapped_rows += line_wrapped
             .iter()
-            .map(|wrapped_line| wrapped_line.width().max(/*other*/ 1).div_ceil(wrap_width))
+            .map(|wrapped_line| physical_row_count(&wrapped_line.line, wrap_width))
             .sum::<usize>();
         wrapped.extend(line_wrapped);
     }
@@ -300,7 +301,7 @@ fn write_history_line<W: Write>(
     line: &HyperlinkLine,
     wrap_width: usize,
 ) -> io::Result<()> {
-    let physical_rows = line.width().max(1).div_ceil(wrap_width) as u16;
+    let physical_rows = physical_row_count(&line.line, wrap_width) as u16;
     if physical_rows > 1 {
         queue!(writer, SavePosition)?;
         for _ in 1..physical_rows {
@@ -820,6 +821,140 @@ mod tests {
     }
 
     #[test]
+    fn vt100_spoken_prompt_keeps_its_marker_color_without_a_terminal_palette() {
+        use crate::history_cell::HistoryCell;
+        use crate::history_cell::new_spoken_user_prompt;
+
+        crate::terminal_palette::with_test_default_colors(
+            /*colors*/ None::<crate::terminal_probe::DefaultColors>,
+            || {
+                let width = 30;
+                let lines = new_spoken_user_prompt("hello from voice".into())
+                    .display_hyperlink_lines(width);
+                let mut snapshots = Vec::new();
+                for policy in [
+                    HistoryLineWrapPolicy::PreWrap,
+                    HistoryLineWrapPolicy::Terminal,
+                ] {
+                    let mut backend = VT100Backend::new(width, /*height*/ 1);
+                    let (wrapped, _) =
+                        wrap_history_hyperlink_lines(&lines[1..2], usize::from(width), policy);
+                    write_history_line(&mut backend, &wrapped[0], usize::from(width))
+                        .expect("write spoken prompt");
+                    let screen = backend.vt100().screen();
+                    let marker = screen.cell(/*row*/ 0, /*col*/ 0).unwrap();
+                    let text = screen.cell(/*row*/ 0, /*col*/ 2).unwrap();
+                    let margin = screen.cell(/*row*/ 0, width - 1).unwrap();
+                    snapshots.push(format!(
+                        "{policy:?}: {}\nmarker: {:?}, text: {:?}, background: {:?}",
+                        screen.rows(/*start*/ 0, width).next().unwrap().trim_end(),
+                        marker.fgcolor(),
+                        text.fgcolor(),
+                        margin.bgcolor(),
+                    ));
+                }
+                insta::assert_snapshot!(snapshots.join("\n"), @"
+                PreWrap: › hello from voice
+                marker: Idx(1), text: Rgb(238, 238, 238), background: Rgb(68, 68, 68)
+                Terminal: › hello from voice
+                marker: Idx(1), text: Rgb(238, 238, 238), background: Rgb(68, 68, 68)
+                ");
+            },
+        );
+    }
+
+    #[test]
+    fn vt100_preserves_bold_at_the_start_of_a_typed_prompt() {
+        use crate::history_cell::HistoryCell;
+        use crate::history_cell::new_user_prompt;
+
+        let width = 30;
+        let lines = new_user_prompt("**Bold** plain".into(), vec![], vec![], vec![])
+            .display_hyperlink_lines(width);
+        let row = lines
+            .iter()
+            .find(|line| line.line.to_string().starts_with("› "))
+            .expect("prompt row");
+        let mut backend = VT100Backend::new(width, /*height*/ 1);
+        write_history_line(&mut backend, row, usize::from(width)).unwrap();
+
+        let screen = backend.vt100().screen();
+        let row = screen.rows(/*start*/ 0, width).next().unwrap();
+        let marker = screen.cell(/*row*/ 0, /*col*/ 0).unwrap();
+        let first = screen.cell(/*row*/ 0, /*col*/ 2).unwrap();
+        let plain = screen.cell(/*row*/ 0, /*col*/ 7).unwrap();
+        let snapshot = format!(
+            "{}\nmarker dim: {}, first word bold: {}, trailing word bold: {}",
+            row.trim_end(),
+            marker.dim(),
+            first.bold(),
+            plain.bold(),
+        );
+        insta::assert_snapshot!(snapshot, @"
+        › Bold plain
+        marker dim: true, first word bold: true, trailing word bold: false
+        ");
+    }
+
+    #[test]
+    fn vt100_prompt_keeps_text_element_accent_without_a_terminal_palette() {
+        use crate::history_cell::HistoryCell;
+        use crate::history_cell::new_user_prompt;
+        use codex_protocol::user_input::TextElement;
+
+        crate::terminal_palette::with_test_default_colors(/*colors*/ None, || {
+            let message = "[Image #1] details";
+            let element = TextElement::new((0..10).into(), Some("[Image #1]".into()));
+            let lines = new_user_prompt(message.into(), vec![element], vec![], vec![])
+                .display_hyperlink_lines(/*width*/ 30);
+            for policy in [
+                HistoryLineWrapPolicy::PreWrap,
+                HistoryLineWrapPolicy::Terminal,
+            ] {
+                let (rows, _) =
+                    wrap_history_hyperlink_lines(&lines[1..2], /*wrap_width*/ 30, policy);
+                let mut backend = VT100Backend::new(/*width*/ 30, /*height*/ 1);
+                write_history_line(&mut backend, &rows[0], /*wrap_width*/ 30).unwrap();
+                let screen = backend.vt100().screen();
+                let element = screen.cell(/*row*/ 0, /*col*/ 2).unwrap();
+                let plain = screen.cell(/*row*/ 0, /*col*/ 13).unwrap();
+                assert_ne!(element.fgcolor(), plain.fgcolor());
+                assert_eq!(element.bgcolor(), plain.bgcolor());
+            }
+        });
+    }
+
+    #[test]
+    fn vt100_async_reply_keeps_inline_code_color_without_a_terminal_palette() {
+        use crate::async_question_reply::AsyncQuestionReply;
+        use crate::history_cell::HistoryCell;
+        use crate::history_cell::new_user_prompt;
+
+        crate::terminal_palette::with_test_default_colors(/*colors*/ None, || {
+            let answer = "Use `main`";
+            let reply = AsyncQuestionReply {
+                question_item_id: "ask".into(),
+                question: "Which branch?".into(),
+                answer: answer.into(),
+            };
+            let lines = new_user_prompt(answer.into(), vec![], vec![], vec![])
+                .with_async_replies(vec![reply], std::path::Path::new("."))
+                .display_hyperlink_lines(/*width*/ 30);
+            let row = lines
+                .iter()
+                .find(|row| row.line.to_string().contains("Use main"))
+                .unwrap();
+            let mut backend = VT100Backend::new(/*width*/ 30, /*height*/ 1);
+            write_history_line(&mut backend, row, /*wrap_width*/ 30).unwrap();
+            let screen = backend.vt100().screen();
+            let plain = screen.cell(/*row*/ 0, /*col*/ 2).unwrap();
+            let code = screen.cell(/*row*/ 0, /*col*/ 6).unwrap();
+            assert_eq!(plain.fgcolor(), vt100::Color::Rgb(238, 238, 238));
+            assert_ne!(code.fgcolor(), plain.fgcolor());
+        });
+    }
+
+    #[test]
     fn vt100_user_message_url_wrap_preserves_gutter_and_background() {
         use crate::history_cell::HistoryCell;
         use crate::history_cell::UserHistoryCell;
@@ -837,7 +972,7 @@ mod tests {
 
         let url = "https://example.test/forwarded/threads/10930?page=1&queue=customer_support_unprocessed&forwardedScope=all";
         let cell = UserHistoryCell {
-            spoken: false,
+            presentation: Default::default(),
             message: url.to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
@@ -1151,37 +1286,34 @@ mod tests {
     }
 
     #[test]
-    fn vt100_long_unwrapped_url_does_not_insert_extra_blank_gap_before_content() {
-        let width: u16 = 56;
-        let height: u16 = 24;
+    fn vt100_long_unwrapped_url_preserves_adjacent_history() {
+        let width: u16 = 20;
+        let height: u16 = 8;
         let backend = VT100Backend::new(width, height);
         let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
-        let viewport = Rect::new(0, height - 1, width, 1);
-        term.set_viewport_area(viewport);
+        term.set_viewport_area(Rect::new(0, 0, width, 1));
 
         let prompt = "Write a long URL as output for testing";
         insert_history_lines(&mut term, vec![Line::from(prompt)]).expect("insert prompt line");
 
-        let long_url = format!(
-            "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/{}",
-            "very-long-segment-".repeat(16),
-        );
+        // The first 界 cannot fit in the last column, so the final x needs a third row.
+        let long_url = "https://test.org/界界界界界界界界界界x";
         let url_line: Line<'static> = Line::from(vec!["• ".into(), long_url.into()]);
         insert_history_lines(&mut term, vec![url_line]).expect("insert long url line");
 
-        let rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
-        let prompt_row = rows
-            .iter()
-            .position(|row| row.contains("Write a long URL as output for testing"))
-            .unwrap_or_else(|| panic!("expected prompt row in screen rows: {rows:?}"));
-        let url_row = rows
-            .iter()
-            .position(|row| row.contains("• https://example.test/api"))
-            .unwrap_or_else(|| panic!("expected URL first row in screen rows: {rows:?}"));
-
-        assert!(
-            url_row <= prompt_row + 2,
-            "expected URL content to appear immediately after prompt (allowing at most one spacer row), got prompt_row={prompt_row}, url_row={url_row}, rows={rows:?}",
-        );
+        let rows: Vec<String> = term
+            .backend()
+            .vt100()
+            .screen()
+            .rows(0, width)
+            .take(usize::from(term.viewport_area.y))
+            .collect();
+        insta::assert_snapshot!(rows.join("\n"), @r"
+        Write a long URL as
+        output for testing
+        • https://test.org/
+        界界界界界界界界界界
+        x
+        ");
     }
 }

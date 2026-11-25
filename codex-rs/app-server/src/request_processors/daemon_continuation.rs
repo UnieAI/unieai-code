@@ -39,19 +39,22 @@ impl ThreadRequestProcessor {
         };
         // The snapshot has complete recorded input, but the old process may have
         // completed or replaced its turn during the shutdown grace period.
-        let Some(start) = history
-            .iter()
-            .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
-        else {
+        let Some(start) = history.iter().rposition(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg {
+                    event: EventMsg::TurnStarted(_),
+                    ..
+                }
+            )
+        }) else {
             return;
         };
-        if !matches!(&history[start], RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+        if !matches!(&history[start], RolloutItem::EventMsg { event: EventMsg::TurnStarted(event), .. }
             if event.turn_id == saved.turn_id)
-            || history[start..].iter().any(|item| match item {
-                RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => {
-                    event.turn_id == saved.turn_id
-                }
-                RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => event
+            || history[start..].iter().any(|item| match item.event_msg() {
+                Some(EventMsg::TurnComplete(event)) => event.turn_id == saved.turn_id,
+                Some(EventMsg::TurnAborted(event)) => event
                     .turn_id
                     .as_ref()
                     .is_none_or(|turn_id| turn_id == &saved.turn_id),
@@ -82,7 +85,7 @@ impl ThreadRequestProcessor {
             return;
         }
         // Recovery must not override a stricter saved or newly configured policy.
-        if previous_context.permission_profile() != config.permission_profile {
+        if previous_context.permission_profile != config.permission_profile {
             return;
         }
         let continuation = ContextualUserFragment::into(InternalModelContextFragment::new(
@@ -130,7 +133,11 @@ impl ThreadRequestProcessor {
             Ok(TurnInputSubmission::NotSubmitted { reason }) => {
                 tracing::debug!(%thread_id, ?reason, "recovery continuation was not started");
             }
-            Ok(TurnInputSubmission::Steered { .. }) => unreachable!("continuation cannot steer"),
+            Ok(TurnInputSubmission::Steered { .. } | TurnInputSubmission::Accepted) => {
+                // continue_turn_if_idle uses start_if_idle, which cannot steer or
+                // enter the agent-message path that returns Accepted.
+                unreachable!("continuation must start or decline")
+            }
             Err(err) => tracing::warn!(%thread_id, %err, "recovery continuation failed"),
         }
     }

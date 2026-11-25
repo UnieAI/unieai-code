@@ -11,8 +11,6 @@ use crate::render::highlight::MAX_HIGHLIGHT_LINE_BYTES;
 use crate::session_state::ThreadSessionState;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
-use codex_app_server_protocol::McpAuthStatus;
-use codex_config::types::McpServerConfig;
 use codex_otel::RuntimeMetricTotals;
 use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::ThreadId;
@@ -53,6 +51,7 @@ fn connected_server_version_notice_snapshot() {
     let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
         &settings,
         &target,
+        /*daemon_updates_allowed*/ true,
         /*server_home*/ None,
         "0.153.0",
         Some("0.152.1"),
@@ -78,14 +77,26 @@ fn local_daemon_version_notice_snapshot() {
         show_server_version_notice: true,
         ..Default::default()
     };
-    for (client, server, snapshot) in [
-        ("0.153.0", "0.152.1", "local_daemon_version_notice_snapshot"),
-        ("0.155.0-alpha.12", "0.156.0", "local_daemon_alpha_mismatch"),
-        ("0.0.0", "0.156.0", "local_daemon_source_mismatch"),
+    for (client, server, updates_allowed, snapshot) in [
+        (
+            "0.153.0",
+            "0.152.1",
+            true,
+            "local_daemon_version_notice_snapshot",
+        ),
+        (
+            "0.155.0-alpha.12",
+            "0.156.0",
+            true,
+            "local_daemon_alpha_mismatch",
+        ),
+        ("0.0.0", "0.156.0", true, "local_daemon_source_mismatch"),
+        ("0.153.0", "0.152.1", false, "local_daemon_updates_disabled"),
     ] {
         let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
             &settings,
             &target,
+            updates_allowed,
             /*server_home*/ None,
             client,
             Some(server),
@@ -135,88 +146,6 @@ fn streaming_agent_tail_blank_line_uses_one_viewport_row() {
 
   second");
     assert_eq!(cell.desired_height(/*width*/ 80), 3);
-}
-
-fn stdio_server_config(
-    command: &str,
-    args: Vec<&str>,
-    env: Option<HashMap<String, String>>,
-    env_vars: Vec<&str>,
-) -> McpServerConfig {
-    let mut table = toml::Table::new();
-    table.insert(
-        "command".to_string(),
-        toml::Value::String(command.to_string()),
-    );
-    if !args.is_empty() {
-        table.insert(
-            "args".to_string(),
-            toml::Value::Array(
-                args.into_iter()
-                    .map(|arg| toml::Value::String(arg.to_string()))
-                    .collect(),
-            ),
-        );
-    }
-    if let Some(env) = env {
-        table.insert("env".to_string(), string_map_to_toml_value(env));
-    }
-    if !env_vars.is_empty() {
-        table.insert(
-            "env_vars".to_string(),
-            toml::Value::Array(
-                env_vars
-                    .into_iter()
-                    .map(|name| toml::Value::String(name.to_string()))
-                    .collect(),
-            ),
-        );
-    }
-
-    toml::Value::Table(table)
-        .try_into()
-        .expect("test stdio MCP config should deserialize")
-}
-
-fn streamable_http_server_config(
-    url: &str,
-    bearer_token_env_var: Option<&str>,
-    http_headers: Option<HashMap<String, String>>,
-    env_http_headers: Option<HashMap<String, String>>,
-) -> McpServerConfig {
-    let mut table = toml::Table::new();
-    table.insert("url".to_string(), toml::Value::String(url.to_string()));
-    if let Some(bearer_token_env_var) = bearer_token_env_var {
-        table.insert(
-            "bearer_token_env_var".to_string(),
-            toml::Value::String(bearer_token_env_var.to_string()),
-        );
-    }
-    if let Some(http_headers) = http_headers {
-        table.insert(
-            "http_headers".to_string(),
-            string_map_to_toml_value(http_headers),
-        );
-    }
-    if let Some(env_http_headers) = env_http_headers {
-        table.insert(
-            "env_http_headers".to_string(),
-            string_map_to_toml_value(env_http_headers),
-        );
-    }
-
-    toml::Value::Table(table)
-        .try_into()
-        .expect("test streamable_http MCP config should deserialize")
-}
-
-fn string_map_to_toml_value(entries: HashMap<String, String>) -> toml::Value {
-    toml::Value::Table(
-        entries
-            .into_iter()
-            .map(|(key, value)| (key, toml::Value::String(value)))
-            .collect(),
-    )
 }
 
 fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
@@ -495,6 +424,7 @@ fn proposed_plan_cell_unwraps_markdown_fenced_table() {
 #[test]
 fn structured_tool_cell_renders_raw_plain_text_without_prefix_or_style() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "search".into(),
         tool: "find_docs".into(),
         arguments: Some(json!({"query": "raw mode"})),
@@ -520,10 +450,32 @@ fn structured_tool_cell_renders_raw_plain_text_without_prefix_or_style() {
 }
 
 #[test]
+fn delegated_message_list_spacing_in_scrollback_and_transcript() {
+    let cell = DelegatedMessageCell::new(
+        "other",
+        "- One\n- This item has enough words to wrap\n- Three".to_string(),
+    );
+    let width = 32;
+    let scrollback = render_lines(&cell.display_lines(width)).join("\n");
+    let transcript = render_lines(&visible_lines(fullscreen_session_lines(
+        &cell,
+        width,
+        /*detailed*/ false,
+        HistoryRenderMode::Rich,
+    )))
+    .join("\n");
+
+    insta::assert_snapshot!(format!(
+        "Scrollback\n{scrollback}\n\nRedrawable transcript\n{transcript}"
+    ));
+}
+
+#[test]
 fn raw_mode_toggle_transcript_snapshot() {
     let mut tool_cell = new_active_mcp_tool_call(
         "call-snapshot".to_string(),
         McpInvocation {
+            environment_id: None,
             server: "workspace".to_string(),
             tool: "inspect".to_string(),
             arguments: Some(json!({"path": "README.md"})),
@@ -587,7 +539,7 @@ fn image_generation_call_renders_saved_path() {
         "call-image-generation".to_string(),
         "completed",
         Some("A tiny blue square".to_string()),
-        Some(saved_path),
+        Some(saved_path.clone()),
     );
 
     assert_eq!(
@@ -598,10 +550,25 @@ fn image_generation_call_renders_saved_path() {
             expected_saved_path,
         ],
     );
+    let lines = cell.transcript_hyperlink_lines(/*width*/ 80);
+    let link = &lines.last().unwrap().hyperlinks[0];
+    assert_eq!(
+        link.reader_destination(/*documents*/ true),
+        Some(crate::terminal_hyperlinks::ReaderLink::Document(
+            crate::markdown_render::FileLink {
+                path: saved_path.to_string_lossy().into_owned(),
+                location: None,
+            },
+        )),
+    );
+    assert_eq!(link.reader_destination(/*documents*/ false), None);
 }
 
 fn session_configured_event(model: &str) -> ThreadSessionState {
     ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id: ThreadId::new(),
@@ -615,7 +582,7 @@ fn session_configured_event(model: &str) -> ThreadSessionState {
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
-        cwd: test_path_buf("/tmp/project").abs(),
+        cwd: codex_utils_path_uri::PathUri::parse("file:///tmp/project").unwrap(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
@@ -753,13 +720,8 @@ async fn session_info_uses_availability_nux_tooltip_override() {
 }
 
 #[tokio::test]
-#[cfg_attr(
-    target_os = "windows",
-    ignore = "snapshot path rendering differs on Windows"
-)]
 async fn session_info_availability_nux_tooltip_snapshot() {
-    let mut config = test_config().await;
-    config.cwd = test_path_buf("/tmp/project").abs();
+    let config = test_config().await;
     let cell = new_session_info(
         &config,
         &crate::local_settings::LocalSettings::from(&config),
@@ -828,22 +790,27 @@ async fn session_info_preserves_styled_tooltip_links() {
 }
 
 #[tokio::test]
-async fn session_info_first_event_suppresses_tooltips_and_nux() {
+async fn session_info_first_event_respects_tooltip_preference() {
     let config = test_config().await;
-    let cell = new_session_info(
-        &config,
-        &crate::local_settings::LocalSettings::from(&config),
-        "gpt-5",
-        "gpt-5",
-        &session_configured_event("gpt-5"),
-        /*is_first_event*/ true,
-        Some("Model just became available".to_string()),
-        Some(PlanType::Free),
-    );
+    let mut local_settings = crate::local_settings::LocalSettings::from(&config);
+    for show_tooltips in [true, false] {
+        local_settings.tui.show_tooltips = show_tooltips;
+        let cell = new_session_info(
+            &config,
+            &local_settings,
+            "requested-model",
+            "gpt-5",
+            &session_configured_event("gpt-5"),
+            /*is_first_event*/ true,
+            Some("Model just became available".to_string()),
+            Some(PlanType::Free),
+        );
 
-    let rendered = render_transcript(&cell).join("\n");
-    assert!(!rendered.contains("Model just became available"));
-    assert!(rendered.contains("To get started"));
+        let rendered = render_transcript(&cell).join("\n");
+        assert_eq!(rendered.contains("To get started"), show_tooltips);
+        assert!(!rendered.contains("Model just became available"));
+        assert!(!rendered.contains("model changed:"));
+    }
 }
 
 #[tokio::test]
@@ -933,6 +900,8 @@ fn safety_access_block_event_snapshot() {
     let cell = new_safety_access_block_event();
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
     insta::assert_snapshot!(rendered);
+    let body = cell.display_lines(u16::MAX)[1].to_string();
+    assert_eq!(cell.raw_lines()[1].to_string(), body.trim_start());
 }
 
 #[test]
@@ -1025,115 +994,10 @@ unset it, then restart UnieAI Code"
     insta::assert_snapshot!(rendered);
 }
 
-#[tokio::test]
-async fn mcp_tools_output_masks_sensitive_values() {
-    let mut config = test_config().await;
-    let mut env = HashMap::new();
-    env.insert("TOKEN".to_string(), "secret".to_string());
-    let stdio_config = stdio_server_config("docs-server", vec![], Some(env), vec!["APP_TOKEN"]);
-    let mut servers = config.mcp_servers.get().clone();
-    servers.insert("docs".to_string(), stdio_config);
-
-    let mut headers = HashMap::new();
-    headers.insert("Authorization".to_string(), "Bearer secret".to_string());
-    let mut env_headers = HashMap::new();
-    env_headers.insert("X-API-Key".to_string(), "API_KEY_ENV".to_string());
-    let http_config = streamable_http_server_config(
-        "https://example.com/mcp",
-        Some("MCP_TOKEN"),
-        Some(headers),
-        Some(env_headers),
-    );
-    servers.insert("http".to_string(), http_config);
-    config
-        .mcp_servers
-        .set(servers)
-        .expect("test mcp servers should accept any configuration");
-
-    let mut tools: HashMap<String, Tool> = HashMap::new();
-    tools.insert(
-        "mcp__docs__list".to_string(),
-        Tool {
-            description: None,
-            name: "list".to_string(),
-            title: None,
-            input_schema: serde_json::json!({"type": "object", "properties": {}}),
-            output_schema: None,
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-    );
-    tools.insert(
-        "mcp__http__ping".to_string(),
-        Tool {
-            description: None,
-            name: "ping".to_string(),
-            title: None,
-            input_schema: serde_json::json!({"type": "object", "properties": {}}),
-            output_schema: None,
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-    );
-
-    let auth_statuses: HashMap<String, McpAuthStatus> = HashMap::new();
-    let cell = new_mcp_tools_output(
-        &config,
-        tools,
-        HashMap::new(),
-        HashMap::new(),
-        &auth_statuses,
-    );
-    let rendered = render_lines(&cell.display_lines(/*width*/ 120)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
-#[tokio::test]
-async fn mcp_tools_output_lists_tools_for_hyphenated_server_names() {
-    let mut config = test_config().await;
-    let mut servers = config.mcp_servers.get().clone();
-    servers.insert(
-        "some-server".to_string(),
-        stdio_server_config("docs-server", vec!["--stdio"], /*env*/ None, vec![]),
-    );
-    config
-        .mcp_servers
-        .set(servers)
-        .expect("test mcp servers should accept any configuration");
-
-    let tools = HashMap::from([(
-        "mcp__some_server__lookup".to_string(),
-        Tool {
-            description: None,
-            name: "lookup".to_string(),
-            title: None,
-            input_schema: serde_json::json!({"type": "object", "properties": {}}),
-            output_schema: None,
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-    )]);
-
-    let auth_statuses: HashMap<String, McpAuthStatus> = HashMap::new();
-    let cell = new_mcp_tools_output(
-        &config,
-        tools,
-        HashMap::new(),
-        HashMap::new(),
-        &auth_statuses,
-    );
-    let rendered = render_lines(&cell.display_lines(/*width*/ 120)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
 #[test]
 fn mcp_tools_output_from_statuses_renders_status_only_servers() {
     let statuses = vec![McpServerStatus {
+        environment_id: None,
         server_capabilities: None,
         tool_list_meta: None,
         tools_error: None,
@@ -1170,6 +1034,7 @@ fn mcp_tools_output_from_statuses_renders_status_only_servers() {
 #[test]
 fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
     let statuses = vec![McpServerStatus {
+        environment_id: None,
         server_capabilities: None,
         tool_list_meta: None,
         tools_error: None,
@@ -1463,6 +1328,7 @@ fn web_search_history_cell_transcript_snapshot() {
 #[test]
 fn active_mcp_tool_call_snapshot() {
     let invocation = McpInvocation {
+        environment_id: Some("a".to_string()),
         server: "search".into(),
         tool: "find_docs".into(),
         arguments: Some(json!({
@@ -1487,6 +1353,7 @@ fn code_mode_tool_call_uses_title_and_preserves_full_transcript() {
     let mut cell = new_active_mcp_tool_call(
         "call-code-mode".into(),
         McpInvocation {
+            environment_id: None,
             server: "node_repl".into(),
             tool: "js".into(),
             arguments: Some(json!({
@@ -1537,6 +1404,7 @@ fn code_mode_tool_call_preserves_failure_details() {
     let mut cell = new_active_mcp_tool_call(
         "call-code-mode-failed".into(),
         McpInvocation {
+            environment_id: None,
             server: "node_repl".into(),
             tool: "js".into(),
             arguments: Some(json!({"title": "Inspect workspace", "code": "throw Error('denied')"})),
@@ -1599,6 +1467,7 @@ fn thread_recap_loading_without_animations_snapshot() {
 #[test]
 fn completed_mcp_tool_call_success_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "search".into(),
         tool: "find_docs".into(),
         arguments: Some(json!({
@@ -1629,6 +1498,7 @@ fn completed_mcp_tool_call_success_snapshot() {
 #[test]
 fn completed_mcp_tool_call_image_after_text_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "image".into(),
         tool: "generate".into(),
         arguments: Some(json!({
@@ -1660,6 +1530,7 @@ fn completed_mcp_tool_call_image_after_text_snapshot() {
 #[test]
 fn completed_mcp_tool_call_accepts_data_url_image_blocks() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "image".into(),
         tool: "generate".into(),
         arguments: Some(json!({
@@ -1689,6 +1560,7 @@ fn completed_mcp_tool_call_accepts_data_url_image_blocks() {
 #[test]
 fn completed_mcp_tool_call_multiple_image_blocks_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "image".into(),
         tool: "generate".into(),
         arguments: Some(json!({
@@ -1717,6 +1589,7 @@ fn completed_mcp_tool_call_multiple_image_blocks_snapshot() {
 #[test]
 fn completed_mcp_tool_call_error_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "search".into(),
         tool: "find_docs".into(),
         arguments: Some(json!({
@@ -1740,6 +1613,7 @@ fn completed_mcp_tool_call_error_snapshot() {
 #[test]
 fn completed_mcp_tool_call_multiple_outputs_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "search".into(),
         tool: "find_docs".into(),
         arguments: Some(json!({
@@ -1780,6 +1654,7 @@ fn completed_mcp_tool_call_multiple_outputs_snapshot() {
 #[test]
 fn completed_mcp_tool_call_wrapped_outputs_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "metrics".into(),
         tool: "get_nearby_metric".into(),
         arguments: Some(json!({
@@ -1812,6 +1687,7 @@ fn completed_mcp_tool_call_wrapped_outputs_snapshot() {
 #[test]
 fn completed_mcp_tool_call_multiple_outputs_inline_snapshot() {
     let invocation = McpInvocation {
+        environment_id: None,
         server: "metrics".into(),
         tool: "summary".into(),
         arguments: Some(json!({
@@ -2312,7 +2188,7 @@ fn ran_cell_multiline_with_stderr_snapshot() {
 fn user_history_cell_wraps_and_prefixes_each_line_snapshot() {
     let msg = "_count_r\x1b[13;2:3uows";
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: msg.to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2336,7 +2212,7 @@ fn user_history_cell_wraps_long_urls_inside_the_message_gutter() {
     );
     let image_start = message.find("[Image #1]").unwrap();
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message,
         text_elements: vec![TextElement::new(
             (image_start..image_start + "[Image #1]".len()).into(),
@@ -2387,7 +2263,7 @@ fn user_history_cell_wraps_long_urls_inside_the_message_gutter() {
 #[test]
 fn user_history_cell_renders_remote_image_urls() {
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "describe these".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2408,7 +2284,7 @@ fn user_image_labels_follow_the_painted_prompt_surface() {
 
     let placeholder = "[Image #1]";
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: format!("{placeholder} describe these"),
         text_elements: vec![TextElement::new(
             (0..placeholder.len()).into(),
@@ -2444,7 +2320,7 @@ fn user_image_labels_follow_the_painted_prompt_surface() {
 #[test]
 fn user_history_cell_summarizes_inline_data_urls() {
     let mut cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "describe inline image".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2470,7 +2346,7 @@ fn user_history_cell_summarizes_inline_data_urls() {
 #[test]
 fn user_history_cell_numbers_multiple_remote_images() {
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "describe both".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2490,7 +2366,7 @@ fn user_history_cell_numbers_multiple_remote_images() {
 #[test]
 fn user_history_cell_height_matches_rendered_lines_with_remote_images() {
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "line one\nline two".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2513,7 +2389,7 @@ fn user_history_cell_height_matches_rendered_lines_with_remote_images() {
 #[test]
 fn user_history_cell_trims_trailing_blank_message_lines() {
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "line one\n\n   \n\t \n".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -2534,7 +2410,7 @@ fn user_history_cell_trims_trailing_blank_message_lines() {
 fn user_history_cell_trims_trailing_blank_message_lines_with_text_elements() {
     let message = "tokenized\n\n\n".to_string();
     let cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message,
         text_elements: vec![TextElement::new(
             (0..8).into(),
@@ -2558,7 +2434,7 @@ fn user_history_cell_trims_trailing_blank_message_lines_with_text_elements() {
 fn render_uses_wrapping_for_long_url_like_line() {
     let url = "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/artifacts/reports/performance/summary/detail/with/a/very/long/path/that/keeps/going/for/testing/purposes-only-and-does/not/need/to/resolve/index.html?session_id=abc123def456ghi789jkl012mno345pqr678stu901vwx234yz";
     let cell: Box<dyn HistoryCell> = Box::new(UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: url.to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -3050,7 +2926,7 @@ fn agent_markdown_cell_narrow_width_shows_prefix_only() {
 #[test]
 fn wrapped_and_prefixed_cells_handle_tiny_widths() {
     let user_cell = UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "tiny width coverage for wrapped user history".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -3157,7 +3033,7 @@ fn consolidation_walker_replaces_agent_message_cells() {
 
     // Build a transcript with: [UserCell, AgentMsg(head), AgentMsg(cont), AgentMsg(cont)]
     let user = Arc::new(UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "hello".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

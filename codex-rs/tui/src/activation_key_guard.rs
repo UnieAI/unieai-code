@@ -1,7 +1,7 @@
-//! Suppress a key held across a view transition from activating the child view.
+//! Keep a held activation key from triggering another action.
 //!
 //! Terminals with enhanced keyboard reporting distinguish a held `Repeat` from a fresh `Press`.
-//! Press-only terminals use a bounded window that extends while repeat events continue to arrive.
+//! A view transition on a press-only terminal can use a bounded window to block ambiguous presses.
 
 use crate::key_hint::KeyBinding;
 use crossterm::event::KeyEventKind;
@@ -11,22 +11,33 @@ use std::time::Instant;
 const INITIAL_GUARD: Duration = Duration::from_secs(/*secs*/ 1);
 const LEGACY_REPEAT_GUARD: Duration = Duration::from_secs(/*secs*/ 1);
 
+pub(crate) enum ActivationKeySuppression {
+    ViewTransition,
+    ReportedRepeats,
+    PressOnlyFallback,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ActivationKeyGuard {
     key: KeyBinding,
     block_until: Instant,
-    key_releases_reported: bool,
+    legacy_repeat_fallback: bool,
     active: bool,
 }
 
 impl ActivationKeyGuard {
-    pub(crate) fn new_at(key: KeyBinding, now: Instant, key_releases_reported: bool) -> Self {
+    pub(crate) fn new_at(key: KeyBinding, now: Instant, reported_repeats_only: bool) -> Self {
         Self {
             key,
             block_until: now.checked_add(INITIAL_GUARD).unwrap_or(now),
-            key_releases_reported,
+            legacy_repeat_fallback: !reported_repeats_only,
             active: true,
         }
+    }
+
+    pub(crate) fn extend_for_protected_view(&mut self, now: Instant) {
+        self.legacy_repeat_fallback = true;
+        self.block_until = self.block_until.max(now + INITIAL_GUARD);
     }
 
     pub(crate) fn consume(&mut self, key: KeyBinding, kind: KeyEventKind) -> bool {
@@ -43,8 +54,8 @@ impl ActivationKeyGuard {
                 self.active = false;
                 return true;
             }
-            // Enhanced keyboard reporting labels a held key as Repeat, so a new Press is fresh.
-            if self.key_releases_reported && kind == KeyEventKind::Press {
+            // Without the legacy fallback, only a reported Repeat is treated as held.
+            if !self.legacy_repeat_fallback && kind == KeyEventKind::Press {
                 self.active = false;
                 return false;
             }

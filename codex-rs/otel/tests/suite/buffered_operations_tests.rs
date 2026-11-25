@@ -14,6 +14,7 @@ use opentelemetry_sdk::metrics::data::AggregatedMetrics;
 use opentelemetry_sdk::metrics::data::MetricData;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::time::Duration;
 
 fn install() -> MetricsClient {
@@ -80,11 +81,11 @@ fn shutdown_buffers_until_replacement_and_preserves_newer_installations() {
 fn rejected_opt_out_preserves_recording_and_accepted_opt_out_survives_shutdown() {
     let metrics = install();
     let mut settings = OtelSettings {
+        headers_helper: None,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         environment: "test".to_string(),
         service_name: "test".to_string(),
         service_version: "1".to_string(),
-        codex_home: ".".into(),
         exporter: OtelExporter::None,
         trace_exporter: OtelExporter::OtlpHttp {
             endpoint: "http://127.0.0.1:1/v1/traces".to_string(),
@@ -94,7 +95,7 @@ fn rejected_opt_out_preserves_recording_and_accepted_opt_out_survives_shutdown()
         },
         metrics_exporter: OtelExporter::None,
         runtime_metrics: false,
-        span_attributes: BTreeMap::from([(String::new(), "invalid".to_string())]),
+        span_attributes: HashMap::from([(String::new(), "invalid".to_string())]),
         tracestate: BTreeMap::new(),
     };
     assert_eq!(

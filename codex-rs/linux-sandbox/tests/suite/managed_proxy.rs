@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use codex_core::exec_env::create_env;
+use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 use codex_network_proxy::write_attribution_frame;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -18,6 +19,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cargo_bin::cargo_bin;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::io::Read;
@@ -36,6 +38,10 @@ use tempfile::NamedTempFile;
 use tokio::process::Command;
 use url::Url;
 
+#[path = "managed_proxy_bridge_lifecycle_tests.rs"]
+mod bridge_lifecycle;
+#[path = "managed_tcp.rs"]
+mod managed_tcp;
 #[path = "managed_proxy_unix_sockets_tests.rs"]
 mod unix_sockets;
 
@@ -48,6 +54,7 @@ const MANAGED_PROXY_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "loopback: Failed RTM_NEWLINK",
     "setting up uid map: Permission denied",
     "No permissions to create a new namespace",
+    "bwrap: Failed to make / slave: Permission denied",
     "error isolating Linux network namespace for proxy mode",
 ];
 
@@ -88,13 +95,16 @@ fn is_bwrap_unavailable_output(output: &Output) -> bool {
 }
 
 async fn should_skip_bwrap_tests() -> bool {
-    let mut env = create_env_from_core_vars();
+    should_skip_bwrap_tests_with_env(create_env_from_core_vars()).await
+}
+
+async fn should_skip_bwrap_tests_with_env(mut env: HashMap<String, String>) -> bool {
     strip_proxy_env(&mut env);
 
     let output = run_linux_sandbox_direct(
         &["bash", "-c", "true"],
         &PermissionProfile::read_only(),
-        /*allow_network_for_proxy*/ false,
+        /*loopback_ports*/ None,
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -111,18 +121,21 @@ fn is_managed_proxy_permission_error(stderr: &str) -> bool {
 }
 
 async fn managed_proxy_skip_reason() -> Option<String> {
-    if should_skip_bwrap_tests().await {
+    managed_proxy_skip_reason_with_env(create_env_from_core_vars()).await
+}
+
+async fn managed_proxy_skip_reason_with_env(mut env: HashMap<String, String>) -> Option<String> {
+    if should_skip_bwrap_tests_with_env(env.clone()).await {
         return Some("bubblewrap is unavailable in this environment".to_string());
     }
 
-    let mut env = create_env_from_core_vars();
     strip_proxy_env(&mut env);
     env.insert("HTTP_PROXY".to_string(), "http://127.0.0.1:9".to_string());
 
     let output = run_linux_sandbox_direct(
         &["bash", "-c", "true"],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -145,12 +158,11 @@ async fn managed_proxy_skip_reason() -> Option<String> {
 async fn run_linux_sandbox_direct(
     command: &[&str],
     permission_profile: &PermissionProfile,
-    allow_network_for_proxy: bool,
+    loopback_ports: Option<&[u16]>,
     env: HashMap<String, String>,
     timeout_ms: u64,
 ) -> Output {
-    let mut command =
-        linux_sandbox_command(command, permission_profile, allow_network_for_proxy, env);
+    let mut command = linux_sandbox_command(command, permission_profile, loopback_ports, env);
     tokio::time::timeout(Duration::from_millis(timeout_ms), command.output())
         .await
         .expect("sandbox command should not time out")
@@ -160,34 +172,55 @@ async fn run_linux_sandbox_direct(
 fn linux_sandbox_command(
     command: &[&str],
     permission_profile: &PermissionProfile,
-    allow_network_for_proxy: bool,
+    loopback_ports: Option<&[u16]>,
     env: HashMap<String, String>,
 ) -> Command {
+    let context = loopback_ports.map(|ports| {
+        serde_json::to_string(&ManagedNetworkSandboxContext {
+            loopback_ports: ports.to_vec(),
+            ..Default::default()
+        })
+        .expect("serialize managed network")
+    });
+    linux_sandbox_command_with_options(command, permission_profile, context.as_deref(), env, &[])
+}
+
+fn linux_sandbox_command_with_options(
+    command: &[&str],
+    permission_profile: &PermissionProfile,
+    managed_network: Option<&str>,
+    env: HashMap<String, String>,
+    options: &[&str],
+) -> Command {
     let cwd = std::env::current_dir().expect("current directory should exist");
-    let permission_profile_json =
-        serde_json::to_string(permission_profile).expect("permission profile should serialize");
+    let mut cmd = linux_sandbox_launcher(&cwd, permission_profile, managed_network, env);
+    cmd.args(options).arg("--").args(command);
+    cmd
+}
 
-    let mut args = vec![
-        "--sandbox-policy-cwd".to_string(),
-        cwd.to_string_lossy().to_string(),
-        "--permission-profile".to_string(),
-        permission_profile_json,
-    ];
-    if allow_network_for_proxy {
-        args.push("--managed-network".to_string());
-        args.push("{}".to_string());
-    }
-    args.push("--".to_string());
-    args.extend(command.iter().map(|entry| (*entry).to_string()));
-
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
-    cmd.args(args)
+fn linux_sandbox_launcher(
+    cwd: &Path,
+    permission_profile: &PermissionProfile,
+    managed_network: Option<&str>,
+    env: HashMap<String, String>,
+) -> Command {
+    let mut cmd =
+        Command::new(cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist"));
+    cmd.arg("--sandbox-policy-cwd")
+        .arg(cwd)
+        .arg("--permission-profile")
+        .arg(
+            serde_json::to_string(permission_profile).expect("permission profile should serialize"),
+        )
         .current_dir(cwd)
         .env_clear()
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(context) = managed_network {
+        cmd.args(["--managed-network", context]);
+    }
     cmd
 }
 
@@ -203,7 +236,7 @@ async fn sandboxed_commands_have_a_seccomp_filtered_namespace_reaper() {
 
     assert_seccomp_filtered_namespace_reaper(
         &PermissionProfile::read_only(),
-        /*allow_network_for_proxy*/ false,
+        /*loopback_ports*/ None,
         env,
     )
     .await;
@@ -221,18 +254,14 @@ async fn managed_proxy_commands_have_a_seccomp_filtered_namespace_reaper() {
     env.insert("HTTP_PROXY".to_string(), "http://127.0.0.1:9".to_string());
 
     for permission_profile in [PermissionProfile::read_only(), PermissionProfile::Disabled] {
-        assert_seccomp_filtered_namespace_reaper(
-            &permission_profile,
-            /*allow_network_for_proxy*/ true,
-            env.clone(),
-        )
-        .await;
+        assert_seccomp_filtered_namespace_reaper(&permission_profile, Some(&[9]), env.clone())
+            .await;
     }
 }
 
 async fn assert_seccomp_filtered_namespace_reaper(
     permission_profile: &PermissionProfile,
-    allow_network_for_proxy: bool,
+    loopback_ports: Option<&[u16]>,
     env: HashMap<String, String>,
 ) {
     let inherited_seccomp_filters = std::fs::read_to_string("/proc/self/status")
@@ -249,7 +278,7 @@ async fn assert_seccomp_filtered_namespace_reaper(
             "if [ ! -r /proc/self/status ] || [ ! -r /proc/1/status ] || [ \"$(readlink /proc/1/ns/pid 2>/dev/null)\" != \"$(readlink /proc/self/ns/pid 2>/dev/null)\" ]; then printf 'namespace proc unavailable\\n'; exit 0; fi; printf '%s\\n' \"$PPID\"; awk '$1 == \"Seccomp:\" && FNR == NR { print $2 } $1 == \"Seccomp_filters:\" { print $2 }' /proc/1/status /proc/self/status",
         ],
         permission_profile,
-        allow_network_for_proxy,
+        loopback_ports,
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -289,7 +318,7 @@ async fn namespace_reaper_collects_orphaned_descendants() {
             "if [ ! -r /proc/self/status ] || [ ! -r /proc/1/status ] || [ \"$(readlink /proc/1/ns/pid 2>/dev/null)\" != \"$(readlink /proc/self/ns/pid 2>/dev/null)\" ]; then printf 'namespace proc unavailable\\n'; exit 0; fi; orphan=$(bash -c 'sleep 0.05 </dev/null >/dev/null 2>&1 & printf \"%s\\n\" \"$!\"'); for _ in $(seq 1 100); do if [ ! -e \"/proc/$orphan\" ]; then printf 'orphan reaped\\n'; exit 0; fi; sleep 0.01; done; exit 1",
         ],
         &PermissionProfile::read_only(),
-        /*allow_network_for_proxy*/ false,
+        /*loopback_ports*/ None,
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -308,8 +337,12 @@ async fn namespace_reaper_collects_orphaned_descendants() {
     assert_eq!(output.stdout, b"orphan reaped\n");
 }
 
+#[test_case::test_case("/newroot/proc"; "older bubblewrap")]
+#[test_case::test_case("/proc"; "bubblewrap 0.12")]
 #[tokio::test]
-async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritance() {
+async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritance(
+    destination: &str,
+) {
     if should_skip_bwrap_tests().await {
         eprintln!("skipping bwrap test: bubblewrap is unavailable");
         return;
@@ -330,7 +363,7 @@ async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritanc
 for arg in "$@"; do
     [ "$arg" = "--" ] && break
     if [ "$arg" = "--proc" ]; then
-        printf '%s\n' "bwrap: Can't mount proc on /newroot/proc: Operation not permitted" >&2
+        printf '%s\n' "bwrap: Can't mount proc on $CODEX_TEST_PROC_DESTINATION: Operation not permitted" >&2
         exit 1
     fi
 done
@@ -389,6 +422,10 @@ printf 'legacy proc fallback\n'
             system_bwrap.display().to_string(),
         );
         env.insert(
+            "CODEX_TEST_PROC_DESTINATION".to_string(),
+            destination.to_string(),
+        );
+        env.insert(
             "CODEX_TEST_PID_NAMESPACE".to_string(),
             pid_namespace.display().to_string(),
         );
@@ -396,7 +433,8 @@ printf 'legacy proc fallback\n'
             "CODEX_TEST_PROTECTED_FILE".to_string(),
             protected_file.display().to_string(),
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+        let mut command =
+            Command::new(cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist"));
         command
             .arg("--sandbox-policy-cwd")
             .arg(std::env::current_dir().expect("current directory should exist"))
@@ -474,9 +512,10 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
 
     let tempdir = tempfile::tempdir().expect("create isolated sandbox installation");
     let sandbox_executable = tempdir.path().join("codex-linux-sandbox");
-    let original_executable = env!("CARGO_BIN_EXE_codex-linux-sandbox");
-    if std::fs::hard_link(original_executable, &sandbox_executable).is_err() {
-        codex_utils_cargo_bin::copy_executable(Path::new(original_executable), &sandbox_executable)
+    let original_executable =
+        cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist");
+    if std::fs::hard_link(&original_executable, &sandbox_executable).is_err() {
+        codex_utils_cargo_bin::copy_executable(&original_executable, &sandbox_executable)
             .expect("copy sandbox executable");
     }
 
@@ -587,7 +626,7 @@ async fn managed_proxy_full_filesystem_uses_minimal_dev_nodes() {
             ),
         ],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -626,7 +665,7 @@ async fn managed_proxy_bridges_release_command_output_after_exit() {
     let output = run_linux_sandbox_direct(
         &["bash", "-c", "printf 'bridge output closed\\n'"],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -682,7 +721,7 @@ async fn approved_command_with_denied_reads_preserves_standard_devices() {
             "if cat \"$CODEX_TEST_DENIED\" >\"$CODEX_TEST_OUTPUT\" 2>&1; then exit 1; fi; ",
             "grep -q 'Permission denied' \"$CODEX_TEST_OUTPUT\"",
         )],
-        &profile, /*allow_network_for_proxy*/ false, env, NETWORK_TIMEOUT_MS,
+        &profile, /*loopback_ports*/ None, env, NETWORK_TIMEOUT_MS,
     ).await;
     assert_eq!(
         output.status.code(),
@@ -706,7 +745,7 @@ async fn managed_proxy_readiness_survives_closed_standard_descriptors() {
     let mut command = linux_sandbox_command(
         &["bash", "-c", "true"],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
     );
     unsafe {
@@ -743,7 +782,7 @@ async fn managed_proxy_mode_fails_closed_without_proxy_env() {
     let output = run_linux_sandbox_direct(
         &["bash", "-c", "true"],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -795,7 +834,12 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+    // Bubblewrap re-executes the canonical binary, outside its Bazel runfiles alias.
+    let sandbox_helper = cargo_bin("codex-linux-sandbox")
+        .expect("sandbox helper should exist")
+        .canonicalize()
+        .expect("sandbox helper should resolve");
+    let sandbox_helper_dir = sandbox_helper
         .parent()
         .expect("sandbox helper should have a parent");
     let file_system_sandbox_policy =
@@ -824,7 +868,7 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
             "proxy=\"${WSS_PROXY#*://}\"; host=\"${proxy%%:*}\"; port=\"${proxy##*:}\"; exec 3<>/dev/tcp/${host}/${port}; printf 'GET http://example.com/ HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n' >&3; IFS= read -r line <&3; printf '%s\\n' \"$line\"",
         ],
         &permission_profile,
-        /*allow_network_for_proxy*/ true,
+        Some(&[proxy_port]),
         env.clone(),
         NETWORK_TIMEOUT_MS,
     )
@@ -855,7 +899,7 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
     let direct_egress_output = run_linux_sandbox_direct(
         &["bash", "-c", "echo hi > /dev/tcp/192.0.2.1/80"],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[proxy_port]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -893,7 +937,7 @@ async fn managed_proxy_mode_denies_af_unix_socket_but_allows_socketpair() {
             "import socket,sys\ntry:\n    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\nexcept PermissionError:\n    pass\nexcept OSError:\n    sys.exit(2)\nelse:\n    sys.exit(1)\nleft,right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)\nleft.sendall(b'ok')\nif right.recv(2) != b'ok':\n    sys.exit(3)\n",
         ],
         &PermissionProfile::Disabled,
-        /*allow_network_for_proxy*/ true,
+        Some(&[9]),
         env,
         NETWORK_TIMEOUT_MS,
     )
@@ -979,7 +1023,7 @@ fn handoff_client() {
     println!("handoff routes verified for {label}");
 }
 
-/// Both filesystem policies must preserve route identity across concurrent launches.
+/// Concurrent launches must reach only their bound host ports, with the right attribution.
 #[tokio::test]
 async fn handoff_isolates_concurrent_endpoints_and_closes_privileged_descriptors() {
     if let Some(reason) = managed_proxy_skip_reason().await {
@@ -1013,6 +1057,7 @@ async fn handoff_isolates_concurrent_endpoints_and_closes_privileged_descriptors
             "CODEX_TEST_HANDOFF_SHARED".to_string(),
             shared.path().to_string_lossy().into_owned(),
         );
+        let mut loopback_ports = Vec::new();
 
         for (routes, keys) in [
             (&["http", "https"][..], &["HTTP_PROXY", "HTTPS_PROXY"][..]),
@@ -1021,6 +1066,7 @@ async fn handoff_isolates_concurrent_endpoints_and_closes_privileged_descriptors
             let listener =
                 TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("local proxy listener");
             let endpoint = listener.local_addr().expect("proxy endpoint");
+            loopback_ports.push(endpoint.port());
             for key in keys {
                 env.insert((*key).to_string(), format!("http://{endpoint}"));
             }
@@ -1073,7 +1119,7 @@ async fn handoff_isolates_concurrent_endpoints_and_closes_privileged_descriptors
                 "--test-threads=1",
             ],
             &profile,
-            /*allow_network_for_proxy*/ true,
+            Some(&loopback_ports),
             env,
         );
         command.kill_on_drop(true);
@@ -1103,81 +1149,5 @@ async fn handoff_isolates_concurrent_endpoints_and_closes_privileged_descriptors
     }
     for server in servers {
         server.join().expect("proxy responder should succeed");
-    }
-}
-
-#[tokio::test]
-async fn cancelling_sandbox_closes_active_proxy_connection() {
-    if let Some(reason) = managed_proxy_skip_reason().await {
-        eprintln!("skipping managed proxy test: {reason}");
-        return;
-    }
-
-    for profile in [
-        PermissionProfile::workspace_write(),
-        PermissionProfile::Disabled,
-    ] {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("local proxy listener");
-        listener
-            .set_nonblocking(/*nonblocking*/ true)
-            .expect("bounded accept");
-        let mut env = create_env_from_core_vars();
-        strip_proxy_env(&mut env);
-        env.remove(PROXY_ATTRIBUTION_TOKEN_ENV_KEY);
-        env.insert(
-            "HTTP_PROXY".to_string(),
-            format!("http://{}", listener.local_addr().expect("proxy endpoint")),
-        );
-        let mut command = linux_sandbox_command(
-            &[
-                "bash",
-                "-c",
-                concat!(
-                    "set -eu; proxy=${HTTP_PROXY#*://}; ",
-                    "exec 3<>/dev/tcp/${proxy%:*}/${proxy##*:}; ",
-                    "printf ready >&3; IFS= read -r response <&3",
-                ),
-            ],
-            &profile,
-            /*allow_network_for_proxy*/ true,
-            env,
-        );
-        command.kill_on_drop(true);
-        let mut child = command.spawn().expect("launch sandbox");
-        let (mut upstream, _) = tokio::time::timeout(OPERATION_TIMEOUT, async {
-            loop {
-                match listener.accept() {
-                    Ok(connection) => break connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
-                    }
-                    Err(error) => panic!("accept proxy connection: {error}"),
-                }
-            }
-        })
-        .await
-        .expect("sandbox should establish its proxy connection");
-        upstream
-            .set_read_timeout(Some(OPERATION_TIMEOUT))
-            .expect("bounded read");
-        let mut ready = [0; 5];
-        upstream
-            .read_exact(&mut ready)
-            .expect("read client readiness");
-        assert_eq!(ready, *b"ready");
-
-        child.start_kill().expect("cancel sandbox");
-        let output = tokio::time::timeout(OPERATION_TIMEOUT, child.wait_with_output())
-            .await
-            .expect("cancelled sandbox should release output")
-            .expect("wait for cancelled sandbox");
-        assert_eq!(output.status.success(), false);
-        assert_eq!(
-            upstream
-                .read(&mut [0])
-                .expect("host bridge should close its active connection"),
-            0,
-            "cancelling the sandbox must stop its host bridge"
-        );
     }
 }

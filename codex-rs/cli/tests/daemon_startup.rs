@@ -22,14 +22,26 @@ async fn agents_can_offer_restart_for_managed_daemon() -> Result<()> {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn agents_no_daemon_uses_embedded_even_with_a_running_daemon() -> Result<()> {
+    daemon_startup("agents-no-daemon").await
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn agents_defers_launch_directory_trust_until_starting_a_task() -> Result<()> {
     daemon_startup("agents-untrusted").await
 }
 
 #[tokio::test]
 #[cfg(unix)]
-async fn agents_checks_trust_when_starting_after_dismissing_overview() -> Result<()> {
-    daemon_startup("agents-untrusted-new").await
+async fn agents_cancels_folder_consent_when_daemon_restarts() -> Result<()> {
+    daemon_startup("agents-trust-restart").await
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn startup_folder_consent_explains_connection_loss() -> Result<()> {
+    daemon_startup("startup-trust-restart").await
 }
 
 #[tokio::test]
@@ -136,7 +148,8 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
             .kill_on_drop(true);
         let mut child = command.spawn()?;
         ensure!(
-            job.assign_and_resume_process(child.id().context("missing CLI pid")?)?,
+            job.assign_and_resume_process(child.id().context("missing CLI pid")?)?
+                .is_some(),
             "CLI job assignment failed"
         );
         let status = child.wait().await?;
@@ -149,7 +162,7 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
 #[tokio::test]
 #[ignore = "UnieAI's sign-in picker offers only the UnieAI flows, never Amazon Bedrock"]
 #[cfg(unix)]
-async fn bedrock_onboarding_leaves_a_running_daemon_untouched() -> Result<()> {
+async fn bedrock_onboarding_discovers_credentials_on_the_running_daemon() -> Result<()> {
     daemon_startup("bedrock-running").await
 }
 
@@ -177,6 +190,15 @@ async fn daemon_startup(command: &str) -> Result<()> {
             .success(),
         "failed to prepare CLI test executable"
     );
+    let bedrock_onboarding = matches!(command, "bedrock" | "bedrock-running");
+    let trust_restart = matches!(command, "agents-trust-restart" | "startup-trust-restart");
+    if trust_restart {
+        fs::create_dir(workspace_path.join(".codex"))?;
+        fs::write(
+            workspace_path.join(".codex/config.toml"),
+            "# project settings\n",
+        )?;
+    }
     fs::write(
         home.path().join("config.toml"),
         format!(
@@ -188,10 +210,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
          tui.disable_paste_burst = true\n\
          {}\n\
          notice.model_migrations.\"gpt-5.6-terra\" = \"gpt-6-sol\"\n\
-         [projects.{}]\ntrust_level = \"{}\"\n",
+         [projects.{}]\n{}\n",
             // UnieAI defaults to its own provider (Studio sign-in) and to
             // auto-start off; these runs exercise upstream's daemon flows.
-            if matches!(command, "bedrock" | "bedrock-running") {
+            if bedrock_onboarding {
                 ""
             } else if command == "discovered" {
                 // This run sets `features.daemon_auto_start=false` itself below.
@@ -201,14 +223,18 @@ async fn daemon_startup(command: &str) -> Result<()> {
             },
             if command == "discovered" {
                 "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]\nfeatures.daemon_auto_start=false"
+            } else if bedrock_onboarding {
+                "features.gcp_setup_wizard=false"
             } else {
                 ""
             },
             serde_json::to_string(&workspace_path)?,
-            if command.starts_with("agents-untrusted") {
-                "untrusted"
+            if trust_restart {
+                ""
+            } else if command == "agents-untrusted" {
+                "trust_level = \"untrusted\""
             } else {
-                "trusted"
+                "trust_level = \"trusted\""
             },
         ),
     )?;
@@ -216,7 +242,6 @@ async fn daemon_startup(command: &str) -> Result<()> {
     let persisted = command == "mismatch-disable-persisted";
     let disabling = matches!(command, "mismatch-disable" | "mismatch-disable-persisted");
     let restart = command == "mismatch-restart" || disabling;
-    let bedrock_onboarding = matches!(command, "bedrock" | "bedrock-running");
     if !bedrock_onboarding {
         fs::write(
             home.path().join("auth.json"),
@@ -248,12 +273,14 @@ async fn daemon_startup(command: &str) -> Result<()> {
         command,
         "start"
             | "agents"
+            | "agents-no-daemon"
             | "agents-untrusted"
-            | "agents-untrusted-new"
             | "discovered"
+            | "bedrock"
             | "bedrock-running"
             | "restrictive-job"
     ) || mismatch
+        || trust_restart
     {
         // A selected package with a stopped daemon avoids installing a release.
         let managed = home
@@ -268,7 +295,8 @@ async fn daemon_startup(command: &str) -> Result<()> {
         fs::hard_link(&codex, &managed)
             .or_else(|_| codex_utils_cargo_bin::copy_executable(&codex, &managed))?;
         if command != "restrictive-job" {
-            fs::create_dir(home.path().join("app-server-daemon"))?;
+            codex_uds::prepare_private_socket_directory(&home.path().join("app-server-daemon"))
+                .await?;
             fs::write(
                 home.path().join("app-server-daemon/settings.json"),
                 if persisted {
@@ -281,9 +309,17 @@ async fn daemon_startup(command: &str) -> Result<()> {
     }
     let pid_file = home.path().join("app-server-daemon/daemon.pid");
     let result = async {
-        let mut existing_daemon = if matches!(command, "bedrock-running" | "discovered")
+        let mut existing_daemon = if matches!(command, "bedrock-running" | "discovered" | "agents-no-daemon")
             || (mismatch && !disabling)
         {
+            if command == "bedrock-running" {
+                // This Unix-only case uses a daemon-only token and no ambient profiles.
+                env.insert("AWS_CONFIG_FILE".into(), "/dev/null".into());
+                env.insert("AWS_SHARED_CREDENTIALS_FILE".into(), "/dev/null".into());
+                env.remove("AWS_ACCESS_KEY_ID");
+                env.remove("AWS_SECRET_ACCESS_KEY");
+                env.insert("AWS_BEARER_TOKEN_BEDROCK".into(), "daemon-only-test-token".into());
+            }
             let started = Command::new(&codex)
                 .env_clear()
                 .envs(&env)
@@ -303,20 +339,29 @@ async fn daemon_startup(command: &str) -> Result<()> {
             // The draft header is visible before the session's command composer is ready.
             steps.push_back(("GPT-5.6-Terra", b"/status\r"));
             "Server:Localbackgroundserver"
+        } else if command == "agents-no-daemon" {
+            args.extend(["agents".into(), "--no-daemon".into()]);
+            steps.push_back(("Notasksyet", b"n"));
+            steps.push_back(("GPT-5.6-Terra", b"/daemon\r"));
+            "Notconnectedtothelocalbackgroundserver"
         } else if command == "agents" {
             args.push("agents".into());
-            steps.push_back(("Notasksyet", b"\x1b"));
+            steps.push_back(("Notasksyet", b"n"));
             steps.push_back(("GPT-5.6-Terra", b"/daemon\r"));
             steps.push_back(("Restartbackgroundserver", b"\x1b[F\r"));
             "Restartbackgroundserver?"
-        } else if command.starts_with("agents-untrusted") {
-            args.push("agents".into());
-            if command == "agents-untrusted-new" {
-                steps.push_back(("Notasksyet", b"\x1b"));
-                steps.push_back(("GPT-5.6-Terra", b"/new\r"));
+        } else if trust_restart {
+            steps.push_back(("Trustandcontinue", b""));
+            if command == "agents-trust-restart" {
+                args.push("agents".into());
+                steps.push_front(("Notasksyet", b"n"));
+                "Notasksyet"
             } else {
-                steps.push_back(("Notasksyet", b"n"));
+                "RestartCodextocontinue."
             }
+        } else if command == "agents-untrusted" {
+            args.push("agents".into());
+            steps.push_back(("Notasksyet", b"n"));
             "entercontinue·escback"
         } else if command == "discovered" {
             args.extend(["--disable".into(), "daemon_auto_start".into()]);
@@ -360,8 +405,14 @@ async fn daemon_startup(command: &str) -> Result<()> {
                 steps.push_back(("GPT-5.6-Terra", b"/status\r"));
                 if restart { "Server:Localbackgroundserver" } else { "Model:" }
             }
+        } else if command == "bedrock-running" {
+            env.remove("AWS_BEARER_TOKEN_BEDROCK");
+            steps.push_back(("UseanAPIkeyoranotherprovider", b"3"));
+            steps.push_back(("UseAmazonBedrock", b"2"));
+            "Continuewithdetectedcredentials"
         } else if bedrock_onboarding {
-            "UseAmazonBedrock"
+            // With GCP disabled, only Bedrock makes the sign-in menu advertise another provider.
+            "UseanAPIkeyoranotherprovider"
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             if command == "resume" {
@@ -410,7 +461,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
             codex.clone()
         };
         let spawned = codex_utils_pty::spawn_pty_process(
-            &program.to_string_lossy(),
+            program.as_os_str(),
             &args,
             &workspace_path,
             &env,
@@ -441,7 +492,18 @@ async fn daemon_startup(command: &str) -> Result<()> {
         // A fresh disable request includes both cold daemon startup and its confirmed restart.
         let timeout = Duration::from_secs(if disabling { 90 } else { 45 });
         let result = tokio::time::timeout(timeout, async {
-            while let Some(bytes) = stdout.recv().await {
+            loop {
+                let bytes = tokio::select! {
+                    bytes = stdout.recv() => bytes,
+                    // The first onboarding draw precedes its typeahead drain. Retry the
+                    // main menu shortcut until the submenu appears (it has no option 3).
+                    () = tokio::time::sleep(Duration::from_millis(/*millis*/ 250)),
+                        if steps.front().is_some_and(|(ready, _)| *ready == "UseAmazonBedrock") => {
+                            writer.send(b"3".to_vec()).await?;
+                            continue;
+                        }
+                };
+                let Some(bytes) = bytes else { break };
                 output.push_str(&String::from_utf8_lossy(&bytes));
                 screen.process(&bytes);
                 for (query, reply) in &mut queries {
@@ -510,10 +572,26 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             ensure!(settings["featureOverrides"]["auth_elicitation"].is_null());
                         }
                     }
-                    writer.send(input.to_vec()).await?;
+                    if trust_restart && *ready == "Trustandcontinue" {
+                        let restarted = tokio::process::Command::new(&codex)
+                            .env_clear()
+                            .envs(&env)
+                            .current_dir(&workspace_path)
+                            .args(["app-server", "daemon", "restart"])
+                            .kill_on_drop(true)
+                            .output()
+                            .await?;
+                        ensure!(restarted.status.success(), "{}", String::from_utf8_lossy(&restarted.stderr));
+                    } else {
+                        writer.send(input.to_vec()).await?;
+                    }
                     steps.pop_front();
                     output.clear();
                 } else if steps.is_empty() && text.contains(expected) {
+                    if trust_restart {
+                        let config = fs::read_to_string(home.path().join("config.toml"))?;
+                        ensure!(!config.contains("trust_level"), "restart must not grant trust");
+                    }
                     if command == "agents-untrusted" {
                         let transition = format!(
                             "{initial_agents_screen}\n\n--- Start a task ---\n\n{}",
@@ -560,9 +638,11 @@ async fn daemon_startup(command: &str) -> Result<()> {
                     } else if elevated_launch {
                         ensure!(!home.path().join("app-server-daemon").exists());
                         ensure!(!home.path().join("packages/app-server-daemon").exists());
-                    } else if bedrock_onboarding || command == "restrictive-job" {
+                    } else if bedrock_onboarding {
+                        ensure!(pid_file.exists() != elevated);
+                    } else if command == "restrictive-job" {
                         ensure!(!pid_file.exists());
-                        if command == "restrictive-job" && !elevated {
+                        if !elevated {
                             let contents = screen.screen().contents();
                             let warning = contents.lines()
                                 .find(|line| line.contains("Running without the shared background server:"))
@@ -589,7 +669,15 @@ async fn daemon_startup(command: &str) -> Result<()> {
         ))
     }
     .await;
-    // Always stop the detached daemon, including on timeout or failed assertions.
+    // Elevated fresh Bedrock onboarding already verified that no daemon started.
+    if elevated
+        && command == "bedrock"
+        && let Ok((session, Ok(Ok(())))) = &result
+    {
+        session.terminate();
+        return Ok(());
+    }
+    // Stop the detached daemon, including on timeout or failed assertions.
     let stopped = Command::new(&codex)
         .env_clear()
         .envs(&env)

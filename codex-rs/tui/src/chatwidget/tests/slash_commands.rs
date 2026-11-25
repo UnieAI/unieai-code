@@ -12,7 +12,7 @@ fn force_pet_image_support(chat: &mut ChatWidget) {
 
 fn force_tmux_pet_image_unsupported(chat: &mut ChatWidget) {
     chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
-        crate::pets::PetImageUnsupportedReason::Tmux,
+        crate::pets::PetImageUnsupportedReason::RequiresVirtualPlacement,
     ));
 }
 
@@ -24,7 +24,7 @@ fn force_terminal_pet_image_unsupported(chat: &mut ChatWidget) {
 
 fn force_old_iterm2_pet_image_unsupported(chat: &mut ChatWidget) {
     chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
-        crate::pets::PetImageUnsupportedReason::Iterm2TooOld,
+        crate::pets::PetImageUnsupportedReason::UpgradeRequired,
     ));
 }
 
@@ -120,7 +120,7 @@ async fn service_tier_commands_and_saved_selection_respect_independent_speed_pol
             })
             .collect();
         preset.default_service_tier = Some("ultrafast".to_string());
-        chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+        set_test_model_catalog(&mut chat, vec![preset]);
         chat.set_feature_enabled(Feature::FastMode, fast_enabled);
         chat.set_feature_enabled(Feature::UltrafastMode, ultrafast_enabled);
         chat.set_service_tier(Some("ultrafast".to_string()));
@@ -173,7 +173,7 @@ async fn service_tier_commands_lowercase_catalog_names() {
         .find(|tier| tier.id == ServiceTier::Fast.request_value())
         .expect("fast tier")
         .name = "Fast".to_string();
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    set_test_model_catalog(&mut chat, vec![preset]);
 
     assert_eq!(
         chat.current_model_service_tier_commands(),
@@ -479,7 +479,7 @@ async fn queued_settings_selection_applies_before_next_input() {
     let mut preset = get_available_model(&chat, "gpt-5.6-terra");
     preset.supported_reasoning_efforts.truncate(1);
     let selected_effort = preset.supported_reasoning_efforts[0].effort.clone();
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    set_test_model_catalog(&mut chat, vec![preset]);
     handle_turn_started(&mut chat, "turn-1");
 
     queue_composer_text_with_tab(&mut chat, "/model");
@@ -500,6 +500,10 @@ async fn queued_settings_selection_applies_before_next_input() {
             AppEvent::OpenReasoningPopup { model } => chat.open_reasoning_popup(model),
             AppEvent::UpdateModel(model) => chat.set_model(&model),
             AppEvent::UpdateReasoningEffort(effort) => chat.set_reasoning_effort(effort),
+            AppEvent::ApplyModelSelection { model, effort } => {
+                chat.set_model(&model);
+                chat.set_reasoning_effort(effort);
+            }
             AppEvent::SettingsSelectionClosed => {
                 chat.app_event_tx.send(AppEvent::SettingsSelectionSettled);
             }
@@ -803,6 +807,7 @@ async fn goal_slash_command_uses_plain_text_for_mentions() {
             mention: "figma".to_string(),
             path: "app://figma".to_string(),
         }],
+        crate::bottom_pane::ShellPrefixHandling::Interpret,
     );
 
     chat.handle_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
@@ -1247,6 +1252,7 @@ async fn interrupted_merged_message_history_encodes_mentions_once() {
             mention: "figma".to_string(),
             path: "app://figma".to_string(),
         }],
+        crate::bottom_pane::ShellPrefixHandling::Interpret,
     );
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1626,11 +1632,11 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
     let commentary = "Here is the command:\n\n```sh\necho current\n```";
     let current_thread_id = chat.thread_id.map(|id| id.to_string()).unwrap_or_default();
     chat.handle_server_notification(
-        ServerNotification::ItemCompleted(ItemCompletedNotification {
-            thread_id: current_thread_id,
-            turn_id: "active".to_string(),
-            completed_at_ms: 0,
-            item: AppServerThreadItem::AgentMessage {
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            current_thread_id,
+            "active".to_string(),
+            AppServerThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: "active-commentary".to_string(),
                 text: commentary.to_string(),
                 phase: Some(MessagePhase::Commentary),
@@ -1638,7 +1644,9 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
                 delivery: None,
                 questions: None,
             },
-        }),
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        )),
         /*replay_kind*/ None,
     );
     while rx.try_recv().is_ok() {}
@@ -1660,15 +1668,16 @@ async fn slash_copy_state_tracks_plan_item_completion() {
     let plan_text = "## Plan\n\n1. Build it\n2. Test it\n\n```sh\r\njust test  \r\n```".to_string();
 
     chat.handle_server_notification(
-        ServerNotification::ItemCompleted(ItemCompletedNotification {
-            thread_id: String::new(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-            item: AppServerThreadItem::Plan {
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            String::new(),
+            "turn-1".to_string(),
+            AppServerThreadItemPayload::Plan {
                 id: "plan-1".to_string(),
                 text: plan_text.clone(),
             },
-        }),
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        )),
         /*replay_kind*/ None,
     );
     handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
@@ -2225,14 +2234,52 @@ async fn slash_copy_picker_remains_available_from_parent_owned_threads() {
 
 #[tokio::test]
 async fn slash_daybreak_offers_an_application_when_unavailable() {
+    assert_daybreak_catalog_and_account_gates("openai").await;
+}
+
+#[tokio::test]
+async fn slash_daybreak_custom_provider_requires_capability() {
+    assert_daybreak_catalog_and_account_gates("proxy").await;
+}
+
+async fn assert_daybreak_catalog_and_account_gates(provider_id: &str) {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.has_chatgpt_account = true;
-    chat.config.model_provider_id = "openai".into();
+    chat.config.model_provider_id = provider_id.into();
+    if provider_id == "proxy" {
+        for capability in [None, Some(false)] {
+            chat.config.model_provider.capabilities =
+                Some(codex_model_provider_info::ModelProviderCapabilities {
+                    cyber_access_programs: capability,
+                    ..Default::default()
+                });
+            chat.config
+                .model_providers
+                .insert(provider_id.into(), chat.config.model_provider.clone());
+            assert!(!chat.daybreak_account_eligible());
+            assert!(chat.daybreak_command_description().is_none());
+        }
+        chat.config.model_provider.capabilities =
+            Some(codex_model_provider_info::ModelProviderCapabilities {
+                cyber_access_programs: Some(true),
+                ..Default::default()
+            });
+    }
+    chat.config
+        .model_providers
+        .insert(provider_id.into(), chat.config.model_provider.clone());
+    // Session updates change the provider ID; eligibility must not use the startup definition.
+    chat.config.model_provider.capabilities = None;
+    assert!(chat.daybreak_account_eligible());
+    chat.config.model_provider_id = "unknown-provider".into();
+    assert!(!chat.daybreak_account_eligible());
+    chat.config.model_provider_id = provider_id.into();
     let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     model.available_access_programs = Some(codex_protocol::openai_models::ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![codex_protocol::turn_input::CyberAccessProgram::Standard],
     });
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![model.clone()]));
+    set_test_model_catalog(&mut chat, vec![model.clone()]);
 
     chat.set_daybreak_enabled(/*enabled*/ false);
     chat.bottom_pane
@@ -2253,7 +2300,7 @@ async fn slash_daybreak_offers_an_application_when_unavailable() {
         lines_to_single_string(&cells[0])
     );
 
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(Vec::new()));
+    set_test_model_catalog(&mut chat, Vec::new());
     chat.dispatch_command(SlashCommand::Daybreak);
     let cells = drain_insert_history(&mut rx);
     assert_chatwidget_snapshot!(
@@ -2276,7 +2323,7 @@ async fn slash_daybreak_offers_an_application_when_unavailable() {
         .unwrap()
         .cyber
         .push(codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue);
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![model]));
+    set_test_model_catalog(&mut chat, vec![model]);
     chat.has_chatgpt_account = false;
     chat.status_account_display = Some(StatusAccountDisplay::ApiKey);
     chat.set_feature_enabled(Feature::ApiKeyCyberAccessPrograms, /*enabled*/ true);
@@ -2512,6 +2559,17 @@ async fn slash_keymap_debug_can_inspect_app_shortcuts() {
 }
 
 #[tokio::test]
+async fn slash_rc_arguments_direct_user_to_menu() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/rc stop");
+
+    let [cell]: [_; 1] = drain_insert_history(&mut rx).try_into().expect("one cell");
+    insta::assert_snapshot!(lines_to_single_string(&cell), @"■ Open /rc and choose Disable to turn off remote control.");
+    assert!(op_rx.try_recv().is_err(), "expected no agent turn");
+}
+
+#[tokio::test]
 async fn slash_keymap_invalid_args_show_usage() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -2534,6 +2592,10 @@ async fn slash_keymap_invalid_args_show_usage() {
 #[tokio::test]
 async fn copy_shortcut_can_be_remapped() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let ctrl_v_pastes_text = cfg!(windows)
+        || (cfg!(target_os = "linux")
+            && !crate::terminal_capabilities::is_ssh_session()
+            && !crate::terminal_capabilities::is_wsl_session());
     for (code, modifiers) in [
         (KeyCode::Char('v'), KeyModifiers::CONTROL),
         (KeyCode::Char('V'), KeyModifiers::CONTROL),
@@ -2546,8 +2608,8 @@ async fn copy_shortcut_can_be_remapped() {
         let paste = KeyEvent::new(code, modifiers);
         assert_matches!(
             chat.handle_key_event(paste),
-            crate::chatwidget::KeyEventAction::PasteImage { text_fallback }
-                if text_fallback == (cfg!(windows) && modifiers == KeyModifiers::CONTROL)
+            crate::chatwidget::KeyEventAction::PasteImage { text_fallback, .. }
+                if text_fallback == (ctrl_v_pastes_text && modifiers == KeyModifiers::CONTROL)
                     .then_some(code)
         );
         chat.handle_key_event(KeyEvent {
@@ -2563,7 +2625,8 @@ async fn copy_shortcut_can_be_remapped() {
         assert_matches!(
             chat.handle_key_event(shift_insert),
             KeyEventAction::PasteImage {
-                text_fallback: Some(KeyCode::Insert)
+                text_fallback: Some(KeyCode::Insert),
+                ..
             }
         );
         assert_eq!(chat.bottom_pane.composer_text(), "q");
@@ -2998,14 +3061,24 @@ async fn slash_mcp_login_targets_the_active_thread() {
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
 
-    submit_composer_text(&mut chat, "/mcp login enterprise");
-
-    assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::StartMcpLogin { name, thread_id: actual_thread_id })
-            if name == "enterprise" && actual_thread_id == thread_id
-    );
+    for (args, expected_name, expected_environment_id) in [
+        ("enterprise", "enterprise", None),
+        ("Team's notes", "Team's notes", None),
+        (
+            "\"Team notes\" --environment env-b",
+            "Team notes",
+            Some("env-b"),
+        ),
+    ] {
+        submit_composer_text(&mut chat, &format!("/mcp login {args}"));
+        assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
+        assert_matches!(
+            rx.try_recv(),
+            Ok(AppEvent::StartMcpLogin { name, environment_id, thread_id: actual_thread_id })
+                if name == expected_name && environment_id.as_deref() == expected_environment_id
+                    && actual_thread_id == thread_id
+        );
+    }
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
 
@@ -3022,7 +3095,7 @@ async fn slash_mcp_invalid_args_show_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /mcp [verbose | login <name>]"),
+        rendered.contains("Usage: /mcp [verbose | login <name> [--environment <id>]]"),
         "expected usage message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/mcp full");
@@ -3091,32 +3164,15 @@ async fn slash_archive_confirmation_requests_current_thread_archive() {
 
 #[tokio::test]
 async fn slash_delete_confirmation_requests_current_thread_delete() {
-    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:4500").unwrap();
-    for target in [
-        crate::AppServerTarget::Embedded,
-        crate::AppServerTarget::LocalDaemon {
-            allow_embedded_fallback: true,
-            endpoint: endpoint.clone(),
-        },
-        crate::AppServerTarget::Remote { endpoint },
-    ] {
-        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-        chat.remote_connection = crate::status::remote_connection::remote_connection_status_value(
-            &target, /*server_version*/ None,
-        );
-        chat.dispatch_command(SlashCommand::Delete);
-        assert!(chat.bottom_pane.has_active_view());
-        assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
-        let popup = render_bottom_popup(&chat, /*width*/ 80);
-        if matches!(target, crate::AppServerTarget::Embedded) {
-            assert_chatwidget_snapshot!("slash_delete_confirmation_popup", popup);
-        } else {
-            assert_chatwidget_snapshot!("slash_delete_confirmation_command_center", popup);
-        }
-        chat.handle_key_event(KeyEvent::from(KeyCode::Down));
-        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-        assert_matches!(rx.try_recv(), Ok(AppEvent::DeleteCurrentThread));
-    }
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.dispatch_command(SlashCommand::Delete);
+    assert!(chat.bottom_pane.has_active_view());
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("slash_delete_confirmation_command_center", popup);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::DeleteCurrentThread));
 }
 
 #[tokio::test]
@@ -3210,7 +3266,7 @@ async fn slash_pets_in_tmux_shows_notice_and_preserves_draft() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Pets are disabled in tmux."));
+    assert!(rendered.contains("Pets are unavailable in this tmux pane."));
     assert!(rendered.contains("outside tmux"));
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
@@ -3229,14 +3285,17 @@ async fn slash_pets_with_arg_on_unsupported_terminal_shows_notice_without_select
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     assert!(chat.bottom_pane.has_active_view());
-    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Pets are disabled in tmux."));
+    assert!(
+        render_bottom_popup(&chat, /*width*/ 80)
+            .contains("Pets are unavailable in this tmux pane.")
+    );
     let cells = drain_insert_history_transcript(&mut rx);
     let rendered = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Pets are disabled in tmux."));
+    assert!(rendered.contains("Pets are unavailable in this tmux pane."));
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 
@@ -3381,6 +3440,11 @@ async fn slash_pwd_and_cwd_alias_display_current_working_directory_from_composer
     let mut output = Vec::new();
     for (command, side) in [("/pwd", false), ("/cwd", true), ("/pwd x", false)] {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        if side {
+            chat.current_cwd =
+                PathUri::try_from(LegacyAppPathString::from_string(r"D:\workspace\remote"))
+                    .expect("absolute server path");
+        }
         chat.set_side_conversation_active(side);
         chat.bottom_pane.set_task_running(!side);
         chat.bottom_pane
@@ -3392,7 +3456,7 @@ async fn slash_pwd_and_cwd_alias_display_current_working_directory_from_composer
     }
     insta::assert_snapshot!(output.join(""), @r"
 • Current working directory: /tmp/project
-• Current working directory: /tmp/project
+• Current working directory: D:\workspace\remote
 ■ Usage: /pwd
 ");
 }
@@ -3637,7 +3701,7 @@ async fn user_turn_preserves_flex_without_catalog_support() {
             model.service_tiers.clear();
             model.default_service_tier = None;
         }
-        chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(models));
+        set_test_model_catalog(&mut chat, models);
         chat.set_feature_enabled(Feature::FastMode, fast_mode_enabled);
         chat.set_service_tier(Some(ServiceTier::Flex.request_value().to_string()));
 
@@ -3673,7 +3737,7 @@ async fn model_switch_recomputes_catalog_default_service_tier() {
         .find(|model| model.model == "gpt-5.4")
         .expect("gpt-5.4 test model");
     default_model.default_service_tier = Some(ServiceTier::Fast.request_value().to_string());
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(models));
+    set_test_model_catalog(&mut chat, models);
     chat.refresh_effective_service_tier();
 
     assert_eq!(chat.current_service_tier(), None);
@@ -3882,14 +3946,14 @@ async fn transcript_copy_feedback_stays_in_the_footer_without_history_or_interru
     assert!(operations.try_recv().is_err());
     insta::assert_snapshot!(
         "transcript_copy_success",
-        render_bottom_popup(&chat, /*width*/ 80)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
     );
     chat.show_selection_copy_result(Ok(crate::clipboard_copy::CopyStatus::Unconfirmed));
     assert_eq!(drain_insert_history(&mut events).len(), 0);
     assert!(operations.try_recv().is_err());
     insta::assert_snapshot!(
         "transcript_copy_unconfirmed",
-        render_bottom_popup(&chat, /*width*/ 80)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
     );
     chat.open_warnings(&[Arc::new(history_cell::new_warning_event(
         "selected café".into(),
@@ -3899,7 +3963,7 @@ async fn transcript_copy_feedback_stays_in_the_footer_without_history_or_interru
     assert!(operations.try_recv().is_err());
     insta::assert_snapshot!(
         "transcript_copy_failure",
-        render_bottom_popup(&chat, /*width*/ 80)
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
     );
 }
 

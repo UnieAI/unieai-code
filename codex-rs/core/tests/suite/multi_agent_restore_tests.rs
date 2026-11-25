@@ -33,6 +33,7 @@ use codex_thread_store::ThreadPage;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreFuture;
+use codex_thread_store::ThreadStoreResult;
 use codex_thread_store::UpdateThreadMetadataParams;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::mount_sse_once_match;
@@ -71,6 +72,10 @@ macro_rules! delegate_store_methods {
 }
 
 impl ThreadStore for GatedChildMetadataStore {
+    fn model_ids(&self) -> ThreadStoreResult<Arc<dyn codex_state::SessionModelIdStore>> {
+        self.inner.model_ids()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -302,7 +307,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
         .thread_manager
         .ensure_multi_agent_v2_child_loaded(first)
         .await?;
-    assert!(resumed.thread_manager.get_thread(first).await.is_ok());
+    let first_child = resumed.thread_manager.get_thread(first).await?;
     assert!(resumed.thread_manager.get_thread(last).await.is_err());
     assert!(resumed.thread_manager.get_thread(failed).await.is_err());
 
@@ -321,7 +326,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     )
     .await;
     resumed.submit_turn("continue restored child").await?;
-    let child = resumed.thread_manager.get_thread(first).await?;
+    let child = first_child;
     wait_for_event(child.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

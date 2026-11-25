@@ -31,6 +31,7 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::TurnItemContributor;
 use codex_extension_api::TurnLifecycleContributor;
+use codex_guardian_context::CachedApprovalContext;
 use codex_protocol::items::HookPromptItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EnvironmentConfigState;
@@ -212,7 +213,7 @@ impl codex_extension_api::SynchronousApprovalReviewer for AllContributors {
     fn review<'a>(
         &'a self,
         _reason: codex_protocol::approvals::GuardianReviewReason,
-        _async_approval: Option<codex_extension_api::ExtensionFuture<'a, ()>>,
+        _async_approval: Option<codex_extension_api::ExtensionFuture<'a, CachedApprovalContext>>,
     ) -> ExtensionFuture<'a, Option<codex_protocol::protocol::ReviewDecision>> {
         Box::pin(std::future::ready(Some(
             codex_protocol::protocol::ReviewDecision::Approved,
@@ -249,12 +250,14 @@ async fn build_round_trips_every_contributor_category() {
     assert_eq!(registry.turn_item_contributors().len(), 1);
     let thread_store = ExtensionData::new("thread");
     let input = codex_extension_api::ApprovalDecisionInput {
+        serving_assessment: None,
         permissions: Some(&Default::default()),
         approval_id: "approval-1",
         tool_call_id: None,
         action: &serde_json::Value::Null,
         thread_id: codex_protocol::ThreadId::new(),
         thread_store: &thread_store,
+        turn_store: &thread_store,
         category: codex_protocol::openai_models::GuardianScope::Shell,
         approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::AutoReview,
