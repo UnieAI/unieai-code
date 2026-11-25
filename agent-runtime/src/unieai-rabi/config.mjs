@@ -344,7 +344,7 @@ export function selfHostedProviderSpec(server) {
 export function renderSettings({ baseUrl, models, defaultModel, defaultProvider = RABI_PROVIDER_ID, shellTimeoutMs = 300_000, localProviders = [], providers = [] }) {
   const q = yamlQuote;
   const lines = [
-    "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
+    "# Written by unieai-agent-core on every start; edits are overwritten.",
     "llm-pi-ai:",
     "  providers:",
   ];

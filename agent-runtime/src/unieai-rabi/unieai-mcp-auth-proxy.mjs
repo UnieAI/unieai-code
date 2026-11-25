@@ -87,7 +87,7 @@ export function createMcpAuthProxy({ getToken, log = () => {}, fetchImpl = fetch
       await upstream.body?.cancel().catch(() => {});
       const fresh = await getToken(name, route.url, { force: true });
       if (fresh) upstream = await forward(route, name, request, body, fresh);
-      if (upstream.status === 401) log(`[uac] MCP server ${name} rejected its token; run \`/mcp login ${name}\``);
+      if (upstream.status === 401) log(`[rabi] MCP server ${name} rejected its token; run \`/mcp login ${name}\``);
     }
     const headers = {};
     upstream.headers.forEach((value, header) => {
@@ -109,7 +109,7 @@ export function createMcpAuthProxy({ getToken, log = () => {}, fetchImpl = fetch
     listening ??= new Promise((resolve, reject) => {
       server = createServer((request, response) => {
         handle(request, response).catch((error) => {
-          log(`[uac] MCP auth proxy: ${error?.message ?? error}`);
+          log(`[rabi] MCP auth proxy: ${error?.message ?? error}`);
           if (!response.headersSent) response.writeHead(502);
           response.end();
         });

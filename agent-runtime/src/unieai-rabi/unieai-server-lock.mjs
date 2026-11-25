@@ -120,7 +120,7 @@ export async function claimServer(
     if (release) return { release };
     if (await isLive(socketPath)) return { release: null };
     if (Date.now() >= deadline) {
-      throw new Error(`another uac server holds ${lockPath} but never answered on ${socketPath}`);
+      throw new Error(`another Rabi Harness server holds ${lockPath} but never answered on ${socketPath}`);
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

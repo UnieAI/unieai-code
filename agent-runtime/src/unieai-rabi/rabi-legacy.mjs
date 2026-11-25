@@ -229,7 +229,7 @@ export function migrateLegacyHome(uacDir, { log = () => {}, socketDirs = [] } = 
   if (!existsSync(legacy)) return null;
   const pids = legacyServerPids(uacDir, { socketDirs });
   if (pids.length) {
-    log(`uac: ${legacy} is still in use by an older UnieAI Code (pid ${pids.join(", ")}); it moves to ${home} once that exits`);
+    log(`rabi: ${legacy} is still in use by an older UnieAI Code (pid ${pids.join(", ")}); it moves to ${home} once that exits`);
     return { deferred: true, pids };
   }
   for (const dir of REBUILT) rmSync(join(legacy, dir), { recursive: true, force: true });
@@ -247,7 +247,7 @@ export function migrateLegacyHome(uacDir, { log = () => {}, socketDirs = [] } = 
       const unmerged = `${legacy}.unmerged-${Date.now()}`;
       renameSync(legacy, unmerged);
       left = left.map((path) => unmerged + path.slice(legacy.length));
-      log(`uac: ${left.length} item(s) of ${legacy} were already in ${home}; the old copies are in ${unmerged}`);
+      log(`rabi: ${left.length} item(s) of ${legacy} were already in ${home}; the old copies are in ${unmerged}`);
     }
   }
   let rewritten = 0;
@@ -257,9 +257,9 @@ export function migrateLegacyHome(uacDir, { log = () => {}, socketDirs = [] } = 
       if (rewriteSessionLog(path)) rewritten++;
     } catch (error) {
       skipped++;
-      log(`uac: could not migrate ${path}: ${error.message}`);
+      log(`rabi: could not migrate ${path}: ${error.message}`);
     }
   }
-  log(`uac: ${merged ? "merged" : "moved"} ${legacy} ${merged ? "into" : "to"} ${home} (${rewritten} session logs updated${skipped ? `, ${skipped} skipped` : ""})`);
+  log(`rabi: ${merged ? "merged" : "moved"} ${legacy} ${merged ? "into" : "to"} ${home} (${rewritten} session logs updated${skipped ? `, ${skipped} skipped` : ""})`);
   return { from: legacy, to: home, merged, left, rewritten, skipped };
 }
