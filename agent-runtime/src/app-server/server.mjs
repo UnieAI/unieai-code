@@ -23,7 +23,8 @@ import { createSubagentThreads } from "./unieai-subagent-threads.mjs";
 import { backgroundTerminal, createExecSessions } from "./unieai-exec-sessions.mjs";
 import { NOTES_KEPT, runUserShellCommand, shellNote, withShellNotes } from "./unieai-shell-command.mjs";
 import { rabiAnswers, protocolQuestions, questionDetails } from "./unieai-ask-user.mjs";
-import { alignTurns, anchoredTurnMeta, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
+import { alignTurns, anchoredTurnMeta, entryOutline, entryTurn, keepTurnsBefore, localTurnMeta } from "./unieai-turn-anchors.mjs";
+import { itemIdAt, pageItems, pageTurns, summaryItems } from "./unieai-history-pages.mjs";
 import { createThreadClients } from "./unieai-thread-clients.mjs";
 import { createRemoteBridge } from "./unieai-remote-bridge.mjs";
 import { describeTurnError } from "../unieai-billing.mjs";
@@ -257,9 +258,11 @@ export function createHandlers({
     projectId: null,
     preview: t.preview ?? "",
     ephemeral: Boolean(t.ephemeral),
-    // Legacy threads are hydrated with `thread/read(includeTurns)`, which is
-    // exactly the history an engine can give; paging is not needed.
-    historyMode: "legacy",
+    // Paged like codex's own threads: the client asks for the last turns and
+    // items (`thread/turns/list`, `thread/items/list`), not the whole history.
+    // Full reads (`thread/read(includeTurns)`, a resume without
+    // `excludeTurns`) still answer with every turn.
+    historyMode: "paginated",
     modelProvider: t.modelProvider,
     // The client's agent list shows which model each agent runs on.
     model: t.model ?? null,
@@ -812,7 +815,8 @@ export function createHandlers({
   const engineKeepTurns = async (thread, engine, turnId) => {
     const index = thread.turnIds.indexOf(turnId);
     if (engine.turnAnchors !== true) return { keepTurns: index };
-    const history = await engine.history();
+    // Lining turns up needs the turns, not their items.
+    const history = typeof engine.historyRange === "function" ? (await engine.historyRange({ from: 0, to: 0 })).turns : await engine.history();
     const entries = alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history });
     return { keepTurns: keepTurnsBefore(entries, turnId) };
   };
@@ -839,43 +843,115 @@ export function createHandlers({
   const historyTurns = async (thread) => {
     const engine = ensureEngine(thread, null);
     if (typeof engine.history !== "function") return legacyTurns(thread, engine);
+    if (engine.turnAnchors === true && typeof engine.historyRange === "function") {
+      const { turns: history } = await engine.historyRange({ from: 0, to: null });
+      return anchoredOutline(thread, history).map((turn) => anchoredTurn(thread, turn.entry, history));
+    }
     const history = await engine.history();
     if (engine.turnAnchors === true) {
-      return alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history }).map((entry) => {
-        const turn = entryTurn(entry, history);
-        const live = thread.activeTurn?.id === entry.id ? thread.activeTurn : null;
-        const items = turn.items.map((item, k) => ({ ...item, id: `${entry.id}:item:${k}` }));
-        return turnShape(
-          {
-            id: entry.id,
-            status: live ? "inProgress" : turn.status,
-            error: null,
-            startedAt: turn.startedAt,
-            completedAt: live ? null : turn.completedAt,
-            durationMs: null,
-          },
-          items,
-        );
-      });
+      return alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history }).map((entry) => anchoredTurn(thread, entry, history));
     }
     return history.map((turn, index) => {
       // Ids given out live are kept; turns from before this index existed
       // (or an index that was lost) get stable synthetic ones.
       const id = thread.turnIds[index] ?? `${thread.id}:turn:${index}`;
-      const live = thread.activeTurn?.id === id ? thread.activeTurn : null;
-      const items = turn.items.map((item, k) => ({ ...item, id: `${id}:item:${k}` }));
-      return turnShape(
-        {
-          id,
-          status: live ? "inProgress" : turn.status ?? "completed",
-          error: null,
-          startedAt: turn.startedAt ?? null,
-          completedAt: live ? null : turn.completedAt ?? null,
-          durationMs: null,
-        },
-        items,
-      );
+      const items = turn.items.map((item, k) => ({ ...item, id: itemIdAt(id, k) }));
+      return turnShape(liveTurnFields(thread, id, { status: turn.status ?? "completed", startedAt: turn.startedAt, completedAt: turn.completedAt }), items);
     });
+  };
+
+  /** A turn's protocol fields, the running one's as running. */
+  const liveTurnFields = (thread, id, turn) => {
+    const live = thread.activeTurn?.id === id;
+    return {
+      id,
+      status: live ? "inProgress" : turn.status,
+      error: null,
+      startedAt: turn.startedAt ?? null,
+      completedAt: live ? null : turn.completedAt ?? null,
+      durationMs: null,
+    };
+  };
+
+  /** One client turn of an anchored engine, from history turns that carry its items. */
+  const anchoredTurn = (thread, entry, history) => {
+    const turn = entryTurn(entry, history);
+    const items = turn.items.map((item, k) => ({ ...item, id: itemIdAt(entry.id, k) }));
+    return turnShape(liveTurnFields(thread, entry.id, turn), items);
+  };
+
+  /**
+   * The client turns of an anchored engine, from history turns that may be
+   * outlines only: `[{ id, entry, itemCount, status, startedAt, completedAt,
+   * summary }]`. The ids and item positions are the ones a full read gives.
+   */
+  const anchoredOutline = (thread, history) =>
+    alignTurns({ threadId: thread.id, turnIds: thread.turnIds, turnMeta: thread.turnMeta ?? {}, history }).map((entry) => ({
+      id: entry.id,
+      entry,
+      ...entryOutline(entry, history),
+    }));
+
+  /** Whether two reads of a history agree on every turn's outline. */
+  const sameOutline = (a, b) =>
+    a.length === b.length &&
+    a.every((turn, index) => {
+      const other = b[index];
+      return turn.anchor === other.anchor && turn.opener === other.opener && turn.itemCount === other.itemCount && turn.status === other.status;
+    });
+
+  /**
+   * One page of a thread's history. `pick(outline)` chooses the page from
+   * the turns' outline (`[{ id, itemCount, ... }]`) and names the turns it
+   * needs items for (`load`); only those turns' items are read from an
+   * engine that can read a range (`historyRange`). Returns `{ outline, page,
+   * turnAt(index) }`, `turnAt` giving a loaded turn with its items.
+   */
+  const readHistoryPage = async (thread, pick) => {
+    const engine = ensureEngine(thread, null);
+    if (engine.turnAnchors === true && typeof engine.historyRange === "function") {
+      const shells = await engine.historyRange({ from: 0, to: 0 });
+      let outline = anchoredOutline(thread, shells.turns);
+      let page = pick(outline);
+      const covered = page.load.map((index) => outline[index].entry).filter((entry) => entry.to > entry.from);
+      let history = shells.turns;
+      if (covered.length) {
+        const from = Math.min(...covered.map((entry) => entry.from));
+        const to = Math.max(...covered.map((entry) => entry.to));
+        const ranged = await engine.historyRange({ from, to });
+        history = ranged.turns;
+        if (!sameOutline(shells.turns, history)) {
+          // The log grew between the two reads: page one consistent read.
+          history = (await engine.historyRange({ from: 0, to: null })).turns;
+          outline = anchoredOutline(thread, history);
+          page = pick(outline);
+        }
+      }
+      const built = new Map();
+      const turnAt = (index) => {
+        if (!built.has(index)) built.set(index, anchoredTurn(thread, outline[index].entry, history));
+        return built.get(index);
+      };
+      return { outline, page, turnAt };
+    }
+    const turns = await historyTurns(thread);
+    const outline = turns.map((turn) => ({ ...turn, itemCount: turn.items.length, itemIds: turn.items.map((item) => item.id), turn }));
+    return { outline, page: pick(outline), turnAt: (index) => turns[index] };
+  };
+
+  /** A turn as `itemsView` asks: no items, its summary, or every item. */
+  const viewTurn = (thread, outlined, view, turnAt) => {
+    if (view === "full") return { ...turnAt(), itemsView: "full" };
+    const fields = outlined.turn ? outlined.turn : turnShape(liveTurnFields(thread, outlined.id, outlined));
+    if (view === "notLoaded") return { ...fields, items: [], itemsView: "notLoaded" };
+    let items;
+    if (outlined.turn) items = summaryItems(outlined.turn.items);
+    else {
+      const { firstUser, lastAgent } = outlined.summary;
+      const at = (entry) => ({ ...entry.item, id: itemIdAt(outlined.id, entry.index) });
+      items = summaryItems([firstUser, lastAgent].filter(Boolean).map(at));
+    }
+    return { ...fields, items, itemsView: "summary" };
   };
 
   /**
@@ -892,7 +968,43 @@ export function createHandlers({
       }
     }
     const id = thread.turnIds.at(-1) ?? `${thread.id}:turn:0`;
-    return items.length ? [turnShape({ id, status: "completed" }, items)] : [];
+    // Ids that a later read gives again, so item pages can continue.
+    return items.length ? [turnShape({ id, status: "completed" }, items.map((item, k) => ({ ...item, id: itemIdAt(id, k) })))] : [];
+  };
+
+  /**
+   * thread/resume's answer. With `excludeTurns` the client pages the
+   * history itself (paginated threads), so none is read here;
+   * `initialTurnsPage` asks for its first page in the same answer.
+   */
+  const resumeResponse = async (thread, params, allTurns) => {
+    const response = sessionResponse(thread, params, params?.excludeTurns ? [] : await allTurns());
+    if (params?.initialTurnsPage) response.initialTurnsPage = await turnsPage(thread.id, { ...params.initialTurnsPage, cursor: null });
+    // Null starts from the newest turn and item, which is what they would name.
+    return { ...response, turnsBackwardsCursor: null, itemsBackwardsCursor: null };
+  };
+
+  /** readHistoryPage's answer over turns already read in full (a subagent's). */
+  const fullHistoryPage = (turns, pick) => {
+    const outline = turns.map((turn) => ({ ...turn, itemCount: turn.items.length, itemIds: turn.items.map((item) => item.id), turn }));
+    return { outline, page: pick(outline), turnAt: (index) => turns[index] };
+  };
+
+  /** A `thread/turns/list` page of `threadId` (a thread or a subagent's). */
+  const turnsPage = async (threadId, { cursor = null, limit = null, sortDirection = null, itemsView = null }) => {
+    const view = itemsView === "full" || itemsView === "notLoaded" ? itemsView : "summary";
+    const pick = (outline) => {
+      const page = pageTurns(outline.map((turn) => turn.id), { cursor, limit, sortDirection });
+      return { ...page, load: view === "full" ? page.indices : [] };
+    };
+    const child = subagents.get(threadId);
+    const thread = child ? null : getThread(threadId);
+    const { outline, page, turnAt } = child ? fullHistoryPage(await subagents.turns(child), pick) : await readHistoryPage(thread, pick);
+    return {
+      data: page.indices.map((index) => viewTurn(thread, outline[index], view, () => turnAt(index))),
+      nextCursor: page.nextCursor,
+      backwardsCursor: page.backwardsCursor,
+    };
   };
 
   const handlers = {
@@ -1141,22 +1253,35 @@ export function createHandlers({
       return {};
     },
 
+    /**
+     * A page of turns (codex `thread/turns/list`): newest first unless
+     * `sortDirection: "asc"`, `limit` of them (25 by default), each with no
+     * items, its summary (the default) or all of them (`itemsView`).
+     */
     async "thread/turns/list"(params, ctx) {
-      const child = subagents.get(params?.threadId);
-      let turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId));
-      if (params?.itemsView === "notLoaded") turns = turns.map((turn) => ({ ...turn, items: [], itemsView: "notLoaded" }));
-      if (params?.sortDirection !== "asc") turns.reverse();
-      return { data: turns, nextCursor: null, backwardsCursor: null };
+      return turnsPage(params?.threadId, params ?? {});
     },
 
+    /** A page of items (codex `thread/items/list`): oldest first unless `sortDirection: "desc"`. */
     async "thread/items/list"(params, ctx) {
+      const options = { turnId: params?.turnId || null, cursor: params?.cursor ?? null, limit: params?.limit, sortDirection: params?.sortDirection ?? null };
       const child = subagents.get(params?.threadId);
-      const turns = child ? await subagents.turns(child) : await historyTurns(getThread(params?.threadId));
-      const data = turns
-        .filter((turn) => !params?.turnId || turn.id === params.turnId)
-        .flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item })));
-      if (params?.sortDirection !== "asc") data.reverse();
-      return { data, nextCursor: null, backwardsCursor: null };
+      const { outline, page, turnAt } = child
+        ? fullHistoryPage(await subagents.turns(child), (outline) => pageItems(outline, options))
+        : await readHistoryPage(getThread(params?.threadId), (outline) => {
+            const page = pageItems(outline, options);
+            return { ...page, load: [...new Set(page.positions.map((position) => position.turn))] };
+          });
+      return {
+        data: page.positions.map((position) => ({
+          turnId: outline[position.turn].id,
+          item: turnAt(position.turn).items[position.item],
+          startedAtMs: null,
+          completedAtMs: null,
+        })),
+        nextCursor: page.nextCursor,
+        backwardsCursor: page.backwardsCursor,
+      };
     },
 
     /**
@@ -1197,14 +1322,13 @@ export function createHandlers({
 
     async "thread/resume"(params, ctx) {
       const child = subagentThread(params?.threadId);
-      if (child) return sessionResponse(child, params, await subagents.turns(subagents.get(child.id)));
+      if (child) return resumeResponse(child, params, () => subagents.turns(subagents.get(child.id)));
       const thread = getThread(params?.threadId);
       // A resumed session takes the options of the launch resuming it.
       const wanted = requestedPermissions(params);
       if (wanted.sandbox || wanted.approval || wanted.reviewer) thread.permissions = { ...thread.permissions, ...Object.fromEntries(Object.entries(wanted).filter(([, v]) => v)) };
       ensureEngine(thread, ctx);
-      const turns = await historyTurns(thread);
-      return sessionResponse(thread, params, turns);
+      return resumeResponse(thread, params, () => historyTurns(thread));
     },
 
     async "thread/fork"(params, ctx) {
@@ -1379,7 +1503,7 @@ export function createHandlers({
       const thread = threads.get(params?.threadId);
       if (!thread) throw new RpcError(RPC.METHOD_NOT_FOUND, "thread/resume is not supported by this engine");
       ensureEngine(thread, ctx);
-      return sessionResponse(thread, params, await historyTurns(thread));
+      return resumeResponse(thread, params, () => historyTurns(thread));
     };
     return handlers;
   }

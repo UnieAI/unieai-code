@@ -141,6 +141,58 @@ export function entryTurn(entry, history) {
   return { items, status: last.status ?? "completed", startedAt: covered[0].startedAt ?? null, completedAt: last.completedAt ?? null };
 }
 
+/** A history turn's item count and summary positions, from its outline or its items. */
+const turnCount = (turn) => (Number.isInteger(turn.itemCount) ? turn.itemCount : (turn.items?.length ?? 0));
+const turnSummary = (turn) => {
+  if (turn.summary) return turn.summary;
+  const items = turn.items ?? [];
+  const user = items.findIndex((item) => item.type === "userMessage");
+  const agent = items.findLastIndex((item) => item.type === "agentMessage");
+  return { firstUser: user < 0 ? null : { index: user, item: items[user] }, lastAgent: agent < 0 ? null : { index: agent, item: items[agent] } };
+};
+
+/**
+ * What `entryTurn` would give for one entry, without its history turns'
+ * items: `{ itemCount, status, startedAt, completedAt, summary }`, where
+ * `summary` is the entry's first user message and last agent message with
+ * their positions among its items (`{ index, item }` or null). History turns
+ * here may be outlines (`itemCount`, `summary`, `items: null`).
+ */
+export function entryOutline(entry, history) {
+  const covered = history.slice(entry.from, entry.to);
+  if (!covered.length) {
+    const { items, ...timing } = entryTurn(entry, history);
+    const user = items.findIndex((item) => item.type === "userMessage");
+    const agent = items.findLastIndex((item) => item.type === "agentMessage");
+    return {
+      ...timing,
+      itemCount: items.length,
+      summary: { firstUser: user < 0 ? null : { index: user, item: items[user] }, lastAgent: agent < 0 ? null : { index: agent, item: items[agent] } },
+    };
+  }
+  let offset = 0;
+  let firstUser = null;
+  let lastAgent = null;
+  for (const turn of covered) {
+    const summary = turnSummary(turn);
+    if (!firstUser && summary.firstUser) firstUser = { index: offset + summary.firstUser.index, item: summary.firstUser.item };
+    if (summary.lastAgent) lastAgent = { index: offset + summary.lastAgent.index, item: summary.lastAgent.item };
+    offset += turnCount(turn);
+  }
+  // The prompt as the client showed it, as entryTurn shows it.
+  if (firstUser && entry.meta?.prompt && !entry.meta.local) {
+    firstUser = { index: firstUser.index, item: userMessageItem(firstUser.item.id ?? "", entry.meta.prompt) };
+  }
+  const last = covered.at(-1);
+  return {
+    itemCount: offset,
+    status: last.status ?? "completed",
+    startedAt: covered[0].startedAt ?? null,
+    completedAt: last.completedAt ?? null,
+    summary: { firstUser, lastAgent },
+  };
+}
+
 /**
  * How many history turns to keep so the turn `turnId` and every one after
  * it are gone: where the first of them with a rabi turn starts. Null when

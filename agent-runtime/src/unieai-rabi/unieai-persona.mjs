@@ -164,7 +164,7 @@ ${rigor ? VERIFYING_RIGOR : "- Before declaring completion, compare the result a
 - If a skill matches the task, load it with skill before acting.
 
 # Communication
-- Before a group of tool calls, write one short sentence saying what you are about to do. On long tasks, give a brief progress note every few steps.
+- The user does not see your thinking, only the text you write outside it. So before each group of tool calls, write one short sentence in the user's language saying what you are about to do and why (e.g. "Checking how the config is loaded before changing it."). A tool call with no sentence before it leaves the user watching silent activity. On long tasks, also give a brief progress note every few steps: what you found, what is next.
 - Final message: lead with the outcome. Be concise (usually under 10 lines) unless detail is needed. Wrap commands, paths, and identifiers in backticks; reference code as \`path/to/file.ts:42\`. Summarize what changed and how it was verified; mention anything left undone.
 - Reply in the user's language.`;
 }

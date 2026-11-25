@@ -159,42 +159,36 @@ export function storedOAuthAccessToken({ home, name, url, now = Date.now(), marg
  * @returns {Promise<{ servers: object[], notes: string[] }>}
  */
 export async function attachOAuthTokens(servers, { configured, probe, readToken, route = null }) {
-  const out = [];
-  const notes = [];
-  for (const server of servers) {
-    if (!oauthCandidate(server.name, configured, server)) {
-      out.push(server);
-      continue;
-    }
-    let status = null;
-    try {
-      status = await probe(server.name);
-    } catch (error) {
-      notes.push(`${server.name}: could not read its sign-in state (${error?.message ?? error}); connecting without a token`);
-      out.push(server);
-      continue;
-    }
-    const auth = normalizedAuth(status?.authStatus);
-    if (auth === "notloggedin") {
-      notes.push(`${server.name}: not signed in; run \`/mcp login ${server.name}\` (or \`unieai mcp login ${server.name}\`)`);
-      continue;
-    }
-    if (auth !== "oauth") {
-      out.push(server);
-      continue;
-    }
-    if (route) {
-      // Through the auth proxy, which puts the current token on every request.
-      out.push(await route(server));
-      continue;
-    }
-    const token = readToken(server.name, server.url);
-    if (!token) {
-      notes.push(`${server.name}: signed in, but no current token could be read (keyring store, or the refresh failed); run \`/mcp login ${server.name}\` if its tools are missing`);
-      out.push(server);
-      continue;
-    }
-    out.push({ ...server, headers: [...(server.headers ?? []), { name: "Authorization", value: `Bearer ${token}` }] });
+  // Each probe is a connection to a remote server: run them side by side, so
+  // opening a session waits for the slowest server, not for all of them in turn.
+  const results = await Promise.all(servers.map((server) => attachOne(server, { configured, probe, readToken, route })));
+  return {
+    servers: results.flatMap((r) => (r.server ? [r.server] : [])),
+    notes: results.flatMap((r) => (r.note ? [r.note] : [])),
+  };
+}
+
+async function attachOne(server, { configured, probe, readToken, route }) {
+  if (!oauthCandidate(server.name, configured, server)) return { server };
+  let status = null;
+  try {
+    status = await probe(server.name);
+  } catch (error) {
+    return { server, note: `${server.name}: could not read its sign-in state (${error?.message ?? error}); connecting without a token` };
   }
-  return { servers: out, notes };
+  const auth = normalizedAuth(status?.authStatus);
+  if (auth === "notloggedin") {
+    return { server: null, note: `${server.name}: not signed in; run \`/mcp login ${server.name}\` (or \`unieai mcp login ${server.name}\`)` };
+  }
+  if (auth !== "oauth") return { server };
+  // Through the auth proxy, which puts the current token on every request.
+  if (route) return { server: await route(server) };
+  const token = readToken(server.name, server.url);
+  if (!token) {
+    return {
+      server,
+      note: `${server.name}: signed in, but no current token could be read (keyring store, or the refresh failed); run \`/mcp login ${server.name}\` if its tools are missing`,
+    };
+  }
+  return { server: { ...server, headers: [...(server.headers ?? []), { name: "Authorization", value: `Bearer ${token}` }] } };
 }
