@@ -119,7 +119,7 @@ impl App {
                     tokio::spawn(async move { member.node.leave().await });
                 }
             }
-            Err(err) => tracing::warn!("uac thread could not join the session mesh: {err:?}"),
+            Err(err) => tracing::warn!("Rabi Harness thread could not join the session mesh: {err:?}"),
         }
     }
 

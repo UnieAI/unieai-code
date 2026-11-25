@@ -2294,6 +2294,23 @@ impl App {
                                     && completion.name == pending.name
                             });
                             if !completed {
+                                self.last_mcp_authorization = Some((
+                                    pending.name.clone(),
+                                    response.authorization_url.clone(),
+                                ));
+                                // Always shown: on an SSH host the browser
+                                // "opens" nowhere the user can see, and the
+                                // redirect then needs `/mcp callback`.
+                                self.chat_widget.add_info_message(
+                                    format!(
+                                        "Sign in to `{}` in your browser: {}",
+                                        pending.name, response.authorization_url
+                                    ),
+                                    Some(
+                                        "If the page after you approve cannot connect (browser on another computer), copy its address and run `/mcp callback <url>`."
+                                            .to_string(),
+                                    ),
+                                );
                                 self.open_url_in_browser(response.authorization_url);
                             }
                         }
@@ -2331,6 +2348,40 @@ impl App {
                     }
                 }
             }
+            AppEvent::McpLoginCallbackPasted { url } => {
+                let Some((name, authorization_url)) = self.last_mcp_authorization.clone() else {
+                    self.chat_widget.add_error_message(
+                        "No MCP sign-in is waiting for a callback. Start one with `/mcp login <name>`."
+                            .to_string(),
+                    );
+                    return Ok(AppRunControl::Continue);
+                };
+                match crate::mcp_login_callback::callback_target(&authorization_url, &url) {
+                    Ok(target) => {
+                        let app_event_tx = self.app_event_tx.clone();
+                        tokio::spawn(async move {
+                            let result = crate::mcp_login_callback::deliver(&target).await;
+                            app_event_tx.send(AppEvent::McpLoginCallbackDelivered { name, result });
+                        });
+                    }
+                    Err(crate::mcp_login_callback::CallbackRejected(message)) => {
+                        self.chat_widget.add_error_message(message);
+                    }
+                }
+            }
+            AppEvent::McpLoginCallbackDelivered { name, result } => match result {
+                // The sign-in's own completion notification reports the outcome.
+                Ok(200) => self.chat_widget.add_info_message(
+                    format!("Callback delivered; finishing sign-in to `{name}`…"),
+                    /*hint*/ None,
+                ),
+                Ok(status) => self.chat_widget.add_error_message(format!(
+                    "The sign-in listener refused that callback (HTTP {status}); the terminal error for `{name}` says why. Run `/mcp login {name}` to try again."
+                )),
+                Err(error) => self
+                    .chat_widget
+                    .add_error_message(format!("Could not finish sign-in to `{name}`: {error}")),
+            },
             AppEvent::McpInventoryLoaded {
                 result,
                 detail,

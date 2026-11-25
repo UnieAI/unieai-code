@@ -16,8 +16,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@unieai/rabi": "0.2.1-rc.3",
-    "@unieai/rabi-llm": "0.2.1-rc.3",
+    "@unieai/rabi": "0.2.2-rc.5",
+    "@unieai/rabi-llm": "0.2.2-rc.5",
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0"

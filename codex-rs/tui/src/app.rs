@@ -768,6 +768,9 @@ pub(crate) struct App {
     pending_mcp_login_start: Option<PendingMcpLoginStart>,
     // Login ID -> requested server and environment. Retrying one target keeps other logins alive.
     active_mcp_login_ids: HashMap<String, (String, Option<String>)>,
+    /// The most recent MCP sign-in's server and authorization URL, for
+    /// `/mcp callback <url>` (see `mcp_login_callback`).
+    last_mcp_authorization: Option<(String, String)>,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.

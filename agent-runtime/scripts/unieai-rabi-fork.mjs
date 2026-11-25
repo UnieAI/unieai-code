@@ -83,9 +83,21 @@ async function fetchTarball(pin, cacheDir) {
   const [algo, expected] = pin.integrity.split(/-(.*)/s);
   const verify = (buf) => createHash(algo).update(buf).digest("base64") === expected;
   if (existsSync(file) && verify(readFileSync(file))) return file;
-  const res = await fetch(pin.resolved);
-  if (!res.ok) throw new Error(`GET ${pin.resolved}: ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  // The registry drops a connection now and then over ~400 downloads; retry
+  // those and 5xx, not a 404 or an integrity mismatch.
+  let buf;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(pin.resolved);
+      if (res.status >= 500) throw new Error(`GET ${pin.resolved}: ${res.status}`);
+      if (!res.ok) throw Object.assign(new Error(`GET ${pin.resolved}: ${res.status}`), { final: true });
+      buf = Buffer.from(await res.arrayBuffer());
+      break;
+    } catch (error) {
+      if (error.final || attempt >= 4) throw error;
+      await new Promise((done) => setTimeout(done, 1000 * attempt));
+    }
+  }
   if (!verify(buf)) throw new Error(`integrity mismatch for ${pin.resolved}`);
   writeFileSync(file, buf);
   return file;

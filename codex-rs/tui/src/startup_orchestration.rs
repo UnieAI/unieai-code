@@ -401,7 +401,7 @@ pub(super) async fn run_main_inner(
             Err(err) => {
                 // Falling back keeps the TUI usable; `/engine` reports the
                 // session is on codex and points at the server log.
-                tracing::warn!(%err, "uac engine unavailable; using the codex engine");
+                tracing::warn!(%err, "Rabi Harness engine unavailable; using the codex engine");
                 uac_unavailable = Some(unieai_engine::uac_unavailable_warning(&codex_home, &err));
                 None
             }

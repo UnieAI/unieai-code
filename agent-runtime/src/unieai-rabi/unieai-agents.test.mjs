@@ -1,20 +1,10 @@
 // Copyright (c) 2026 UnieAI. All rights reserved.
 // The `subagent` shadow and the delegation prompt line it has to replace.
-// The plugin imports rabi's packages by their published names; in the source
-// tree they are installed under their upstream dsh names.
-import { registerHooks } from "node:module";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const match = /^@unieai\/rabi(-.*)?$/.exec(specifier);
-    return nextResolve(match ? `@deepseek-ai/dsh${match[1] ?? ""}` : specifier, context);
-  },
-});
 
 const plugin = await import("./uac-plugins/unieai-agents.mjs");
 const { RABI_SPAWN_LEAD, SUBAGENT_LEAD, SUBAGENT_PROMPT_DESCRIPTION } = plugin;
@@ -115,7 +105,7 @@ test("the lead being replaced is rabi's current wording", async () => {
   // If upstream rewords it, the shadow silently stops rewording; fail here instead.
   const { readFileSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
-  const lib = createRequire(import.meta.url).resolve("@deepseek-ai/dsh-tool-subagent");
+  const lib = createRequire(import.meta.url).resolve("@unieai/rabi-tool-subagent");
   assert.ok(readFileSync(lib, "utf8").includes(`description: ${JSON.stringify(RABI_SPAWN_LEAD)}`));
 });
 

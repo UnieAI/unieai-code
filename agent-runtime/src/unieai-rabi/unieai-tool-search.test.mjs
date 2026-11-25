@@ -2,11 +2,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // rabi's packages under their upstream names (the ones installed here).
-import { Context } from "@deepseek-ai/cordis";
-import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
-import { ToolRuntime, defineTool } from "@deepseek-ai/dsh-tools";
+import { Context } from "@unieai/cordis";
+import { SystemPrompt } from "@unieai/rabi-system-prompt";
+import { ToolRuntime, defineTool } from "@unieai/rabi-tools";
+import * as NativeExecutor from "@unieai/rabi-tool-executor-native";
 import { renderPatch } from "./config.mjs";
-import { TOOL_NAME, apply, describe as describeTool, listDeferred, planDeferral, schemaTokens, searchTools, toolSearchConfig } from "./unieai-tool-search.mjs";
+import { TOOL_NAME, apply, describe as describeTool, installDefinitionFilter, listDeferred, planDeferral, schemaTokens, searchTools, toolSearchConfig } from "./unieai-tool-search.mjs";
 
 // A server shaped like UnieAI Space: 118 tools, ~85k characters of schema.
 const bigServer = Array.from({ length: 118 }, (_, i) => ({
@@ -79,96 +80,119 @@ test("UNIEAI_TOOL_SEARCH: off, on, auto:<percent>, default", () => {
   assert.deepEqual(toolSearchConfig({}), {});
 });
 
-function fakeHost() {
-  const listeners = new Map();
-  const registered = [];
-  const logs = [];
-  const ctx = {
-    on: (event, listener) => listeners.set(event, listener),
-    tools: { register: (tool) => registered.push(tool) },
-    logger: { info: (line) => logs.push(line) },
-    get: () => undefined,
-  };
-  return { ctx, listeners, registered, logs };
-}
-
 const agentWith = (contextWindow) => ({ session: { requestContext: () => ({ provider: "unieai", model: "m", contextWindow }) } });
 
-test("in a host: deferred schemas leave the assembly, tool_search loads them for the next step", async () => {
-  const { ctx, listeners, registered } = fakeHost();
-  await apply(ctx, {}, { defineTool });
-  assert.equal(registered.length, 1);
-  const tool = registered[0];
-  assert.equal(tool.name, TOOL_NAME);
-  const assemble = listeners.get("system-prompt/assemble");
+/** rabi's own prompt and tool services, `tools` registered globally, and this plugin. */
+async function host(tools) {
+  const root = new Context();
+  root.plugin(SystemPrompt, {});
+  root.plugin(ToolRuntime, {});
+  root.plugin(NativeExecutor, {});
+  root.inject(["tools"], (ctx) => {
+    for (const tool of tools) {
+      ctx.tools.register(
+        defineTool({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters.properties,
+          output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
+          execute: async () => `ran ${tool.name}`,
+        }),
+      );
+    }
+  });
+  root.plugin({ name: "unieai-tool-search", inject: ["tools"], apply: (ctx) => apply(ctx, {}, { defineTool }) });
+  for (let i = 0; i < 50 && !root.tools?.get?.(TOOL_NAME); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(root.tools.get(TOOL_NAME), "tool_search registered");
+  /** One step as rabi's agent loop prepares it: admission, then assembly. */
+  const step = async (agent) => {
+    const toolSet = await root.tools.resolve({ agent, modelSelection: { provider: "unieai", model: "m" }, signal: new AbortController().signal });
+    const assembly = await root.systemPrompt.assemble({ scope: agent, toolSet });
+    return { toolSet, tools: assembly.tools, names: assembly.tools.map((tool) => tool.name) };
+  };
+  return { root, step };
+}
+
+// Built-ins without tool_search (this plugin registers its own).
+const exec = builtin.filter((tool) => tool.name !== TOOL_NAME);
+
+test("deferred schemas leave the step's tool list; tool_search loads them for the next step", async () => {
+  const { root, step } = await host([...exec, ...smallServer, ...bigServer]);
   const agent = agentWith(131072);
-  const tools = [...builtin, ...smallServer, ...bigServer];
-  const run = () => assemble(null, { agent, scope: agent }, async () => ({ sections: [], contexts: [], variables: {}, tools: structuredClone(tools) }));
 
-  let assembly = await run();
-  assert.deepEqual(assembly.tools.map((t) => t.name), ["exec_command", TOOL_NAME]);
-  assert.match(assembly.tools[1].description, /120 MCP tools are deferred/);
-  assert.ok(schemaTokens(assembly.tools) < 1500, `${schemaTokens(assembly.tools)}`);
+  let current = await step(agent);
+  assert.deepEqual(current.names, ["exec_command", TOOL_NAME]);
+  const search = current.tools.find((tool) => tool.name === TOOL_NAME);
+  assert.match(search.description, /120 MCP tools are deferred/);
+  assert.ok(schemaTokens(current.tools) < 1500, `${schemaTokens(current.tools)}`);
 
+  const tool = root.tools.executable(TOOL_NAME, agent, current.toolSet);
   const result = await tool.execute({ query: "select:kb_search,tool_042" }, { agent });
   assert.match(result.text, /Loaded 2 tools/);
   assert.match(result.text, /mcp__space__tool_042/);
   assert.deepEqual(tool.output.render({}, result), [{ type: "text", text: result.text }]);
 
-  assembly = await run();
-  assert.deepEqual(assembly.tools.map((t) => t.name), ["exec_command", TOOL_NAME, "mcp__unieai_studio__kb_search", "mcp__space__tool_042"]);
-  assert.equal(assembly.tools[2].parameters.properties.q.type, "string");
-  assert.match(assembly.tools[1].description, /118 MCP tools are deferred/);
+  current = await step(agent);
+  assert.deepEqual(new Set(current.names), new Set(["exec_command", TOOL_NAME, "mcp__unieai_studio__kb_search", "mcp__space__tool_042"]));
+  const loaded = current.tools.find((t) => t.name === "mcp__unieai_studio__kb_search");
+  assert.equal(loaded.parameters.properties.q.type, "string");
+  assert.match(current.tools.find((t) => t.name === TOOL_NAME).description, /118 MCP tools are deferred/);
 
   const again = await tool.execute({ query: "select:tool_042" }, { agent });
   assert.match(again.text, /Already in your tool list/);
   // Bad arguments are refused by rabi's own validation.
   await assert.rejects(tool.execute({}, { agent }));
+
+  // Execution is untouched: a deferred tool stays callable in the step.
+  const direct = root.tools.executable("mcp__space__tool_009", agent, current.toolSet);
+  assert.ok(direct, "a deferred tool is still admitted for dispatch");
+  assert.equal(await direct.execute({ id: "a" }, { agent }), "ran mcp__space__tool_009");
+  // Inspection without a step tool set sees every registration.
+  assert.equal(root.tools.schemas(agent).length, 1 + 2 + 118 + 1);
 });
 
-test("in a host: a small MCP server and a big window keep every schema; no tool_search", async () => {
-  const { ctx, listeners } = fakeHost();
-  await apply(ctx, {}, { defineTool });
-  const assemble = listeners.get("system-prompt/assemble");
+test("a small MCP server, or a big window, keeps every schema and leaves tool_search out", async () => {
+  const small = await host([...exec, ...smallServer]);
   const agent = agentWith(131072);
-  const assembly = await assemble(null, { agent }, async () => ({ tools: structuredClone([...builtin, ...smallServer]) }));
-  assert.deepEqual(assembly.tools.map((t) => t.name), ["exec_command", ...smallServer.map((t) => t.name)]);
+  const narrow = await small.step(agent);
+  assert.deepEqual(narrow.names, ["exec_command", ...smallServer.map((t) => t.name)]);
+  // Left out of the step entirely: not declared and not dispatchable.
+  assert.equal(small.root.tools.executable(TOOL_NAME, agent, narrow.toolSet), undefined);
+  assert.ok(small.root.tools.executable("exec_command", agent, narrow.toolSet));
+
+  const big = await host([...exec, ...bigServer]);
+  const wide = await big.step(agentWith(1_048_576));
+  assert.equal(wide.names.length, 1 + bigServer.length);
+  assert.ok(!wide.names.includes(TOOL_NAME));
+});
+
+test("each agent defers on its own window and keeps its own loaded tools", async () => {
+  const { root, step } = await host([...exec, ...bigServer]);
+  const narrow = agentWith(131072);
   const wide = agentWith(1_048_576);
-  const wideAssembly = await assemble(null, { agent: wide }, async () => ({ tools: structuredClone([...builtin, ...bigServer]) }));
-  assert.equal(wideAssembly.tools.length, 1 + bigServer.length);
-  // No agent (a global preview assembly): untouched.
-  const plain = { tools: structuredClone([...builtin, ...bigServer]) };
-  assert.equal(await assemble(null, {}, async () => plain), plain);
+  const first = await step(narrow);
+  assert.deepEqual(first.names, ["exec_command", TOOL_NAME]);
+  assert.equal((await step(wide)).names.length, 1 + bigServer.length);
+  await root.tools.executable(TOOL_NAME, narrow, first.toolSet).execute({ query: "select:tool_001" }, { agent: narrow });
+  assert.deepEqual((await step(narrow)).names, ["exec_command", "mcp__space__tool_001", TOOL_NAME]);
 });
 
-test("on rabi's own prompt and tool services: filtered, loaded, and a deferred tool still runs", async () => {
-  const root = new Context();
-  root.plugin(SystemPrompt, {});
-  root.plugin(ToolRuntime, {});
-  const make = (name) =>
-    defineTool({
-      name,
-      description: "Space tool ".repeat(10),
-      parameters: { id: { type: "string", description: "x".repeat(600) } },
-      output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
-      execute: async () => `ran ${name}`,
-    });
-  root.inject(["tools"], (ctx) => {
-    for (let i = 0; i < 118; i += 1) ctx.tools.register(make(`mcp__space__t${i}`));
-    ctx.tools.register(make("exec_command"));
-  });
-  root.plugin({ name: "unieai-tool-search", inject: ["tools"], apply: (ctx) => apply(ctx, {}, { defineTool }) });
-  for (let i = 0; i < 50 && !root.tools?.get?.(TOOL_NAME); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
-  const agent = agentWith(131072);
-  const names = async () => (await root.systemPrompt.assemble({ agent, scope: agent })).tools.map((tool) => tool.name);
-  assert.deepEqual(await names(), ["exec_command", TOOL_NAME]);
-  const call = (name, args) => root.tools.execute({ callId: name, name, arguments: args, agent, signal: new AbortController().signal });
-  const loaded = await call(TOOL_NAME, { query: "select:t5" });
-  assert.equal(loaded.isError, false);
-  assert.match(loaded.content[0].text, /Loaded 1 tool/);
-  assert.deepEqual(await names(), ["exec_command", "mcp__space__t5", TOOL_NAME]);
-  const direct = await call("mcp__space__t9", { id: "a" });
-  assert.equal(direct.value, "ran mcp__space__t9");
+test("installDefinitionFilter: one wrapper per class, inspection untouched, removable", () => {
+  class Registry {
+    definitions(scope, toolSet) {
+      return [{ name: "a" }, { name: "b" }];
+    }
+  }
+  const registry = new Registry();
+  const drop = installDefinitionFilter(registry, (_scope, list) => list.filter((t) => t.name !== "a"));
+  const rename = installDefinitionFilter(new Registry(), (_scope, list) => list.map((t) => ({ ...t, seen: true })));
+  assert.deepEqual(registry.definitions({}, {}), [{ name: "b", seen: true }]);
+  assert.deepEqual(registry.definitions({}), [{ name: "a" }, { name: "b" }]);
+  assert.deepEqual(registry.definitions(undefined, {}), [{ name: "a" }, { name: "b" }]);
+  drop();
+  rename();
+  assert.deepEqual(registry.definitions({}, {}), [{ name: "a" }, { name: "b" }]);
+  assert.equal(installDefinitionFilter({}, () => []), null);
 });
 
 test("the uac patch: compaction is ratio-led and tool search is loaded unless turned off", () => {

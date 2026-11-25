@@ -61,7 +61,7 @@ impl EngineKind {
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "codex",
-            Self::Uac => "Rabi Harness (uac)",
+            Self::Uac => "Rabi Harness",
         }
     }
 
@@ -265,7 +265,7 @@ pub(crate) fn uac_unavailable_warning(codex_home: &Path, error: &std::io::Error)
             .map(|line| line.chars().take(200).collect::<String>())
     });
     let mut warning = format!(
-        "{} (uac) did not start, so this session runs on {}: {error}.",
+        "{} did not start, so this session runs on {}: {error}.",
         EngineKind::Uac.display_name(),
         EngineKind::Codex.display_name()
     );
@@ -662,7 +662,7 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
             match std::fs::remove_file(&socket) {
                 Ok(()) => tracing::warn!(
                     socket = %socket.display(),
-                    "replaced an unstoppable uac server by taking over its socket"
+                    "replaced an unstoppable Rabi Harness server by taking over its socket"
                 ),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
@@ -702,7 +702,7 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
     command.process_group(0);
     let mut child = command.spawn().map_err(|err| {
         std::io::Error::other(format!(
-            "failed to start uac server ({}): {err}",
+            "failed to start the Rabi Harness server ({}): {err}",
             script.display()
         ))
     })?;
@@ -718,13 +718,13 @@ pub(crate) async fn ensure_uac_server(codex_home: &Path) -> std::io::Result<Abso
         }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(std::io::Error::other(format!(
-                "uac server exited with {status}; see {}",
+                "the Rabi Harness server exited with {status}; see {}",
                 log_path.display()
             )));
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(std::io::Error::other(format!(
-                "uac server did not start within {}s; see {}",
+                "the Rabi Harness server did not start within {}s; see {}",
                 UAC_START_TIMEOUT.as_secs(),
                 log_path.display()
             )));

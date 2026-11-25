@@ -575,14 +575,17 @@ test("rabi modes: each is a patch on the flat standard composition", async () =>
   assert.match(standard, /- id: worktree\n {6}name: '@unieai\/rabi-experimental-worktree'\n {4}- id: tool-worktree\n/, "create_worktree is on");
 
   const ptc = renderPatch({ defaultModel: "A", plugins, mode: "ptc" });
-  assert.match(ptc, /- id: tools\n {2}config:\n {4}mode: ptc\n/);
+  // rabi 0.2.2: PTC is the deployment executor, not a `tools` mode.
+  assert.match(ptc, /- id: tool-executor-native\n {2}disabled: true\n- id: tool-executor-ptc\n {2}disabled: false\n/);
+  assert.doesNotMatch(ptc, /mode: ptc/);
   assert.match(ptc, /- id: tool-workflow\n {2}disabled: true/);
 
   const cordis = renderPatch({ defaultModel: "A", plugins, mode: "cordis" });
   assert.match(cordis, /- id: cordis-host-runner[\s\S]*- id: tool-cordis/, "tool-cordis waits on the host runner");
 
   const minimal = renderPatch({ defaultModel: "A", plugins, mode: "minimal" });
-  for (const id of ["tool-bash", "tool-fs", "tool-subagent", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
+  for (const id of ["tool-bash", "tool-fs", "tool-subagent", "tool-agent-team", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
+  assert.doesNotMatch(minimal, /tool-subagent-list-agents/, "a row rabi 0.2.2 no longer has");
   assert.match(minimal, /- id: persistent-bash/);
   assert.doesNotMatch(minimal, /tool-worktree/, "minimal keeps only its shell");
   assert.doesNotMatch(minimal, /unieai-exec|unieai-apply-patch|unieai-web-search/, "no tool plugins in minimal");
@@ -934,4 +937,12 @@ test("rabi starts through the launcher, so a Node without import.meta.main still
   const { args } = rabiCommand({ UNIEAI_RABI_BIN: "/opt/rabi/lib/bin.js" });
   assert.deepEqual(args.slice(0, 2), [RABI_LAUNCHER, "/opt/rabi/lib/bin.js"]);
   assert.deepEqual(rabiCommand({ UNIEAI_RABI_BIN: "/usr/local/bin/rabi" }).args.slice(0, 1), ["--profile"]);
+});
+
+test("spill-policy is capped with the key rabi reads (maxInlineTokens)", () => {
+  const plugins = selectPlugins({});
+  const row = (patch) => /- id: spill-policy\n {2}config:\n((?: {4}.+\n)+)/.exec(patch)?.[1] ?? "";
+  // rabi's spill-policy reads only maxInlineTokens; any other key leaves it off.
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins })), "    maxInlineTokens: 16384\n");
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins: [] })), "    maxInlineTokens: 6000\n");
 });
