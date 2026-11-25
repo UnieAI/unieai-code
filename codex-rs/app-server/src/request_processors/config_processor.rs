@@ -1054,6 +1054,7 @@ mod tests {
     #[tokio::test]
     async fn reload_user_config_preserves_promoted_mcp_allowlist_denial() -> anyhow::Result<()> {
         let home = tempfile::tempdir()?;
+        crate::unieai_test_support::pin_openai_provider(home.path());
         let managed_config_path = home.path().join("managed_config.toml");
         std::fs::write(
             &managed_config_path,
@@ -1100,7 +1101,9 @@ client_id = "mcp-client"
         std::fs::write(&requirements_path, "[mcp_servers]\n")?;
         std::fs::write(
             home.path().join(codex_config::CONFIG_TOML_FILE),
-            "[tool_suggest]\ndisabled_tools = [{ type = 'connector', id = 'calendar' }]\n",
+            crate::unieai_test_support::with_openai_provider(
+                "[tool_suggest]\ndisabled_tools = [{ type = 'connector', id = 'calendar' }]\n",
+            ),
         )?;
         reload_user_config(&config_manager, &thread_manager).await;
 

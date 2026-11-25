@@ -243,6 +243,7 @@ async fn provider_requirement_load_errors_reject_input() -> Result<()> {
 #[tokio::test]
 async fn catalog_reload_uses_latest_model_provider() -> Result<()> {
     let home = tempdir()?;
+    crate::unieai_test_support::pin_openai_provider(home.path());
     let manager = ConfigManager::new_for_tests(
         home.path().to_path_buf(),
         Vec::new(),

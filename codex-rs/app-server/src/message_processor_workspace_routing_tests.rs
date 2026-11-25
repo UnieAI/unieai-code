@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 #[tokio::test]
 async fn background_routing_call_sites_skip_config(api_key: Option<&str>) -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
+    crate::unieai_test_support::pin_openai_provider(home.path());
     if let Some(api_key) = api_key {
         codex_login::login_with_api_key(
             home.path(),

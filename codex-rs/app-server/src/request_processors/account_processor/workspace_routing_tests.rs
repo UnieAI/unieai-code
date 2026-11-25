@@ -43,6 +43,7 @@ async fn background_routing_skips_config_until_chatgpt_sign_in(
     use std::sync::atomic::Ordering;
 
     let home = tempfile::tempdir()?;
+    crate::unieai_test_support::pin_openai_provider(home.path());
     let backend = wiremock::MockServer::start().await;
     app_test_support::mount_workspace_routing(&backend).await;
     let loads = Arc::new(AtomicUsize::new(/*v*/ 0));

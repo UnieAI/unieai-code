@@ -222,7 +222,9 @@ mod tests {
         let (temp_dir, thread_manager, config_manager, _loader) = refresh_test_state().await?;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            "[features]\nsecret_auth_storage = true\n",
+            crate::unieai_test_support::with_openai_provider(
+                "[features]\nsecret_auth_storage = true\n",
+            ),
         )?;
 
         let err = reload_mcp_config(&thread_manager, &config_manager)
@@ -250,7 +252,9 @@ mod tests {
         let (temp_dir, thread_manager, config_manager, loader) = refresh_test_state().await?;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            "[features]\nsecret_auth_storage = true\n",
+            crate::unieai_test_support::with_openai_provider(
+                "[features]\nsecret_auth_storage = true\n",
+            ),
         )?;
 
         reload_mcp_config_best_effort(&thread_manager, &config_manager).await;
@@ -275,7 +279,7 @@ mod tests {
         let (temp_dir, thread_manager, config_manager, _loader) = refresh_test_state().await?;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            "[features",
+            crate::unieai_test_support::with_openai_provider("[features"),
         )?;
 
         assert!(
@@ -310,7 +314,9 @@ mod tests {
         let (temp_dir, thread_manager, config_manager, _loader) = refresh_test_state().await?;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            "model = \"unrelated-model-change\"\n[features]\nsecret_auth_storage = true\n",
+            crate::unieai_test_support::with_openai_provider(
+                "model = \"unrelated-model-change\"\n[features]\nsecret_auth_storage = true\n",
+            ),
         )?;
 
         let mut good_thread = None;
@@ -363,11 +369,13 @@ mod tests {
             .thread;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            r#"
+            crate::unieai_test_support::with_openai_provider(
+                r#"
 [mcp_servers.global]
 command = "global-mcp"
 enabled = false
 "#,
+            ),
         )?;
 
         let current_config = thread.config().await;
@@ -427,11 +435,13 @@ enabled = false
         thread_manager.remove_thread(&parent.thread_id).await;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            r#"
+            crate::unieai_test_support::with_openai_provider(
+                r#"
 [mcp_servers.refreshed]
 command = "refreshed-mcp"
 enabled = false
 "#,
+            ),
         )?;
 
         reload_mcp_config(&thread_manager, &config_manager).await?;
@@ -499,7 +509,9 @@ enabled = false
         std::fs::create_dir_all(&bad_cwd)?;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
-            "[features]\nsecret_auth_storage = false\n",
+            crate::unieai_test_support::with_openai_provider(
+                "[features]\nsecret_auth_storage = false\n",
+            ),
         )?;
 
         let initial_config_manager =

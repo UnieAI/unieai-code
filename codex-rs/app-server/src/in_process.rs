@@ -973,6 +973,7 @@ mod tests {
     use tempfile::TempDir;
 
     async fn build_test_config(codex_home: &Path) -> Config {
+        crate::unieai_test_support::pin_openai_provider(codex_home);
         match ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
             .build()

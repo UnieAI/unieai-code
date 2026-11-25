@@ -358,7 +358,12 @@ async fn catalog_reload_recovers_after_cloud_failure() -> anyhow::Result<()> {
     ));
     failed.store(true, Ordering::SeqCst);
     catalog.invalidate().await;
-    assert_eq!(catalog.current().await?.0.model_provider_id, "openai");
+    // A cloud failure falls back to built-in defaults, whose provider is
+    // UnieAI's default (upstream: "openai").
+    assert_eq!(
+        catalog.current().await?.0.model_provider_id,
+        codex_model_provider_info::UNIEAI_PROVIDER_ID
+    );
     assert!(catalog.list_models(RefreshStrategy::Offline).await.is_err());
     failed.store(false, Ordering::SeqCst);
     // Exercise the same online request used by the periodic background worker.

@@ -81,7 +81,9 @@ async fn user_reload_refreshes_independent_requirements_without_server_changes()
     )?;
     std::fs::write(
         home.path().join(codex_config::CONFIG_TOML_FILE),
-        "approvals_reviewer = 'user'\n[features]\nenable_mcp_apps = true\n",
+        crate::unieai_test_support::with_openai_provider(
+            "approvals_reviewer = 'user'\n[features]\nenable_mcp_apps = true\n",
+        ),
     )?;
     let mut overrides = codex_config::LoaderOverrides::without_managed_config_for_tests();
     overrides.ignore_managed_requirements = false;
@@ -212,7 +214,9 @@ async fn user_reload_refreshes_independent_requirements_without_server_changes()
     std::fs::write(&requirements_path, "")?;
     std::fs::write(
         home.path().join(codex_config::CONFIG_TOML_FILE),
-        "[auto_review]\npolicy = 'new user fallback'",
+        crate::unieai_test_support::with_openai_provider(
+            "[auto_review]\npolicy = 'new user fallback'",
+        ),
     )?;
     reload_user_config(&manager, &threads).await;
     let config = thread.config().await;
@@ -251,6 +255,7 @@ async fn mcp_refresh_rejects_superseded_app_server_policy(
     use codex_core::ConfigRefreshOutcome;
 
     let home = tempfile::tempdir()?;
+    crate::unieai_test_support::pin_openai_provider(home.path());
     let policy = CloudConfigBundlePolicy::default();
     let mut snapshot = CloudConfigBundleSnapshot {
         config_server: None,

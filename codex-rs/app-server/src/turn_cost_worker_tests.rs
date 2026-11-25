@@ -40,6 +40,8 @@ async fn worker_starts_with_otlp_metrics_exporter_without_log_exporter() {
         .mount(&server)
         .await;
     let codex_home = TempDir::new().expect("temporary Codex home");
+    // The OpenAI turn-cost backend is chosen by the provider.
+    crate::unieai_test_support::pin_openai_provider(codex_home.path());
     let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .build()
