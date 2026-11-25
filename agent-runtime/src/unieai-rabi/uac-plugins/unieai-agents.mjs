@@ -389,23 +389,25 @@ export function apply(ctx, rawConfig = {}) {
     pending.set(childId, snapshot(definition, allow));
     try {
       const maxDepth = ctx.subagents.resolveMaxDepth(undefined);
-      const request = {
+      // Since 0.2.2 the start request's fields sit on the activation spec
+      // itself (no `request` member), and a child may be given a name.
+      const activation = await ctx.subagents.startActivation({
+        provider: config.provider,
+        childId,
+        label: `${definition.name}: ${args.description}`,
+        ...(typeof args.name === "string" && args.name ? { name: args.name } : {}),
         ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
         prompt: [{ type: "text", text: args.prompt }],
         parent,
         ...(agentOptions ? { agentOptions } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
-      };
-      const activation = await ctx.subagents.startActivation({
-        provider: config.provider,
-        childId,
-        label: `${definition.name}: ${args.description}`,
-        request,
         signal: exec.signal,
         delivery: "parent",
       });
       for (const note of notes) ctx.logger.info(`${name}: ${note}`);
-      return { kind: "activation", subagentId: activation.childId };
+      // The base tool's output schema since 0.2.2: { kind, name }, rendered
+      // "started subagent <name>" -- the name the model addresses it by.
+      return { kind: "activation", name: activation.name ?? String(activation.childId) };
     } finally {
       pending.delete(childId);
     }

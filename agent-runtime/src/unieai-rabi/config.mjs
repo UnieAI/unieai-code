@@ -490,7 +490,6 @@ const MINIMAL_DISABLED = [
   "tool-fs-search",
   "tool-skill",
   "tool-subagent-control",
-  "tool-subagent-list-agents",
   "tool-subagent",
   "tool-subagent-fork",
   "tool-workflow",
@@ -499,6 +498,8 @@ const MINIMAL_DISABLED = [
   "tool-ralph",
   "tool-web",
   "tool-plugin-manager",
+  // rabi 0.2.2's team task board (off until a session turns Team mode on).
+  "tool-agent-team",
   "plan-mode",
 ];
 
@@ -512,12 +513,13 @@ export function modePatch(mode) {
   const disable = (id) => [`- id: ${id}`, "  disabled: true"];
   switch (mode) {
     case "ptc":
-      // The presentation is the `tools` row's own `mode` in a flat
-      // composition (the preset's `tool-presentation` row only works under a
-      // preset's scope). run_code is PTC mode's composition surface; a second
-      // model-authored orchestration tool beside it is what the preset turns off.
+      // rabi 0.2.2 made the presentation a deployment executor (the `tools`
+      // row's `mode` key is gone): swap the native executor for the PTC one,
+      // both rows of the base composition. run_code is PTC mode's composition
+      // surface; a second model-authored orchestration tool beside it is what
+      // the preset turns off.
       return {
-        rows: ["- id: tools", "  config:", "    mode: ptc", ...disable("tool-workflow")],
+        rows: [...disable("tool-executor-native"), "- id: tool-executor-ptc", "  disabled: false", ...disable("tool-workflow")],
         inserts: [],
       };
     case "cordis":

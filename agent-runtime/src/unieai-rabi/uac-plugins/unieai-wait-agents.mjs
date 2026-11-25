@@ -14,6 +14,12 @@
  * answer, so the parent usually needs no further call to read results.
  * Without `agent_ids` it waits on the caller's own running children.
  *
+ * Since 0.2.2 the model knows a child by its name (`subagent` answers
+ * "started subagent <name>", list_agents lists names; the root is `lead`,
+ * a grandchild `a/b`). `agent_ids` takes those names, resolved within the
+ * caller's tree by the subagent runtime, or Session ids as before; each
+ * child is reported under both.
+ *
  * Children are tracked from rabi's `subagent/start` / `subagent/end` events
  * and filed under the parent their session names (`header.parentSession`,
  * the same link rabi checks before letting a parent message a child), so a
@@ -126,7 +132,15 @@ export function createChildRegistry() {
   };
   return {
     started(parent, info) {
-      childrenOf(parent).set(String(info.id), { id: String(info.id), running: true, stopReason: null, output: "", endedAt: null, boundary: info.boundary ?? 0 });
+      childrenOf(parent).set(String(info.id), {
+        id: String(info.id),
+        ...(info.name ? { name: String(info.name) } : {}),
+        running: true,
+        stopReason: null,
+        output: "",
+        endedAt: null,
+        boundary: info.boundary ?? 0,
+      });
       wake(parent);
     },
     ended(parent, info) {
@@ -177,7 +191,7 @@ export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, 
   const wanted = Array.isArray(args.agent_ids) && args.agent_ids.length > 0 ? new Set(args.agent_ids.map(String)) : null;
   const unknown = wanted ? [...wanted].filter((id) => !known().some((child) => child.id === id)) : [];
   if (unknown.length > 0) {
-    throw new Error(`not your subagent(s): ${unknown.join(", ")}. Use the ids returned by the subagent tool or list_agents.`);
+    throw new Error(`not your subagent(s): ${unknown.join(", ")}. Use the names the subagent tool or list_agents gave you.`);
   }
   // Without ids: the children running now, plus any that finished since a
   // wait last reported them — a fast child can finish before the parent
@@ -213,6 +227,7 @@ export async function waitForChildren(registry, parent, args, { cfg = DEFAULTS, 
   const clip = (text) => (text.length > cfg.maxOutputChars ? `${text.slice(0, cfg.maxOutputChars)}… [truncated]` : text);
   const children = snapshot().map((child) => ({
     agent_id: child.id,
+    ...(child.name && child.name !== child.id ? { name: child.name } : {}),
     status: child.running ? "running" : "finished",
     ...(child.running ? {} : { stop_reason: child.stopReason ?? "unknown", output: clip(child.output) }),
   }));
@@ -232,8 +247,9 @@ function render(value) {
   if (value.note) lines.push(value.note);
   if (value.timed_out) lines.push(`Timed out after ${value.waited_seconds}s.`);
   for (const child of value.children) {
-    if (child.status === "running") lines.push(`${child.agent_id}: still running`);
-    else lines.push(`${child.agent_id}: finished (${child.stop_reason})${child.output ? `\n${child.output}` : ""}`);
+    const who = child.name ?? child.agent_id;
+    if (child.status === "running") lines.push(`${who}: still running`);
+    else lines.push(`${who}: finished (${child.stop_reason})${child.output ? `\n${child.output}` : ""}`);
   }
   return lines.join("\n\n") || "No subagents to wait for.";
 }
@@ -242,7 +258,36 @@ export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
   const registry = createChildRegistry();
 
-  const parentOf = (info) => ctx.agents?.get(info.id)?.session?.header?.parentSession;
+  const parentOf = (info) => ctx.agents?.get(info.id)?.session?.header?.parentSession ?? info.parentSessionId;
+  // Optional: the subagent runtime names children (0.2.2+). A real context
+  // throws on reading a service it did not inject, so ask reflect.
+  const subagents = () => {
+    try {
+      return ctx.reflect ? ctx.reflect.get("subagents") : ctx.subagents;
+    } catch {
+      return undefined;
+    }
+  };
+  const nameOf = (id) => {
+    const agent = ctx.agents?.get(id);
+    try {
+      return agent ? subagents()?.namesOf?.(agent)?.self : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  /** The model's references (names or Session ids) as Session ids. */
+  const resolveRefs = async (caller, refs, signal) => {
+    const runtime = subagents();
+    if (typeof runtime?.resolveName !== "function") return refs;
+    return Promise.all(refs.map(async (ref) => {
+      try {
+        return String(await runtime.resolveName(caller, String(ref), signal));
+      } catch {
+        return String(ref); // reported as not the caller's below
+      }
+    }));
+  };
   const known = new Map(); // child id -> parent id (the child may be gone at subagent/end)
   ctx.on("subagent/start", (info) => {
     const parent = parentOf(info);
@@ -250,7 +295,7 @@ export function apply(ctx, config = {}) {
     known.set(String(info.id), parent);
     // Only this epoch's turns count: a resumed child's old turns are done.
     const boundary = ctx.agents?.get(info.id)?.session?.seq ?? 0;
-    registry.started(parent, { ...info, boundary });
+    registry.started(parent, { ...info, boundary, name: nameOf(info.id) });
   });
   // When a child's agent was last seen missing, so a disposal that never
   // produces `subagent/end` still settles it. See refresh.
@@ -304,7 +349,7 @@ export function apply(ctx, config = {}) {
         "with each finished subagent's stop reason and final answer. Omit agent_ids to wait on all your running subagents. " +
         "Do your own independent work first; wait only when you are blocked on a result.",
       parameters: {
-        agent_ids: { type: "array", items: { type: "string" }, description: "Subagent ids to wait on (from the subagent tool). Defaults to all your running subagents." },
+        agent_ids: { type: "array", items: { type: "string" }, description: "Subagent names to wait on (as the subagent tool or list_agents gave them). Defaults to all your running subagents." },
         all: { type: "boolean", description: "Wait until every awaited subagent has finished. Defaults to false (return on the first)." },
         timeout_ms: { type: "number", description: `Maximum wait. Defaults to ${cfg.defaultTimeoutMs} ms; at most ${cfg.maxTimeoutMs} ms.` },
       },
@@ -323,6 +368,7 @@ export function apply(ctx, config = {}) {
                 additionalProperties: false,
                 properties: {
                   agent_id: { type: "string", required: true },
+                  name: { type: "string" },
                   status: { type: "string", required: true },
                   stop_reason: { type: "string" },
                   output: { type: "string" },
@@ -339,7 +385,10 @@ export function apply(ctx, config = {}) {
         // What the user typed while this runs cannot be read until it ends.
         const boundary = ctx.agents?.get(exec.agent.id)?.session?.seq ?? 0;
         const interrupted = () => userSpokeSince(ctx.agents?.get(exec.agent.id), boundary);
-        return waitForChildren(registry, exec.agent.id, args, { cfg, signal: exec.signal, refresh, interrupted });
+        const resolved = Array.isArray(args.agent_ids) && args.agent_ids.length > 0
+          ? { ...args, agent_ids: await resolveRefs(exec.agent, args.agent_ids, exec.signal) }
+          : args;
+        return waitForChildren(registry, exec.agent.id, resolved, { cfg, signal: exec.signal, refresh, interrupted });
       },
     }),
   );
