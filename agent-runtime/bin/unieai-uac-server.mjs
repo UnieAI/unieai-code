@@ -160,6 +160,16 @@ function mcpAuthProxy(probe) {
   return authProxy;
 }
 
+/**
+ * Most of rabi's ~2 s boot is compiling its modules. Node keeps the compiled
+ * code on disk when NODE_COMPILE_CACHE names a directory (ignored by a Node
+ * too old to know it), so every later start skips that work (measured ~0.6 s).
+ */
+function withCompileCache(env) {
+  if (env.NODE_COMPILE_CACHE || env.UNIEAI_RABI_COMPILE_CACHE === "off") return env;
+  return { ...env, NODE_COMPILE_CACHE: join(codexHome, "uac", "node-compile-cache") };
+}
+
 const hosts = new Map(); // mode -> rabi host
 
 /** The rabi process for `mode`, started on first use. */
@@ -179,7 +189,7 @@ function hostFor(mode = "standard") {
         return await spawnAcpAgent({
           command: setup.command,
           args: setup.args,
-          env: setup.env,
+          env: withCompileCache(setup.env ?? process.env),
           cwd: process.cwd(),
           onLog: (line) => {
             stderr.push(line);
