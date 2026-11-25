@@ -2,10 +2,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // rabi's packages under their upstream names (the ones installed here).
-import { Context } from "@deepseek-ai/cordis";
-import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
-import { ToolRuntime, defineTool } from "@deepseek-ai/dsh-tools";
-import * as NativeExecutor from "@deepseek-ai/dsh-tool-executor-native";
+import { Context } from "@unieai/cordis";
+import { SystemPrompt } from "@unieai/rabi-system-prompt";
+import { ToolRuntime, defineTool } from "@unieai/rabi-tools";
+import * as NativeExecutor from "@unieai/rabi-tool-executor-native";
 import { renderPatch } from "./config.mjs";
 import { TOOL_NAME, apply, describe as describeTool, installDefinitionFilter, listDeferred, planDeferral, schemaTokens, searchTools, toolSearchConfig } from "./unieai-tool-search.mjs";
 
