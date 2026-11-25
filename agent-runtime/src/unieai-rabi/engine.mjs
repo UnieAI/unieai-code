@@ -848,9 +848,20 @@ export function createRabiEngine({
     }
   };
 
+  // Client tool calls still waiting on the client. An interrupt ends them:
+  // rabi's prompt cannot finish while one waits, and a client that never
+  // answers would otherwise refuse every later turn ("a prompt is already
+  // in flight").
+  const clientCalls = new Set();
   const onToolCall = async (call) => {
     if (!callClientTool) throw new Error("this client hosts no tools");
-    return callClientTool(call);
+    const abort = new AbortController();
+    clientCalls.add(abort);
+    try {
+      return await callClientTool({ ...call, signal: abort.signal });
+    } finally {
+      clientCalls.delete(abort);
+    }
   };
 
   /** Offer the client's tools in `sessionId` (rabi forgets them when it restarts). */
@@ -1079,6 +1090,7 @@ export function createRabiEngine({
 
     /** Stop the running turn, including one rabi started on its own. */
     async cancel() {
+      for (const abort of clientCalls) abort.abort(new Error("interrupted: the turn was stopped before the client answered"));
       if (!sessionId || !sessionAgent) return;
       sessionAgent.notify("session/cancel", { sessionId });
     },

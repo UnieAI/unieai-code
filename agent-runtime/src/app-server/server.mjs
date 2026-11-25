@@ -1149,6 +1149,11 @@ export function createHandlers({
       requireIdle(thread, "start a turn");
       const text = textOf(params?.input);
       if (!thread.preview) thread.preview = text.slice(0, 120);
+      // The client the user is typing in drives the thread from now on: its
+      // client tools are the ones the model should reach (list_peers from the
+      // TUI that started the thread answered for whatever session that TUI
+      // showed later, or not at all).
+      thread.connection.attach(ctx, { drive: "claim" });
       ensureEngine(thread, ctx);
       // Every turn/start carries the client's current model and permissions.
       await applySettings(thread, params);
@@ -1167,6 +1172,8 @@ export function createHandlers({
       const thread = getThread(params?.threadId);
       const text = textOf(params?.input);
       if (!text.trim()) throw new RpcError(RPC.INVALID_PARAMS, "steer needs some input");
+      // As turn/start: the client the user types in hosts the tools.
+      thread.connection.attach(ctx, { drive: "claim" });
       const clientId = params?.clientUserMessageId ?? null;
       const images = imagesOf(params?.input);
       const turn = thread.activeTurn;
@@ -1711,7 +1718,8 @@ export async function startAppServer({ socketPath, createEngineFor, codexHome, v
             signal?.addEventListener("abort", () => {
               if (!pending.delete(id)) return;
               if (timer) clearTimeout(timer);
-              reject(new Error("answered by another client"));
+              const reason = signal.reason;
+              reject(reason instanceof Error && reason.name !== "AbortError" ? reason : new Error("answered by another client"));
             }, { once: true });
             onId?.(id);
             if (!conn.send({ id, method, params })) {
