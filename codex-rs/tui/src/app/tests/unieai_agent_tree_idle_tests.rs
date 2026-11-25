@@ -10,6 +10,8 @@ use pretty_assertions::assert_eq;
 
 async fn app_with_running_agent(thread_id: ThreadId) -> Result<Box<App>> {
     let mut app = Box::pin(make_test_app()).await;
+    // The resident panel is opt-in; these tests cover it.
+    app.config.tui_agent_tree = true;
     app.primary_thread_id = Some(thread_id);
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 8));
@@ -76,6 +78,8 @@ async fn idle_status_stops_the_agent_row_without_turn_completion() -> Result<()>
 /// mid-turn.
 async fn app_with_running_subagent(main: ThreadId, child: ThreadId) -> Result<Box<App>> {
     let mut app = Box::pin(make_test_app()).await;
+    // The resident panel is opt-in; these tests cover it.
+    app.config.tui_agent_tree = true;
     app.primary_thread_id = Some(main);
     app.active_thread_id = Some(main);
     for thread_id in [main, child] {
@@ -227,6 +231,8 @@ async fn show_finished_keeps_the_old_panel() -> Result<()> {
 async fn a_lone_main_row_is_not_shown() -> Result<()> {
     let main = ThreadId::new();
     let mut app = Box::pin(make_test_app()).await;
+    // The resident panel is opt-in; these tests cover it.
+    app.config.tui_agent_tree = true;
     app.primary_thread_id = Some(main);
     app.active_thread_id = Some(main);
     app.thread_event_channels

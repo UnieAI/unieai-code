@@ -898,6 +898,10 @@ pub struct Config {
     /// Last selected grouping in Agent Command Center.
     pub tui_agents_overview_grouping: codex_config::types::AgentsOverviewGrouping,
 
+    /// Show the resident todo / subagent panel under the composer (`[tui]
+    /// agent_tree`). Off by default, matching upstream Codex.
+    pub tui_agent_tree: bool,
+
     /// Keep finished subagents on the resident agent tree (`[tui]
     /// agent_tree_show_finished`).
     pub tui_agent_tree_show_finished: bool,
@@ -5002,6 +5006,7 @@ impl Config {
                 .and_then(|t| t.session_picker_view)
                 .unwrap_or_default(),
             tui_agents_overview_grouping: cfg.tui.as_ref().map(|t| t.agents_overview_grouping).unwrap_or_default(),
+            tui_agent_tree: cfg.tui.as_ref().is_some_and(|t| t.agent_tree),
             tui_agent_tree_show_finished: cfg
                 .tui
                 .as_ref()

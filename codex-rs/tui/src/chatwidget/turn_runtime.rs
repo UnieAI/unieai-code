@@ -613,11 +613,15 @@ impl ChatWidget {
         // Also kept resident above the composer: the transcript card scrolls
         // away with the next message, which made "what am I working on" a
         // question the user had to re-ask.
-        self.bottom_pane
-            .set_agent_tree_todos(crate::bottom_pane::todo_rows_from_plan(&update));
-        // ...and taken down again as soon as the last item is ticked; see
-        // AgentTree::retire_finished_todos.
-        self.bottom_pane.retire_finished_agent_tree_todos();
+        // Opt-in (`[tui] agent_tree`); by default only the transcript card
+        // below is shown, as in upstream Codex.
+        if self.config.tui_agent_tree {
+            self.bottom_pane
+                .set_agent_tree_todos(crate::bottom_pane::todo_rows_from_plan(&update));
+            // ...and taken down again as soon as the last item is ticked; see
+            // AgentTree::retire_finished_todos.
+            self.bottom_pane.retire_finished_agent_tree_todos();
+        }
         self.add_to_history(history_cell::new_plan_update(update));
     }
 }

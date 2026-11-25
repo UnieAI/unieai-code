@@ -999,6 +999,13 @@ pub struct Tui {
     #[serde(default)]
     pub agents_overview_grouping: AgentsOverviewGrouping,
 
+    /// Show the resident todo / subagent panel under the composer (UnieAI).
+    /// Defaults to `false`, which matches upstream Codex: the plan appears as
+    /// an "Updated Plan" card in the transcript, and subagents are reached with
+    /// `/agent` and the agent navigation keys. `/tasks` works either way.
+    #[serde(default)]
+    pub agent_tree: bool,
+
     /// Keep finished subagents on the resident agent tree under the composer.
     /// Defaults to `false`: the tree shows only running work, work waiting on
     /// you, and failures you have not seen, and finished work is listed in

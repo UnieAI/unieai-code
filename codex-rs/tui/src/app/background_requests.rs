@@ -113,7 +113,8 @@ impl App {
     /// line points at until the user opens it. The main row is only there
     /// to sit among other rows (marking which thread is on screen, with its
     /// context meter): on its own it repeats the status indicator, so it is
-    /// left out. `[tui] agent_tree_show_finished = true` keeps the old panel:
+    /// left out. Nothing is drawn unless `[tui] agent_tree = true`.
+    /// `[tui] agent_tree_show_finished = true` keeps the old panel:
     /// every thread that is not closed, the main row always, and no hint.
     ///
     /// [`FINISHED_GRACE`]: super::unieai_tasks::FINISHED_GRACE
@@ -122,6 +123,13 @@ impl App {
         // Looking at a thread is seeing how it ended.
         if let Some(displayed) = self.current_displayed_thread_id() {
             self.tasks.acknowledge_agent(displayed);
+        }
+        // The panel is opt-in (`[tui] agent_tree`). Off, the bottom pane looks
+        // like upstream Codex; `/tasks` and `/agent` still list everything.
+        if !self.config.tui_agent_tree {
+            self.chat_widget.set_agent_tree_agents(Vec::new());
+            self.chat_widget.set_agent_tree_hidden_done(0);
+            return;
         }
         let threads: Vec<(ThreadId, crate::multi_agents::AgentPickerThreadEntry)> = self
             .agent_navigation
