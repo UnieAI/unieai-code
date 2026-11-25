@@ -10,24 +10,34 @@
  * tools behind its ToolSearch tool once their schemas pass 10% of the window;
  * this is the same for uac.
  *
- * How: rabi assembles each step's prompt (sections, contexts, tools) through
- * the `system-prompt/assemble` waterfall. When the `mcp__*` schemas there
- * exceed `deferRatio` of the route's context window, this plugin leaves them
- * out of the assembly (so the request, the logged request header and the
- * token meter all go without them) and offers `tool_search` instead, whose
- * description names every deferred tool. `tool_search` with
+ * How (rabi 0.2.2): each step, rabi resolves the step's tool set (every
+ * registration's `when` condition) and then asks the tool executor to
+ * describe the visible definitions. `tool_search`'s own `when` plans the
+ * step: when the `mcp__*` schemas exceed `deferRatio` of the route's context
+ * window, it records which of them to defer and offers itself. The tool
+ * registry's `definitions(scope, toolSet)`, which the executor describes,
+ * then leaves the deferred tools out (so the request, the logged request
+ * header and the token meter all go without them) and gives `tool_search` a
+ * description naming every deferred tool. `tool_search` with
  * `select:<name>,...` or keywords marks the matching tools loaded for that
  * agent; from the next step on their full schemas are back in the tool list
  * and the model calls them natively.
+ *
+ * rabi 0.2.1 let a `system-prompt/assemble` listener rewrite the tool list;
+ * 0.2.2 restores the provider-owned declarations after that waterfall, and
+ * MCP tools are registered in the agent's own scope, where `tools.restrict()`
+ * cannot reach them. Wrapping `definitions()` is the narrowest hook left:
+ * it only feeds descriptions (the executor, its prompt sections,
+ * `schemas()`), never dispatch.
  *
  * rabi's own `deferLoading` flag is not used: on an openai-completions route
  * (the UnieAI gateway) the adapter has no tool-update mode, strips the flag
  * and sends every tool anyway.
  *
- * Execution is untouched: a deferred tool is still registered, so a call to
- * one the model already knows (from history, or a resumed session) runs.
- * Loading a tool changes the tool list, which costs one uncached prompt on
- * providers that cache by prefix; the result asks for one batched call.
+ * Execution is untouched: a deferred tool stays in the step's tool set, so a
+ * call to one the model already knows (from history, or a resumed session)
+ * runs. Loading a tool changes the tool list, which costs one uncached prompt
+ * on providers that cache by prefix; the result asks for one batched call.
  *
  * Off with `UNIEAI_TOOL_SEARCH=off` (the plugin is then not loaded); `on`
  * defers MCP tools whatever their size; `auto:<percent>` sets the share.
@@ -188,12 +198,12 @@ const PARAMETERS = {
   max_results: { type: "number", description: `How many keyword matches to load (default ${DEFAULTS.maxResults}).` },
 };
 
-/** The route an assembly is for, then its context window. */
-async function contextWindowOf(ctx, agent, assembly, fallback) {
+/** The route a step is for, then its context window. */
+async function contextWindowOf(ctx, agent, selection, fallback) {
   const logged = agent?.session?.requestContext?.()?.contextWindow;
   if (Number.isInteger(logged) && logged > 0) return logged;
-  const provider = assembly?.variables?.provider ?? agent?.session?.requestHeader?.()?.config?.provider ?? agent?.options?.provider;
-  const model = assembly?.variables?.model ?? agent?.session?.requestHeader?.()?.config?.model ?? agent?.options?.model;
+  const provider = selection?.provider ?? agent?.session?.requestHeader?.()?.config?.provider ?? agent?.options?.provider;
+  const model = selection?.model ?? agent?.session?.requestHeader?.()?.config?.model ?? agent?.options?.model;
   try {
     const info = provider && model ? await ctx.get?.("llm")?.resolveModelInfo?.(provider, model) : undefined;
     const window = info?.context?.contextWindow;
@@ -204,6 +214,33 @@ async function contextWindowOf(ctx, agent, assembly, fallback) {
   return fallback;
 }
 
+// Filters installed on a tool registry class, one per loaded plugin instance.
+const FILTERS = Symbol.for("unieai.toolSearch.definitionFilters");
+
+/**
+ * Wrap `registry.definitions(scope, toolSet)` (once per class) so each
+ * installed filter can rewrite a step's described tools. Inspection calls
+ * (no toolSet) are left alone. Returns the uninstaller, or null when the
+ * registry has no such method (a rabi this plugin was not written for).
+ */
+export function installDefinitionFilter(registry, filter) {
+  const proto = registry && Object.getPrototypeOf(registry);
+  if (!proto || typeof proto.definitions !== "function") return null;
+  if (!proto[FILTERS]) {
+    const original = proto.definitions;
+    const filters = new Set();
+    Object.defineProperty(proto, FILTERS, { value: filters });
+    proto.definitions = function definitions(scope, toolSet) {
+      let list = original.call(this, scope, toolSet);
+      if (toolSet === undefined || scope === undefined) return list;
+      for (const rewrite of filters) list = rewrite(scope, list);
+      return list;
+    };
+  }
+  proto[FILTERS].add(filter);
+  return () => proto[FILTERS].delete(filter);
+}
+
 /**
  * @param ctx - the plugin context (rabi's cordis context).
  * @param rawConfig - DEFAULTS overrides.
@@ -212,39 +249,51 @@ async function contextWindowOf(ctx, agent, assembly, fallback) {
 export async function apply(ctx, rawConfig = {}, deps = {}) {
   const config = { ...DEFAULTS, ...rawConfig };
   const defineTool = deps.defineTool ?? (await import("@unieai/rabi-tools")).defineTool;
-  // Per agent: tools it loaded, the deferred tools of its last assembly, and
-  // whether it has deferred before.
+  // Per agent: tools it loaded, this step's deferred tools and their names,
+  // the tool_search description, and whether it has deferred before.
   const states = new WeakMap();
   const stateOf = (agent) => {
     let state = states.get(agent);
     if (!state) {
-      state = { loaded: new Set(), deferred: [], sticky: false };
+      state = { loaded: new Set(), deferred: [], deferredNames: new Set(), description: null, sticky: false };
       states.set(agent, state);
     }
     return state;
   };
 
-  ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
-    const assembly = await next();
-    const agent = context?.agent ?? context?.scope;
-    const tools = assembly?.tools;
-    if (!agent?.session || !Array.isArray(tools)) return assembly;
+  /** tool_search's `when`: plan one step for `agent`; true offers tool_search. */
+  const planStep = async ({ agent, modelSelection } = {}) => {
+    if (!agent) return false;
     const state = stateOf(agent);
+    // Without a toolSet: every visible schema, before this plugin's filter.
+    const tools = ctx.tools.schemas(agent);
     const hasDeferrable = tools.some((tool) => tool?.name?.startsWith(config.prefix) && tool.name !== TOOL_NAME);
-    const contextWindow = hasDeferrable ? await contextWindowOf(ctx, agent, assembly, config.fallbackContextWindow) : 0;
+    const contextWindow = hasDeferrable ? await contextWindowOf(ctx, agent, modelSelection, config.fallbackContextWindow) : 0;
     const plan = planDeferral(tools, { ...config, contextWindow, loaded: state.loaded, sticky: state.sticky });
     if (plan.defer && !state.sticky) {
       state.sticky = true;
       ctx.logger?.info?.(`${name}: deferring MCP tool schemas (~${plan.tokens} tokens, window ${contextWindow}) behind ${TOOL_NAME}`);
     }
     state.deferred = plan.deferred;
+    state.deferredNames = new Set(plan.deferred.map((tool) => tool.name));
+    state.description = plan.deferred.length > 0 ? describe(plan.deferred, config.prefix) : null;
     // Not deferring: tool_search is left out. Deferring: it stays (also once
-    // everything is loaded, so the list does not change again) and names
-    // what is still deferred.
-    if (plan.deferred.length === 0) return { ...assembly, tools: plan.kept };
-    const description = describe(plan.deferred, config.prefix);
-    return { ...assembly, tools: plan.kept.map((tool) => (tool.name === TOOL_NAME ? { ...tool, description } : tool)) };
+    // everything is loaded, so the list does not change again).
+    return plan.defer;
+  };
+
+  const uninstall = installDefinitionFilter(ctx.tools, (scope, list) => {
+    const state = states.get(scope);
+    if (!state || (state.deferredNames.size === 0 && !state.description)) return list;
+    return list
+      .filter((tool) => !state.deferredNames.has(tool.name))
+      .map((tool) => (tool.name === TOOL_NAME && state.description ? { ...tool, description: state.description } : tool));
   });
+  if (!uninstall) {
+    ctx.logger?.warn?.(`${name}: this rabi's tool registry has no definitions(); MCP tools are not deferred`);
+    return;
+  }
+  ctx.on?.("dispose", uninstall);
 
   ctx.tools.register(
     defineTool({
@@ -271,5 +320,6 @@ export async function apply(ctx, rawConfig = {}, deps = {}) {
         return { text: renderResult({ query, matched, missing, alreadyLoaded }) };
       },
     }),
+    { when: planStep },
   );
 }
