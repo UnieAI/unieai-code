@@ -40,11 +40,18 @@ const LITERAL_RULES = [
   ["github.com/deepseek-harness/deepseek-harness", "github.com/UnieAI/rabi-harness"],
   ["github.com/deepseek-ai/deepseek-harness", "github.com/UnieAI/rabi-harness"],
   ["github.com/deepseek-ai", "github.com/UnieAI"],
+  // An owner/repo slug outside a URL: 'deepseek-ai/dsh-libreoffice-kit'.
+  // Only the harness's own repos: other deepseek-ai/... slugs are model ids.
+  ["deepseek-ai/deepseek-harness", "UnieAI/rabi-harness"],
+  ["deepseek-ai/dsh", "UnieAI/rabi"],
+  // A Windows path: %APPDATA%\@deepseek-ai\dsh-desktop.
+  ["@deepseek-ai\\", "@unieai\\"],
   ["deepseek-harness", "rabi-harness"],
   ["deepseek_harness", "rabi_harness"],
   ["DeepSeek Harness", "Rabi Harness"],
   ["DeepSeek-Harness", "Rabi-Harness"],
   ["DeepseekHarness", "RabiHarness"],
+  ["DeepSeekHarness", "RabiHarness"],
   ["DEEPSEEK_HARNESS", "RABI_HARNESS"],
 ];
 

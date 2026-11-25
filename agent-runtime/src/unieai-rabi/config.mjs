@@ -490,7 +490,6 @@ const MINIMAL_DISABLED = [
   "tool-fs-search",
   "tool-skill",
   "tool-subagent-control",
-  "tool-subagent-list-agents",
   "tool-subagent",
   "tool-subagent-fork",
   "tool-workflow",
@@ -499,6 +498,8 @@ const MINIMAL_DISABLED = [
   "tool-ralph",
   "tool-web",
   "tool-plugin-manager",
+  // rabi 0.2.2's team task board (off until a session turns Team mode on).
+  "tool-agent-team",
   "plan-mode",
 ];
 
@@ -512,12 +513,13 @@ export function modePatch(mode) {
   const disable = (id) => [`- id: ${id}`, "  disabled: true"];
   switch (mode) {
     case "ptc":
-      // The presentation is the `tools` row's own `mode` in a flat
-      // composition (the preset's `tool-presentation` row only works under a
-      // preset's scope). run_code is PTC mode's composition surface; a second
-      // model-authored orchestration tool beside it is what the preset turns off.
+      // rabi 0.2.2 made the presentation a deployment executor (the `tools`
+      // row's `mode` key is gone): swap the native executor for the PTC one,
+      // both rows of the base composition. run_code is PTC mode's composition
+      // surface; a second model-authored orchestration tool beside it is what
+      // the preset turns off.
       return {
-        rows: ["- id: tools", "  config:", "    mode: ptc", ...disable("tool-workflow")],
+        rows: [...disable("tool-executor-native"), "- id: tool-executor-ptc", "  disabled: false", ...disable("tool-workflow")],
         inserts: [],
       };
     case "cordis":
@@ -650,12 +652,17 @@ export function renderPatch({
     "    maxTokens: 16384",
     "    compactionRetries: 2",
     "    maxOverflowRetries: 2",
-    // Codex keeps ~10k tokens of a tool result; rabi inlined 50KB. The spill
-    // preview keeps head and tail and the full text stays readable.
-    // unieai-exec already cuts to ~44KB itself; don't cut its output twice.
+    // Codex keeps ~10k tokens of a tool result. The spill preview keeps head
+    // and tail and the full text stays readable. rabi's key is
+    // maxInlineTokens (estimated at ~4 bytes a token); the maxInlineBytes
+    // this row used to set is not one, so the row turned spill-policy off
+    // (the base composition's own cap is 12500 tokens). With exec tools the
+    // cap stays above a full 64 KiB read and unieai-exec's own ~44KB cut, so
+    // it only catches outliers (an MCP result, a huge grep); without them,
+    // ~24KB as before.
     "- id: spill-policy",
     "  config:",
-    `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    `    maxInlineTokens: ${execTools ? 16384 : 6000}`,
     // Above rabi's own 50 KiB default: a lower cap turned single reads into
     // windowed ones (41 reads where 57 KiB would have been one).
     "- id: tool-fs",
