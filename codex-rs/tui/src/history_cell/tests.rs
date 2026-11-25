@@ -2593,11 +2593,45 @@ fn reasoning_summary_block() {
         &test_cwd(),
     );
 
+    // Folded in history: the first sentence; all of it in the transcript.
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Detailed reasoning goes here. (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Detailed reasoning goes here."]);
+}
+
+#[test]
+fn folded_reasoning_shows_only_its_first_sentence() {
+    let cell = new_reasoning_summary_block(
+        vec!["先看 AGENTS.md 和最近的 commit。然後找 GPU Fabric 的設定。\n\n第二段".to_string()],
+        &test_cwd(),
+    );
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)),
+        vec!["• 先看 AGENTS.md 和最近的 commit。 (ctrl+t)"]
+    );
+
+    let cell = new_reasoning_summary_block(
+        vec!["Check v1.2 of the config first. Then edit it.".to_string()],
+        &test_cwd(),
+    );
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)),
+        vec!["• Check v1.2 of the config first. (ctrl+t)"]
+    );
+}
+
+#[test]
+fn folded_reasoning_keeps_the_hint_when_shortened() {
+    let cell = new_reasoning_summary_block(
+        vec!["The user wants a very long explanation of everything that is going on here".to_string()],
+        &test_cwd(),
+    );
+    let lines = render_lines(&cell.display_lines(/*width*/ 30));
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].ends_with("… (ctrl+t)"), "{lines:?}");
+    assert!(unicode_width::UnicodeWidthStr::width(lines[0].as_str()) <= 30, "{lines:?}");
 }
 
 #[test]
@@ -2665,7 +2699,7 @@ async fn reasoning_summary_block_respects_config_overrides() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Detailed reasoning goes here. (ctrl+t)"]);
 }
 
 #[test]
@@ -2706,7 +2740,7 @@ fn reasoning_summary_block_keeps_title_only_summary_in_expanded_transcript() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Confirming backend JSONL source (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(
@@ -2723,7 +2757,7 @@ fn reasoning_summary_block_splits_header_and_summary_when_present() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• We should fix the bug next. (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• We should fix the bug next."]);
@@ -2758,7 +2792,7 @@ fn reasoning_summary_block_preserves_bold_content_after_empty_html_comment_part(
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Important conclusion (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Important conclusion"]);
@@ -2786,7 +2820,7 @@ fn reasoning_summary_block_strips_header_after_leading_empty_part() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Tests passed (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Tests passed"]);
@@ -2803,7 +2837,7 @@ fn reasoning_summary_block_drops_empty_part_after_real_content() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• done (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• done"]);
@@ -2817,7 +2851,7 @@ fn reasoning_summary_block_preserves_literal_html_comment() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, Vec::<String>::new());
+    assert_eq!(rendered_display, vec!["• Use `<!-- -->` in JSX. (ctrl+t)"]);
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Use <!-- --> in JSX."]);

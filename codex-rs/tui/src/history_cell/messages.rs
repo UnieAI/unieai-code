@@ -475,6 +475,54 @@ impl ReasoningSummaryCell {
                 .subsequent_indent("  ".into()),
         )
     }
+
+    /// One dim line: the first sentence and a hint that Ctrl+T shows the rest.
+    fn folded_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        let Some(sentence) = reasoning_first_sentence(&self.content) else {
+            return Vec::new();
+        };
+        const BULLET: &str = "• ";
+        const HINT: &str = " (ctrl+t)";
+        // Shorten the sentence, never the hint.
+        // The bullet is two columns wide; the hint is ASCII.
+        let room = usize::from(width).saturating_sub(2 + HINT.len()).max(1);
+        let sentence = crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
+            Line::from(Span::styled(sentence, Style::default().dim().italic())),
+            room,
+        );
+        let mut spans = vec![BULLET.dim()];
+        spans.extend(sentence.spans);
+        spans.push(HINT.dim());
+        plain_hyperlink_lines(vec![Line::from(spans)])
+    }
+}
+
+/// The first sentence of a reasoning block, without markdown emphasis or
+/// headings; None when it has no text.
+pub(crate) fn reasoning_first_sentence(content: &str) -> Option<String> {
+    let line = content.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("<!--") {
+            return None;
+        }
+        let line = line.trim_start_matches('#').trim().replace("**", "");
+        let line = line.trim();
+        (!line.is_empty()).then(|| line.to_string())
+    })?;
+    // End at the first sentence break: CJK punctuation, or ". " / "? " / "! "
+    // (so "v1.2" and "e.g." mid-word do not end it).
+    let mut end = line.len();
+    let mut chars = line.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let next = chars.peek().map(|(_, n)| *n);
+        let breaks = matches!(c, '。' | '！' | '？')
+            || (matches!(c, '.' | '?' | '!') && next.is_none_or(char::is_whitespace));
+        if breaks {
+            end = i + c.len_utf8();
+            break;
+        }
+    }
+    Some(line[..end].to_string())
 }
 
 impl HistoryCell for ReasoningSummaryCell {
@@ -484,7 +532,11 @@ impl HistoryCell for ReasoningSummaryCell {
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         if self.transcript_only {
-            Vec::new()
+            // Folded: the block's first sentence, with the whole of it in the
+            // transcript (Ctrl+T). Hidden entirely, a turn of tool calls read
+            // as silent activity whenever the model only explained itself
+            // while thinking.
+            self.folded_lines(width)
         } else {
             self.lines(width)
         }

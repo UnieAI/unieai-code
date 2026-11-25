@@ -64,7 +64,7 @@ pub enum SlashCommand {
     Mention,
     Status,
     Daemon,
-    /// Choose the agent engine for new sessions: `/engine [codex|uac]`.
+    /// Choose the agent engine for new sessions: `/engine [codex|rabi]`.
     Engine,
     #[strum(to_string = "rc", serialize = "remote")]
     Rc,

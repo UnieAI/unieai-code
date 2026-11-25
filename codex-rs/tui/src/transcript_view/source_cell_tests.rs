@@ -30,7 +30,13 @@ fn reasoning_copy_joins_soft_wraps_and_retains_the_existing_rendering() {
     let layout = TextLayout::new(lines.clone(), width);
     assert_eq!(layout.text(), content);
     assert_eq!(layout.rewrap(/*width*/ 19).text(), content);
-    assert_eq!(cell.display_hyperlink_lines(width), Vec::new());
+    // History shows it folded to one line, ending in the transcript hint.
+    let folded = cell.display_hyperlink_lines(width);
+    assert_eq!(folded.len(), 1);
+    assert_eq!(
+        folded[0].line.spans.last().map(|span| span.content.as_ref()),
+        Some(" (ctrl+t)")
+    );
 
     assert_layout_paints_like_lines(lines, width);
 }

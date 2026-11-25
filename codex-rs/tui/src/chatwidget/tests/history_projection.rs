@@ -205,11 +205,8 @@ async fn snapshot_formatter_reasoning_matches_compact_and_detailed_replay() {
         chat.replay_thread_item(item.clone(), "turn".to_string(), ReplayKind::ThreadSnapshot);
         let replayed = take_history_cells(&mut rx);
         assert_eq!((projected.len(), replayed.len()), (1, 1));
-        assert!(
-            projected[0]
-                .display_hyperlink_lines(/*width*/ 80)
-                .is_empty()
-        );
+        // Folded to one line in history; the rest is in the transcript.
+        assert_eq!(projected[0].display_hyperlink_lines(/*width*/ 80).len(), 1);
         assert!(replayed[0].display_hyperlink_lines(/*width*/ 80).is_empty());
         for width in [28, 80] {
             assert_eq!(

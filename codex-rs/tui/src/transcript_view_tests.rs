@@ -148,7 +148,7 @@ fn joined_prompt_preserves_source_offsets_across_rewrap() {
 }
 
 #[test]
-fn detailed_only_reasoning_separates_user_prompts() {
+fn folded_reasoning_separates_user_prompts() {
     use crate::history_cell::ReasoningSummaryCell;
     use std::path::Path;
 
@@ -173,9 +173,11 @@ fn detailed_only_reasoning_separates_user_prompts() {
             .separated
     );
 
+    // The compact view shows the reasoning folded to one line, so it too
+    // separates the prompts.
     let mut compact = TranscriptView::default();
     assert!(
-        !compact
+        compact
             .entry_layout(&cells, /*index*/ 2, /*full_content*/ true)
             .unwrap()
             .separated
