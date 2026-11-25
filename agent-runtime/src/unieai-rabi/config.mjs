@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadCredentials, unieaiHome } from "../config.mjs";
 import { HOME_NAME, migrateLegacyHome } from "./rabi-legacy.mjs";
-import { buildPersona } from "./unieai-persona.mjs";
+import { DEFAULT_ATTRIBUTION, buildPersona } from "./unieai-persona.mjs";
 import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
 
 export const RABI_PROVIDER_ID = "unieai";
@@ -90,6 +90,37 @@ export function configuredModel(home = unieaiHome()) {
   } catch {
     return null;
   }
+}
+
+/**
+ * `[attribution]` from `$CODEX_HOME/config.toml`: `commit` (the trailer) and
+ * `pr` (the description footer), each a string; `""` turns it off. Keys left
+ * out keep the default.
+ */
+export function configuredAttribution(home = unieaiHome()) {
+  const out = { ...DEFAULT_ATTRIBUTION };
+  let text;
+  try {
+    text = readFileSync(join(home, "config.toml"), "utf8");
+  } catch {
+    return out;
+  }
+  const table = text.match(/^\s*\[attribution\]\s*$([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m)?.[1];
+  if (!table) return out;
+  for (const key of ["commit", "pr"]) {
+    const basic = table.match(new RegExp(`^\\s*${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")`, "m"))?.[1];
+    const literal = table.match(new RegExp(`^\\s*${key}\\s*=\\s*'([^']*)'`, "m"))?.[1];
+    if (basic !== undefined) {
+      try {
+        out[key] = JSON.parse(basic);
+      } catch {
+        // Not a JSON-compatible TOML string: keep the default.
+      }
+    } else if (literal !== undefined) {
+      out[key] = literal;
+    }
+  }
+  return out;
 }
 
 /** Context window assumed for gateway models that declare none. */
@@ -581,6 +612,7 @@ export function renderPatch({
       execTools,
       shellOnly: mode === "minimal",
       rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
+      attribution: configuredAttribution(home),
     });
     // No working directory here: rabi 0.2 states it in the runtime context
     // (user side, so the system prompt stays cacheable) and no longer
