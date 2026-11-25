@@ -72,9 +72,9 @@ export function commandText(detail) {
  * bounds the wait so a user who walked away pauses the turn instead of pinning
  * it forever, and a timeout is a refusal.
  */
-export function createApprovalBridge({ request, cwd, timeoutMs = 0, ids = () => ({}), newItemId }) {
+export function createApprovalBridge({ request, cwd, timeoutMs = 0, ids = () => ({}), newItemId, itemIdFor = () => null }) {
   let callSeq = 0;
-  return async function requestApproval({ tool, action, detail, reason } = {}) {
+  return async function requestApproval({ tool, action, detail, reason, callId: toolCallId = null } = {}) {
     const callId = `call-${++callSeq}`;
     const { threadId, turnId } = ids() ?? {};
     // The client routes by these. Without them the request cannot deserialize,
@@ -89,7 +89,8 @@ export function createApprovalBridge({ request, cwd, timeoutMs = 0, ids = () => 
     const base = {
       threadId,
       turnId,
-      itemId: newItemId ? newItemId() : callId,
+      // The tool's own card when it has one (the diff and command shown come from it).
+      itemId: (toolCallId && itemIdFor(toolCallId)) || (newItemId ? newItemId() : callId),
       startedAtMs: Date.now(),
       approvalId: callId,
       reason: reason ?? action ?? null,

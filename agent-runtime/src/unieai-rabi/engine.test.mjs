@@ -8,6 +8,7 @@ import { createAcpConnection } from "./acp-client.mjs";
 import {
   createRabiEngine,
   createRabiHost,
+  approvalDetail,
   diffFromArgs,
   engineToolArgs,
   findModelOption,
@@ -169,6 +170,7 @@ test("permission requests go through requestApproval and fail closed", async () 
     workspace: "/w",
     requestApproval: async (request) => {
       asked.push(request.detail);
+      assert.match(request.callId, /^c[12]$/);
       return decisions.shift();
     },
   });
@@ -945,4 +947,14 @@ test("spill-policy is capped with the key rabi reads (maxInlineTokens)", () => {
   // rabi's spill-policy reads only maxInlineTokens; any other key leaves it off.
   assert.equal(row(renderPatch({ defaultModel: "A", plugins })), "    maxInlineTokens: 16384\n");
   assert.equal(row(renderPatch({ defaultModel: "A", plugins: [] })), "    maxInlineTokens: 6000\n");
+});
+
+test("an approval card shows the line to run, not the call's JSON", () => {
+  assert.equal(approvalDetail("exec_command", { cmd: "git push" }, { cmd: "git push" }), "git push");
+  assert.equal(approvalDetail("bash", { command: "ls" }, { command: "ls" }), "ls");
+  assert.equal(approvalDetail("write", { file_path: "a.txt" }, { file_path: "a.txt" }), "a.txt");
+  const mcp = approvalDetail("mcp__space__create_rows", { db: "x", rows: [1] }, { db: "x", rows: [1] });
+  assert.match(mcp, /^mcp__space__create_rows \{/);
+  assert.match(mcp, /"db": "x"/);
+  assert.equal(approvalDetail("ping", {}, {}), "ping");
 });

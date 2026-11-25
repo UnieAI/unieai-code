@@ -107,3 +107,19 @@ test("each request gets its own ids", async () => {
   await ask({ tool: "bash", detail: "two" });
   assert.equal(new Set(seen).size, 2, "two approvals shared an item id");
 });
+
+test("an approval names the card its tool call started, so the client can show its diff", async () => {
+  const sent = [];
+  const bridge = createApprovalBridge({
+    request: async (method, params) => (sent.push({ method, params }), { decision: "accept" }),
+    ids: () => ({ threadId: "t", turnId: "u" }),
+    newItemId: () => "fresh",
+    itemIdFor: (callId) => (callId === "call-7" ? "item-of-call-7" : null),
+  });
+  assert.equal(await bridge({ tool: "edit", action: "edit", detail: "a.txt", callId: "call-7" }), "accept");
+  assert.equal(sent[0].method, "item/fileChange/requestApproval");
+  assert.equal(sent[0].params.itemId, "item-of-call-7");
+  // A call with no card yet still gets an id of its own.
+  await bridge({ tool: "exec_command", action: "exec_command", detail: "ls", callId: "unknown" });
+  assert.equal(sent[1].params.itemId, "fresh");
+});

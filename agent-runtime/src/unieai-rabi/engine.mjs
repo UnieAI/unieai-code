@@ -90,6 +90,21 @@ export function engineToolName(rabiName) {
   return TOOL_NAMES[rabiName] ?? rabiName;
 }
 
+/**
+ * What an approval card shows as the thing to run. exec_command names its
+ * line `cmd`, not `command`; reading only `command` put the raw JSON of the
+ * call on the card. Any other tool (an MCP tool, say) is shown as its name
+ * and arguments.
+ */
+export function approvalDetail(name, input, rawInput) {
+  const line = input.command ?? input.cmd;
+  if (typeof line === "string" && line.trim()) return line;
+  const path = input.file_path ?? input.path;
+  if (typeof path === "string" && path) return path;
+  const args = rawInput && typeof rawInput === "object" ? JSON.stringify(rawInput, null, 2) : String(rawInput ?? "");
+  return args && args !== "{}" ? `${name} ${args}` : String(name ?? "tool");
+}
+
 /** POSIX single-quoting. */
 export function shellQuote(text) {
   return /^[A-Za-z0-9_\/.,:=@%+-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
@@ -735,8 +750,13 @@ export function createRabiEngine({
     } else if (!requestApproval) {
       allow = false;
     } else {
-      const detail = input.command ?? input.file_path ?? input.path ?? JSON.stringify(call.rawInput ?? {});
-      const decision = await requestApproval({ tool, action: call.name, detail, reason: null }).catch(() => "decline");
+      const decision = await requestApproval({
+        tool,
+        action: call.name,
+        detail: approvalDetail(call.name, input, call.rawInput),
+        reason: null,
+        callId: toolCall?.toolCallId ?? null,
+      }).catch(() => "decline");
       if (decision === "acceptForSession") allowedForSession.add(tool);
       allow = decision === "accept" || decision === "acceptForSession";
     }

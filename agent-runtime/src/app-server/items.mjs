@@ -221,7 +221,7 @@ export const userMessageItem = (id, text, clientId = null) => ({
  */
 export function createItemBridge(emit) {
   const open = new Map(); // tool_use_id -> { itemId, tool, args }
-  return function onToolEvent(event) {
+  const onToolEvent = function onToolEvent(event) {
     const useId = event?.tool_use_id || event?.id;
     const tool = event?.tool_name || event?.tool || "";
     switch (event?.type) {
@@ -274,6 +274,13 @@ export function createItemBridge(emit) {
         break; // engine-internal events (doom_warning, completion_nudge, …) have no card
     }
   };
+  /**
+   * The card a tool call's start created, so an approval request for that
+   * call names the same item: the TUI finds a file change's diff by it, and
+   * an approval under any other id shows an empty card.
+   */
+  onToolEvent.itemIdFor = (useId) => open.get(useId)?.itemId ?? null;
+  return onToolEvent;
 }
 
 /**
