@@ -1083,13 +1083,17 @@ async fn unieai_project_config_dir_skills_are_discovered_alongside_agents_skills
     .await
     .expect("load config stack");
 
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
     let roots = resolve_skill_roots_with_home_dir(
-        Some(Arc::clone(&LOCAL_FS)),
+        Some(&access),
+        &access,
         &config_stack,
         &repo,
+        /*project_markers*/ None,
         /*home_dir*/ None,
         Vec::new(),
         Vec::new(),
+        /*empty_remote_roots*/ None,
     )
     .await;
     let repo_roots = roots
