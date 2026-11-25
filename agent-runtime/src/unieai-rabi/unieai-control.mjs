@@ -29,6 +29,7 @@ import { createMcpToolDefinition } from "@unieai/rabi-mcp-client";
 import { SANDBOX_MODES, setSandboxMode } from "@unieai/rabi-sandbox-policy";
 import { APPROVAL_POLICIES, setApprovalPolicy } from "@unieai/rabi-user-approval";
 import { appendPluginRecord } from "@unieai/rabi-session";
+import { applyGoalProjection, goalProjectionDefinition } from "@unieai/rabi-goal";
 import { isBillingFailure } from "../unieai-billing.mjs";
 // The same module URL unieai-exec loads (config.mjs points rabi at this
 // directory's uac-plugins), so both see one registry of background sessions.
@@ -75,6 +76,8 @@ export function mcpResultOf(response) {
 export function textOf(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
+  // The common case, without copying the text (history caches hold these).
+  if (content.length === 1) return content[0]?.type === "text" && typeof content[0].text === "string" ? content[0].text : "";
   return content
     .map((block) => (block?.type === "text" ? block.text : ""))
     .filter(Boolean)
@@ -155,8 +158,11 @@ export function historyFromEvents(events, { everyTurn = false } = {}) {
         current.items.push({ type: "tool", callId: data.callId, name: data.name, arguments: data.arguments, status: "inProgress", output: "" });
         break;
       case "tool/result": {
-        const result = data.message?.content?.[0];
-        if (!result || !current) break;
+        // rabi 0.2.2 logs the tool message itself ({role: "tool", toolCallId,
+        // content, isError}); older logs wrapped it as the first content block.
+        const message = data.message ?? {};
+        const result = message.toolCallId ? message : message.content?.[0];
+        if (!result?.toolCallId || !current) break;
         const call = current.items.find((item) => item.type === "tool" && item.callId === result.toolCallId);
         if (call) {
           call.status = result.isError ? "failed" : "completed";
@@ -178,6 +184,112 @@ export function historyFromEvents(events, { everyTurn = false } = {}) {
   }
   if (everyTurn) for (const turn of turns) delete turn.answered;
   return turns;
+}
+
+/**
+ * One history turn without its items: what lining turns up and paging them
+ * needs. `itemCount` is how many items it has, and `summary` the two a turn
+ * summary shows (its first user message, its last answer), each with its
+ * position among the turn's items.
+ */
+export function turnOutline(turn) {
+  const { items = [], ...rest } = turn;
+  const firstUser = items.findIndex((item) => item.type === "user");
+  const lastAssistant = items.findLastIndex((item) => item.type === "assistant");
+  return {
+    ...rest,
+    itemCount: items.length,
+    summary: {
+      firstUser: firstUser < 0 ? null : { index: firstUser, item: items[firstUser] },
+      lastAssistant: lastAssistant < 0 ? null : { index: lastAssistant, item: items[lastAssistant] },
+    },
+  };
+}
+
+/**
+ * The `history` answer. Without a range, every turn with its items (what
+ * older bridges ask for). With `from`/`to`, every turn's outline and the items
+ * of the turns in `[from, to)` only: a long conversation's log is tens of
+ * megabytes of tool output, and a client showing its last turns needs a few.
+ */
+export function historyAnswer(turns, { from = null, to = null, outlines = null } = {}) {
+  if (from === null && to === null) return { turns };
+  const shells = outlines ?? turns.map(turnOutline);
+  const start = Math.max(0, Number(from) || 0);
+  const end = to === null ? shells.length : Math.min(shells.length, Number(to) || 0);
+  return {
+    turns: shells.map((outline, index) => (index >= start && index < end ? { ...outline, items: turns[index].items } : outline)),
+  };
+}
+
+/** Whether a `history` request needs any turn's items. */
+export function historyNeedsItems({ from = null, to = null } = {}) {
+  if (from === null && to === null) return true;
+  return to === null || Number(to) > Math.max(0, Number(from) || 0);
+}
+
+/** The session's goal as its log left it, in goalView's shape (null when none). */
+export function storedGoal(events) {
+  let state = goalProjectionDefinition.init();
+  for (const event of events) state = applyGoalProjection(state, event);
+  const current = state.current;
+  if (!current) return null;
+  return {
+    id: current.goal.id,
+    revision: current.goal.revision,
+    objective: current.goal.objective,
+    phase: current.goal.phase,
+    roundsStarted: current.roundsStarted ?? 0,
+    maxGoalRounds: current.goal.maxGoalRounds ?? null,
+  };
+}
+
+/**
+ * Built histories by session, so reading a long conversation again does not
+ * decode its log again. An entry is valid while its `version` is the
+ * session's: the live session's sequence number, or the stored log's
+ * revision (both change whenever the log grows). The newest `full` entries
+ * keep their turns' items; older ones keep only outlines and the goal, which
+ * is all a turn list or an agent overview needs.
+ */
+export function createHistoryCache({ full = 4, outlines = 64 } = {}) {
+  const entries = new Map(); // `${sessionId}:${everyTurn}` -> { version, turns, outlines, goal }
+  const keyOf = (sessionId, everyTurn) => `${sessionId}:${Boolean(everyTurn)}`;
+  return {
+    get(sessionId, everyTurn, version) {
+      const key = keyOf(sessionId, everyTurn);
+      const entry = entries.get(key);
+      if (!entry || version === null || entry.version !== version) return null;
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry;
+    },
+    set(sessionId, everyTurn, version, turns, goal) {
+      const key = keyOf(sessionId, everyTurn);
+      entries.delete(key);
+      const created = { version, turns, outlines: null, goal };
+      if (version === null) return created;
+      entries.set(key, created);
+      let withItems = 0;
+      for (const entry of [...entries.values()].reverse()) {
+        if (!entry.turns) continue;
+        withItems += 1;
+        if (withItems > full) {
+          entry.outlines ??= entry.turns.map(turnOutline);
+          entry.turns = null;
+        }
+      }
+      while (entries.size > outlines) entries.delete(entries.keys().next().value);
+      return created;
+    },
+    /** Forget a session (it was forked from, reverted or closed for good). */
+    drop(sessionId) {
+      for (const key of [...entries.keys()]) if (key.startsWith(`${sessionId}:`)) entries.delete(key);
+    },
+    get size() {
+      return entries.size;
+    },
+  };
 }
 
 /**
@@ -209,8 +321,8 @@ function lastBalancedEnd(events) {
   return null;
 }
 
-async function withObservation(ctx, sessionId, read) {
-  const observed = await ctx.sessionQuery.observeSession(sessionId);
+async function withObservation(ctx, sessionId, read, options = undefined) {
+  const observed = await ctx.sessionQuery.observeSession(sessionId, options);
   try {
     return await read(observed);
   } finally {
@@ -517,6 +629,58 @@ export function apply(ctx, config = {}) {
     delivered.peer.notify?.("steerDelivered", { sessionId: session.header.id, clientId: delivered.clientId, text });
   });
 
+  // Built histories (createHistoryCache), checked against the session's
+  // version before its log is read again.
+  const historyCache = createHistoryCache();
+  const persistenceOf = () => {
+    try {
+      return ctx.reflect?.get?.("sessionPersistence") ?? null;
+    } catch {
+      return null;
+    }
+  };
+  /** The session's version without reading its log: null when unknown. */
+  const sessionVersion = async (sessionId) => {
+    const live = ctx.sessions?.get?.(sessionId);
+    if (live) return Number.isSafeInteger(live.seq) ? `live:${live.seq}` : null;
+    const persistence = persistenceOf();
+    if (typeof persistence?.stat !== "function") return null;
+    try {
+      const snapshot = await persistence.stat(sessionId);
+      return snapshot?.revision ? `cold:${snapshot.revision}` : null;
+    } catch {
+      return null;
+    }
+  };
+  const observedVersion = (observed) =>
+    observed.source === "live" ? `live:${observed.cursor + 1}` : observed.revision ? `cold:${observed.revision}` : null;
+  const goalOfLog = (events) => {
+    try {
+      return storedGoal(events);
+    } catch {
+      return null;
+    }
+  };
+  /** `{ version, turns | null, outlines, goal }`: `turns` is there when `needItems`. */
+  const readHistory = async (sessionId, everyTurn, needItems) => {
+    const hit = historyCache.get(sessionId, everyTurn, await sessionVersion(sessionId));
+    // A copy: a later read may drop this entry's items while the caller uses them.
+    if (hit && (hit.turns || !needItems)) return { ...hit, entry: hit };
+    return withObservation(
+      ctx,
+      sessionId,
+      (observed) => {
+        const events = observed.events;
+        const turns = historyFromEvents(events, { everyTurn });
+        const version = observedVersion(observed);
+        const entry = historyCache.set(sessionId, everyTurn, version, turns, goalOfLog(events));
+        return { ...entry, entry };
+      },
+      // Only the events are read here; rabi's projections are not needed.
+      { projectionMode: "none" },
+    );
+  };
+
   const methods = {
     /**
      * Register the client's tools for one session (replacing earlier ones).
@@ -669,13 +833,21 @@ export function apply(ctx, config = {}) {
       return service.measure(agent, { clientToolNames: clientToolNames.get(owner) ?? [] });
     },
 
-    /** The session's current goal (null when none). */
+    /**
+     * The session's current goal (null when none). A session that is not
+     * open answers from its log: the client asks on every resume, and
+     * opening the session for it (ACP resume, every MCP server) held up the
+     * resumed conversation's first frame.
+     */
     async goalGet({ sessionId }, peer) {
       bridge = peer;
       const agent = ctx.agents.get(sessionId);
       const goals = goalsOf();
-      if (!agent || !goals) return { goal: null, supported: Boolean(goals) };
-      return { goal: goalView(goals.get(agent)), supported: true };
+      if (!goals) return { goal: null, supported: false };
+      if (agent) return { goal: goalView(goals.get(agent)), supported: true };
+      if (!sessionId) return { goal: null, supported: true };
+      const built = await readHistory(sessionId, true, false);
+      return { goal: built.goal ?? null, supported: true, stored: true };
     },
 
     /**
@@ -762,8 +934,16 @@ export function apply(ctx, config = {}) {
       });
     },
 
-    async history({ sessionId, everyTurn = false }) {
-      return withObservation(ctx, sessionId, (observed) => ({ turns: historyFromEvents(observed.events, { everyTurn }) }));
+    /**
+     * The session's turns (see historyAnswer: all of them with their items,
+     * or with `from`/`to` every turn's outline and only those turns' items),
+     * and the `version` they were read at.
+     */
+    async history({ sessionId, everyTurn = false, from = null, to = null }) {
+      const built = await readHistory(sessionId, everyTurn, historyNeedsItems({ from, to }));
+      if (!built.turns) return { version: built.version, turns: built.outlines };
+      if (from !== null || to !== null) built.outlines = built.entry.outlines ??= built.turns.map(turnOutline);
+      return { version: built.version, ...historyAnswer(built.turns, { from, to, outlines: built.outlines }) };
     },
 
     /**

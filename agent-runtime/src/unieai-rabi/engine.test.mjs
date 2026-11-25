@@ -949,6 +949,40 @@ test("spill-policy is capped with the key rabi reads (maxInlineTokens)", () => {
   assert.equal(row(renderPatch({ defaultModel: "A", plugins: [] })), "    maxInlineTokens: 6000\n");
 });
 
+test("the goal and ranged history of a stored conversation are read without opening it", async () => {
+  const acpCalls = [];
+  const controlCalls = [];
+  const { client } = fakeAgent(async ({ method, params }) => {
+    acpCalls.push([method, params.sessionId]);
+    return {};
+  });
+  const control = async (method, params) => {
+    controlCalls.push([method, params]);
+    if (method === "goalGet") return { goal: { id: "g", objective: "ship", phase: "paused" }, supported: true, stored: true };
+    if (method === "history") {
+      return {
+        version: "cold:1",
+        turns: [
+          { rabiTurn: 1, opener: "user", endSeq: 4, reason: "completed", startedAt: 1, completedAt: 2, itemCount: 2, summary: { firstUser: { index: 0, item: { type: "user", text: "hi" } }, lastAssistant: { index: 1, item: { type: "assistant", text: "yo" } } } },
+          { rabiTurn: 2, opener: "user", endSeq: null, reason: null, startedAt: 3, itemCount: 1, summary: { firstUser: null, lastAssistant: null }, items: [{ type: "tool", callId: "c", name: "bash", arguments: "{}", status: "completed", output: "ok" }] },
+        ],
+      };
+    }
+    return {};
+  };
+  const engine = createRabiEngine({ host: scriptedHost(client, control), workspace: "/w", resumeState: { sessionId: "old" } });
+  assert.equal(await createRabiEngine({ host: scriptedHost(client, control), workspace: "/w" }).goal(), null, "a new conversation has none");
+  assert.deepEqual(await engine.goal(), { id: "g", objective: "ship", phase: "paused" });
+  const { version, turns } = await engine.historyRange({ from: 1, to: 2 });
+  assert.deepEqual(acpCalls, [], "no session/resume, no MCP servers");
+  assert.deepEqual(controlCalls.at(-1), ["history", { sessionId: "old", everyTurn: true, from: 1, to: 2 }]);
+  assert.equal(version, "cold:1");
+  assert.deepEqual(turns.map((t) => [t.anchor, t.status, t.itemCount, t.items?.length ?? null]), [[1, "completed", 2, null], [2, "inProgress", 1, 1]]);
+  assert.equal(turns[0].summary.firstUser.item.type, "userMessage");
+  assert.equal(turns[0].summary.lastAgent.item.text, "yo");
+  assert.equal(turns[1].items[0].status, "completed");
+});
+
 test("an approval card shows the line to run, not the call's JSON", () => {
   assert.equal(approvalDetail("exec_command", { cmd: "git push" }, { cmd: "git push" }), "git push");
   assert.equal(approvalDetail("bash", { command: "ls" }, { command: "ls" }), "ls");

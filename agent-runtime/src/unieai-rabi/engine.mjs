@@ -440,11 +440,35 @@ export function historyTurn(turn) {
         break;
     }
   }
+  return { items, ...historyTurnTiming(turn) };
+}
+
+/** A history turn's status and times, which its outline carries too. */
+function historyTurnTiming(turn) {
   return {
-    items,
     status: turn.endSeq === null ? "inProgress" : TURN_STATUS[turn.reason] ?? "completed",
     startedAt: turn.startedAt ?? null,
     completedAt: turn.completedAt ?? null,
+  };
+}
+
+/**
+ * One unieai-control history turn from a ranged read: its items when it was
+ * in the range (`items: null` when not), how many it has, and the two a
+ * turn summary shows as protocol items at their positions.
+ */
+export function historyRangeTurn(turn) {
+  const one = (entry) => (entry ? { index: entry.index, item: historyTurn({ items: [entry.item], endSeq: 0 }).items[0] ?? null } : null);
+  // A control plugin from before ranged reads sends every item and no summary.
+  const raw = turn.items ?? [];
+  const at = (index) => (index < 0 ? null : { index, item: raw[index] });
+  const summary = turn.summary ?? { firstUser: at(raw.findIndex((i) => i.type === "user")), lastAssistant: at(raw.findLastIndex((i) => i.type === "assistant")) };
+  return {
+    ...(Array.isArray(turn.items) ? historyTurn(turn) : { items: null, ...historyTurnTiming(turn) }),
+    itemCount: Number.isInteger(turn.itemCount) ? turn.itemCount : (turn.items?.length ?? 0),
+    summary: { firstUser: one(summary.firstUser), lastAgent: one(summary.lastAssistant) },
+    anchor: turn.rabiTurn ?? null,
+    opener: turn.opener ?? null,
   };
 }
 
@@ -1059,9 +1083,13 @@ export function createRabiEngine({
       sessionAgent.notify("session/cancel", { sessionId });
     },
 
-    /** rabi's goal for this conversation (see unieai-control goal*). */
+    /**
+     * rabi's goal for this conversation (see unieai-control goal*). Read
+     * without opening the session: unieai-control answers a closed one from
+     * its log, and the client asks before it shows a resumed conversation.
+     */
     async goal() {
-      await ensureSession();
+      if (!sessionId) return null;
       return (await host.control("goalGet", { sessionId })).goal;
     },
     async setGoal({ objective = null, status = null } = {}) {
@@ -1140,6 +1168,18 @@ export function createRabiEngine({
       if (!sessionId) return [];
       const { turns } = await host.control("history", { sessionId, everyTurn: true });
       return turns.map((turn) => ({ ...historyTurn(turn), anchor: turn.rabiTurn ?? null, opener: turn.opener ?? null }));
+    },
+
+    /**
+     * The same turns, with only those in `[from, to)` carrying their items
+     * (`to: null` runs to the end): every turn's outline (`itemCount`,
+     * `summary`, status, anchor) and the `version` of the log they were read
+     * from, which changes whenever it grows.
+     */
+    async historyRange({ from = 0, to = null } = {}) {
+      if (!sessionId) return { version: "empty", turns: [] };
+      const { version = null, turns } = await host.control("history", { sessionId, everyTurn: true, from, to });
+      return { version, turns: turns.map(historyRangeTurn) };
     },
 
     /** A subagent's token usage, in the shape `onUsage` reports the session's own. */
