@@ -54,12 +54,19 @@ pub(crate) async fn emit_sub_agent_activity(
 fn agent_message_from_tool(
     message: String,
     source: &crate::tools::context::ToolCallSource,
+    turn: &crate::session::turn_context::TurnContext,
 ) -> AgentMessage {
-    if matches!(
-        source,
-        crate::tools::context::ToolCallSource::DirectPlaintextMessage
-            | crate::tools::context::ToolCallSource::CodeMode { .. }
-    ) {
+    // UnieAI: only the OpenAI backend sends encrypted tool arguments and reads
+    // encrypted agent-message content. Any other provider's model wrote the
+    // message in plain text, and the request rewrite for such providers drops
+    // encrypted parts, so delivering it as `Encrypted` would empty the payload.
+    if !turn.provider.info().is_openai()
+        || matches!(
+            source,
+            crate::tools::context::ToolCallSource::DirectPlaintextMessage
+                | crate::tools::context::ToolCallSource::CodeMode { .. }
+        )
+    {
         AgentMessage::Plaintext(message)
     } else {
         AgentMessage::Encrypted(message)
