@@ -47,8 +47,8 @@ import {
   writeRabiAccount,
 } from "../src/unieai-rabi/config.mjs";
 import { createRabiEngine, createRabiHost } from "../src/unieai-rabi/engine.mjs";
-import { loadCredentials } from "../src/config.mjs";
-import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
+import { loadCredentials, unieaiHome } from "../src/config.mjs";
+import { acpMcpServers, attachOAuthTokens, sessionMcpServers, storedOAuthAccessToken, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
 import { agentFailureReason } from "../src/unieai-rabi/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-rabi/unieai-oneshot.mjs";
 import { claimServer } from "../src/unieai-rabi/unieai-server-lock.mjs";
@@ -298,13 +298,22 @@ await launchAppServer({
       return model;
     }
   },
-  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, ...callbacks }) => {
+  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, probeMcpServer, ...callbacks }) => {
     // The user's `[mcp_servers]` and Studio's (knowledge bases, SQL, skills),
     // read when each session opens so a config edit or new sign-in counts.
     const mcpServers = async () => {
       const { config } = (await readConfig?.()) ?? {};
-      const { servers, skipped } = acpMcpServers(config?.mcp_servers);
+      const { servers: converted, skipped } = acpMcpServers(config?.mcp_servers);
       for (const reason of skipped) log("[uac] MCP server skipped:", reason);
+      // OAuth servers get codex's current token (see attachOAuthTokens).
+      const { servers, notes } = probeMcpServer
+        ? await attachOAuthTokens(converted, {
+            configured: config?.mcp_servers,
+            probe: probeMcpServer,
+            readToken: (name, url) => storedOAuthAccessToken({ home: unieaiHome(), name, url }),
+          })
+        : { servers: converted, notes: [] };
+      for (const note of notes) log("[uac] MCP server", note);
       return sessionMcpServers({ configured: servers, studio: studioMcpServer(loadCredentials()) });
     };
     // The TUI re-synced unieai.json with Studio when it launched; carry that

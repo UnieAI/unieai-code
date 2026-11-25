@@ -95,6 +95,12 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         // The effective config as codex resolves it for this directory
         // (profiles, project layers): where `[mcp_servers]` comes from.
         readConfig: () => forwarder.forward("config/read", { cwd }),
+        // One server's sign-in state, asked of the Rust side, which connects
+        // it with codex's OAuth runtime (and so refreshes a token that is due).
+        probeMcpServer: async (serverName) => {
+          const result = await forwarder.forward("mcpServerStatus/list", { serverName, detail: "toolsAndAuthOnly" });
+          return result?.data?.find((server) => server.name === serverName) ?? null;
+        },
         oneShot,
         variant,
         permissions,
