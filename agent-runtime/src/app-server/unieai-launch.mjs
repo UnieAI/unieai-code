@@ -123,8 +123,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onState,
         clientTools,
         // A client-hosted tool runs in the client: ask it, as the Rust server does.
-        callClientTool: ({ callId, namespace, tool, arguments: args }) =>
-          request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }),
+        callClientTool: ({ callId, namespace, tool, arguments: args, signal }) =>
+          request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }, { signal }),
         onText: (delta) => emit("item/agentMessage/delta", { delta }),
         // /status and the context meter read these.
         onUsage: (tokenUsage) => emit("thread/tokenUsage/updated", { ...ids(), tokenUsage }),
