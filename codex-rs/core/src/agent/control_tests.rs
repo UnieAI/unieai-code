@@ -163,6 +163,14 @@ async fn test_config_with_cli_overrides(
         "model".to_string(),
         TomlValue::String("gpt-5.5".to_string()),
     ));
+    // UnieAI defaults to the `unieai` provider; these tests use upstream's
+    // OpenAI catalog (model metadata such as default reasoning effort).
+    if !cli_overrides.iter().any(|(key, _)| key == "model_provider") {
+        cli_overrides.push((
+            "model_provider".to_string(),
+            TomlValue::String("openai".to_string()),
+        ));
+    }
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(home.path().to_path_buf())
         .cli_overrides(cli_overrides)

@@ -61,6 +61,11 @@ async fn spawn_call(parent: &CodexThread) -> anyhow::Result<ToolInvocation> {
 async fn prepare_child_retains_loaded_exec_policy_requirements_after_mcp_refresh()
 -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
+    // UnieAI defaults to the `unieai` provider, which has no bundled catalog.
+    std::fs::write(
+        home.path().join(codex_config::CONFIG_TOML_FILE),
+        "model_provider = \"openai\"\n",
+    )?;
     let builder =
         || ConfigBuilder::without_managed_config_for_tests().codex_home(home.path().to_path_buf());
     let mut config = builder()
@@ -126,6 +131,11 @@ async fn prepare_child_retains_loaded_exec_policy_requirements_after_mcp_refresh
 async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() -> anyhow::Result<()>
 {
     let home = tempfile::tempdir()?;
+    // UnieAI defaults to the `unieai` provider, which has no bundled catalog.
+    std::fs::write(
+        home.path().join(codex_config::CONFIG_TOML_FILE),
+        "model_provider = \"openai\"\n",
+    )?;
     let mut config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(home.path().to_path_buf())
         .build()
