@@ -105,3 +105,31 @@ test("commits and pull requests are signed, and config can change or drop either
   assert.deepEqual([...new Set([...hostile.matchAll(/\{\{([^}]*)\}\}/g)].map((m) => m[1]))], ["model"]);
   assert.ok(!hostile.includes("${"));
 });
+
+test("every persona with a subagent tool says when to delegate, and the minimal mode does not", () => {
+  const triggers = [
+    "two or more independent pieces: start one subagent per piece, all in one message",
+    "searching broadly (more than about five files)",
+    "off your critical path",
+    "Give it the requirement, not your conclusion",
+    "Do it yourself when it takes one or two tool calls",
+    "what it may edit (parallel subagents get disjoint files)",
+    "Call wait_agents only when you are blocked on a result",
+    "Use subagent_fork only when the child truly needs this conversation's history",
+    "needs no permission from the user",
+    "covers those two tools, not subagent",
+    "carry out your brief directly instead of delegating it again",
+  ];
+  for (const [name, text] of variants()) {
+    if (name.startsWith("shell only")) {
+      // One shell and no subagent tool: rules about it would be noise.
+      assert.ok(!text.includes("# Delegation"), `${name}: no delegation section`);
+      continue;
+    }
+    for (const trigger of triggers) assert.ok(text.includes(trigger), `${name}: missing delegation rule: ${trigger}`);
+    // Next to planning, where the decision to split the work is made.
+    const sections = [...text.matchAll(/^# (.+)$/gm)].map((match) => match[1]);
+    assert.equal(sections[sections.indexOf("Planning") + 1], "Delegation", `${name}: Delegation follows Planning`);
+    assert.equal(sections.filter((section) => section === "Delegation").length, 1, `${name}: one Delegation section`);
+  }
+});

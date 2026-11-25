@@ -654,6 +654,15 @@ export function renderPatch({
     "- id: jobs",
     "  config:",
     "    maxConcurrentJobsPerOwner: 16",
+    // One level of delegation: the persona tells the main agent to delegate
+    // independent pieces, and a child that read the same rule must not fan
+    // out again. rabi's own default is also 1; pinning it keeps that true if
+    // upstream changes it. The row's whole config is restated (8 is rabi's
+    // default for concurrent children).
+    "- id: subagent",
+    "  config:",
+    "    maxDepth: 1",
+    "    maxActiveSubagents: 8",
   );
   // Full-text search over earlier sessions of this workspace. rabi-base mounts
   // the sqlite query index with `openAt: never` (the web sidebar then matches

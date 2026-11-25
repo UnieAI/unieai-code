@@ -506,6 +506,15 @@ test("AGENTS.md, skills and agent definitions come from the UnieAI home", () => 
   assert.match(patch, / {4}- id: unieai-agents\n {6}name: "file:[^"]+"\n {6}config:\n {8}home: "\/h\/\.unieai"/);
 });
 
+test("delegation is one level deep, and the persona says when to delegate", () => {
+  const patch = renderPatch({ defaultModel: "A", home: "/h/.unieai" });
+  // A child read the same "delegate independent pieces" rule; it must not fan out again.
+  assert.match(patch, /\n- id: subagent\n {2}config:\n {4}maxDepth: 1\n {4}maxActiveSubagents: 8\n/);
+  const persona = patch.slice(patch.indexOf("personaPrefix: |"));
+  assert.ok(persona.indexOf("      # Delegation\n") > persona.indexOf("      # Planning\n"));
+  assert.ok(persona.includes("start one subagent per piece, all in one message"));
+});
+
 test("apply_patch calls render as a diff of the first file they change", async () => {
   const { diffFromApplyPatch } = await import("./engine.mjs");
   const update = diffFromApplyPatch("*** Begin Patch\n*** Update File: src/a.py\n@@ def f():\n-    return 1\n+    return 2\n*** Add File: b.txt\n+x\n*** End Patch");

@@ -301,7 +301,8 @@ export function apply(ctx, config = {}) {
       description:
         "Wait for background subagents you started to finish, instead of polling list_agents. " +
         "Returns when one of them finishes (or all of them with `all: true`), or at the timeout, " +
-        "with each finished subagent's stop reason and final answer. Omit agent_ids to wait on all your running subagents.",
+        "with each finished subagent's stop reason and final answer. Omit agent_ids to wait on all your running subagents. " +
+        "Do your own independent work first; wait only when you are blocked on a result.",
       parameters: {
         agent_ids: { type: "array", items: { type: "string" }, description: "Subagent ids to wait on (from the subagent tool). Defaults to all your running subagents." },
         all: { type: "boolean", description: "Wait until every awaited subagent has finished. Defaults to false (return on the first)." },
