@@ -965,8 +965,17 @@ impl ChatWidget {
                             "MCP sign-in requires an active session.".to_string(),
                         );
                     }
+                } else if let Some((command, url)) = trimmed.split_once(' ')
+                    && command.eq_ignore_ascii_case("callback")
+                    && !url.trim().is_empty()
+                {
+                    self.app_event_tx.send(AppEvent::McpLoginCallbackPasted {
+                        url: url.trim().to_string(),
+                    });
                 } else {
-                    self.add_error_message("Usage: /mcp [verbose | login <name>]".to_string());
+                    self.add_error_message(
+                        "Usage: /mcp [verbose | login <name> | callback <url>]".to_string(),
+                    );
                 }
             }
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
@@ -1547,7 +1556,7 @@ impl ChatWidget {
     }
 }
 
-const ENGINE_USAGE: &str = "Usage: /engine [codex|uac|standard|minimal]";
+const ENGINE_USAGE: &str = "Usage: /engine [codex|rabi|standard|minimal]";
 
 const PEER_USAGE: &str =
     "Usage: /peer <handle> <message>  (run /peers to see handles, for example `api [k2f8]`)";

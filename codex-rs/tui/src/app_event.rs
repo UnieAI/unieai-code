@@ -1284,6 +1284,18 @@ pub(crate) enum AppEvent {
         result: Result<McpServerOauthLoginResponse, String>,
     },
 
+    /// `/mcp callback <url>`: the browser's redirect URL, pasted because it
+    /// could not reach this machine's sign-in listener.
+    McpLoginCallbackPasted {
+        url: String,
+    },
+
+    /// What the sign-in listener answered to a pasted callback.
+    McpLoginCallbackDelivered {
+        name: String,
+        result: Result<u16, String>,
+    },
+
     /// Result of fetching MCP inventory via app-server RPCs.
     McpInventoryLoaded {
         result: Result<Vec<McpServerStatus>, String>,

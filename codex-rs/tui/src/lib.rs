@@ -207,6 +207,7 @@ pub use live_wrap::RowBuilder;
 mod local_chatgpt_auth;
 mod managed_new_thread_defaults;
 mod markdown;
+mod mcp_login_callback;
 mod markdown_render;
 mod markdown_stream;
 mod markdown_text_merge;
@@ -457,7 +458,7 @@ async fn init_state_db_for_app_server_target(
             match state_db::try_init(config).await {
                 Ok(handle) => Ok(Some(handle)),
                 Err(err) => {
-                    tracing::warn!("uac session has no state database ({err:#}); peers are off");
+                    tracing::warn!("Rabi Harness session has no state database ({err:#}); peers are off");
                     Ok(None)
                 }
             }
@@ -660,7 +661,7 @@ async fn start_app_server(
                     unieai_engine::record_uac_unavailable(unieai_engine::uac_unavailable_warning(
                         &config.codex_home,
                         &std::io::Error::other(format!(
-                            "could not connect to the uac server ({err})"
+                            "could not connect to the Rabi Harness server ({err})"
                         )),
                     ));
                 }
