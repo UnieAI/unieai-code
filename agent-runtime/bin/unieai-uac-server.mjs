@@ -47,8 +47,9 @@ import {
   writeRabiAccount,
 } from "../src/unieai-rabi/config.mjs";
 import { createRabiEngine, createRabiHost } from "../src/unieai-rabi/engine.mjs";
-import { loadCredentials, unieaiHome } from "../src/config.mjs";
+import { loadCredentials } from "../src/config.mjs";
 import { acpMcpServers, attachOAuthTokens, sessionMcpServers, storedOAuthAccessToken, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
+import { codexTokenSource, createMcpAuthProxy } from "../src/unieai-rabi/unieai-mcp-auth-proxy.mjs";
 import { agentFailureReason } from "../src/unieai-rabi/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-rabi/unieai-oneshot.mjs";
 import { claimServer } from "../src/unieai-rabi/unieai-server-lock.mjs";
@@ -140,6 +141,24 @@ function removeStaleControlSockets(dir) {
 // Fail at startup, where the TUI reports it, rather than on the first turn.
 const rabi = prepareRabi({ sandboxMode, controlSocket: controlSocketFor("standard") });
 log(`uac: rabi = ${rabi.command} ${rabi.args.join(" ")} (home ${rabi.env.RABI_HOME}, model ${rabi.defaultModel})`);
+
+/**
+ * One auth proxy for this server process, made on first use. It refreshes
+ * through the latest thread's probe; every probe reaches the same Rust side.
+ */
+let authProxy = null;
+let refreshProbe = null;
+function mcpAuthProxy(probe) {
+  refreshProbe = probe;
+  authProxy ??= createMcpAuthProxy({
+    log,
+    getToken: codexTokenSource({
+      read: (name, url, marginMs) => storedOAuthAccessToken({ home: codexHome, name, url, marginMs }),
+      refresh: (name) => refreshProbe?.(name),
+    }),
+  });
+  return authProxy;
+}
 
 const hosts = new Map(); // mode -> rabi host
 
@@ -305,12 +324,14 @@ await launchAppServer({
       const { config } = (await readConfig?.()) ?? {};
       const { servers: converted, skipped } = acpMcpServers(config?.mcp_servers);
       for (const reason of skipped) log("[uac] MCP server skipped:", reason);
-      // OAuth servers get codex's current token (see attachOAuthTokens).
+      // OAuth servers go through the auth proxy, which puts codex's current
+      // token on every request and has the Rust side refresh it when due.
       const { servers, notes } = probeMcpServer
         ? await attachOAuthTokens(converted, {
             configured: config?.mcp_servers,
             probe: probeMcpServer,
-            readToken: (name, url) => storedOAuthAccessToken({ home: unieaiHome(), name, url }),
+            readToken: (name, url) => storedOAuthAccessToken({ home: codexHome, name, url }),
+            route: (server) => mcpAuthProxy(probeMcpServer).route(server),
           })
         : { servers: converted, notes: [] };
       for (const note of notes) log("[uac] MCP server", note);

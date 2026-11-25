@@ -152,12 +152,13 @@ export function storedOAuthAccessToken({ home, name, url, now = Date.now(), marg
 }
 
 /**
- * Gives each OAuth server its current bearer token, and leaves out one that
+ * Gives each OAuth server its current bearer token (or, with `route`, sends it
+ * through the auth proxy, which keeps the token current), and leaves out one that
  * is not signed in (rabi would only fail to connect it) with a log line that
  * says how to sign in. `probe(name)` resolves to the server's McpServerStatus.
  * @returns {Promise<{ servers: object[], notes: string[] }>}
  */
-export async function attachOAuthTokens(servers, { configured, probe, readToken }) {
+export async function attachOAuthTokens(servers, { configured, probe, readToken, route = null }) {
   const out = [];
   const notes = [];
   for (const server of servers) {
@@ -180,6 +181,11 @@ export async function attachOAuthTokens(servers, { configured, probe, readToken 
     }
     if (auth !== "oauth") {
       out.push(server);
+      continue;
+    }
+    if (route) {
+      // Through the auth proxy, which puts the current token on every request.
+      out.push(await route(server));
       continue;
     }
     const token = readToken(server.name, server.url);
