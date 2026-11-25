@@ -18,6 +18,7 @@ import { loadCredentials, unieaiHome } from "../config.mjs";
 import { HOME_NAME, migrateLegacyHome } from "./rabi-legacy.mjs";
 import { DEFAULT_ATTRIBUTION, buildPersona } from "./unieai-persona.mjs";
 import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
+import { toolSearchConfig } from "./unieai-tool-search.mjs";
 
 export const RABI_PROVIDER_ID = "unieai";
 export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
@@ -30,6 +31,9 @@ export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "unieai-control.mjs")
 
 /** `publish_artifact` (see unieai-artifacts.mjs), a uac host plugin loaded by URL. */
 export const ARTIFACTS_PLUGIN_URL = pathToFileURL(join(here, "unieai-artifacts.mjs")).href;
+
+/** `tool_search` and MCP schema deferral (see unieai-tool-search.mjs), loaded by URL. */
+export const TOOL_SEARCH_PLUGIN_URL = pathToFileURL(join(here, "unieai-tool-search.mjs")).href;
 
 /** Skills that ship with UnieAI Code (the `artifact` skill); user and project skills outrank them. */
 export const BUNDLED_SKILLS_DIR = join(here, "skills");
@@ -594,6 +598,9 @@ export function renderPatch({
   // publish_artifact and the bundled `artifact` skill (not in minimal mode).
   artifacts = false,
   artifactsUrl = ARTIFACTS_PLUGIN_URL,
+  // unieai-tool-search's config, or null to leave it out (UNIEAI_TOOL_SEARCH=off).
+  toolSearch = toolSearchConfig(),
+  toolSearchUrl = TOOL_SEARCH_PLUGIN_URL,
 }) {
   const q = yamlQuote;
   plugins = pluginsForMode(plugins, mode);
@@ -629,9 +636,16 @@ export function renderPatch({
   lines.push(
     // Leave a quarter of the window for reasoning and output, and give the
     // summary room: thinking models truncate an 8k summary.
+    // rabi compacts at min(W x thresholdRatio, W - maxTokens - headroomTokens),
+    // and headroomTokens defaults to 65536 (sized for 1M windows): on a 131k
+    // window that is 65.5k, not 98k, and a window of 64k or less never
+    // compacted automatically. Stored uac sessions (DeepSeek-V4.1-Flash, 131k)
+    // compacted at a median 65.2k prompt tokens, left 47.7k, ~20 steps apart.
+    // A small headroom lets the ratio decide for every window from 32k up.
     "- id: compaction-basic",
     "  config:",
     "    thresholdRatio: 0.75",
+    "    headroomTokens: 8192",
     "    retainRatio: 0.15",
     "    maxTokens: 16384",
     "    compactionRetries: 2",
@@ -732,6 +746,12 @@ export function renderPatch({
       "    - id: tool-worktree",
       "      name: '@unieai/rabi-experimental-tool-worktree'",
     );
+  }
+  // MCP tool schemas past a share of the window wait behind tool_search.
+  if (toolSearch) {
+    const entries = Object.entries(toolSearch);
+    inserts.push("    - id: unieai-tool-search", `      name: ${q(toolSearchUrl)}`);
+    if (entries.length > 0) inserts.push("      config:", ...entries.map(([key, value]) => `        ${key}: ${JSON.stringify(value)}`));
   }
   if (artifacts) {
     inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
@@ -914,6 +934,7 @@ export function prepareRabi({ env = process.env, sandboxMode = "workspace-write"
       autoApprovalModel,
       mode,
       artifacts,
+      toolSearch: toolSearchConfig(env),
     }),
   );
 
