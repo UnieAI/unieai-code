@@ -528,7 +528,7 @@ mod tests {
                 no_openai_services: true,
                 feedback_to_openai: true,
             }),
-            vec!["app", "voice", "apps", "feedback"]
+            vec!["app", "voice", "rc", "apps", "feedback"]
         );
     }
 
@@ -542,7 +542,7 @@ mod tests {
             }),
             vec![
                 "approve", "memories", "hooks", "review", "app", "plan", "voice", "side", "btw",
-                "apps", "plugins",
+                "rc", "apps", "plugins",
             ]
         );
     }

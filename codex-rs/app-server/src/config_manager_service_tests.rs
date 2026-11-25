@@ -1996,7 +1996,12 @@ enabled = false
         );
         assert_eq!(
             response.config.additional.get("feedback"),
-            Some(&serde_json::json!({"enabled": false}))
+            // UnieAI's `[feedback]` also carries the (unset) webhook routing.
+            Some(&serde_json::json!({
+                "enabled": false,
+                "webhook_url": null,
+                "webhook_token": null,
+            }))
         );
         for path in ["sqlite_home", "allow_login_shell", "feedback.enabled"] {
             assert!(!response.origins.contains_key(path), "origin for {path}");
