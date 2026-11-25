@@ -17,7 +17,7 @@ async fn start_feature_server(
         ignore_project_config: true,
         ..LoaderOverrides::without_managed_config_for_tests()
     };
-    crate::test_support::pin_openai_provider(home.path());
+    crate::test_support::pin_openai_provider(home);
     let config = ConfigBuilder::default()
         .codex_home(home.to_path_buf())
         .loader_overrides(loader.clone())

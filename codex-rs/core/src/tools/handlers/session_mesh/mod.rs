@@ -17,7 +17,6 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use unieai_session_mesh::MeshError;
 use unieai_session_mesh::MeshNode;

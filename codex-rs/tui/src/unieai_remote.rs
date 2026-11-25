@@ -270,6 +270,8 @@ impl UacRemoteControl {
             .await
             .map_err(|err| err.to_string())?;
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            // Control-only connection: it never answers approval prompts.
+            required_human_approval: false,
             endpoint: crate::unieai_engine::uac_endpoint(socket_path),
             client_name: "unieai-remote-control".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),

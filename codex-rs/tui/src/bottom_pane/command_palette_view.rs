@@ -154,6 +154,7 @@ impl CommandPaletteView {
             .into_iter()
             .map(|item| GenericDisplayRow {
                 name: format!("/{}", item.command()),
+                wrapped_name: Vec::new(),
                 name_prefix_spans: Vec::new(),
                 match_indices: None,
                 display_shortcut: None,

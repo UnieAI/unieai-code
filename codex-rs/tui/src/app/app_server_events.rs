@@ -705,7 +705,11 @@ impl App {
             // `list_peers` / `send_peer_message` for a uac thread in the
             // session mesh; answered by this TUI, which holds the membership.
             if !app_server_client.uses_embedded_app_server()
-                && self.handle_peer_dynamic_tool_call(request_id, params)
+                && self.handle_peer_dynamic_tool_call(
+                    request_id,
+                    params,
+                    buffered_request.reply.clone(),
+                )
             {
                 return;
             }

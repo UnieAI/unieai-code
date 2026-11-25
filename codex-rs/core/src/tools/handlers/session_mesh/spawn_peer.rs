@@ -147,7 +147,7 @@ impl ToolExecutor<ToolInvocation> for SpawnPeerSessionHandler {
                     codex_protocol::approvals::ExecApprovalKind::Command,
                     crate::guardian::GuardianReviewContext::from(std::sync::Arc::clone(&turn))
                         .model_context(),
-                    call_id.clone(),
+                    call_id.to_string(),
                     Some(call_id.as_str()),
                     /*approval_id*/ None,
                     /*environment_id*/ None,

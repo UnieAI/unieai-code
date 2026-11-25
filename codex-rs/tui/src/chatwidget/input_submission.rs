@@ -18,7 +18,13 @@ impl ChatWidget {
         } else {
             None
         };
+        // Not "user": peer text must not name the thread or count as the
+        // user's first prompt, and failures must come back to the mesh (which
+        // re-queues the message) instead of being handled as a typed prompt.
+        // The mesh only calls this when the thread is idle.
         AppCommand::user_turn(
+            "peer_message",
+            crate::app_command::CloudSubmissionIntent::UseKnownTurn,
             crate::unieai_mesh::peer_delivery_client_id(),
             vec![UserInput::Text {
                 text,

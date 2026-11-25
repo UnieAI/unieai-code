@@ -772,7 +772,11 @@ impl ChatComposer {
     /// Commands for the Ctrl+P palette, built with the exact same availability
     /// flags and filtering as this composer's `/` popup.
     pub(crate) fn palette_command_items(&self) -> Vec<CommandItem> {
-        self.slash_input().command_popup("").palette_items()
+        let disconnected =
+            self.popups.restricted_input_mode == Some(RestrictedInputMode::Disconnected);
+        self.slash_input()
+            .command_popup("", disconnected)
+            .palette_items()
     }
 
     pub fn new(

@@ -1536,6 +1536,7 @@ async fn run_ratatui_app(
                 token_usage: crate::token_usage::TokenUsage::default(),
                 thread_id: None,
                 resume_hint: None,
+                archive_warnings: Vec::new(),
                 disconnect_info: None,
                 update_action: None,
                 exit_reason: ExitReason::EngineSwitched,

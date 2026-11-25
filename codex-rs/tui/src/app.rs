@@ -595,10 +595,8 @@ pub(crate) struct App {
     launch_cwd: PathBuf,
     /// Resume anchor selected by `/cd`; ordinary resumes retain the immutable launch cwd.
     runtime_working_directory_override: Option<PathBuf>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retain the state runtime for the app lifetime")
-    )]
+    /// Retains the state runtime for the app lifetime; the peer mesh also
+    /// checks whether one is available.
     pub(crate) state_db: Option<StateDbHandle>,
     /// Drives every passive peer surface. `None` until a session starts, or
     /// permanently when the mesh cannot work on this host.

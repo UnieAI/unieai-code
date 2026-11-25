@@ -194,7 +194,7 @@ impl AppServerSession {
     ) -> std::result::Result<ThreadRevertPreviewResponse, codex_app_server_client::TypedRequestError>
     {
         let request_id = self.next_request_id();
-        self.client
+        self.request_handle
             .request_typed(ClientRequest::ThreadRevertPreview {
                 request_id,
                 params: ThreadRevertPreviewParams {

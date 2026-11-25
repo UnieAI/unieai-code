@@ -268,6 +268,7 @@ async fn application_network_mcp_login_denies_even_an_allowed_mcp_server() -> an
                 remote: false,
                 remote_url: None,
                 scopes: Vec::new(),
+                timeout_secs: None,
                 oauth_client_registration: None,
             },
         ),

@@ -2394,7 +2394,7 @@ impl AppServerSession {
     ) -> Result<bool> {
         let request_id = self.next_request_id();
         let response: ThreadBackgroundTerminalsTerminateResponse = self
-            .client
+            .request_handle
             .request_typed(ClientRequest::ThreadBackgroundTerminalsTerminate {
                 request_id,
                 params: ThreadBackgroundTerminalsTerminateParams {

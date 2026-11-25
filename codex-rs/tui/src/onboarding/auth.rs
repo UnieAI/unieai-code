@@ -134,7 +134,9 @@ pub(crate) enum SignInOption {
     ApiKey,
     #[allow(dead_code)]
     Bedrock,
+    #[allow(dead_code)]
     Gcp,
+    #[allow(dead_code)]
     Gateway,
 }
 
@@ -525,10 +527,6 @@ impl AuthModeWidget {
             SignInOption::UnieAICompany,
             SignInOption::ModelApi,
         ]
-    }
-
-    fn selectable_sign_in_options(&self) -> Vec<SignInOption> {
-        self.displayed_sign_in_options()
     }
 
     fn move_highlight(&mut self, delta: isize) {
@@ -2013,7 +2011,6 @@ mod tests {
     use codex_arg0::Arg0DispatchPaths;
     use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
-    use codex_features::Feature;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
