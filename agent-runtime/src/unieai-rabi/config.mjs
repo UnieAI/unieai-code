@@ -652,12 +652,17 @@ export function renderPatch({
     "    maxTokens: 16384",
     "    compactionRetries: 2",
     "    maxOverflowRetries: 2",
-    // Codex keeps ~10k tokens of a tool result; rabi inlined 50KB. The spill
-    // preview keeps head and tail and the full text stays readable.
-    // unieai-exec already cuts to ~44KB itself; don't cut its output twice.
+    // Codex keeps ~10k tokens of a tool result. The spill preview keeps head
+    // and tail and the full text stays readable. rabi's key is
+    // maxInlineTokens (estimated at ~4 bytes a token); the maxInlineBytes
+    // this row used to set is not one, so the row turned spill-policy off
+    // (the base composition's own cap is 12500 tokens). With exec tools the
+    // cap stays above a full 64 KiB read and unieai-exec's own ~44KB cut, so
+    // it only catches outliers (an MCP result, a huge grep); without them,
+    // ~24KB as before.
     "- id: spill-policy",
     "  config:",
-    `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    `    maxInlineTokens: ${execTools ? 16384 : 6000}`,
     // Above rabi's own 50 KiB default: a lower cap turned single reads into
     // windowed ones (41 reads where 57 KiB would have been one).
     "- id: tool-fs",

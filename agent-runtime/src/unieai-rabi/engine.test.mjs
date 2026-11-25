@@ -938,3 +938,11 @@ test("rabi starts through the launcher, so a Node without import.meta.main still
   assert.deepEqual(args.slice(0, 2), [RABI_LAUNCHER, "/opt/rabi/lib/bin.js"]);
   assert.deepEqual(rabiCommand({ UNIEAI_RABI_BIN: "/usr/local/bin/rabi" }).args.slice(0, 1), ["--profile"]);
 });
+
+test("spill-policy is capped with the key rabi reads (maxInlineTokens)", () => {
+  const plugins = selectPlugins({});
+  const row = (patch) => /- id: spill-policy\n {2}config:\n((?: {4}.+\n)+)/.exec(patch)?.[1] ?? "";
+  // rabi's spill-policy reads only maxInlineTokens; any other key leaves it off.
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins })), "    maxInlineTokens: 16384\n");
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins: [] })), "    maxInlineTokens: 6000\n");
+});
