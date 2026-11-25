@@ -84,6 +84,13 @@ the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 - **核准卡顯示要核准的內容。** 改檔案的核准卡會顯示 diff；執行指令的核准卡顯示
   那行指令，不再是一整串 JSON；MCP 工具顯示工具名稱與參數。
 
+- **等指令跑完時插話，模型會馬上看到。** 以前模型輪詢一個長指令（build、測試）時
+  最多等 300 秒，期間你說的話要等它等完才送到；現在一插話就停下來讀，指令照樣在背景跑。
+- **peer 工具不再跑錯視窗，也不會再卡住整個 session。** 同一個 session 開在兩個視窗、
+  或最早的視窗已經切到別的 session 時，`list_peers`／`send_peer_message` 會在錯的視窗
+  執行（清單裡出現自己、聯絡不到別人），甚至沒有回應、中斷也停不下來，之後每次送出都是
+  「a prompt is already in flight」。現在由你正在打字的視窗執行，中斷一定會結束它。
+
 ### Rabi Harness
 
 - **上下文壓縮不再那麼頻繁。** 128k 視窗以前在約 65k 就壓縮（設定被一個為 1M
