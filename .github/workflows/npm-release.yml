@@ -192,6 +192,18 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      # rusty_v8 became a git dependency in the 2026-11-25 upstream merge. Its
+      # vendored crates hold a 266-character path under
+      # C:/Users/runneradmin/.cargo, and cargo's libgit2 checkout stops at
+      # 260 (npm-v0.0.47 first run). A short Cargo home brings it to ~243.
+      - name: Short Cargo home and long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          git config --global core.longpaths true
+          mkdir -p /c/ch
+          echo "CARGO_HOME=C:\\ch" >> "$GITHUB_ENV"
+
       - name: Cargo build
         shell: bash
         run: |
