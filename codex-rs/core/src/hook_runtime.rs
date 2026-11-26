@@ -1,4 +1,5 @@
 mod executor;
+pub(crate) mod sampling;
 
 pub(crate) use executor::prepare_executor_hook_sources;
 
@@ -30,7 +31,7 @@ use codex_otel::HOOK_RUN_DURATION_METRIC;
 use codex_otel::HOOK_RUN_METRIC;
 use codex_protocol::items::FunctionCallOutputItem;
 use codex_protocol::items::TurnItem;
-use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AskForApproval;
@@ -52,16 +53,19 @@ use codex_protocol::protocol::WarningEvent;
 use codex_rollout::state_db;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
+use codex_user_input::ResolvedUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Map;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::event_mapping::parse_turn_item;
+use crate::event_mapping::is_contextual_user_message_content;
+use crate::event_mapping::user_input_parts;
 use crate::guardian::GuardianReviewContext;
 use crate::hook_environment_executor::with_environment_hooks;
 use crate::hook_environment_executor::with_tool_environment_hooks;
@@ -71,6 +75,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::state::TurnState;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PostToolUsePayload;
 use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::turn_metadata::ExecutionMetadata;
 
@@ -129,8 +134,9 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
 pub(crate) async fn run_pending_session_start_hooks(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> bool {
-    while let Some(session_start_source) = sess.take_pending_session_start_source().await {
+    while let Some(session_start_source) = sess.pending_session_start_source().await {
         // Spawned subagents can start fresh or fork their parent's history, so both
         // sources dispatch SubagentStart. Internal/system subagents skip start hooks.
         let target = match &turn_context.session_source {
@@ -148,7 +154,10 @@ pub(crate) async fn run_pending_session_start_hooks(
                     agent_type: context.agent_type,
                 }
             }
-            SessionSource::SubAgent(_) => return false,
+            SessionSource::SubAgent(_) => {
+                sess.take_pending_session_start_source().await;
+                return false;
+            }
             _ => StartHookTarget::SessionStart {
                 source: session_start_source,
             },
@@ -168,7 +177,16 @@ pub(crate) async fn run_pending_session_start_hooks(
             &turn_context.initial_environments.refresh_readiness(),
         );
         let preview_runs = hooks.preview_session_start(&request);
-        if run_context_injecting_hook(
+        if cancellation_token.is_cancelled()
+            && preview_runs
+                .iter()
+                .any(|run| run.execution_mode == HookExecutionMode::Sync)
+        {
+            return true;
+        }
+        // Only the running turn consumes sources. Keep this one queued until
+        // its outcome is handled so forced teardown cannot skip a blocking hook.
+        let should_stop = run_context_injecting_hook(
             sess,
             turn_context,
             preview_runs,
@@ -176,8 +194,9 @@ pub(crate) async fn run_pending_session_start_hooks(
         )
         .await
         .record_additional_contexts(sess, turn_context)
-        .await
-        {
+        .await;
+        sess.take_pending_session_start_source().await;
+        if should_stop {
             return true;
         }
     }
@@ -196,6 +215,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
     tool_use_id: String,
     tool_name: &HookToolName,
     tool_input: &Value,
+    tool_cwd: Option<codex_utils_path_uri::PathUri>,
     target_environments: &[&str],
 ) -> PreToolUseHookResult {
     let turn_context = &step_context.turn;
@@ -204,6 +224,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
+        tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
@@ -240,6 +261,8 @@ pub(crate) async fn run_pre_tool_use_hooks(
             updated_input: None,
         };
     };
+
+    let reason = reason.trim_end_matches('.');
 
     if (tool_name.name() == "Bash" || tool_name.name() == "apply_patch")
         && let Some(command) = tool_input.get("command").and_then(Value::as_str)
@@ -279,6 +302,7 @@ pub(crate) async fn run_permission_request_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(review_context.environments(), turn_context).to_path_buf(),
+        tool_cwd: payload.tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: review_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(review_context.approval_policy),
@@ -307,19 +331,13 @@ pub(crate) async fn run_permission_request_hooks(
 
 /// Runs matching `PostToolUse` hooks after a tool has produced a successful output.
 ///
-/// The `tool_name`, matcher aliases, `tool_input`, and `tool_response` values are
-/// already adapted by the tool handler into the stable hook contract. Passing
+/// The payload is already adapted by the tool handler into the stable hook contract. Passing
 /// raw internal tool data here would leak implementation details into user hook
 /// matchers and hook logs.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_post_tool_use_hooks(
     sess: &Arc<Session>,
     step_context: &StepContext,
-    tool_use_id: String,
-    tool_name: String,
-    matcher_aliases: Vec<String>,
-    tool_input: Value,
-    tool_response: Value,
+    payload: PostToolUsePayload,
     target_environments: &[&str],
 ) -> PostToolUseOutcome {
     let turn_context = &step_context.turn;
@@ -328,14 +346,15 @@ pub(crate) async fn run_post_tool_use_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
+        tool_cwd: payload.tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
-        tool_name,
-        matcher_aliases,
-        tool_use_id,
-        tool_input,
-        tool_response,
+        tool_name: payload.tool_name.name().to_string(),
+        matcher_aliases: payload.tool_name.matcher_aliases().to_vec(),
+        tool_use_id: payload.tool_use_id,
+        tool_input: payload.tool_input,
+        tool_response: payload.tool_response,
     };
     let hooks = with_tool_environment_hooks(
         sess,
@@ -617,21 +636,38 @@ pub(crate) async fn run_post_compact_hooks(
     }
 }
 
+pub(crate) fn legacy_notify_input_messages(input: &[ResponseItem]) -> Vec<String> {
+    input
+        .iter()
+        .filter_map(|item| {
+            let ResponseItem::Message { role, content, .. } = item else {
+                return None;
+            };
+            if role != "user" || is_contextual_user_message_content(content) {
+                return None;
+            }
+            Some(
+                user_input_parts(content)
+                    .filter_map(|(_, part)| match part {
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        ContentItem::InputImage { .. }
+                        | ContentItem::InputAudio { .. }
+                        | ContentItem::OutputText { .. } => None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn run_legacy_after_agent_hook(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    input: &[ResponseItem],
+    input_messages: Vec<String>,
     last_assistant_message: Option<String>,
 ) -> bool {
     let mut abort_message = None;
-    let input_messages = input
-        .iter()
-        .filter_map(|item| match parse_turn_item(item) {
-            Some(TurnItem::UserMessage(user_message)) => Some(user_message.message()),
-            _ => None,
-        })
-        .collect();
     let hooks = sess.hooks();
     for hook_outcome in hooks
         .dispatch(codex_hooks::HookPayload {
@@ -702,7 +738,10 @@ pub(crate) async fn inspect_pending_input(
                 transcript_path: sess.hook_transcript_path().await,
                 model: turn_context.model_info().slug.clone(),
                 permission_mode: hook_permission_mode(turn_context.approval_policy()),
-                prompt: UserMessageItem::new(content).message(),
+                prompt: content
+                    .iter()
+                    .filter_map(ResolvedUserInput::as_text)
+                    .collect(),
             };
             let hooks = with_environment_hooks(
                 sess,
@@ -736,7 +775,7 @@ pub(crate) async fn record_pending_input(
     pending_input: TurnInput,
     additional_contexts: Vec<codex_hooks::HookContext>,
     persist_context: PersistContext,
-) {
+) -> std::io::Result<()> {
     match pending_input {
         TurnInput::UserInput {
             content,
@@ -751,7 +790,7 @@ pub(crate) async fn record_pending_input(
                 metadata,
                 persist_context,
             )
-            .await;
+            .await?;
         }
         TurnInput::ResponseItem(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
@@ -786,6 +825,7 @@ pub(crate) async fn record_pending_input(
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
+    Ok(())
 }
 
 /// Processes finished async hook results at a safe turn boundary.
@@ -807,7 +847,7 @@ pub(crate) async fn drain_async_hook_results(
             .iter()
             .filter(|entry| entry.kind == HookOutputEntryKind::Context)
             .map(|entry| codex_hooks::HookContext {
-                text: entry.text.clone(),
+                payload: codex_hooks::HookContextPayload::Text(entry.text.clone()),
                 metadata: codex_protocol::models::ContentItemMetadata::command_hook(),
             })
             .collect::<Vec<_>>();
@@ -888,8 +928,34 @@ fn additional_context_messages(
 ) -> Vec<ResponseItem> {
     additional_contexts
         .into_iter()
-        .map(HookAdditionalContext::new)
-        .map(ContextualUserFragment::into)
+        .map(|context| match context.payload {
+            codex_hooks::HookContextPayload::Text(text) => {
+                ContextualUserFragment::into(HookAdditionalContext::new(text, context.metadata))
+            }
+            codex_hooks::HookContextPayload::EncryptedToolOutput {
+                name,
+                namespace,
+                encrypted_content,
+            } => ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some(name),
+                namespace,
+                output: codex_protocol::models::FunctionCallOutputPayload::from_content_items(
+                    vec![
+                        codex_protocol::models::FunctionCallOutputContentItem::EncryptedContent {
+                            encrypted_content,
+                        },
+                    ],
+                ),
+                internal_chat_message_metadata_passthrough: Some(
+                    codex_protocol::models::InternalChatMessageMetadataPassthrough {
+                        content_item_metadata: Some(vec![context.metadata]),
+                        ..Default::default()
+                    },
+                ),
+            },
+        })
         .collect()
 }
 
@@ -1090,10 +1156,7 @@ fn compaction_trigger_label(value: CompactionTrigger) -> &'static str {
     }
 }
 
-pub(crate) fn hooks_for_model_request(
-    session: &Arc<Session>,
-    step: &StepContext,
-) -> Arc<codex_hooks::Hooks> {
+fn hooks_for_model_request(session: &Arc<Session>, step: &StepContext) -> Arc<codex_hooks::Hooks> {
     match step.turn.session_source {
         SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
         | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => Arc::new(
@@ -1109,26 +1172,16 @@ pub(crate) fn hooks_for_model_request(
     }
 }
 
-pub(crate) async fn run_model_request_hooks(
+async fn run_model_request_hooks(
     session: &Arc<Session>,
     step: &StepContext,
     hooks: &codex_hooks::Hooks,
-    event: codex_hooks::ModelRequestHookEvent,
-) {
-    let subagent = thread_spawn_subagent_hook_context(session, &step.turn);
-    let request = codex_hooks::ModelRequestHookInput {
-        session_id: session.session_id().to_string(),
-        turn_id: step.turn.sub_id.clone(),
-        cwd: tool_hook_cwd(&step.environments, &step.turn),
-        transcript_path: session.hook_transcript_path().await,
-        model: step.settings.model_info.slug.clone(),
-        event,
-        agent_id: subagent.as_ref().map(|context| context.agent_id.clone()),
-        agent_type: subagent.map(|context| context.agent_type),
-    };
+    request: codex_hooks::ModelRequestHookInput,
+) -> codex_hooks::ModelRequestHookOutcome {
     emit_hook_started_events(session, &step.turn, hooks.preview_model_request(&request)).await;
-    let events = hooks.run_model_request(request).await;
+    let (events, outcome) = hooks.run_model_request(request, |_| {}).await;
     emit_hook_completed_events(session, &step.turn, events).await;
+    outcome
 }
 
 #[cfg(test)]

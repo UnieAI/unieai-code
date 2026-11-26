@@ -10,6 +10,8 @@ fn blockquote_paste_continues_current_line_prefix() {
     for (draft, pasted, expected) in [
         ("> ", "first\nsecond", "> first\n> second\n\n"),
         ("> ", "first\n", "> first\n\n"),
+        ("> first", "\n", "> first\n"),
+        ("> first", "\n\t", "> first\n\t"),
         ("intro\n> ", "α\r\n\r\nβ\r", "intro\n> α\n> \n> β\n\n"),
         (
             "> existing ",
@@ -25,7 +27,8 @@ fn blockquote_paste_continues_current_line_prefix() {
         ),
         ("> ", "single", "> single"),
         ("!> ", "out\npwd", "!> out\npwd"),
-        (" !echo hi\n> ", "out\npwd", " !echo hi\n> out\npwd"),
+        // A space before the bang keeps the draft in normal text mode.
+        (" !echo hi\n> ", "out\npwd", " !echo hi\n> out\n> pwd\n\n"),
     ] {
         let (mut composer, _rx) = new_test_composer();
         composer.insert_str(draft);

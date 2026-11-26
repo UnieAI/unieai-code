@@ -119,7 +119,7 @@ impl App {
                     tokio::spawn(async move { member.node.leave().await });
                 }
             }
-            Err(err) => tracing::warn!("uac thread could not join the session mesh: {err:?}"),
+            Err(err) => tracing::warn!("Rabi Harness thread could not join the session mesh: {err:?}"),
         }
     }
 
@@ -219,6 +219,7 @@ impl App {
         &mut self,
         request_id: &codex_app_server_protocol::RequestId,
         params: &DynamicToolCallParams,
+        reply: codex_app_server_client::AppServerReplyHandle,
     ) -> bool {
         if !crate::unieai_mesh::is_peer_tool(&params.tool) {
             return false;
@@ -234,6 +235,7 @@ impl App {
                 response: crate::dynamic_tools::failure_response(
                     "the session mesh is not available in this session",
                 ),
+                reply: Some(reply),
             });
             return true;
         };
@@ -250,6 +252,7 @@ impl App {
             app_event_tx.send(AppEvent::DynamicToolCallCompleted {
                 request_id,
                 response,
+                reply: Some(reply),
             });
         });
         true

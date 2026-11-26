@@ -17,8 +17,6 @@ use codex_config::types::CopyOnSelect;
 use codex_config::types::History;
 use codex_config::types::Notice;
 use codex_config::types::Tui;
-use codex_terminal_detection::TerminalInfo;
-use codex_terminal_detection::TerminalName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +42,13 @@ impl From<&Config> for LocalSettings {
 }
 
 impl LocalSettings {
+    pub(crate) fn workspace_enabled(&self, config: &Config) -> bool {
+        self.transcript_mode.is_owned()
+            && config
+                .features
+                .enabled(codex_features::Feature::TuiWorkspace)
+    }
+
     fn with_accessibility_preferences(
         config: &Config,
         system_motion: crate::motion::MotionMode,
@@ -56,6 +61,7 @@ impl LocalSettings {
                 config.tui_alternate_screen != codex_config::types::AltScreenMode::Never,
             ),
             tui: Tui {
+                default_hosts: Default::default(),
                 notification_settings: config.tui_notifications.clone(),
                 animations: config.animations,
                 screen_reader_detection_done: None,
@@ -69,12 +75,15 @@ impl LocalSettings {
                 question_esc_back: config.tui_question_esc_back,
                 raw_output_mode: config.tui_raw_output_mode,
                 fullscreen_transcript: config.tui_fullscreen_transcript,
+                collapse_turn_details: config.tui_collapse_turn_details,
+                sidebar_width_percent: config.tui_sidebar_width_percent,
                 mouse_scroll_speed: config.tui_mouse_scroll_speed,
                 copy_on_select: config.tui_copy_on_select,
                 copy_on_select_clear_selection: config.tui_copy_on_select_clear_selection,
                 right_click_paste: config.tui_right_click_paste,
                 alternate_screen: config.tui_alternate_screen,
                 status_line: config.tui_status_line.clone(),
+                status_line_provider: config.tui_status_line_provider.clone(),
                 status_line_use_colors: config.tui_status_line_use_colors,
                 terminal_title: config.tui_terminal_title.clone(),
                 theme: config.tui_theme.clone(),
@@ -82,6 +91,7 @@ impl LocalSettings {
                 pet_anchor: config.tui_pet_anchor,
                 session_picker_view: Some(config.tui_session_picker_view),
                 agents_overview_grouping: config.tui_agents_overview_grouping,
+                agent_tree: config.tui_agent_tree,
                 agent_tree_show_finished: config.tui_agent_tree_show_finished,
                 resume_cwd: config.tui_resume_cwd,
                 keymap: config.tui_keymap.clone(),
@@ -159,6 +169,15 @@ impl LocalSettings {
         system_motion: crate::motion::MotionMode,
         screen_reader_default: crate::motion::MotionMode,
     ) {
+        self.tui.default_hosts = layers
+            .effective_user_config()
+            .and_then(|config| {
+                config
+                    .get("tui")
+                    .and_then(|tui| tui.get("default_hosts"))
+                    .and_then(|value| value.clone().try_into().ok())
+            })
+            .unwrap_or_default();
         if screen_reader_default == crate::motion::MotionMode::Reduced {
             // Consult the current layers so preferences edited after startup still win.
             self.tui.animations &= layers
@@ -219,47 +238,16 @@ impl LocalSettings {
         settings
     }
 
-    /// Copy on release unless a direct terminal is known to forward its default copy shortcut.
-    /// Multiplexers, unknown terminals and Ghostty without a recognized version default to copying.
-    pub(crate) fn copy_on_select(&self, terminal: &TerminalInfo) -> bool {
+    /// Copy on release unless the default copy shortcut reaches the application.
+    pub(crate) fn copy_on_select(&self) -> bool {
+        self.copy_on_select_with(crate::terminal_capabilities::forwards_copy_shortcut())
+    }
+
+    fn copy_on_select_with(&self, forwards_copy_shortcut: bool) -> bool {
         match self.tui.copy_on_select {
             CopyOnSelect::Always => true,
             CopyOnSelect::Never => false,
-            CopyOnSelect::Auto => {
-                terminal.multiplexer.is_some()
-                    || match terminal.name {
-                        // Since 1.2, both Ghostty's Cmd-C and Ctrl-Shift-C bindings are
-                        // "performable": they forward the key if Ghostty has no selection.
-                        TerminalName::Ghostty => !terminal
-                            .version
-                            .as_deref()
-                            .and_then(|version| semver::Version::parse(version).ok())
-                            .is_some_and(|version| {
-                                version
-                                    >= semver::Version::new(
-                                        /*major*/ 1, /*minor*/ 2, /*patch*/ 0,
-                                    )
-                            }),
-                        // Kitty's Cmd-C uses copy_or_noop. Its Ctrl-Shift-C consumes the key.
-                        TerminalName::Kitty => !cfg!(target_os = "macos"),
-                        // Windows Terminal's Copy action forwards its key when unselected,
-                        // including when the CLI runs in WSL.
-                        TerminalName::WindowsTerminal => false,
-                        // VS Code gates Copy on native selection. Only Windows' default
-                        // (plain Ctrl-C) is also forwarded by the legacy xterm.js encoder.
-                        TerminalName::VsCode => !cfg!(target_os = "windows"),
-                        TerminalName::AppleTerminal
-                        | TerminalName::Iterm2
-                        | TerminalName::WarpTerminal
-                        | TerminalName::WezTerm
-                        | TerminalName::Alacritty
-                        | TerminalName::Konsole
-                        | TerminalName::GnomeTerminal
-                        | TerminalName::Vte
-                        | TerminalName::Dumb
-                        | TerminalName::Unknown => true,
-                    }
-            }
+            CopyOnSelect::Auto => !forwards_copy_shortcut,
         }
     }
 

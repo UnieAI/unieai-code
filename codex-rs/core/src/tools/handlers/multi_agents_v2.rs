@@ -12,6 +12,7 @@ use crate::tools::handlers::multi_agents_common::*;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_code_mode::CodeModeToolResult;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
@@ -23,7 +24,6 @@ use codex_protocol::protocol::SubAgentActivityKind;
 use codex_tools::ToolName;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 
 pub(crate) use followup_task::Handler as FollowupTaskHandler;
 pub(crate) use interrupt_agent::Handler as InterruptAgentHandler;
@@ -54,12 +54,19 @@ pub(crate) async fn emit_sub_agent_activity(
 fn agent_message_from_tool(
     message: String,
     source: &crate::tools::context::ToolCallSource,
+    turn: &crate::session::turn_context::TurnContext,
 ) -> AgentMessage {
-    if matches!(
-        source,
-        crate::tools::context::ToolCallSource::DirectPlaintextMessage
-            | crate::tools::context::ToolCallSource::CodeMode { .. }
-    ) {
+    // UnieAI: only the OpenAI backend sends encrypted tool arguments and reads
+    // encrypted agent-message content. Any other provider's model wrote the
+    // message in plain text, and the request rewrite for such providers drops
+    // encrypted parts, so delivering it as `Encrypted` would empty the payload.
+    if !turn.provider.info().is_openai()
+        || matches!(
+            source,
+            crate::tools::context::ToolCallSource::DirectPlaintextMessage
+                | crate::tools::context::ToolCallSource::CodeMode { .. }
+        )
+    {
         AgentMessage::Plaintext(message)
     } else {
         AgentMessage::Encrypted(message)

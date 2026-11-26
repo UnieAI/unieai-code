@@ -1,14 +1,8 @@
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Context;
 use clap::Parser;
-use codex_otel::OtelExporter;
-use codex_otel::OtelHttpProtocol;
+use codex_otel::BlockingHttpService;
 use codex_otel::OtelProvider;
-use codex_otel::OtelSettings;
 use codex_otel_trace_websocket::TraceWebSocket;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -18,7 +12,14 @@ const OTEL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 
 #[derive(Debug, Parser)]
 struct Cli {
-    /// Transport endpoint: `stdio`, `stdio://`, `grpc+stdio://`, or `grpc://IP:PORT`.
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["listen", "otel_trace_listen", "otel_trace_exporter"]
+    )]
+    codex_ui_plugin_process: bool,
+
+    /// gRPC endpoint: `grpc+stdio://` (aliases `stdio` and `stdio://`) or `grpc://IP:PORT`.
     #[arg(
         long,
         value_name = "URL",
@@ -37,8 +38,7 @@ struct Cli {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let mut trace_transport = if let Some(trace_listen) = cli.otel_trace_listen.as_deref() {
         Some(TraceWebSocket::start(trace_listen).await?)
     } else {
@@ -88,27 +88,20 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    if cli.codex_ui_plugin_process {
+        return codex_code_mode_runtime::run_ui_sandbox().map_err(Into::into);
+    }
+    run(cli)
+}
+
 fn build_trace_provider(endpoint: &str) -> anyhow::Result<OtelProvider> {
-    OtelProvider::try_new(&OtelSettings {
-        http_client_factory: codex_http_client::HttpClientFactory::new(
-            codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-        ),
-        environment: "code-mode-host".to_string(),
-        service_name: "codex-code-mode-host".to_string(),
-        service_version: env!("CARGO_PKG_VERSION").to_string(),
-        codex_home: PathBuf::from("/tmp"),
-        exporter: OtelExporter::None,
-        trace_exporter: OtelExporter::OtlpHttp {
-            endpoint: endpoint.to_string(),
-            headers: HashMap::new(),
-            protocol: OtelHttpProtocol::Json,
-            tls: None,
-        },
-        metrics_exporter: OtelExporter::None,
-        runtime_metrics: false,
-        span_attributes: BTreeMap::new(),
-        tracestate: BTreeMap::new(),
-    })
-    .map_err(|error| anyhow::anyhow!("failed to build code-mode host OTEL provider: {error}"))?
-    .context("code-mode host OTEL trace provider was unexpectedly disabled")
+    BlockingHttpService {
+        environment: "code-mode-host",
+        name: "codex-code-mode-host",
+        version: env!("CARGO_PKG_VERSION"),
+    }
+    .traces(endpoint)
+    .map_err(|error| anyhow::anyhow!("failed to build code-mode host OTEL provider: {error}"))
 }

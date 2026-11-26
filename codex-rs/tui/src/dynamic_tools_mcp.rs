@@ -1,7 +1,8 @@
-//! Approval-gated MCP transport for task tools owned by a local-daemon TUI.
+//! MCP transport for tools owned by the local interactive TUI.
 
 use crate::app_event_sender::AppEventSender;
 use crate::dynamic_tools;
+use crate::open_in_codex;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -18,9 +19,6 @@ use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
-use codex_config::McpServerConfig;
-use codex_config::McpServerRequirement;
-use codex_config::RawMcpServerConfig;
 use codex_features::Features;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -47,13 +45,13 @@ use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::RwLock;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) enum ThreadToolTransport {
-    Disabled,
     Dynamic,
     /// `Dynamic` plus the session-mesh peer tools (`list_peers`,
     /// `send_peer_message`) in the `codex_tui` namespace. Used for uac
@@ -63,16 +61,21 @@ pub(crate) enum ThreadToolTransport {
 }
 
 impl ThreadToolTransport {
-    pub(crate) fn validate_config(
+    /// Never shadow an existing server when adding the client-owned task tools.
+    pub(crate) async fn check_namespace(
         &self,
-        config: &crate::legacy_core::config::Config,
+        handle: &AppServerRequestHandle,
+        cwd: &std::path::Path,
     ) -> std::io::Result<()> {
-        if let Self::Mcp(server) = self
-            && config.mcp_servers.get().contains_key(server.namespace)
+        if matches!(self, Self::Mcp(_))
+            && crate::config_update::read_mcp_servers(handle, cwd.display().to_string())
+                .await
+                .map_err(std::io::Error::other)?
+                .contains_key(dynamic_tools::NAMESPACE)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                "A configured MCP server owns the TUI tools namespace; keep the current task and rename that server before changing projects",
+                "a configured MCP server already owns the TUI tools namespace",
             ));
         }
         Ok(())
@@ -80,7 +83,6 @@ impl ThreadToolTransport {
 
     pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
         match self {
-            Self::Disabled => params.dynamic_tools = None,
             Self::Dynamic => {
                 params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
             }
@@ -99,25 +101,9 @@ impl ThreadToolTransport {
     pub(crate) fn configure_mcp(&self, config: &mut Option<HashMap<String, Value>>) {
         if let Self::Mcp(server) = self {
             config.get_or_insert_default().insert(
-                format!("mcp_servers.{}", server.namespace),
+                format!("mcp_servers.{}", dynamic_tools::NAMESPACE),
                 server.config.clone(),
             );
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ToolServices {
-    pub(crate) task_tools: bool,
-    pub(crate) worktrees: Option<crate::managed_worktree_tools::ManagedWorktreeTools>,
-}
-
-impl ToolServices {
-    pub(crate) fn namespace(&self) -> &'static str {
-        if self.task_tools {
-            dynamic_tools::NAMESPACE
-        } else {
-            "codex_worktrees"
         }
     }
 }
@@ -127,7 +113,6 @@ type ToolConnection = Arc<RwLock<Option<(AppServerRequestHandle, AppEventSender)
 pub(crate) struct DynamicToolMcpServer {
     connection: ToolConnection,
     config: Value,
-    namespace: &'static str,
     task: JoinHandle<()>,
 }
 
@@ -152,8 +137,8 @@ impl DynamicToolMcpServer {
         features: Features,
         app_event_tx: AppEventSender,
         status_updates: broadcast::Sender<ThreadStatusChangedNotification>,
-        managed_requirement: Option<&McpServerRequirement>,
-        services: ToolServices,
+        worktrees: Option<crate::managed_worktree_tools::ManagedWorktreeTools>,
+        sidebar_backend: Option<crate::backend_id::BackendId>,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -169,32 +154,19 @@ impl DynamicToolMcpServer {
                 "create_worktree": {"approval_mode": "approve"}
             }
         });
-        if let Some(requirement) = managed_requirement {
-            let raw_config = serde_json::from_value::<RawMcpServerConfig>(server_config.clone())
-                .map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                })?;
-            let configured_server = McpServerConfig::try_from(raw_config)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-            if !configured_server.matches_requirement(requirement) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "managed MCP requirements do not permit the TUI task-tools server",
-                ));
-            }
-        }
         if let Some(overrides) = thread_start_params.config.as_mut() {
             overrides.remove("web_search");
         }
         let connection = Arc::new(RwLock::new(Some((request_handle, app_event_tx))));
-        let namespace = services.namespace();
         let handler = DynamicToolMcpHandler {
             connection: Arc::clone(&connection),
             thread_start_params,
             features,
             status_updates,
             server_config: server_config.clone(),
-            services,
+            worktrees,
+            sidebar_backend,
+            sidebar_pending_slots: Arc::new(Semaphore::new(open_in_codex::MAX_PENDING_DOCUMENTS)),
         };
         let service = StreamableHttpService::new(
             move || Ok(handler.clone()),
@@ -216,7 +188,6 @@ impl DynamicToolMcpServer {
         Ok(Self {
             connection,
             config: server_config,
-            namespace,
             task,
         })
     }
@@ -251,7 +222,9 @@ struct DynamicToolMcpHandler {
     features: Features,
     status_updates: broadcast::Sender<ThreadStatusChangedNotification>,
     server_config: Value,
-    services: ToolServices,
+    worktrees: Option<crate::managed_worktree_tools::ManagedWorktreeTools>,
+    sidebar_backend: Option<crate::backend_id::BackendId>,
+    sidebar_pending_slots: Arc<Semaphore>,
 }
 
 impl ServerHandler for DynamicToolMcpHandler {
@@ -265,12 +238,11 @@ impl ServerHandler for DynamicToolMcpHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let mut tools = Vec::new();
-        let mut specs = if self.services.task_tools {
-            dynamic_tools::tool_specs()
-        } else {
-            Vec::new()
-        };
-        if self.services.worktrees.is_some() {
+        if self.sidebar_backend.is_some() {
+            tools.push(open_in_codex::tool());
+        }
+        let mut specs = dynamic_tools::tool_specs();
+        if self.worktrees.is_some() {
             specs.extend(crate::managed_worktree_tool_specs::specs());
         }
         for spec in specs {
@@ -336,6 +308,7 @@ impl ServerHandler for DynamicToolMcpHandler {
             .and_then(Value::as_str)
             .map_or_else(|| format!("mcp-call-{}", Uuid::new_v4()), str::to_string);
         let params = DynamicToolCallParams {
+            supported_result_format: None,
             thread_id: thread_id.to_string(),
             turn_id,
             call_id,
@@ -343,11 +316,6 @@ impl ServerHandler for DynamicToolMcpHandler {
             tool: request.name.into_owned(),
             arguments: Value::Object(request.arguments.unwrap_or_default()),
         };
-        let mut thread_start_params = self.thread_start_params.clone();
-        thread_start_params.config.get_or_insert_default().insert(
-            format!("mcp_servers.{}", self.services.namespace()),
-            self.server_config.clone(),
-        );
         // Snapshot once: an in-flight call must never switch connections or replay a mutation.
         let (request_handle, app_event_tx) = self
             .connection
@@ -357,11 +325,26 @@ impl ServerHandler for DynamicToolMcpHandler {
             .ok_or_else(|| {
                 McpError::internal_error("TUI is reconnecting; tool was not sent", None)
             })?;
+        if params.tool == open_in_codex::NAME {
+            let backend = self.sidebar_backend.ok_or_else(|| {
+                McpError::invalid_params("The sidebar is unavailable on this connection", None)
+            })?;
+            return open_in_codex::execute(
+                request_handle,
+                &app_event_tx,
+                Arc::clone(&self.sidebar_pending_slots),
+                backend,
+                &params.thread_id,
+                params.arguments,
+            )
+            .await
+            .map(Into::into);
+        }
         let response = if matches!(
             params.tool.as_str(),
             "create_worktree" | "get_worktree_creation_status" | "list_worktrees"
         ) {
-            let service = self.services.worktrees.as_ref().ok_or_else(|| {
+            let service = self.worktrees.as_ref().ok_or_else(|| {
                 McpError::invalid_params("Worktree tools are unavailable on this connection", None)
             })?;
             service
@@ -373,12 +356,11 @@ impl ServerHandler for DynamicToolMcpHandler {
                 )
                 .await
         } else {
-            if !self.services.task_tools {
-                return Err(McpError::invalid_params(
-                    "Task tools are unavailable on this connection",
-                    None,
-                ));
-            }
+            let mut thread_start_params = self.thread_start_params.clone();
+            thread_start_params.config.get_or_insert_default().insert(
+                format!("mcp_servers.{}", dynamic_tools::NAMESPACE),
+                self.server_config.clone(),
+            );
             dynamic_tools::execute(
                 request_handle,
                 params,

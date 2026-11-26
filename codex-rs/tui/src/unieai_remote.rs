@@ -45,7 +45,7 @@ const VIEWER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const QUIET_ZONE: usize = 2;
 
 pub(crate) const ONLY_UAC: &str =
-    "Remote Control works on the Rabi Harness (uac) engine only.";
+    "Remote Control works on the Rabi Harness engine only.";
 
 /// The bridge's state, as `unieai/remote/start` and `/status` report it.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -270,6 +270,8 @@ impl UacRemoteControl {
             .await
             .map_err(|err| err.to_string())?;
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            // Control-only connection: it never answers approval prompts.
+            required_human_approval: false,
             endpoint: crate::unieai_engine::uac_endpoint(socket_path),
             client_name: "unieai-remote-control".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),

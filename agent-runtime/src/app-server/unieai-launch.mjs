@@ -90,11 +90,18 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
     onError: (error) => log("[app-server]", error.message),
     onTurnError: (message, { threadId }) => log(`[turn] ${threadId} failed: ${message}`),
     onTrace: (line) => log("[trace]", line),
-    createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onScheduledPrompt, onSubagent, onChildActivity, onExecSession, askUser, onCompaction }) =>
-      buildEngine({
+    createEngineFor: ({ cwd, model, effort, modelProvider, emit, request, sandboxMode: mode, ids, newItemId, resumeState, onState, clientTools, oneShot, mode: variant, permissions, onSteerDelivered, onGoalChanged, onEngineTurn, onScheduledPrompt, onSubagent, onChildActivity, onExecSession, askUser, onCompaction }) => {
+      const items = createItemBridge(emit);
+      return buildEngine({
         // The effective config as codex resolves it for this directory
         // (profiles, project layers): where `[mcp_servers]` comes from.
         readConfig: () => forwarder.forward("config/read", { cwd }),
+        // One server's sign-in state, asked of the Rust side, which connects
+        // it with codex's OAuth runtime (and so refreshes a token that is due).
+        probeMcpServer: async (serverName) => {
+          const result = await forwarder.forward("mcpServerStatus/list", { serverName, detail: "toolsAndAuthOnly" });
+          return result?.data?.find((server) => server.name === serverName) ?? null;
+        },
         oneShot,
         variant,
         permissions,
@@ -116,8 +123,8 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onState,
         clientTools,
         // A client-hosted tool runs in the client: ask it, as the Rust server does.
-        callClientTool: ({ callId, namespace, tool, arguments: args }) =>
-          request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }),
+        callClientTool: ({ callId, namespace, tool, arguments: args, signal }) =>
+          request("item/tool/call", { ...ids(), callId, namespace: namespace ?? null, tool, arguments: args ?? {} }, { signal }),
         onText: (delta) => emit("item/agentMessage/delta", { delta }),
         // /status and the context meter read these.
         onUsage: (tokenUsage) => emit("thread/tokenUsage/updated", { ...ids(), tokenUsage }),
@@ -125,7 +132,7 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
         onPlan: (plan) => emit("turn/plan/updated", { ...ids(), explanation: null, plan }),
         onReasoning: (delta) => emit("item/reasoning/textDelta", { delta }),
         // Engine events carry our vocabulary; the client only renders the protocol's.
-        onToolEvent: createItemBridge(emit),
+        onToolEvent: items,
         // The user decides, through the client. Fails closed: an unanswered or
         // errored request declines rather than running unapproved.
         requestApproval: createApprovalBridge({
@@ -133,9 +140,11 @@ export async function launchAppServer({ name, version, buildEngine, sandboxMode,
           cwd,
           ids,
           newItemId,
+          itemIdFor: items.itemIdFor,
           timeoutMs: Number(process.env.UNIEAI_APPROVAL_TIMEOUT_MS) || 0,
         }),
-      }),
+      });
+    },
   });
 
   // Only this user may drive the engine: the socket accepts turns that run

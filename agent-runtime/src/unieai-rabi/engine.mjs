@@ -90,6 +90,21 @@ export function engineToolName(rabiName) {
   return TOOL_NAMES[rabiName] ?? rabiName;
 }
 
+/**
+ * What an approval card shows as the thing to run. exec_command names its
+ * line `cmd`, not `command`; reading only `command` put the raw JSON of the
+ * call on the card. Any other tool (an MCP tool, say) is shown as its name
+ * and arguments.
+ */
+export function approvalDetail(name, input, rawInput) {
+  const line = input.command ?? input.cmd;
+  if (typeof line === "string" && line.trim()) return line;
+  const path = input.file_path ?? input.path;
+  if (typeof path === "string" && path) return path;
+  const args = rawInput && typeof rawInput === "object" ? JSON.stringify(rawInput, null, 2) : String(rawInput ?? "");
+  return args && args !== "{}" ? `${name} ${args}` : String(name ?? "tool");
+}
+
 /** POSIX single-quoting. */
 export function shellQuote(text) {
   return /^[A-Za-z0-9_\/.,:=@%+-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
@@ -425,11 +440,35 @@ export function historyTurn(turn) {
         break;
     }
   }
+  return { items, ...historyTurnTiming(turn) };
+}
+
+/** A history turn's status and times, which its outline carries too. */
+function historyTurnTiming(turn) {
   return {
-    items,
     status: turn.endSeq === null ? "inProgress" : TURN_STATUS[turn.reason] ?? "completed",
     startedAt: turn.startedAt ?? null,
     completedAt: turn.completedAt ?? null,
+  };
+}
+
+/**
+ * One unieai-control history turn from a ranged read: its items when it was
+ * in the range (`items: null` when not), how many it has, and the two a
+ * turn summary shows as protocol items at their positions.
+ */
+export function historyRangeTurn(turn) {
+  const one = (entry) => (entry ? { index: entry.index, item: historyTurn({ items: [entry.item], endSeq: 0 }).items[0] ?? null } : null);
+  // A control plugin from before ranged reads sends every item and no summary.
+  const raw = turn.items ?? [];
+  const at = (index) => (index < 0 ? null : { index, item: raw[index] });
+  const summary = turn.summary ?? { firstUser: at(raw.findIndex((i) => i.type === "user")), lastAssistant: at(raw.findLastIndex((i) => i.type === "assistant")) };
+  return {
+    ...(Array.isArray(turn.items) ? historyTurn(turn) : { items: null, ...historyTurnTiming(turn) }),
+    itemCount: Number.isInteger(turn.itemCount) ? turn.itemCount : (turn.items?.length ?? 0),
+    summary: { firstUser: one(summary.firstUser), lastAgent: one(summary.lastAssistant) },
+    anchor: turn.rabiTurn ?? null,
+    opener: turn.opener ?? null,
   };
 }
 
@@ -735,8 +774,13 @@ export function createRabiEngine({
     } else if (!requestApproval) {
       allow = false;
     } else {
-      const detail = input.command ?? input.file_path ?? input.path ?? JSON.stringify(call.rawInput ?? {});
-      const decision = await requestApproval({ tool, action: call.name, detail, reason: null }).catch(() => "decline");
+      const decision = await requestApproval({
+        tool,
+        action: call.name,
+        detail: approvalDetail(call.name, input, call.rawInput),
+        reason: null,
+        callId: toolCall?.toolCallId ?? null,
+      }).catch(() => "decline");
       if (decision === "acceptForSession") allowedForSession.add(tool);
       allow = decision === "accept" || decision === "acceptForSession";
     }
@@ -804,9 +848,20 @@ export function createRabiEngine({
     }
   };
 
+  // Client tool calls still waiting on the client. An interrupt ends them:
+  // rabi's prompt cannot finish while one waits, and a client that never
+  // answers would otherwise refuse every later turn ("a prompt is already
+  // in flight").
+  const clientCalls = new Set();
   const onToolCall = async (call) => {
     if (!callClientTool) throw new Error("this client hosts no tools");
-    return callClientTool(call);
+    const abort = new AbortController();
+    clientCalls.add(abort);
+    try {
+      return await callClientTool({ ...call, signal: abort.signal });
+    } finally {
+      clientCalls.delete(abort);
+    }
   };
 
   /** Offer the client's tools in `sessionId` (rabi forgets them when it restarts). */
@@ -1035,13 +1090,18 @@ export function createRabiEngine({
 
     /** Stop the running turn, including one rabi started on its own. */
     async cancel() {
+      for (const abort of clientCalls) abort.abort(new Error("interrupted: the turn was stopped before the client answered"));
       if (!sessionId || !sessionAgent) return;
       sessionAgent.notify("session/cancel", { sessionId });
     },
 
-    /** rabi's goal for this conversation (see unieai-control goal*). */
+    /**
+     * rabi's goal for this conversation (see unieai-control goal*). Read
+     * without opening the session: unieai-control answers a closed one from
+     * its log, and the client asks before it shows a resumed conversation.
+     */
     async goal() {
-      await ensureSession();
+      if (!sessionId) return null;
       return (await host.control("goalGet", { sessionId })).goal;
     },
     async setGoal({ objective = null, status = null } = {}) {
@@ -1120,6 +1180,18 @@ export function createRabiEngine({
       if (!sessionId) return [];
       const { turns } = await host.control("history", { sessionId, everyTurn: true });
       return turns.map((turn) => ({ ...historyTurn(turn), anchor: turn.rabiTurn ?? null, opener: turn.opener ?? null }));
+    },
+
+    /**
+     * The same turns, with only those in `[from, to)` carrying their items
+     * (`to: null` runs to the end): every turn's outline (`itemCount`,
+     * `summary`, status, anchor) and the `version` of the log they were read
+     * from, which changes whenever it grows.
+     */
+    async historyRange({ from = 0, to = null } = {}) {
+      if (!sessionId) return { version: "empty", turns: [] };
+      const { version = null, turns } = await host.control("history", { sessionId, everyTurn: true, from, to });
+      return { version, turns: turns.map(historyRangeTurn) };
     },
 
     /** A subagent's token usage, in the shape `onUsage` reports the session's own. */

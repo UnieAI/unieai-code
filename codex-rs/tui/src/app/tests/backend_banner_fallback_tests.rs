@@ -188,7 +188,7 @@ async fn backend_banner_fallback_uses_current_task_and_accepted_generation() -> 
         /*initial_user_message*/ None,
     );
     app.replace_chat_widget(ChatWidget::new_with_app_event(init));
-    app.store_active_thread_receiver().await;
+    app.save_active_thread_state().await;
     app.active_thread_id = None;
     app.enqueue_primary_thread_session(second.session, second.turns)
         .await?;
@@ -332,6 +332,7 @@ async fn backend_banner_fallback_handles_settings_failure_and_queued_manual_sele
             client,
             crate::app_server_session::ThreadParamsMode::Embedded,
         );
+        assert!(!crate::app::safety_recourse::supports_server(&server));
         while events.try_recv().is_ok() {}
         let pending_turn = if use_reserve && error_code.is_some() {
             app.chat_widget
@@ -456,7 +457,10 @@ async fn backend_banner_fallback_preserves_permissions_for_first_eligible_cyber_
     cyber_model.model = "cyber-test-model".into();
     cyber_model.model_specialty = Some(MODEL_SPECIALTY_CYBER.into());
     models.push(cyber_model.clone());
-    app.model_catalog = Arc::new(ModelCatalog::new(models));
+    app.model_catalog = Arc::new(ModelCatalog::new(
+        models,
+        Some(app.config.model_provider_id.clone()),
+    ));
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let mut init = app.chatwidget_init_for_forked_or_resumed_thread(
         &mut tui,

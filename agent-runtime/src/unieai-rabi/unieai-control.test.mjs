@@ -370,3 +370,85 @@ test("stopping a subagent interrupts it as the user, under its direct parent", a
   assert.match((await call("subagentInterrupt", { sessionId: "p9" })).error.message, /not a subagent/);
   close();
 });
+
+test("a tool result fills in its call, in rabi 0.2.2's shape and the older one", () => {
+  const run = (result) => {
+    seq = 0;
+    return historyFromEvents([
+      ev("turn/start", { turn: 1 }),
+      user("go"),
+      ev("tool/call", { callId: "c1", name: "bash", arguments: "{}" }),
+      ev("tool/call", { callId: "c2", name: "bash", arguments: "{}" }),
+      ev("tool/result", result("c1", false, "out one")),
+      ev("tool/result", result("c2", true, "boom")),
+      ev("turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ])[0].items.filter((item) => item.type === "tool");
+  };
+  const expected = [
+    { type: "tool", callId: "c1", name: "bash", arguments: "{}", status: "completed", output: "out one" },
+    { type: "tool", callId: "c2", name: "bash", arguments: "{}", status: "failed", output: "boom" },
+  ];
+  // 0.2.2: the tool message itself.
+  assert.deepEqual(run((id, isError, text) => ({ message: { role: "tool", source: { kind: "tool", callId: id }, toolCallId: id, content: [{ type: "text", text }], isError } })), expected);
+  // Before: the result as the message's first content block.
+  assert.deepEqual(run((id, isError, text) => ({ message: { content: [{ toolCallId: id, isError, content: [{ type: "text", text }] }] } })), expected);
+});
+
+test("a ranged history read sends every turn's outline and only the range's items", async () => {
+  const { historyAnswer, historyNeedsItems, turnOutline } = await import("./unieai-control.mjs");
+  const turns = historyFromEvents(session(), { everyTurn: true });
+  assert.deepEqual(historyAnswer(turns), { turns }, "no range: everything, as before");
+  const { turns: ranged } = historyAnswer(turns, { from: 1, to: 2 });
+  assert.equal(ranged.length, turns.length);
+  assert.deepEqual(ranged.map((t) => Boolean(t.items)), [false, true, false, false]);
+  assert.deepEqual(ranged[1].items, turns[1].items);
+  assert.equal(ranged[0].itemCount, 5);
+  assert.deepEqual(ranged[0].summary, { firstUser: { index: 0, item: turns[0].items[0] }, lastAssistant: { index: 2, item: turns[0].items[2] } });
+  assert.deepEqual(turnOutline(turns[3]).summary, { firstUser: { index: 0, item: { type: "user", text: "third, still running" } }, lastAssistant: null });
+  assert.equal(historyAnswer(turns, { from: 2, to: null }).turns.filter((t) => t.items).length, 2, "to null runs to the end");
+  assert.equal(historyNeedsItems({}), true);
+  assert.equal(historyNeedsItems({ from: 0, to: 0 }), false);
+  assert.equal(historyNeedsItems({ from: 3, to: null }), true);
+});
+
+test("the history cache answers while the session's version holds, and keeps items for the newest few", async () => {
+  const { createHistoryCache } = await import("./unieai-control.mjs");
+  const cache = createHistoryCache({ full: 2, outlines: 3 });
+  const turns = (n) => [{ rabiTurn: n, items: [{ type: "user", text: `t${n}` }] }];
+  cache.set("a", true, "v1", turns(1), null);
+  assert.equal(cache.get("a", true, "v1").turns[0].rabiTurn, 1);
+  assert.equal(cache.get("a", true, "v2"), null, "the log grew");
+  assert.equal(cache.get("a", false, "v1"), null, "user turns and every turn are different reads");
+  assert.equal(cache.get("a", true, null), null, "an unknown version is never a hit");
+  cache.set("b", true, "v1", turns(2), null);
+  cache.set("c", true, "v1", turns(3), { id: "g" });
+  const oldest = cache.get("a", true, "v1");
+  assert.equal(oldest.turns, null, "past the newest two, only outlines");
+  assert.equal(oldest.outlines[0].itemCount, 1);
+  assert.deepEqual(cache.get("c", true, "v1").goal, { id: "g" });
+  cache.set("d", true, "v1", turns(4), null);
+  assert.equal(cache.size, 3);
+  assert.equal(cache.get("b", true, "v1"), null, "the least recently used went");
+  const unversioned = cache.set("e", true, null, turns(5), null);
+  assert.equal(unversioned.turns[0].rabiTurn, 5);
+  assert.equal(cache.size, 3, "nothing kept without a version");
+  cache.drop("d");
+  assert.equal(cache.get("d", true, "v1"), null);
+});
+
+test("a stored session's goal comes from its log", async () => {
+  const { storedGoal } = await import("./unieai-control.mjs");
+  assert.equal(storedGoal(session()), null);
+  seq = 0;
+  const goal = { id: "g1", revision: 1, objective: "ship it", phase: "active", maxGoalRounds: 8 };
+  const change = (operation, snapshot, roundsStarted, at) => ev("goal/change", { kind: "goal/change", version: 1, operation, goal: snapshot, roundsStarted, createdAt: 100, updatedAt: at });
+  const events = [
+    change("create", goal, 0, 100),
+    ev("turn/start", { turn: 1 }),
+    ev("user/message", { content: [{ type: "text", text: "continue" }], source: { kind: "goal", goalId: "g1", revision: 1, round: 1 } }),
+    ev("turn/end", { turn: 1, reason: { kind: "completed" } }),
+  ];
+  assert.deepEqual(storedGoal(events), { id: "g1", revision: 1, objective: "ship it", phase: "active", roundsStarted: 1, maxGoalRounds: 8 });
+  events.push(change("pause", { ...goal, revision: 2, phase: "paused" }, 1, 200));
+  assert.equal(storedGoal(events).phase, "paused");
+});

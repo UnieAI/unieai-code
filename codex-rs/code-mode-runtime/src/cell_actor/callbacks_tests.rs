@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
+use codex_code_mode_protocol::CodeModeToolResult;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
@@ -24,7 +25,7 @@ impl CellHost for PanickingCallbackHost {
         &self,
         _invocation: CellToolCall,
         _cancellation_token: CancellationToken,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<CodeModeToolResult, String> {
         panic!("tool callback panic probe");
     }
 
@@ -40,8 +41,7 @@ impl CellHost for PanickingCallbackHost {
     async fn commit_completion(
         &self,
         _stored_value_writes: HashMap<String, Arc<JsonValue>>,
-        _event: CellEvent,
-        _pending_initial_yield_items: Option<Vec<crate::session_runtime::OutputItem>>,
+        _event: impl FnOnce() -> CellEvent + Send,
         _cell_state: Arc<CellState>,
     ) -> CompletionCommit {
         panic!("unexpected completion commit");

@@ -106,7 +106,7 @@ impl Handler {
             .emit_turn_item_started(
                 &turn,
                 &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
+                    id: call_id.to_string(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
@@ -151,7 +151,7 @@ impl Handler {
                         .emit_turn_item_completed(
                             &turn,
                             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                                id: call_id.clone(),
+                                id: call_id.to_string(),
                                 tool: CollabAgentTool::Wait,
                                 status: wait_tool_call_status(&statuses),
                                 sender_thread_id: session.thread_id,
@@ -222,7 +222,7 @@ impl Handler {
             .emit_turn_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id,
+                    id: call_id.into(),
                     tool: CollabAgentTool::Wait,
                     status: wait_tool_call_status(&statuses_by_id),
                     sender_thread_id: session.thread_id,
@@ -314,7 +314,7 @@ impl ToolOutput for WaitAgentResult {
         tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
         tool_output_code_mode_result(self, "wait_agent")
     }
 }

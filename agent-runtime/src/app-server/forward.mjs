@@ -106,7 +106,7 @@ export function createForwarder({ bin, args = ["app-server"], cwd, env = process
     const now = Date.now();
     while (restarts.length && now - restarts[0] > restartWindowMs) restarts.shift();
     if (current && restarts.length >= maxRestarts) {
-      throw new Error(`the platform app-server keeps exiting (${restarts.length} restarts in ${Math.round(restartWindowMs / 1000)}s); see the uac server log`);
+      throw new Error(`the platform app-server keeps exiting (${restarts.length} restarts in ${Math.round(restartWindowMs / 1000)}s); see the Rabi Harness server log`);
     }
     if (current) restarts.push(now);
     current = start();

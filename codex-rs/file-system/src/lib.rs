@@ -2,6 +2,7 @@ mod environment_accessor;
 mod exec_permission_profile_serde;
 mod find_up;
 mod local_logs;
+mod metadata_batch;
 mod nfs;
 
 use bytes::Bytes;
@@ -9,16 +10,13 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::config_types::WindowsSandboxProxySettingsMode;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxEntryMissingPathBehavior;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::sandbox::SandboxOverride;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
@@ -32,6 +30,10 @@ pub use find_up::find_nearest_native_ancestor_with_markers;
 use futures::Stream;
 use futures::stream::BoxStream;
 pub use local_logs::LocalLogsDir;
+pub use metadata_batch::MAX_METADATA_BATCH_BYTES;
+pub use metadata_batch::MAX_METADATA_BATCH_PROBES;
+pub use metadata_batch::metadata_batch_fits;
+pub use metadata_batch::resolve_metadata_batch;
 pub use nfs::is_nfs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -115,7 +117,8 @@ pub struct CopyOptions {
     pub recursive: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileMetadata {
     pub is_directory: bool,
     pub is_file: bool,
@@ -380,26 +383,6 @@ pub struct FileSystemSandboxContext {
 }
 
 impl FileSystemSandboxContext {
-    pub fn from_legacy_sandbox_policy(
-        sandbox_policy: SandboxPolicy,
-        cwd: PathUri,
-    ) -> io::Result<Self> {
-        // Legacy policy projection materializes native roots, so convert at the receiving-host
-        // boundary while retaining the URI in the resulting sandbox context.
-        let native_cwd = cwd.to_abs_path()?;
-        let file_system_sandbox_policy =
-            FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-                &sandbox_policy,
-                &native_cwd,
-            );
-        let permissions = PermissionProfile::from_runtime_permissions_with_enforcement(
-            SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
-            &file_system_sandbox_policy,
-            NetworkSandboxPolicy::from(&sandbox_policy),
-        );
-        Ok(Self::from_permission_profile(permissions, cwd))
-    }
-
     pub fn from_permission_profile(permissions: PermissionProfile, cwd: PathUri) -> Self {
         Self {
             permissions,
@@ -642,6 +625,17 @@ impl Stream for FileSystemReadStream {
 /// Abstract filesystem access used by components that may operate locally or via
 /// a remote environment.
 pub trait ExecutorFileSystem: Send + Sync {
+    /// Watches an unsandboxed observation: every `missing` path is absent and `present`
+    /// (if supplied) exists. Change, disconnection or supersession completes the receiver.
+    /// Unsupported filesystems and observations that cannot be verified return `None`.
+    fn watch_missing(
+        &self,
+        _missing: Vec<PathUri>,
+        _present: Option<PathUri>,
+    ) -> ExecutorFileSystemFuture<'_, Option<tokio::sync::oneshot::Receiver<()>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Resolves a path within this filesystem.
     fn canonicalize<'a>(
         &'a self,
@@ -727,6 +721,16 @@ pub trait ExecutorFileSystem: Send + Sync {
         options: GetMetadataOptions,
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata>;
+
+    /// Return one metadata result or error per input path, in the same order.
+    fn get_metadata_batch<'a>(
+        &'a self,
+        _paths: &'a [PathUri],
+        _options: GetMetadataOptions,
+        _sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, Vec<io::Result<FileMetadata>>> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
 
     fn read_directory<'a>(
         &'a self,

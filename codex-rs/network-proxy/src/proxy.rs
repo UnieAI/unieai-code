@@ -442,6 +442,7 @@ fn reserve_loopback_ephemeral_listener() -> Result<StdTcpListener> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NetworkProxyRuntimeSettings {
+    transparent_tcp: bool,
     allow_local_binding: bool,
     allow_unix_sockets: Arc<[String]>,
     dangerously_allow_all_unix_sockets: bool,
@@ -463,6 +464,7 @@ impl NetworkProxyRuntimeSettings {
             None
         };
         Ok(Self {
+            transparent_tcp: config.transparent_tcp,
             allow_local_binding: config.allow_local_binding(),
             allow_unix_sockets: if cfg!(target_os = "windows") {
                 Arc::default()
@@ -486,6 +488,9 @@ struct EnvironmentProxyAddrs {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedNetworkSandboxContext {
+    /// Route outbound TCP from managed Linux sandbox commands through the managed SOCKS5 proxy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub transparent_tcp: bool,
     /// Loopback proxy ports that sandboxed commands may connect to.
     #[serde(default)]
     pub loopback_ports: Vec<u16>,
@@ -505,8 +510,61 @@ pub struct ManagedNetworkSandboxContext {
 pub struct PreparedManagedNetwork {
     /// Complete command environment with managed proxy variables applied.
     pub env: HashMap<String, String>,
-    /// Matching portable sandbox inputs for the command environment.
-    pub sandbox_context: ManagedNetworkSandboxContext,
+    /// Matching sandbox policy and executor-local CA grant.
+    pub sandbox_context: PreparedNetworkRoute,
+}
+
+/// Sandbox inputs captured together when the proxy prepares a command environment.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PreparedNetworkRoute {
+    /// Policy that can be sent to another executor.
+    pub portable: ManagedNetworkSandboxContext,
+    ca_bundle: CaBundleSource,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum CaBundleSource {
+    #[default]
+    None,
+    Prepared(AbsolutePathBuf),
+    ControllerEnvironment,
+}
+
+impl PreparedNetworkRoute {
+    /// Controller-supplied routes carry the generated CA in the command environment.
+    pub fn from_portable_context(portable: ManagedNetworkSandboxContext) -> Self {
+        Self {
+            portable,
+            ca_bundle: CaBundleSource::ControllerEnvironment,
+        }
+    }
+
+    /// Validate the CA when the sandbox grants access. A local proxy with no CA
+    /// must never pick up an unrelated bundle from the command environment.
+    pub fn into_sandbox_inputs(
+        self,
+        env: &HashMap<String, String>,
+    ) -> (ManagedNetworkSandboxContext, Option<AbsolutePathBuf>) {
+        let bundle = match self.ca_bundle {
+            CaBundleSource::None => None,
+            CaBundleSource::Prepared(path) => path
+                .to_str()
+                .is_some_and(crate::certs::is_managed_mitm_ca_trust_bundle_path)
+                .then_some(path),
+            CaBundleSource::ControllerEnvironment => crate::certs::managed_mitm_ca_from_env(env),
+        };
+        (self.portable, bundle)
+    }
+}
+
+impl From<ManagedNetworkSandboxContext> for PreparedNetworkRoute {
+    /// Portable sandbox inputs carry no executor-local file grant.
+    fn from(portable: ManagedNetworkSandboxContext) -> Self {
+        Self {
+            portable,
+            ca_bundle: CaBundleSource::None,
+        }
+    }
 }
 
 struct EnvironmentProxy {
@@ -683,7 +741,10 @@ pub fn is_managed_proxy_env_var(key: &str, value: &str) -> bool {
     if PROXY_ENV_KEYS.contains(&key) {
         return true;
     }
-    if key == crate::aws_sigv4::AWS_CA_BUNDLE || crate::certs::CUSTOM_CA_ENV_KEYS.contains(&key) {
+    if key == crate::aws_sigv4::AWS_CA_BUNDLE
+        || crate::certs::CUSTOM_CA_ENV_KEYS.contains(&key)
+        || crate::certs::CHILD_ONLY_CA_ENV_KEYS.contains(&key)
+    {
         return crate::certs::is_managed_mitm_ca_trust_bundle_path(value);
     }
     #[cfg(target_os = "macos")]
@@ -878,12 +939,44 @@ fn apply_proxy_env_overrides(
             }
             env.insert(key.to_string(), managed_path.clone());
         }
+        for key in crate::certs::CHILD_ONLY_CA_ENV_KEYS {
+            if crate::credential_broker::env_value(env, key).is_none() {
+                env.insert(key.to_string(), managed_path.clone());
+            }
+        }
     }
 }
 
 impl NetworkProxy {
     pub fn builder() -> NetworkProxyBuilder {
         NetworkProxyBuilder::default()
+    }
+
+    /// Starts a Codex-managed proxy from resolved policy. Keep the handle for as long as
+    /// clients need the proxy. A disabled policy returns the proxy and an inactive handle.
+    pub async fn start_managed(
+        state: NetworkProxyState,
+        routing: ManagedProxyRouting,
+        policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
+        blocked_request_observer: Option<Arc<dyn BlockedRequestObserver>>,
+    ) -> Result<(Self, NetworkProxyHandle)> {
+        // Startup errors can cross the executor RPC boundary. Keep the stage and immediate cause.
+        let proxy = NetworkProxyBuilder {
+            state: Some(Arc::new(state)),
+            managed_by_codex: true,
+            managed_proxy_routing: routing,
+            policy_decider,
+            blocked_request_observer,
+            ..Default::default()
+        }
+        .build()
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to build network proxy: {err}"))?;
+        let handle = proxy
+            .run()
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to run network proxy: {err}"))?;
+        Ok((proxy, handle))
     }
 
     pub fn http_addr(&self) -> SocketAddr {
@@ -1138,17 +1231,6 @@ impl NetworkProxy {
         self.runtime_settings().dangerously_allow_all_unix_sockets
     }
 
-    /// Returns the generated MITM CA bundle path child sandboxes should expose to TLS clients.
-    pub fn managed_mitm_ca_trust_bundle_path(&self) -> Option<AbsolutePathBuf> {
-        self.runtime_settings()
-            .mitm_ca_trust_bundle
-            .and_then(|bundle| {
-                AbsolutePathBuf::from_absolute_path(bundle.path)
-                    .map_err(|err| warn!("managed MITM CA trust bundle path is invalid: {err}"))
-                    .ok()
-            })
-    }
-
     fn prepare_for_addrs(
         &self,
         mut env: HashMap<String, String>,
@@ -1235,12 +1317,25 @@ impl NetworkProxy {
         }
         PreparedManagedNetwork {
             env,
-            sandbox_context: ManagedNetworkSandboxContext {
-                loopback_ports,
-                allow_local_binding: runtime_settings.allow_local_binding,
-                allow_unix_sockets: runtime_settings.allow_unix_sockets.to_vec(),
-                dangerously_allow_all_unix_sockets: runtime_settings
-                    .dangerously_allow_all_unix_sockets,
+            sandbox_context: PreparedNetworkRoute {
+                ca_bundle: runtime_settings
+                    .mitm_ca_trust_bundle
+                    .and_then(|bundle| {
+                        AbsolutePathBuf::from_absolute_path(bundle.path)
+                            .map_err(|err| {
+                                warn!("managed MITM CA trust bundle path is invalid: {err}")
+                            })
+                            .ok()
+                    })
+                    .map_or(CaBundleSource::None, CaBundleSource::Prepared),
+                portable: ManagedNetworkSandboxContext {
+                    loopback_ports,
+                    transparent_tcp: runtime_settings.transparent_tcp,
+                    allow_local_binding: runtime_settings.allow_local_binding,
+                    allow_unix_sockets: runtime_settings.allow_unix_sockets.to_vec(),
+                    dangerously_allow_all_unix_sockets: runtime_settings
+                        .dangerously_allow_all_unix_sockets,
+                },
             },
         }
     }
@@ -1595,28 +1690,37 @@ impl NetworkProxy {
         Ok(addrs)
     }
 
-    pub async fn replace_config_state(&self, new_state: ConfigState) -> Result<()> {
-        let current_cfg = self.state.current_cfg().await?;
+    /// Verifies that an in-place reload preserves the running proxy's listeners.
+    pub fn validate_config_update(
+        current_cfg: &config::NetworkProxyConfig,
+        next: &config::NetworkProxyConfig,
+    ) -> Result<()> {
         anyhow::ensure!(
-            new_state.config.enabled == current_cfg.enabled,
+            next.enabled == current_cfg.enabled,
             "cannot update network.enabled on a running proxy"
         );
         anyhow::ensure!(
-            new_state.config.proxy_url == current_cfg.proxy_url,
+            next.proxy_url == current_cfg.proxy_url,
             "cannot update network.proxy_url on a running proxy"
         );
         anyhow::ensure!(
-            new_state.config.socks_url == current_cfg.socks_url,
+            next.socks_url == current_cfg.socks_url,
             "cannot update network.socks_url on a running proxy"
         );
         anyhow::ensure!(
-            new_state.config.enable_socks5 == current_cfg.enable_socks5,
+            next.enable_socks5 == current_cfg.enable_socks5,
             "cannot update network.enable_socks5 on a running proxy"
         );
         anyhow::ensure!(
-            new_state.config.enable_socks5_udp == current_cfg.enable_socks5_udp,
+            next.enable_socks5_udp == current_cfg.enable_socks5_udp,
             "cannot update network.enable_socks5_udp on a running proxy"
         );
+        Ok(())
+    }
+
+    pub async fn replace_config_state(&self, new_state: ConfigState) -> Result<()> {
+        let current_cfg = self.state.current_cfg().await?;
+        Self::validate_config_update(&current_cfg, &new_state.config)?;
         let config = self
             .state
             .local_binding_policy
@@ -2337,8 +2441,9 @@ mod tests {
             let prepared = proxy
                 .prepare_for_optional_environment(HashMap::new(), /*environment_id*/ None)?;
             assert_eq!(
-                prepared.sandbox_context,
+                prepared.sandbox_context.portable,
                 ManagedNetworkSandboxContext {
+                    transparent_tcp: false,
                     loopback_ports: vec![43128, 48081],
                     allow_local_binding: true,
                     allow_unix_sockets: if cfg!(target_os = "windows") {
@@ -2414,7 +2519,7 @@ mod tests {
             expected_ports.sort_unstable();
             expected_ports.dedup();
             assert_eq!(
-                prepared.sandbox_context,
+                prepared.sandbox_context.portable,
                 ManagedNetworkSandboxContext {
                     loopback_ports: expected_ports,
                     allow_local_binding: false,
@@ -2484,6 +2589,14 @@ mod tests {
 
     #[tokio::test]
     async fn remote_launch_config_carries_execution_scope() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ca = crate::certs::ManagedMitmCa::for_test(dir.path())?;
+        crate::certs::TEST_MITM_CA
+            .scope(ca, check_remote_launch_config_execution_scope())
+            .await
+    }
+
+    async fn check_remote_launch_config_execution_scope() -> Result<()> {
         #[cfg(target_os = "windows")]
         let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();
         let mut config = NetworkProxyConfig {
@@ -2716,7 +2829,10 @@ mod tests {
                 )
                 .expect("prepare stable Windows proxy");
             assert_eq!(
-                prepared_before_upgrade.sandbox_context.loopback_ports,
+                prepared_before_upgrade
+                    .sandbox_context
+                    .portable
+                    .loopback_ports,
                 vec![proxy.http_addr.port()]
             );
             assert_eq!(
@@ -2734,7 +2850,10 @@ mod tests {
                 .prepare_for_optional_environment(HashMap::new(), Some(environment_id))
                 .expect("prepare cached HTTP-only environment");
             assert_eq!(
-                environment_before_upgrade.sandbox_context.loopback_ports,
+                environment_before_upgrade
+                    .sandbox_context
+                    .portable
+                    .loopback_ports,
                 vec![proxy.http_addr.port()]
             );
 
@@ -2774,7 +2893,10 @@ mod tests {
                 .prepare_for_optional_environment(HashMap::new(), Some(environment_id))
                 .expect("re-prepare cached environment after SOCKS5 upgrade");
             for prepared in [&prepared_after_upgrade, &environment_after_upgrade] {
-                assert_eq!(prepared.sandbox_context.loopback_ports, expected_ports);
+                assert_eq!(
+                    prepared.sandbox_context.portable.loopback_ports,
+                    expected_ports
+                );
                 assert_eq!(
                     prepared.env.get(WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY),
                     Some(
@@ -2794,7 +2916,7 @@ mod tests {
                 .prepare_for_optional_environment(HashMap::new(), None)
                 .expect("prepare SOCKS-enabled route");
             assert_eq!(
-                socks_prepared.sandbox_context.loopback_ports,
+                socks_prepared.sandbox_context.portable.loopback_ports,
                 expected_ports
             );
             assert_eq!(
@@ -2810,7 +2932,7 @@ mod tests {
                     "remote",
                 )
                 .expect("prepare HTTP-only trusted bridge proxy");
-            assert_eq!(remote.sandbox_context.loopback_ports.len(), 1);
+            assert_eq!(remote.sandbox_context.portable.loopback_ports.len(), 1);
             assert_eq!(remote.env.get(WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY), None);
             assert_eq!(proxy.network_proxy_restricting_sid(Some("remote")), None);
             socks_handle
@@ -3066,7 +3188,11 @@ mod tests {
             Some(&mitm_ca_trust_bundle),
         );
 
-        for key in crate::certs::CUSTOM_CA_ENV_KEYS {
+        assert!(!env.contains_key("NIX_SSL_CERT_FILE"));
+        for key in crate::certs::CUSTOM_CA_ENV_KEYS
+            .into_iter()
+            .chain(["DENO_CERT", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE"])
+        {
             assert_eq!(
                 env.get(key),
                 Some(&mitm_ca_trust_bundle_path.display().to_string())
@@ -3077,10 +3203,21 @@ mod tests {
     #[test]
     fn apply_proxy_env_overrides_preserves_command_scoped_mitm_ca_override() {
         let command_ca_bundle_path = "/tmp/command-ca.pem".to_string();
-        let mut env = HashMap::from([(
-            "REQUESTS_CA_BUNDLE".to_string(),
-            command_ca_bundle_path.clone(),
-        )]);
+        let mut env = HashMap::from([
+            (
+                "REQUESTS_CA_BUNDLE".to_string(),
+                command_ca_bundle_path.clone(),
+            ),
+            (
+                "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE".to_string(),
+                command_ca_bundle_path.clone(),
+            ),
+            ("DENO_CERT".to_string(), String::new()),
+            (
+                "NIX_SSL_CERT_FILE".to_string(),
+                command_ca_bundle_path.clone(),
+            ),
+        ]);
         let mitm_ca_trust_bundle_path = Path::new("/tmp/codex-proxy/ca-bundle.pem");
         let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
             path: mitm_ca_trust_bundle_path.to_path_buf(),
@@ -3096,7 +3233,14 @@ mod tests {
             Some(&mitm_ca_trust_bundle),
         );
 
-        assert_eq!(env.get("REQUESTS_CA_BUNDLE"), Some(&command_ca_bundle_path));
+        for key in [
+            "REQUESTS_CA_BUNDLE",
+            "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+            "NIX_SSL_CERT_FILE",
+        ] {
+            assert_eq!(env.get(key), Some(&command_ca_bundle_path));
+        }
+        assert_eq!(env.get("DENO_CERT").map(String::as_str), Some(""));
         assert_eq!(
             env.get("SSL_CERT_FILE"),
             Some(&mitm_ca_trust_bundle_path.display().to_string())

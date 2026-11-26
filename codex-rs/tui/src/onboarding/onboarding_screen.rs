@@ -14,6 +14,7 @@ use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
+use codex_app_server_protocol::GatewayOAuthPrompt;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_exec_server::LOCAL_FS;
@@ -50,11 +51,12 @@ use crate::onboarding::trust_directory::TrustDirectoryWidget;
 use crate::onboarding::welcome::WelcomeWidget;
 use crate::startup_draft::StartupCancelled;
 use crate::tui::FrameRequester;
-use crate::tui::OverlayInput;
+use crate::tui::MouseCapture;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::RwLock;
 use uuid::Uuid;
@@ -68,6 +70,7 @@ pub(crate) use directory_trust::check_directory_trust;
 enum Step {
     Welcome(WelcomeWidget),
     Auth(AuthModeWidget),
+    GatewayDevice(GatewayOAuthPrompt),
     TrustDirectory(TrustDirectoryWidget),
     GovCloudGuidance {
         state: BedrockState,
@@ -104,6 +107,8 @@ pub(crate) struct OnboardingScreenArgs {
     pub remote_project_trust: Option<RemoteProjectTrust>,
     pub show_login_screen: bool,
     pub bedrock_setup_enabled: bool,
+    pub gcp_setup_enabled: bool,
+    pub gateway_setup_enabled: bool,
     pub login_status: LoginStatus,
     pub app_server_target: crate::AppServerTarget,
     pub app_server_request_handle: Option<AppServerRequestHandle>,
@@ -113,6 +118,7 @@ pub(crate) struct OnboardingScreenArgs {
 #[derive(Default)]
 pub(crate) struct OnboardingResult {
     pub directory_trust_persisted: bool,
+    pub selected_gateway: Option<String>,
     pub should_exit: bool,
 }
 
@@ -131,6 +137,8 @@ impl OnboardingScreen {
             remote_project_trust,
             show_login_screen,
             bedrock_setup_enabled,
+            gcp_setup_enabled,
+            gateway_setup_enabled,
             login_status,
             app_server_target,
             app_server_request_handle,
@@ -170,6 +178,7 @@ impl OnboardingScreen {
                 steps.push(Step::Auth(AuthModeWidget {
                     request_frame: tui.frame_requester(),
                     highlighted_mode,
+                    activation_key_guard: None,
                     error: Arc::new(RwLock::new(None)),
                     sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
                     login_status,
@@ -177,6 +186,9 @@ impl OnboardingScreen {
                     app_server_request_handle,
                     auth_config,
                     bedrock_setup_enabled,
+                    gcp_setup_enabled,
+                    gateway_setup_enabled,
+                    gateway: None,
                     animations_enabled: local_settings.tui.animations
                         && local_settings.tui.effects.shimmer,
                     animations_suppressed: std::cell::Cell::new(false),
@@ -259,13 +271,15 @@ impl OnboardingScreen {
         // material so terminal selection is not interrupted by redraws.
         self.current_steps().into_iter().any(|step| match step {
             Step::Auth(widget) => widget.should_suppress_animations(),
+            Step::GatewayDevice(_) => true,
             Step::Welcome(_) | Step::TrustDirectory(_) | Step::GovCloudGuidance { .. } => false,
         })
     }
 
     fn is_auth_in_progress(&self) -> bool {
         self.steps.iter().any(|step| {
-            matches!(step, Step::Auth(_)) && matches!(step.get_step_state(), StepState::InProgress)
+            matches!(step, Step::Auth(_) | Step::GatewayDevice(_))
+                && matches!(step.get_step_state(), StepState::InProgress)
         })
     }
 
@@ -297,10 +311,13 @@ impl OnboardingScreen {
         }
     }
 
-    fn auth_widget_mut(&mut self) -> Option<&mut AuthModeWidget> {
+    pub(super) fn auth_widget_mut(&mut self) -> Option<&mut AuthModeWidget> {
         self.steps.iter_mut().find_map(|step| match step {
             Step::Auth(widget) => Some(widget),
-            Step::Welcome(_) | Step::TrustDirectory(_) | Step::GovCloudGuidance { .. } => None,
+            Step::Welcome(_)
+            | Step::TrustDirectory(_)
+            | Step::GovCloudGuidance { .. }
+            | Step::GatewayDevice(_) => None,
         })
     }
 
@@ -309,6 +326,11 @@ impl OnboardingScreen {
             ServerNotification::AccountLoginCompleted(notification) => {
                 if let Some(widget) = self.auth_widget_mut() {
                     widget.on_account_login_completed(notification);
+                }
+            }
+            ServerNotification::GatewayOAuthChanged(notification) => {
+                if let Some(widget) = self.auth_widget_mut() {
+                    widget.on_gateway_oauth_changed(notification);
                 }
             }
             ServerNotification::AccountUpdated(notification) => {
@@ -341,15 +363,20 @@ impl KeyboardHandler for OnboardingScreen {
     /// Route key events to onboarding steps while preserving text-entry safety.
     ///
     /// OpenAI API-key entry suppresses printable quit bindings after typing
-    /// starts, while Bedrock fields suppress them from the first character.
+    /// starts, while cloud provider fields suppress them from the first character.
     /// Control/alt quit chords still work as emergency exits.
     fn handle_key_event(&mut self, key_event: KeyEvent) {
-        if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        if key_event.kind == KeyEventKind::Release {
+            if let Some(widget) = self.auth_widget_mut() {
+                widget.handle_key_event(key_event);
+            }
             return;
         }
         let text_entry_context = self.text_entry_context();
         let should_quit = key_event.kind == KeyEventKind::Press
-            && keys::QUIT.is_pressed(key_event)
+            && (keys::QUIT.is_pressed(key_event)
+                || matches!(self.steps.as_slice(), [Step::GatewayDevice(_)])
+                    && keys::CANCEL.is_pressed(key_event))
             && !suppress_quit_while_typing(key_event, text_entry_context);
         if should_quit {
             if self.is_auth_in_progress() {
@@ -430,7 +457,9 @@ impl WidgetRef for &OnboardingScreen {
             match step {
                 Step::Welcome(widget) => widget.set_presentation(logo_presentation),
                 Step::Auth(widget) => widget.set_animations_suppressed(suppress_animations),
-                Step::TrustDirectory(_) | Step::GovCloudGuidance { .. } => {}
+                Step::TrustDirectory(_)
+                | Step::GovCloudGuidance { .. }
+                | Step::GatewayDevice(_) => {}
             }
         }
 
@@ -501,6 +530,7 @@ impl WidgetRef for &OnboardingScreen {
 impl KeyboardHandler for Step {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match self {
+            Step::GatewayDevice(_) => {}
             Step::Welcome(widget) => widget.handle_key_event(key_event),
             Step::Auth(widget) => widget.handle_key_event(key_event),
             Step::TrustDirectory(widget) => widget.handle_key_event(key_event),
@@ -515,7 +545,7 @@ impl KeyboardHandler for Step {
 
     fn handle_paste(&mut self, pasted: String) {
         match self {
-            Step::Welcome(_) | Step::GovCloudGuidance { .. } => {}
+            Step::Welcome(_) | Step::GovCloudGuidance { .. } | Step::GatewayDevice(_) => {}
             Step::Auth(widget) => widget.handle_paste(pasted),
             Step::TrustDirectory(widget) => widget.handle_paste(pasted),
         }
@@ -525,6 +555,7 @@ impl KeyboardHandler for Step {
 impl StepStateProvider for Step {
     fn get_step_state(&self) -> StepState {
         match self {
+            Step::GatewayDevice(_) => StepState::InProgress,
             Step::Welcome(w) => w.get_step_state(),
             Step::Auth(w) => w.get_step_state(),
             Step::TrustDirectory(w) => w.get_step_state(),
@@ -551,9 +582,60 @@ impl WidgetRef for Step {
             Step::TrustDirectory(widget) => {
                 widget.render_ref(area, buf);
             }
+            Step::GatewayDevice(prompt) => render_gateway_device_prompt(prompt, area, buf),
             Step::GovCloudGuidance { state, .. } => state.render(area, buf, /*error*/ None),
         }
     }
+}
+
+pub(crate) fn render_gateway_device_prompt(
+    prompt: &GatewayOAuthPrompt,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    super::auth::render_device_code_prompt(
+        area,
+        buf,
+        "  Sign in to your gateway".into(),
+        Some((&prompt.verification_url, &prompt.user_code)),
+        [
+            "  1. Open this link in a browser",
+            "  2. Enter this one-time code when prompted",
+        ],
+        keys::CANCEL[0],
+    );
+}
+
+pub(crate) async fn run_gateway_device_login(
+    tui: &mut Tui,
+    server: &mut AppServerSession,
+    prompt: GatewayOAuthPrompt,
+) -> Result<()> {
+    let screen = OnboardingScreen {
+        request_frame: tui.frame_requester(),
+        steps: vec![Step::GatewayDevice(prompt)],
+        remote_trust_key: None,
+        is_done: false,
+        should_exit: false,
+    };
+    let result = run_onboarding_screen(
+        screen,
+        /*app_server_request_handle*/ None,
+        Some(server),
+        tui,
+    )
+    .await
+    .and_then(|result| {
+        if result.should_exit {
+            Err(std::io::Error::new(std::io::ErrorKind::Interrupted, StartupCancelled).into())
+        } else {
+            Ok(())
+        }
+    });
+    if result.is_err() {
+        crate::device_login::cancel(server).await;
+    }
+    result
 }
 
 pub(crate) async fn run_gov_cloud_guidance(tui: &mut Tui) -> Result<()> {
@@ -587,15 +669,15 @@ pub(crate) async fn run_onboarding_app(
     run_onboarding_screen(screen, request_handle, app_server, tui).await
 }
 
-async fn run_onboarding_screen(
+pub(super) async fn run_onboarding_screen(
     onboarding_screen: OnboardingScreen,
     app_server_request_handle: Option<AppServerRequestHandle>,
     app_server: Option<&mut AppServerSession>,
     tui: &mut Tui,
 ) -> Result<OnboardingResult> {
     // Let the terminal select and copy login URLs and device codes, even in fullscreen mode.
-    let previous_input = tui.overlay_input;
-    let result = match tui.set_overlay_input(OverlayInput::Onboarding) {
+    let previous_mouse_capture = tui.mouse_capture;
+    let result = match tui.set_mouse_capture(MouseCapture::Disabled) {
         Ok(()) => {
             run_onboarding_screen_inner(
                 onboarding_screen,
@@ -607,8 +689,21 @@ async fn run_onboarding_screen(
         }
         Err(error) => Err(error.into()),
     };
-    let restore = tui.set_overlay_input(previous_input);
+    let restore = tui.set_mouse_capture(previous_mouse_capture);
     result.and_then(|result| restore.map(|()| result).map_err(Into::into))
+}
+
+// A queued confirmation must not accept a disconnected folder, even when opening
+// restricted would complete without an RPC. Leave the disconnect event for the app.
+async fn folder_input(
+    closed: impl Future<Output = ()>,
+    input: impl Future<Output = Option<TuiEvent>>,
+) -> ControlFlow<(), Option<TuiEvent>> {
+    tokio::select! {
+        biased;
+        () = closed => ControlFlow::Break(()),
+        event = input => ControlFlow::Continue(event),
+    }
 }
 
 async fn run_onboarding_screen_inner(
@@ -632,9 +727,36 @@ async fn run_onboarding_screen_inner(
     tokio::pin!(tui_events);
     let mut trust_step_was_active = onboarding_screen.is_trust_step_active();
 
+    let folder_connection = match (
+        &app_server_request_handle,
+        onboarding_screen.steps.as_slice(),
+    ) {
+        (Some(AppServerRequestHandle::Remote(handle)), [Step::TrustDirectory(_)]) => Some(handle),
+        _ => None,
+    };
+
     while !onboarding_screen.is_done() {
         tokio::select! {
-            event = tui_events.next() => {
+            () = async {
+                match onboarding_screen.auth_widget_mut() {
+                    Some(auth) => auth.advance_gateway_request().await,
+                    None => std::future::pending().await,
+                }
+            } => {}
+            event = async {
+                let input = tui_events.next();
+                match folder_connection {
+                    Some(handle) => folder_input(handle.closed(), input).await,
+                    None => ControlFlow::Continue(input.await),
+                }
+            } => {
+                let ControlFlow::Continue(event) = event else {
+                    tui.discard_pending_input_before_interactive_screen()?;
+                    return Ok(OnboardingResult {
+                        should_exit: true,
+                        ..Default::default()
+                    });
+                };
                 if let Some(event) = event {
                     tui.screen_size_for_event(&event)?;
                     match event {
@@ -706,10 +828,7 @@ async fn run_onboarding_screen_inner(
                             }
                             for step in &onboarding_screen.steps {
                                 if let Step::Welcome(widget) = step {
-                                    if matches!(&event, TuiEvent::Resume) {
-                                        widget.set_presentation(crate::empty_state_animation::Presentation::Hidden);
-                                    }
-                                    widget.set_focused(tui.is_terminal_focused());
+                                    widget.handle_draw_event(&event, tui.is_terminal_focused());
                                 }
                             }
                             if !did_full_clear_after_success
@@ -758,7 +877,16 @@ async fn run_onboarding_screen_inner(
                     None => None,
                 }
             }, if app_server.is_some() => {
-                if let Some(event) = event {
+                let Some(event) = event else {
+                    return Err(color_eyre::eyre::eyre!(super::SETUP_CONNECTION_LOST));
+                };
+                if let (Some(server), [Step::GatewayDevice(prompt)]) = (app_server.as_deref(), onboarding_screen.steps.as_slice()) {
+                    onboarding_screen.is_done = crate::device_login::handle_event_during_device_login(
+                        prompt,
+                        event.event,
+                        &server.request_handle(),
+                    ).await?;
+                } else {
                     match event.event {
                         AppServerEvent::ServerNotification(notification) => {
                             onboarding_screen.handle_app_server_notification(*notification);
@@ -766,7 +894,10 @@ async fn run_onboarding_screen_inner(
                         AppServerEvent::Disconnected { message } => {
                             return Err(color_eyre::eyre::eyre!(message));
                         }
-                        AppServerEvent::Lagged { .. }
+                        AppServerEvent::CloudInventoryChanged(_)
+                        | AppServerEvent::ThreadStreamReconnected(_)
+                | AppServerEvent::ThreadStreamDisconnected(_)
+                        | AppServerEvent::Lagged { .. }
                         | AppServerEvent::ServerRequest(_) => {}
                     }
                 }
@@ -787,6 +918,16 @@ async fn run_onboarding_screen_inner(
     }
     Ok(OnboardingResult {
         directory_trust_persisted,
+        selected_gateway: onboarding_screen.auth_widget_mut().and_then(|widget| {
+            match &*widget
+                .sign_in_state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                SignInState::GatewaySelected(id) => Some(id.clone()),
+                _ => None,
+            }
+        }),
         should_exit: onboarding_screen.should_exit(),
     })
 }
@@ -898,6 +1039,14 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn folder_disconnect_wins_over_queued_enter() {
+        let enter = super::TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let event =
+            super::folder_input(std::future::ready(()), std::future::ready(Some(enter))).await;
+        assert!(event.is_break());
+    }
 
     #[test]
     fn suppresses_printable_quit_key_during_api_key_entry() {

@@ -53,6 +53,7 @@ fn completed(thread: ThreadId, item: ThreadItem) -> ServerNotification {
         thread_id: thread.to_string(),
         turn_id: "turn-1".to_string(),
         item,
+        content_token_count: None,
         completed_at_ms: 0,
     })
 }

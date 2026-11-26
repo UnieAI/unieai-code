@@ -571,10 +571,10 @@ impl AuthModeWidget {
                 };
                 let engines = if *codex_engine {
                     format!(
-                        "  They run on the uac engine; codex can use them too with model_provider = \"{id}\"."
+                        "  They run on the Rabi Harness engine; codex can use them too with model_provider = \"{id}\"."
                     )
                 } else {
-                    "  They run on the uac engine (Rabi Harness).".to_string()
+                    "  They run on the Rabi Harness engine.".to_string()
                 };
                 let lines: Vec<Line> = vec![
                     format!("✓ Connected {label}").fg(Color::Green).into(),

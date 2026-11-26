@@ -2,6 +2,7 @@
 //! Tool output previews share a three-row budget across all result blocks;
 //! the expanded transcript retains the full text.
 //! Invocation and result rows retain exact logical source ranges through wrapping and gutters.
+//! Environment ownership is rendered separately from raw server names used by special handlers.
 
 use super::*;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
@@ -60,6 +61,7 @@ pub(crate) struct McpToolCallCell {
 #[derive(Debug, Clone)]
 pub(crate) struct McpInvocation {
     pub(crate) server: String,
+    pub(crate) environment_id: Option<String>,
     pub(crate) tool: String,
     pub(crate) arguments: Option<serde_json::Value>,
 }
@@ -177,14 +179,7 @@ impl McpToolCallCell {
             .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|title| !title.is_empty());
         let invocation_line = if compact {
-            Line::from(
-                title
-                    .clone()
-                    .unwrap_or_else(|| {
-                        format!("{}.{}", self.invocation.server, self.invocation.tool)
-                    })
-                    .fg(accent_color()),
-            )
+            Line::from(self.compact_tool_name().fg(accent_color()))
         } else {
             line_to_static(&format_mcp_invocation(&self.invocation))
         };
@@ -356,6 +351,15 @@ impl McpToolCallCell {
 }
 
 impl HistoryCell for McpToolCallCell {
+    fn tool_call_labels(&self) -> Vec<String> {
+        let verb = match self.success() {
+            Some(true) => "Called",
+            Some(false) => "Failed",
+            None => "Calling",
+        };
+        vec![format!("{verb} {}", self.compact_tool_name())]
+    }
+
     fn activity_ids(&self) -> Vec<String> {
         vec![format!("mcp:{}", self.call_id)]
     }
@@ -458,180 +462,6 @@ pub(crate) fn empty_mcp_output() -> WebHyperlinkHistoryCell {
     WebHyperlinkHistoryCell::new_hyperlink_lines(lines)
 }
 
-#[cfg(test)]
-/// Render MCP tools grouped by connection using the fully-qualified tool names.
-pub(crate) fn new_mcp_tools_output(
-    config: &Config,
-    tools: HashMap<String, codex_protocol::mcp::Tool>,
-    resources: HashMap<String, Vec<Resource>>,
-    resource_templates: HashMap<String, Vec<ResourceTemplate>>,
-    auth_statuses: &HashMap<String, McpAuthStatus>,
-) -> PlainHistoryCell {
-    let mut lines: Vec<Line<'static>> = vec![
-        "/mcp".magenta().into(),
-        "".into(),
-        vec!["🔌  ".into(), "MCP Tools".bold()].into(),
-        "".into(),
-    ];
-
-    if tools.is_empty() {
-        lines.push("  • No MCP tools available.".italic().into());
-        lines.push("".into());
-    }
-
-    let effective_servers = config.mcp_servers.get().clone();
-    let mut servers: Vec<_> = effective_servers.iter().collect();
-    servers.sort_by_key(|(server, _)| *server);
-
-    for (server, cfg) in servers {
-        let prefix = qualified_mcp_tool_name_prefix(server);
-        let mut names: Vec<String> = tools
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .map(|k| k[prefix.len()..].to_string())
-            .collect();
-        names.sort();
-
-        let auth_status = auth_statuses
-            .get(server.as_str())
-            .copied()
-            .unwrap_or(McpAuthStatus::Unsupported);
-        let mut header: Vec<Span<'static>> = vec!["  • ".into(), server.clone().into()];
-        if !cfg.enabled {
-            header.push(" ".into());
-            header.push("(disabled)".red());
-            lines.push(header.into());
-            if let Some(reason) = cfg.disabled_reason.as_ref().map(ToString::to_string) {
-                lines.push(vec!["    • Reason: ".into(), reason.dim()].into());
-            }
-            lines.push(Line::from(""));
-            continue;
-        }
-        lines.push(header.into());
-        lines.push(vec!["    • Status: ".into(), "enabled".green()].into());
-        lines.push(
-            vec![
-                "    • Auth: ".into(),
-                mcp_auth_status_label(auth_status).into(),
-            ]
-            .into(),
-        );
-
-        match &cfg.transport {
-            McpServerTransportConfig::Stdio {
-                command,
-                args,
-                env,
-                env_vars,
-                cwd,
-            } => {
-                let args_suffix = if args.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", args.join(" "))
-                };
-                let cmd_display = format!("{command}{args_suffix}");
-                lines.push(vec!["    • Command: ".into(), cmd_display.into()].into());
-
-                if let Some(cwd) = cwd.as_ref() {
-                    lines.push(vec!["    • Cwd: ".into(), cwd.to_string().into()].into());
-                }
-
-                let env_display = format_env_display(env.as_ref(), env_vars);
-                if env_display != "-" {
-                    lines.push(vec!["    • Env: ".into(), env_display.into()].into());
-                }
-            }
-            McpServerTransportConfig::StreamableHttp {
-                url,
-                http_headers,
-                env_http_headers,
-                ..
-            } => {
-                lines.push(vec!["    • URL: ".into(), url.clone().into()].into());
-                if let Some(headers) = http_headers.as_ref()
-                    && !headers.is_empty()
-                {
-                    let mut pairs: Vec<_> = headers.iter().collect();
-                    pairs.sort_by_key(|(name, _)| *name);
-                    let display = pairs
-                        .into_iter()
-                        .map(|(name, _)| format!("{name}=*****"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    lines.push(vec!["    • HTTP headers: ".into(), display.into()].into());
-                }
-                if let Some(headers) = env_http_headers.as_ref()
-                    && !headers.is_empty()
-                {
-                    let mut pairs: Vec<_> = headers.iter().collect();
-                    pairs.sort_by_key(|(name, _)| *name);
-                    let display = pairs
-                        .into_iter()
-                        .map(|(name, var)| format!("{name}={var}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    lines.push(vec!["    • Env HTTP headers: ".into(), display.into()].into());
-                }
-            }
-        }
-
-        if names.is_empty() {
-            lines.push("    • Tools: (none)".into());
-        } else {
-            lines.push(vec!["    • Tools: ".into(), names.join(", ").into()].into());
-        }
-
-        let server_resources: Vec<Resource> =
-            resources.get(server.as_str()).cloned().unwrap_or_default();
-        if server_resources.is_empty() {
-            lines.push("    • Resources: (none)".into());
-        } else {
-            let mut spans: Vec<Span<'static>> = vec!["    • Resources: ".into()];
-
-            for (idx, resource) in server_resources.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(", ".into());
-                }
-
-                let label = resource.title.as_ref().unwrap_or(&resource.name);
-                spans.push(label.clone().into());
-                spans.push(" ".into());
-                spans.push(format!("({})", resource.uri).dim());
-            }
-
-            lines.push(spans.into());
-        }
-
-        let server_templates: Vec<ResourceTemplate> = resource_templates
-            .get(server.as_str())
-            .cloned()
-            .unwrap_or_default();
-        if server_templates.is_empty() {
-            lines.push("    • Resource templates: (none)".into());
-        } else {
-            let mut spans: Vec<Span<'static>> = vec!["    • Resource templates: ".into()];
-
-            for (idx, template) in server_templates.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(", ".into());
-                }
-
-                let label = template.title.as_ref().unwrap_or(&template.name);
-                spans.push(label.clone().into());
-                spans.push(" ".into());
-                spans.push(format!("({})", template.uri_template).dim());
-            }
-
-            lines.push(spans.into());
-        }
-
-        lines.push(Line::from(""));
-    }
-
-    PlainHistoryCell { lines }
-}
-
 /// Build the `/mcp` history cell from app-server `McpServerStatus` responses.
 ///
 /// The server list comes directly from the app-server status response, sorted
@@ -652,7 +482,7 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
     ];
 
     let mut statuses = statuses.iter().collect::<Vec<_>>();
-    statuses.sort_by(|a, b| a.name.cmp(&b.name));
+    statuses.sort_by(|a, b| (&a.name, &a.environment_id).cmp(&(&b.name, &b.environment_id)));
 
     let has_any_tools = statuses.iter().any(|status| !status.tools.is_empty());
     if !has_any_tools && matches!(detail, McpServerStatusDetail::Full) {
@@ -690,10 +520,14 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
         };
         let count = status.tools.len();
         let unit = if count == 1 { "tool" } else { "tools" };
+        let name = match &status.environment_id {
+            Some(environment_id) => format!("{} (environment {environment_id})", status.name),
+            None => status.name.clone(),
+        };
         lines.push(
             vec![
                 "  • ".set_style(style),
-                status.name.clone().bold(),
+                name.bold(),
                 ": ".into(),
                 label.set_style(style),
                 format!(" ({count} {unit})").dim(),
@@ -844,7 +678,7 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> Line<'_> {
         })
         .unwrap_or_default();
 
-    let invocation_spans = vec![
+    let mut invocation_spans = vec![
         invocation.server.as_str().fg(accent_color()),
         ".".into(),
         invocation.tool.as_str().fg(accent_color()),
@@ -852,5 +686,8 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> Line<'_> {
         args_str.dim(),
         ")".into(),
     ];
+    if let Some(environment_id) = &invocation.environment_id {
+        invocation_spans.push(format!(" (environment {environment_id})").dim());
+    }
     invocation_spans.into()
 }

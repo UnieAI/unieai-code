@@ -56,7 +56,8 @@ impl UpdateAction {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/UnieAI/Unieai-Code-Publish/main/install.sh | sh",
+                    // Download first: `curl | sh` exits 0 when the download fails.
+                    r#"s=$(curl -fsSL https://raw.githubusercontent.com/UnieAI/Unieai-Code-Publish/main/install.sh) && CODEX_NON_INTERACTIVE=1 eval "$s""#,
                 ],
             ),
             UpdateAction::StandaloneWindows => (
@@ -163,10 +164,14 @@ mod tests {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://raw.githubusercontent.com/UnieAI/Unieai-Code-Publish/main/install.sh | sh"
+                    r#"s=$(curl -fsSL https://raw.githubusercontent.com/UnieAI/Unieai-Code-Publish/main/install.sh) && CODEX_NON_INTERACTIVE=1 eval "$s""#
                 ][..],
             )
         );
+    }
+
+    #[test]
+    fn standalone_windows_update_command_reruns_latest_installer() {
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
@@ -179,6 +184,23 @@ mod tests {
                 ][..],
             )
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standalone_unix_update_fails_when_installer_download_fails() {
+        let (command, args) = UpdateAction::StandaloneUnix.command_args();
+        let offline_command = args[1].replace("https://raw.githubusercontent.com", "file:///dev/null");
+        assert_ne!(offline_command, args[1], "installer URL must be replaced");
+        let output = std::process::Command::new(command)
+            .args([args[0], &offline_command])
+            .env_clear()
+            .env("HOME", "/dev/null")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("run standalone Unix update command");
+
+        assert!(!output.status.success(), "{output:?}");
     }
 }
 

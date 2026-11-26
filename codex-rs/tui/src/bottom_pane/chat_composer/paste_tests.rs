@@ -1,10 +1,67 @@
-//! Raw paste tabs remain draft text until the user explicitly submits or queues it.
+//! Composer paste handling for literal paths and raw multiline input.
 
 use super::tests::new_test_composer;
 use super::*;
+use image::ImageBuffer;
+use image::Rgba;
 use pretty_assertions::assert_eq;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tempfile::tempdir;
+
+#[cfg(unix)]
+#[test]
+fn pasting_fifo_path_keeps_it_editable() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = "tty.usbserial-110";
+    let status = std::process::Command::new("mkfifo")
+        .arg(dir.path().join(name))
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let (mut composer, _rx) = new_test_composer();
+    let prefix = shlex::try_quote(dir.path().to_str().unwrap()).unwrap();
+    composer.handle_paste(format!("{prefix}/{name}"));
+    composer.handle_key_event(KeyEvent::from(KeyCode::Backspace));
+    insta::assert_snapshot!(
+        composer.current_text().strip_prefix(prefix.as_ref()).unwrap(),
+        @"/tty.usbserial-11"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn paste_burst_keeps_newlines_after_short_unicode_and_flushed_lines() {
+    let (mut composer, _rx) = new_test_composer();
+    for ch in "有几个问题:".chars() {
+        composer.handle_key_event(KeyCode::Char(ch).into());
+    }
+    assert_eq!(composer.current_text(), "有几个问题:");
+    for line in ["- first", "- second"] {
+        let (result, _) = composer.handle_key_event(KeyCode::Enter.into());
+        assert_eq!(result, InputResult::None);
+        assert_eq!(
+            composer.handle_key_event(KeyCode::Tab.into()).0,
+            InputResult::None
+        );
+        for ch in line.chars() {
+            composer.handle_key_event(KeyCode::Char(ch).into());
+        }
+        tokio::time::advance(PasteBurst::recommended_active_flush_delay()).await;
+        assert!(composer.flush_paste_burst_if_due());
+    }
+    insta::assert_snapshot!(composer.current_text(), @"有几个问题:
+\t- first
+\t- second");
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let expected = InputResult::Submitted {
+        text: composer.current_text(),
+        text_elements: Vec::new(),
+    };
+    let (result, _) = composer.handle_key_event(KeyCode::Enter.into());
+    assert_eq!(result, expected);
+}
 
 #[test]
 fn paste_burst_tabs_preserve_multiline_draft() {
@@ -144,4 +201,67 @@ fn paste_burst_modified_queue_binding_still_dispatches() {
             pending_pastes: Vec::new(),
         }
     );
+}
+
+#[test]
+fn pasting_filepath_attaches_image() {
+    let tmp = tempdir().expect("create TempDir");
+    let tmp_path: PathBuf = tmp.path().join("codex_tui_test_paste_image.png");
+    let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(3, 2, |_x, _y| Rgba([1, 2, 3, 255]));
+    img.save(&tmp_path).expect("failed to write temp png");
+
+    let (mut composer, _rx) = new_test_composer();
+
+    let needs_redraw = composer.handle_paste(tmp_path.to_string_lossy().to_string());
+    assert!(needs_redraw);
+    assert!(composer.draft.textarea.text().starts_with("[Image #1] "));
+
+    let imgs = composer.take_recent_submission_images();
+    let [attachment] = imgs.as_slice() else {
+        panic!("expected one image attachment");
+    };
+    let expected = std::fs::read(&tmp_path).unwrap();
+    std::fs::remove_file(&tmp_path).unwrap();
+    assert_eq!(std::fs::read(attachment).unwrap(), expected);
+    std::fs::remove_file(attachment).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn oversized_pasted_image_reports_error_without_copying() {
+    let tmp = tempdir().unwrap();
+    let path = tmp.path().join("oversized.png");
+    ImageBuffer::from_pixel(1, 1, Rgba([0u8, 0, 0, 255]))
+        .save(&path)
+        .unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(crate::clipboard_paste::MAX_PASTED_IMAGE_BYTES + 1)
+        .unwrap();
+    let (mut composer, mut rx) = new_test_composer();
+    composer.set_text_content("draft".to_string(), Vec::new(), Vec::new());
+    let before = composer.draft_snapshot();
+    let now = Instant::now();
+    composer.draft.paste_burst.on_plain_char_no_hold(now);
+    composer
+        .draft
+        .paste_burst
+        .begin_with_retro_grabbed(path.to_string_lossy().into_owned(), now);
+    let flushed_at = now + PasteBurst::recommended_active_flush_delay();
+    assert!(composer.handle_paste_burst_flush(flushed_at));
+    assert_eq!(composer.draft_snapshot(), before);
+    assert!(!composer.handle_paste_enter(flushed_at));
+    let AppEvent::InsertHistoryCell(cell) = rx.try_recv().unwrap() else {
+        panic!("expected an image paste error");
+    };
+    let message = cell
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("oversized_pasted_image_error", message);
 }

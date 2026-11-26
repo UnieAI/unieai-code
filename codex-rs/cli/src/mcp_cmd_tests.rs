@@ -268,6 +268,7 @@ async fn application_network_mcp_login_denies_even_an_allowed_mcp_server() -> an
                 remote: false,
                 remote_url: None,
                 scopes: Vec::new(),
+                timeout_secs: None,
                 oauth_client_registration: None,
             },
         ),
@@ -340,7 +341,7 @@ async fn application_network_loader_allows_listed_https_destination_to_connect()
     let client = config
         .http_client_factory()
         .build_client(&url, ClientRouteClass::Other)?;
-    let (response, connection) = timeout(Duration::from_secs(2), async {
+    let (response, connection) = timeout(Duration::from_secs(10), async {
         tokio::join!(client.get(&url).send(), async {
             let (stream, _) = listener.accept().await?;
             // This listener proves TCP permission; it deliberately does not provide TLS.

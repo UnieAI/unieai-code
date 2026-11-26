@@ -48,7 +48,8 @@ import {
 } from "../src/unieai-rabi/config.mjs";
 import { createRabiEngine, createRabiHost } from "../src/unieai-rabi/engine.mjs";
 import { loadCredentials } from "../src/config.mjs";
-import { acpMcpServers, sessionMcpServers, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
+import { acpMcpServers, attachOAuthTokens, sessionMcpServers, storedOAuthAccessToken, studioMcpServer } from "../src/unieai-rabi/unieai-mcp-servers.mjs";
+import { codexTokenSource, createMcpAuthProxy } from "../src/unieai-rabi/unieai-mcp-auth-proxy.mjs";
 import { agentFailureReason } from "../src/unieai-rabi/acp-client.mjs";
 import { createOneShotEngine, createOneShotModel } from "../src/unieai-rabi/unieai-oneshot.mjs";
 import { claimServer } from "../src/unieai-rabi/unieai-server-lock.mjs";
@@ -71,7 +72,7 @@ const oneShotModel = async (request) => {
   try {
     return await oneShotCall(request);
   } finally {
-    log(`[uac] one-shot ${request.model} answered in ${Date.now() - started} ms`);
+    log(`[rabi] one-shot ${request.model} answered in ${Date.now() - started} ms`);
   }
 };
 
@@ -99,11 +100,11 @@ const appSocket = process.env.UNIEAI_APP_SERVER_SOCKET || join(codexHome, "uac",
 // new release's server can take both while this one serves its clients.
 mkdirSync(dirname(appSocket), { recursive: true });
 const claimed = await claimServer(appSocket).catch((error) => {
-  log(`uac: ${error.message}`);
+  log(`rabi: ${error.message}`);
   process.exit(1);
 });
 if (!claimed.release) {
-  log(`uac: another server is already serving ${appSocket}; this one is not needed`);
+  log(`rabi: another server is already serving ${appSocket}; this one is not needed`);
   process.exit(0);
 }
 process.once("exit", claimed.release);
@@ -139,7 +140,35 @@ function removeStaleControlSockets(dir) {
 }
 // Fail at startup, where the TUI reports it, rather than on the first turn.
 const rabi = prepareRabi({ sandboxMode, controlSocket: controlSocketFor("standard") });
-log(`uac: rabi = ${rabi.command} ${rabi.args.join(" ")} (home ${rabi.env.RABI_HOME}, model ${rabi.defaultModel})`);
+log(`rabi: command = ${rabi.command} ${rabi.args.join(" ")} (home ${rabi.env.RABI_HOME}, model ${rabi.defaultModel})`);
+
+/**
+ * One auth proxy for this server process, made on first use. It refreshes
+ * through the latest thread's probe; every probe reaches the same Rust side.
+ */
+let authProxy = null;
+let refreshProbe = null;
+function mcpAuthProxy(probe) {
+  refreshProbe = probe;
+  authProxy ??= createMcpAuthProxy({
+    log,
+    getToken: codexTokenSource({
+      read: (name, url, marginMs) => storedOAuthAccessToken({ home: codexHome, name, url, marginMs }),
+      refresh: (name) => refreshProbe?.(name),
+    }),
+  });
+  return authProxy;
+}
+
+/**
+ * Most of rabi's ~2 s boot is compiling its modules. Node keeps the compiled
+ * code on disk when NODE_COMPILE_CACHE names a directory (ignored by a Node
+ * too old to know it), so every later start skips that work (measured ~0.6 s).
+ */
+function withCompileCache(env) {
+  if (env.NODE_COMPILE_CACHE || env.UNIEAI_RABI_COMPILE_CACHE === "off") return env;
+  return { ...env, NODE_COMPILE_CACHE: join(codexHome, "uac", "node-compile-cache") };
+}
 
 const hosts = new Map(); // mode -> rabi host
 
@@ -154,13 +183,13 @@ function hostFor(mode = "standard") {
   const stderr = [];
   const tag = mode === "standard" ? "[rabi]" : `[rabi:${mode}]`;
   const host = createRabiHost({
-    onLog: (line) => log("[uac]", line),
+    onLog: (line) => log("[rabi]", line),
     connect: async () => {
       try {
         return await spawnAcpAgent({
           command: setup.command,
           args: setup.args,
-          env: setup.env,
+          env: withCompileCache(setup.env ?? process.env),
           cwd: process.cwd(),
           onLog: (line) => {
             stderr.push(line);
@@ -178,7 +207,7 @@ function hostFor(mode = "standard") {
             : "";
         throw new Error(
           `rabi-harness (rabi, ${mode} mode) failed to start${reason ? `: ${reason}` : `: ${error.message}`}.${macKilled} ` +
-            "Reinstall UnieAI Code if it persists; details are in the uac server log.",
+            "Reinstall UnieAI Code if it persists; details are in the Rabi Harness server log.",
         );
       }
     },
@@ -187,8 +216,8 @@ function hostFor(mode = "standard") {
   hosts.set(mode, host);
   // Start rabi now so a broken install shows up in the log before the first turn.
   host.agent().then(
-    (acp) => log(`uac: rabi ${mode} ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
-    (error) => log(`uac: rabi ${mode} failed to start: ${error.message}`),
+    (acp) => log(`rabi: ${mode} mode ready (${acp.agentInfo?.name ?? "acp agent"} ${acp.agentInfo?.version ?? ""})`),
+    (error) => log(`rabi: ${mode} mode failed to start: ${error.message}`),
   );
   return host;
 }
@@ -219,7 +248,7 @@ async function declareLocalProvider(id) {
   if (models.length === 0) throw new Error(`${LOCAL_PROVIDERS[id].displayName} at ${baseUrl} serves no models; pull one first`);
   localProviders.set(id, { id, baseUrl, models });
   writeAccount();
-  log(`[uac] local provider ${id} at ${baseUrl}: ${models.join(", ")}`);
+  log(`[rabi] local provider ${id} at ${baseUrl}: ${models.join(", ")}`);
   return models;
 }
 
@@ -247,7 +276,7 @@ async function declareConfiguredProvider(id, info) {
     models: models.map((model) => ({ id: model, contextWindow: null, input: null })),
   });
   writeAccount();
-  log(`[uac] config provider ${id} at ${baseUrl}: ${models.join(", ")}`);
+  log(`[rabi] config provider ${id} at ${baseUrl}: ${models.join(", ")}`);
   return models;
 }
 hostFor(threadMode());
@@ -269,7 +298,7 @@ async function connectControlSocket(path, { attempts = 40, intervalMs = 250 } = 
 }
 
 await launchAppServer({
-  name: "unieai-agent-core (uac)",
+  name: "unieai-agent-core",
   version,
   // The protocol spells it `readOnly`; what the client is told must match rabi.
   sandboxMode: sandboxMode === "read-only" ? "readOnly" : sandboxMode,
@@ -292,19 +321,30 @@ await launchAppServer({
     try {
       const account = writeAccount();
       if (account.models.includes(model)) return model;
-      log(`[uac] this account does not offer "${model}"; using ${account.defaultModel}`);
+      log(`[rabi] this account does not offer "${model}"; using ${account.defaultModel}`);
       return account.defaultModel;
     } catch {
       return model;
     }
   },
-  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, ...callbacks }) => {
+  buildEngine: ({ cwd, model, modelProvider, sandboxMode: _mode, oneShot, variant, readConfig, probeMcpServer, ...callbacks }) => {
     // The user's `[mcp_servers]` and Studio's (knowledge bases, SQL, skills),
     // read when each session opens so a config edit or new sign-in counts.
     const mcpServers = async () => {
       const { config } = (await readConfig?.()) ?? {};
-      const { servers, skipped } = acpMcpServers(config?.mcp_servers);
-      for (const reason of skipped) log("[uac] MCP server skipped:", reason);
+      const { servers: converted, skipped } = acpMcpServers(config?.mcp_servers);
+      for (const reason of skipped) log("[rabi] MCP server skipped:", reason);
+      // OAuth servers go through the auth proxy, which puts codex's current
+      // token on every request and has the Rust side refresh it when due.
+      const { servers, notes } = probeMcpServer
+        ? await attachOAuthTokens(converted, {
+            configured: config?.mcp_servers,
+            probe: probeMcpServer,
+            readToken: (name, url) => storedOAuthAccessToken({ home: codexHome, name, url }),
+            route: (server) => mcpAuthProxy(probeMcpServer).route(server),
+          })
+        : { servers: converted, notes: [] };
+      for (const note of notes) log("[rabi] MCP server", note);
       return sessionMcpServers({ configured: servers, studio: studioMcpServer(loadCredentials()) });
     };
     // The TUI re-synced unieai.json with Studio when it launched; carry that
@@ -313,7 +353,7 @@ await launchAppServer({
     try {
       account = writeAccount();
     } catch (error) {
-      log("[uac] could not refresh the account for rabi:", error.message);
+      log("[rabi] could not refresh the account for rabi:", error.message);
     }
     const selfHosted = account.selfHosted ?? loadSelfHostedProviders();
     // A thread whose provider is a self-hosted server itself (config.toml
@@ -344,7 +384,7 @@ await launchAppServer({
           if (!info) throw new Error(`model provider ${modelProvider} is not defined in config.toml`);
           return declareConfiguredProvider(modelProvider, info);
         },
-        onLog: (line) => log("[uac]", line),
+        onLog: (line) => log("[rabi]", line),
         mcpServers,
         ...callbacks,
       });
@@ -358,7 +398,7 @@ await launchAppServer({
         model,
         provider: modelProvider,
         prepare: () => declareLocalProvider(modelProvider),
-        onLog: (line) => log("[uac]", line),
+        onLog: (line) => log("[rabi]", line),
         mcpServers,
         ...callbacks,
       });
@@ -371,7 +411,7 @@ await launchAppServer({
       model: routed.model,
       provider: routed.provider,
       routeModel: route,
-      onLog: (line) => log("[uac]", line),
+      onLog: (line) => log("[rabi]", line),
       mcpServers,
       ...callbacks,
     });

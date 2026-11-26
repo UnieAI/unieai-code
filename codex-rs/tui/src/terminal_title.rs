@@ -38,7 +38,7 @@ const MAX_TERMINAL_TITLE_CHARS: usize = 240;
 #[derive(Clone, Copy)]
 pub(crate) enum TitleEncoding {
     Unicode,
-    Screen,
+    Ascii,
 }
 
 /// Outcome of a [`set_terminal_title`] call.
@@ -69,13 +69,7 @@ pub(crate) fn set_terminal_title(title: &str) -> io::Result<SetTerminalTitleResu
         return Ok(SetTerminalTitleResult::Applied);
     }
 
-    // Screen remains an output hop when another multiplexer runs inside it.
-    // TERM=screen alone is not sufficient: tmux also commonly uses that TERM.
-    let encoding = if std::env::var_os("STY").is_some() {
-        TitleEncoding::Screen
-    } else {
-        TitleEncoding::Unicode
-    };
+    let encoding = crate::terminal_capabilities::title_encoding();
     let title = sanitize_terminal_title(title, encoding);
     if title.is_empty() {
         return Ok(SetTerminalTitleResult::NoVisibleContent);
@@ -139,7 +133,11 @@ pub(crate) fn sanitize_terminal_title(title: &str, encoding: TitleEncoding) -> S
             continue;
         }
 
-        if is_disallowed_terminal_title_char(ch) {
+        let is_cloud_emoji_selector = matches!(encoding, TitleEncoding::Unicode)
+            && ch == '\u{FE0F}'
+            && !pending_space
+            && sanitized.ends_with('☁');
+        if is_disallowed_terminal_title_char(ch) && !is_cloud_emoji_selector {
             continue;
         }
 
@@ -147,12 +145,12 @@ pub(crate) fn sanitize_terminal_title(title: &str, encoding: TitleEncoding) -> S
             // Preserve a visible activity animation without allowing Screen to
             // turn, for example, U+2807 into BEL. Other Unicode title content
             // needs the same protection, including names made entirely of it.
-            (TitleEncoding::Screen, '⠋' | '⠼' | '⠇') => '|',
-            (TitleEncoding::Screen, '⠙' | '⠴' | '⠏') => '/',
-            (TitleEncoding::Screen, '⠹' | '⠦') => '-',
-            (TitleEncoding::Screen, '⠸' | '⠧') => '\\',
-            (TitleEncoding::Screen, '●') => '*',
-            (TitleEncoding::Screen, ch) if !ch.is_ascii() => '?',
+            (TitleEncoding::Ascii, '⠋' | '⠼' | '⠇') => '|',
+            (TitleEncoding::Ascii, '⠙' | '⠴' | '⠏') => '/',
+            (TitleEncoding::Ascii, '⠹' | '⠦') => '-',
+            (TitleEncoding::Ascii, '⠸' | '⠧') => '\\',
+            (TitleEncoding::Ascii, '●') => '*',
+            (TitleEncoding::Ascii, ch) if !ch.is_ascii() => '?',
             (_, ch) => ch,
         };
 
@@ -260,24 +258,24 @@ mod tests {
 
     #[test]
     fn screen_title_stays_ascii_across_activity_and_user_named_fields() {
-        let title = " ● ⠇ | ě[31m thread \u{202e}\x07| 日本語 ćafé  ";
-        let screen = sanitize_terminal_title(title, TitleEncoding::Screen);
+        let title = " ☁️ ● ⠇ | ě[31m thread \u{202e}\x07| 日本語 ćafé  ";
+        let screen = sanitize_terminal_title(title, TitleEncoding::Ascii);
         let unicode = sanitize_terminal_title(title, TitleEncoding::Unicode);
 
         assert!(screen.is_ascii());
         insta::assert_snapshot!(
             format!("Screen: {screen}\nDirect: {unicode}"),
             @r#"
-        Screen: * | | ?[31m thread | ??? ?af?
-        Direct: ● ⠇ | ě[31m thread | 日本語 ćafé
+        Screen: ? * | | ?[31m thread | ??? ?af?
+        Direct: ☁️ ● ⠇ | ě[31m thread | 日本語 ćafé
         "#
         );
         assert_eq!(
-            sanitize_terminal_title("日本語", TitleEncoding::Screen),
+            sanitize_terminal_title("日本語", TitleEncoding::Ascii),
             "???"
         );
         assert_eq!(
-            sanitize_terminal_title("\x07\x1b\u{202E}\u{FEFF}", TitleEncoding::Screen),
+            sanitize_terminal_title("\x07\x1b\u{202E}\u{FEFF}", TitleEncoding::Ascii),
             ""
         );
     }

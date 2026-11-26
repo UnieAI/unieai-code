@@ -1,10 +1,17 @@
 //! Terminal detection utilities.
 //!
 //! This module feeds terminal metadata into OpenTelemetry user-agent logging and into
-//! terminal-specific configuration choices in the TUI. Detection only reads the
-//! environment; it must not execute helpers selected by an untrusted PATH.
+//! terminal-specific configuration choices in the TUI. Detection reads the
+//! environment and stdout capabilities without executing helpers from PATH.
 
 use std::sync::OnceLock;
+
+mod color;
+pub use color::StdoutColorLevel;
+pub use color::stdout_color_level;
+pub use color::terminal_color_level;
+
+const GHOSTTY_TERM: &str = "xterm-ghostty";
 
 /// Structured terminal identification data.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,6 +26,18 @@ pub struct TerminalInfo {
     pub term: Option<String>,
     /// Multiplexer metadata when a terminal multiplexer is active.
     pub multiplexer: Option<Multiplexer>,
+    /// Backend metadata observed independently of the terminal application identity.
+    pub backend: Option<TerminalBackend>,
+}
+
+/// Known terminal rendering backends derived from environment metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalBackend {
+    /// VTE, used by GNOME Terminal and other terminal applications.
+    Vte {
+        /// Encoded as major * 10_000 + minor * 100 + micro; unknown if malformed.
+        version: Option<u32>,
+    },
 }
 
 /// Known terminal name categories derived from environment variables.
@@ -28,6 +47,10 @@ pub enum TerminalName {
     AppleTerminal,
     /// Ghostty terminal emulator.
     Ghostty,
+    /// Rex terminal emulator.
+    Rex,
+    /// Orca integrated terminal.
+    Orca,
     /// iTerm2 terminal emulator.
     Iterm2,
     /// Warp terminal emulator.
@@ -86,6 +109,7 @@ impl TerminalInfo {
             version,
             term,
             multiplexer,
+            backend: None,
         }
     }
 
@@ -124,7 +148,8 @@ impl TerminalInfo {
     fn from_term(term: String, multiplexer: Option<Multiplexer>) -> Self {
         let name = match term.as_str() {
             "dumb" => TerminalName::Dumb,
-            "xterm-ghostty" => TerminalName::Ghostty,
+            GHOSTTY_TERM => TerminalName::Ghostty,
+            "xterm-rex" => TerminalName::Rex,
             "wezterm" | "wezterm-mux" => TerminalName::WezTerm,
             _ => TerminalName::Unknown,
         };
@@ -163,6 +188,8 @@ impl TerminalInfo {
                     format_terminal_version("Apple_Terminal", &self.version)
                 }
                 TerminalName::Ghostty => format_terminal_version("Ghostty", &self.version),
+                TerminalName::Rex => format_terminal_version("rex", &self.version),
+                TerminalName::Orca => format_terminal_version("Orca", &self.version),
                 TerminalName::Iterm2 => format_terminal_version("iTerm.app", &self.version),
                 TerminalName::WarpTerminal => {
                     format_terminal_version("WarpTerminal", &self.version)
@@ -186,6 +213,15 @@ impl TerminalInfo {
     /// Returns whether the active terminal multiplexer is Zellij.
     pub fn is_zellij(&self) -> bool {
         matches!(self.multiplexer, Some(Multiplexer::Zellij { .. }))
+    }
+
+    /// Whether this terminal is VS Code running in a dev container.
+    pub fn is_vscode_dev_container(&self) -> bool {
+        self.is_vscode_dev_container_in(&ProcessEnvironment)
+    }
+
+    fn is_vscode_dev_container_in(&self, env: &dyn Environment) -> bool {
+        self.name == TerminalName::VsCode && env.var("REMOTE_CONTAINERS").as_deref() == Some("true")
     }
 }
 
@@ -252,6 +288,24 @@ pub fn terminal_info() -> TerminalInfo {
 ///   `TERM_SESSION_ID` is not terminal-specific and cannot identify Apple Terminal.
 /// - Finally, `TERM` is used as the capability fallback.
 fn detect_terminal_info_from_env(env: &dyn Environment) -> TerminalInfo {
+    let mut terminal = detect_terminal_identity_from_env(env);
+    // Identity probes can return before VTE is considered. Keep its backend
+    // metadata even when GNOME or another TERM_PROGRAM identifies the application.
+    let vte_version = env.var("VTE_VERSION");
+    if vte_version.is_some() || terminal.name == TerminalName::Vte {
+        terminal.backend = Some(TerminalBackend::Vte {
+            // Choose the raw value before parsing so malformed values retain
+            // precedence over the terminal-version fallback.
+            version: vte_version
+                .as_deref()
+                .or(terminal.version.as_deref())
+                .and_then(|version| version.parse().ok()),
+        });
+    }
+    terminal
+}
+
+fn detect_terminal_identity_from_env(env: &dyn Environment) -> TerminalInfo {
     let multiplexer = detect_multiplexer(env);
 
     if let Some(term_program) = env.var_non_empty("TERM_PROGRAM")
@@ -385,6 +439,8 @@ fn terminal_name_from_term_program(value: &str) -> Option<TerminalName> {
     match normalized.as_str() {
         "appleterminal" => Some(TerminalName::AppleTerminal),
         "ghostty" => Some(TerminalName::Ghostty),
+        "rex" => Some(TerminalName::Rex),
+        "orca" => Some(TerminalName::Orca),
         "iterm" | "iterm2" | "itermapp" => Some(TerminalName::Iterm2),
         "warp" | "warpterminal" => Some(TerminalName::WarpTerminal),
         "vscode" => Some(TerminalName::VsCode),

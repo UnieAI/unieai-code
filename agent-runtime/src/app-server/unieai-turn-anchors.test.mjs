@@ -13,13 +13,20 @@ import { createHandlers } from "./server.mjs";
 import { createThreadStore } from "./unieai-thread-store.mjs";
 import { alignTurns, keepTurnsBefore } from "./unieai-turn-anchors.mjs";
 import { userMessageItem } from "./items.mjs";
-import { forkCut, historyFromEvents, rewindRequest } from "../unieai-rabi/unieai-control.mjs";
-import { historyTurn } from "../unieai-rabi/engine.mjs";
+import { forkCut, historyAnswer, historyFromEvents, rewindRequest } from "../unieai-rabi/unieai-control.mjs";
+import { historyRangeTurn, historyTurn } from "../unieai-rabi/engine.mjs";
+import { summaryItems } from "./unieai-history-pages.mjs";
 
-/** A rabi session log per conversation; `/loop` handled as unieai-schedule does. */
-function rabiWorld() {
+/**
+ * A rabi session log per conversation; `/loop` handled as unieai-schedule does.
+ * `ranged`: the engine also reads ranges of turns (`historyRange`, as uac's
+ * does through unieai-control), so the server pages without full reads.
+ */
+function rabiWorld({ ranged = false } = {}) {
+  const options = { ranged };
   const sessions = new Map(); // id -> events
   const calls = [];
+  const reads = []; // historyRange's ranges, in order
   let nextSession = 1;
   let hooks = null;
   let engineRef = null;
@@ -40,6 +47,7 @@ function rabiWorld() {
       append("turn/start", { turn });
       append("user/message", { content: [{ type: "text", text }], source });
       append("tool/call", { callId: `c${turn}`, name: "edit", arguments: "{}" });
+      append("tool/result", { message: { role: "tool", toolCallId: `c${turn}`, content: [{ type: "text", text: `edited ${turn}` }], isError: false } });
       append("assistant/message", { message: { content: [{ type: "text", text: `done: ${text}` }] } });
       append("turn/end", { turn, reason: { kind: "completed" } });
       return turn;
@@ -62,6 +70,16 @@ function rabiWorld() {
         if (!id) return [];
         return historyFromEvents(events(), { everyTurn: true }).map((turn) => ({ ...historyTurn(turn), anchor: turn.rabiTurn, opener: turn.opener }));
       },
+      ...(options.ranged
+        ? {
+            async historyRange({ from = 0, to = null } = {}) {
+              reads.push([from, to]);
+              if (!id) return { version: "empty", turns: [] };
+              const turns = historyFromEvents(events(), { everyTurn: true });
+              return { version: `v${events().length}`, turns: historyAnswer(turns, { from, to }).turns.map(historyRangeTurn) };
+            },
+          }
+        : {}),
       async revertPreview({ keepTurns }) {
         calls.push(["preview", keepTurns]);
         const request = rewindRequest({ events: events() }, keepTurns, { everyTurn: true });
@@ -94,7 +112,9 @@ function rabiWorld() {
   };
   return {
     factory,
+    options,
     calls,
+    reads,
     sessions,
     // rabi runs a scheduled turn on its own: the bridge's notes, in order.
     scheduledTick(text) {
@@ -114,9 +134,9 @@ function rabiWorld() {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-function setup() {
+function setup(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "uac-anchors-"));
-  const world = rabiWorld();
+  const world = rabiWorld(options);
   const store = createThreadStore(join(dir, "threads.json"));
   const make = () => createHandlers({ createEngineFor: world.factory, codexHome: dir, threadStore: store });
   const emitted = [];
@@ -130,6 +150,12 @@ async function turn(h, ctx, threadId, text) {
   return started.id;
 }
 
+/** A scenario, run against an engine that reads whole histories and one that reads ranges. */
+function scenario(name, run) {
+  test(name, () => run({}));
+  test(`${name} (ranged reads)`, () => run({ ranged: true }));
+}
+
 const lastStartedTurn = (emitted) => emitted.filter(([method]) => method === "turn/started").at(-1)[1].turn.id;
 
 /** What the TUI checks before a rewind, and the prompts it counts. */
@@ -139,8 +165,8 @@ async function readAsTui(h, ctx, threadId) {
   return { ids: thread.turns.map((t) => t.id), last: thread.turns.at(-1)?.id ?? null, prompts };
 }
 
-test("/loop list and stop leave rewinding to the turns around them working", async () => {
-  const { make, ctx, emitted, world } = setup();
+scenario("/loop list and stop leave rewinding to the turns around them working", async (options) => {
+  const { make, ctx, emitted, world } = setup(options);
   const h = make();
   const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
   const t1 = await turn(h, ctx, thread.id, "edit one");
@@ -177,8 +203,8 @@ test("/loop list and stop leave rewinding to the turns around them working", asy
   assert.deepEqual((await readAsTui(h, ctx, thread.id)).ids, [again]);
 });
 
-test("a scheduled turn and goal rounds are client turns of their own, for rewinding past and to them", async () => {
-  const { make, ctx, emitted, world } = setup();
+scenario("a scheduled turn and goal rounds are client turns of their own, for rewinding past and to them", async (options) => {
+  const { make, ctx, emitted, world } = setup(options);
   const h = make();
   const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
   const t1 = await turn(h, ctx, thread.id, "edit one");
@@ -217,8 +243,8 @@ test("a scheduled turn and goal rounds are client turns of their own, for rewind
   assert.deepEqual((await readAsTui(h, ctx, thread.id)).ids, [t1]);
 });
 
-test("the bookkeeping survives a restart, and a fork keeps the turns it was asked to", async () => {
-  const { make, ctx, world } = setup();
+scenario("the bookkeeping survives a restart, and a fork keeps the turns it was asked to", async (options) => {
+  const { make, ctx, world } = setup(options);
   const first = make();
   const { thread } = await first["thread/start"]({ cwd: "/repo" }, ctx);
   const t1 = await turn(first, ctx, thread.id, "edit one");
@@ -237,8 +263,8 @@ test("the bookkeeping survives a restart, and a fork keeps the turns it was aske
   assert.deepEqual(world.calls.at(-1), ["revert", 1, false]);
 });
 
-test("a `!command` turn of its own has no rabi turn", async () => {
-  const { make, ctx, world } = setup();
+scenario("a `!command` turn of its own has no rabi turn", async (options) => {
+  const { make, ctx, world } = setup(options);
   const h = make();
   const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
   const t1 = await turn(h, ctx, thread.id, "edit one");
@@ -253,8 +279,8 @@ test("a `!command` turn of its own has no rabi turn", async () => {
   assert.deepEqual(world.calls.at(-1), ["revert", 1, false]);
 });
 
-test("/compact is a turn the client keeps as its latest, so it is in the history too", async () => {
-  const { make, ctx, emitted, world } = setup();
+scenario("/compact is a turn the client keeps as its latest, so it is in the history too", async (options) => {
+  const { make, ctx, emitted, world } = setup(options);
   const h = make();
   const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
   const t1 = await turn(h, ctx, thread.id, "edit one");
@@ -287,4 +313,96 @@ test("turns from before the bookkeeping map onto the user-prompted rabi turns", 
   // A user turn no client turn knows still shows, under an id of its own.
   const lost = alignTurns({ threadId: "t", turnIds: ["a"], turnMeta: { a: { anchor: 1 } }, history });
   assert.deepEqual(lost.map((e) => [e.id, e.from, e.to]), [["a", 0, 2], ["t:turn:a3", 2, 3], ["t:turn:a4", 3, 4]]);
+});
+
+test("pages of turns and items are the full history's, cut the way codex cuts them, reading only what they show", async () => {
+  const { make, ctx, world } = setup({ ranged: true });
+  const h = make();
+  const { thread } = await h["thread/start"]({ cwd: "/repo" }, ctx);
+  await turn(h, ctx, thread.id, "edit one");
+  await turn(h, ctx, thread.id, "/loop 1m check CI");
+  world.scheduledTick("[scheduled] check CI");
+  await settle();
+  world.goalRounds(3);
+  await settle();
+  await turn(h, ctx, thread.id, "/loop");
+  await h["thread/compact/start"]({ threadId: thread.id }, ctx);
+  await settle();
+  await turn(h, ctx, thread.id, "edit two");
+  await turn(h, ctx, thread.id, "edit three");
+
+  const { thread: full } = await h["thread/read"]({ threadId: thread.id, includeTurns: true }, ctx);
+  assert.equal(full.historyMode, "paginated");
+  assert.equal(full.turns.length, 8);
+  const tool = full.turns[0].items.find((item) => item.type !== "userMessage" && item.type !== "agentMessage");
+  assert.equal(tool.status, "completed", "a resumed tool call shows how it ended");
+
+  // The same turns as an engine that reads whole histories gives.
+  world.options.ranged = false;
+  const whole = make();
+  const { thread: legacy } = await whole["thread/read"]({ threadId: thread.id, includeTurns: true }, ctx);
+  assert.deepEqual(legacy.turns, full.turns);
+  world.options.ranged = true;
+
+  const resumed = await h["thread/resume"]({ threadId: thread.id, excludeTurns: true }, ctx);
+  assert.deepEqual(resumed.thread.turns, [], "the client pages it itself");
+  assert.equal(resumed.thread.historyMode, "paginated");
+
+  // Turns, newest first, two at a time, with every item.
+  const pages = [];
+  let cursor = null;
+  do {
+    const page = await h["thread/turns/list"]({ threadId: thread.id, limit: 2, cursor, itemsView: "full" }, ctx);
+    pages.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.deepEqual(pages.reverse().map(({ itemsView, ...turn }) => turn), full.turns.map(({ itemsView, ...turn }) => turn));
+
+  // Turning back: the backwards cursor starts at the page's first turn again.
+  const newest = await h["thread/turns/list"]({ threadId: thread.id, limit: 2 }, ctx);
+  assert.deepEqual(newest.data.map((t) => t.id), [full.turns[7].id, full.turns[6].id]);
+  const back = await h["thread/turns/list"]({ threadId: thread.id, limit: 5, sortDirection: "asc", cursor: newest.backwardsCursor }, ctx);
+  assert.deepEqual(back.data.map((t) => t.id), [full.turns[7].id]);
+  assert.equal(back.nextCursor, null);
+  const older = await h["thread/turns/list"]({ threadId: thread.id, limit: 3, cursor: newest.nextCursor }, ctx);
+  assert.deepEqual(older.data.map((t) => t.id), [5, 4, 3].map((k) => full.turns[k].id));
+
+  // Summaries without reading any turn's items.
+  world.reads.length = 0;
+  const summaries = await h["thread/turns/list"]({ threadId: thread.id, limit: 100, sortDirection: "asc" }, ctx);
+  assert.deepEqual(world.reads, [[0, 0]], "outlines only");
+  summaries.data.forEach((turn, k) => {
+    assert.equal(turn.itemsView, "summary");
+    assert.deepEqual(turn.items, summaryItems(full.turns[k].items), `turn ${k}`);
+    assert.equal(turn.status, full.turns[k].status);
+  });
+  const shells = await h["thread/turns/list"]({ threadId: thread.id, itemsView: "notLoaded" }, ctx);
+  assert.ok(shells.data.every((turn) => turn.items.length === 0 && turn.itemsView === "notLoaded"));
+
+  // The last turn with its items reads only that turn's.
+  world.reads.length = 0;
+  const last = await h["thread/turns/list"]({ threadId: thread.id, limit: 1, itemsView: "full" }, ctx);
+  assert.deepEqual(last.data[0].items, full.turns[7].items);
+  const rabiTurns = world.sessions.get([...world.sessions.keys()].at(-1));
+  const lastRabiTurn = historyFromEvents(rabiTurns, { everyTurn: true }).length;
+  assert.deepEqual(world.reads, [[0, 0], [lastRabiTurn - 1, lastRabiTurn]]);
+
+  // Items, newest first, three at a time: every item once, in order.
+  const everyItem = full.turns.flatMap((t) => t.items.map((item) => ({ turnId: t.id, item, startedAtMs: null, completedAtMs: null })));
+  const items = [];
+  cursor = null;
+  do {
+    const page = await h["thread/items/list"]({ threadId: thread.id, limit: 3, cursor, sortDirection: "desc" }, ctx);
+    assert.ok(page.data.length <= 3);
+    items.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.deepEqual(items.reverse(), everyItem);
+
+  // One turn's items after an anchor, oldest first.
+  const goalTurn = full.turns[3];
+  const after = await h["thread/items/list"]({ threadId: thread.id, turnId: goalTurn.id, cursor: { type: "item", itemId: goalTurn.items[0].id } }, ctx);
+  assert.deepEqual(after.data.map((entry) => entry.item), goalTurn.items.slice(1));
+  await assert.rejects(h["thread/items/list"]({ threadId: thread.id, cursor: { type: "item", itemId: goalTurn.items[0].id } }, ctx), /turnId is required/);
+  await assert.rejects(h["thread/turns/list"]({ threadId: thread.id, cursor: JSON.stringify({ turnId: "gone", includeAnchor: false }) }, ctx), /anchor turn is no longer present/);
 });

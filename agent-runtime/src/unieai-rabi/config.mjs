@@ -16,8 +16,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadCredentials, unieaiHome } from "../config.mjs";
 import { HOME_NAME, migrateLegacyHome } from "./rabi-legacy.mjs";
-import { buildPersona } from "./unieai-persona.mjs";
+import { DEFAULT_ATTRIBUTION, buildPersona } from "./unieai-persona.mjs";
 import { renderPatchParts, selectPlugins as selectCatalogPlugins } from "./uac-plugins/unieai-catalog.mjs";
+import { toolSearchConfig } from "./unieai-tool-search.mjs";
 
 export const RABI_PROVIDER_ID = "unieai";
 export const GATEWAY_KEY_ENV = "UNIEAI_GATEWAY_API_KEY";
@@ -30,6 +31,9 @@ export const CONTROL_PLUGIN_URL = pathToFileURL(join(here, "unieai-control.mjs")
 
 /** `publish_artifact` (see unieai-artifacts.mjs), a uac host plugin loaded by URL. */
 export const ARTIFACTS_PLUGIN_URL = pathToFileURL(join(here, "unieai-artifacts.mjs")).href;
+
+/** `tool_search` and MCP schema deferral (see unieai-tool-search.mjs), loaded by URL. */
+export const TOOL_SEARCH_PLUGIN_URL = pathToFileURL(join(here, "unieai-tool-search.mjs")).href;
 
 /** Skills that ship with UnieAI Code (the `artifact` skill); user and project skills outrank them. */
 export const BUNDLED_SKILLS_DIR = join(here, "skills");
@@ -90,6 +94,37 @@ export function configuredModel(home = unieaiHome()) {
   } catch {
     return null;
   }
+}
+
+/**
+ * `[attribution]` from `$CODEX_HOME/config.toml`: `commit` (the trailer) and
+ * `pr` (the description footer), each a string; `""` turns it off. Keys left
+ * out keep the default.
+ */
+export function configuredAttribution(home = unieaiHome()) {
+  const out = { ...DEFAULT_ATTRIBUTION };
+  let text;
+  try {
+    text = readFileSync(join(home, "config.toml"), "utf8");
+  } catch {
+    return out;
+  }
+  const table = text.match(/^\s*\[attribution\]\s*$([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m)?.[1];
+  if (!table) return out;
+  for (const key of ["commit", "pr"]) {
+    const basic = table.match(new RegExp(`^\\s*${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")`, "m"))?.[1];
+    const literal = table.match(new RegExp(`^\\s*${key}\\s*=\\s*'([^']*)'`, "m"))?.[1];
+    if (basic !== undefined) {
+      try {
+        out[key] = JSON.parse(basic);
+      } catch {
+        // Not a JSON-compatible TOML string: keep the default.
+      }
+    } else if (literal !== undefined) {
+      out[key] = literal;
+    }
+  }
+  return out;
 }
 
 /** Context window assumed for gateway models that declare none. */
@@ -309,7 +344,7 @@ export function selfHostedProviderSpec(server) {
 export function renderSettings({ baseUrl, models, defaultModel, defaultProvider = RABI_PROVIDER_ID, shellTimeoutMs = 300_000, localProviders = [], providers = [] }) {
   const q = yamlQuote;
   const lines = [
-    "# Written by unieai-agent-core (uac) on every start; edits are overwritten.",
+    "# Written by unieai-agent-core on every start; edits are overwritten.",
     "llm-pi-ai:",
     "  providers:",
   ];
@@ -455,7 +490,6 @@ const MINIMAL_DISABLED = [
   "tool-fs-search",
   "tool-skill",
   "tool-subagent-control",
-  "tool-subagent-list-agents",
   "tool-subagent",
   "tool-subagent-fork",
   "tool-workflow",
@@ -464,6 +498,8 @@ const MINIMAL_DISABLED = [
   "tool-ralph",
   "tool-web",
   "tool-plugin-manager",
+  // rabi 0.2.2's team task board (off until a session turns Team mode on).
+  "tool-agent-team",
   "plan-mode",
 ];
 
@@ -477,12 +513,13 @@ export function modePatch(mode) {
   const disable = (id) => [`- id: ${id}`, "  disabled: true"];
   switch (mode) {
     case "ptc":
-      // The presentation is the `tools` row's own `mode` in a flat
-      // composition (the preset's `tool-presentation` row only works under a
-      // preset's scope). run_code is PTC mode's composition surface; a second
-      // model-authored orchestration tool beside it is what the preset turns off.
+      // rabi 0.2.2 made the presentation a deployment executor (the `tools`
+      // row's `mode` key is gone): swap the native executor for the PTC one,
+      // both rows of the base composition. run_code is PTC mode's composition
+      // surface; a second model-authored orchestration tool beside it is what
+      // the preset turns off.
       return {
-        rows: ["- id: tools", "  config:", "    mode: ptc", ...disable("tool-workflow")],
+        rows: [...disable("tool-executor-native"), "- id: tool-executor-ptc", "  disabled: false", ...disable("tool-workflow")],
         inserts: [],
       };
     case "cordis":
@@ -563,6 +600,9 @@ export function renderPatch({
   // publish_artifact and the bundled `artifact` skill (not in minimal mode).
   artifacts = false,
   artifactsUrl = ARTIFACTS_PLUGIN_URL,
+  // unieai-tool-search's config, or null to leave it out (UNIEAI_TOOL_SEARCH=off).
+  toolSearch = toolSearchConfig(),
+  toolSearchUrl = TOOL_SEARCH_PLUGIN_URL,
 }) {
   const q = yamlQuote;
   plugins = pluginsForMode(plugins, mode);
@@ -581,6 +621,7 @@ export function renderPatch({
       execTools,
       shellOnly: mode === "minimal",
       rigor: process.env.UNIEAI_PERSONA_RIGOR === "1",
+      attribution: configuredAttribution(home),
     });
     // No working directory here: rabi 0.2 states it in the runtime context
     // (user side, so the system prompt stays cacheable) and no longer
@@ -597,19 +638,31 @@ export function renderPatch({
   lines.push(
     // Leave a quarter of the window for reasoning and output, and give the
     // summary room: thinking models truncate an 8k summary.
+    // rabi compacts at min(W x thresholdRatio, W - maxTokens - headroomTokens),
+    // and headroomTokens defaults to 65536 (sized for 1M windows): on a 131k
+    // window that is 65.5k, not 98k, and a window of 64k or less never
+    // compacted automatically. Stored uac sessions (DeepSeek-V4.1-Flash, 131k)
+    // compacted at a median 65.2k prompt tokens, left 47.7k, ~20 steps apart.
+    // A small headroom lets the ratio decide for every window from 32k up.
     "- id: compaction-basic",
     "  config:",
     "    thresholdRatio: 0.75",
+    "    headroomTokens: 8192",
     "    retainRatio: 0.15",
     "    maxTokens: 16384",
     "    compactionRetries: 2",
     "    maxOverflowRetries: 2",
-    // Codex keeps ~10k tokens of a tool result; rabi inlined 50KB. The spill
-    // preview keeps head and tail and the full text stays readable.
-    // unieai-exec already cuts to ~44KB itself; don't cut its output twice.
+    // Codex keeps ~10k tokens of a tool result. The spill preview keeps head
+    // and tail and the full text stays readable. rabi's key is
+    // maxInlineTokens (estimated at ~4 bytes a token); the maxInlineBytes
+    // this row used to set is not one, so the row turned spill-policy off
+    // (the base composition's own cap is 12500 tokens). With exec tools the
+    // cap stays above a full 64 KiB read and unieai-exec's own ~44KB cut, so
+    // it only catches outliers (an MCP result, a huge grep); without them,
+    // ~24KB as before.
     "- id: spill-policy",
     "  config:",
-    `    maxInlineBytes: ${execTools ? 50000 : 24000}`,
+    `    maxInlineTokens: ${execTools ? 16384 : 6000}`,
     // Above rabi's own 50 KiB default: a lower cap turned single reads into
     // windowed ones (41 reads where 57 KiB would have been one).
     "- id: tool-fs",
@@ -622,6 +675,15 @@ export function renderPatch({
     "- id: jobs",
     "  config:",
     "    maxConcurrentJobsPerOwner: 16",
+    // One level of delegation: the persona tells the main agent to delegate
+    // independent pieces, and a child that read the same rule must not fan
+    // out again. rabi's own default is also 1; pinning it keeps that true if
+    // upstream changes it. The row's whole config is restated (8 is rabi's
+    // default for concurrent children).
+    "- id: subagent",
+    "  config:",
+    "    maxDepth: 1",
+    "    maxActiveSubagents: 8",
   );
   // Full-text search over earlier sessions of this workspace. rabi-base mounts
   // the sqlite query index with `openAt: never` (the web sidebar then matches
@@ -691,6 +753,12 @@ export function renderPatch({
       "    - id: tool-worktree",
       "      name: '@unieai/rabi-experimental-tool-worktree'",
     );
+  }
+  // MCP tool schemas past a share of the window wait behind tool_search.
+  if (toolSearch) {
+    const entries = Object.entries(toolSearch);
+    inserts.push("    - id: unieai-tool-search", `      name: ${q(toolSearchUrl)}`);
+    if (entries.length > 0) inserts.push("      config:", ...entries.map(([key, value]) => `        ${key}: ${JSON.stringify(value)}`));
   }
   if (artifacts) {
     inserts.push("    - id: unieai-artifacts", `      name: ${q(artifactsUrl)}`, "      config:", `        home: ${q(home)}`);
@@ -873,6 +941,7 @@ export function prepareRabi({ env = process.env, sandboxMode = "workspace-write"
       autoApprovalModel,
       mode,
       artifacts,
+      toolSearch: toolSearchConfig(env),
     }),
   );
 

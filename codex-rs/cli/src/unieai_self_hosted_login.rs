@@ -115,12 +115,12 @@ pub fn added_api_lines(added: &AddedApi) -> Vec<String> {
     ));
     if server.runs_on_codex_engine() {
         lines.push(format!(
-            "Runs on the uac engine; the codex engine can use it too with `model_provider = \"{}\"` and `model = \"{first}\"` in config.toml.",
+            "Runs on the Rabi Harness engine; the codex engine can use it too with `model_provider = \"{}\"` and `model = \"{first}\"` in config.toml.",
             server.id
         ));
     } else {
         lines.push(
-            "Runs on the uac engine (Rabi Harness); the codex engine needs the Responses API, which this API does not reliably serve."
+            "Runs on the Rabi Harness engine; the codex engine needs the Responses API, which this API does not reliably serve."
                 .to_string(),
         );
     }
@@ -295,7 +295,7 @@ mod tests {
         assert!(lines.contains("the first 2 of 468 listed"), "{lines}");
         assert!(lines.contains("openrouter/m0"), "{lines}");
         assert!(
-            lines.contains("Runs on the uac engine (Rabi Harness)"),
+            lines.contains("Runs on the Rabi Harness engine;"),
             "{lines}"
         );
         assert!(!lines.contains("sk-never-printed"), "{lines}");

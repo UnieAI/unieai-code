@@ -27,10 +27,18 @@
  * the three things directly on the child it starts:
  *
  * - The main agent's `subagent` tool is shadowed, in that agent's own scope,
- *   by the same tool with an `agent` parameter listing each definition's name
- *   and description. A call without `agent` is rabi's call, unchanged; with
- *   one, the child starts through the same subagent service with the
- *   definition's model as its route.
+ *   by the same tool with UnieAI's description (what to delegate, not only
+ *   that it saves context) and, when there are definitions, an `agent`
+ *   parameter listing each one's name and description. A call without
+ *   `agent` is rabi's call, unchanged; with one, the child starts through the
+ *   same subagent service with the definition's model as its route. The
+ *   shadow is installed even with no definitions, so every session gets the
+ *   same wording.
+ * - Shadowing hides the tool from rabi's TOOL_SUBAGENT prompt line ("start
+ *   independent delegations with ... together in one message"), which only
+ *   names tools it registered itself: it would then name only
+ *   `subagent_fork`. The same scope therefore replaces that line with one
+ *   that names `subagent` (and `subagent_fork` when present).
  * - When the child is created its scope gets the body as a section of its
  *   own placed right after the UnieAI persona (`deployment:persona-prefix`),
  *   so the child keeps the persona and reads the definition as its role on
@@ -57,7 +65,33 @@ import { parentAgentOptionsForDelegation } from "@unieai/rabi-subagent";
 export const name = "unieai-agents";
 export const inject = ["tools", "agents", "subagents", "systemPrompt"];
 
-export const DEFAULTS = Object.freeze({ toolName: "subagent", provider: "spawn", maxAgents: 64, maxPromptBytes: 65_536 });
+export const DEFAULTS = Object.freeze({
+  toolName: "subagent",
+  forkToolName: "subagent_fork",
+  provider: "spawn",
+  maxAgents: 64,
+  maxPromptBytes: 65_536,
+});
+
+/**
+ * rabi's lead sentence for a fresh (non-forking) child. It sells saving
+ * context; weak models read that as "only when my context is full". When the
+ * base tool opens with it, UnieAI's lead replaces it and the rest (how the
+ * child reports back, model selection) is kept.
+ */
+export const RABI_SPAWN_LEAD =
+  "Delegate a self-contained task to a subagent (a separate agent that works in its own context) to offload focused, independent work — research, a scoped implementation, an analysis — so it does not consume this conversation's context. The subagent returns its result, not its intermediate steps.";
+
+export const SUBAGENT_LEAD =
+  "Start a subagent: a separate agent with its own context that does one piece of work while you keep working, then reports its result (not its intermediate steps). Use it to run independent pieces of a task in parallel (start several in one message, one per piece), for broad searches, for side tasks off your critical path, and for an independent check of finished work (review the diff, rerun the tests, try to break it). It needs no permission from the user.";
+
+/** The `prompt` parameter, for a child that does not see this conversation. */
+export const SUBAGENT_PROMPT_DESCRIPTION =
+  "The subagent's whole brief; it does not see this conversation. State the goal, the relevant paths, what is already ruled out, what it may edit (give parallel subagents disjoint files), and exactly what to return and how long. A few sentences usually do.";
+
+/** The prompt line rabi's TOOL_SUBAGENT section would give, naming `names`. */
+export const parallelDelegationLine = (names) =>
+  `Start independent delegations with ${names.map((tool) => `\`${tool}\``).join(" or ")} together in one assistant message and continue useful work while they run.`;
 
 /** The child's prompt section holding its definition's body, after the persona. */
 export const DEFINITION_SECTION = "unieai-agents:definition";
@@ -233,18 +267,43 @@ export function agentParameterDescription(agents) {
   ].join("\n");
 }
 
-/** The shadowing tool: `base` with the `agent` parameter added. */
+/**
+ * `base`'s description and `prompt` parameter in UnieAI's wording. Only a base
+ * that opens with rabi's fresh-child lead is reworded; any other (a forking
+ * child, a changed upstream text) is left as it is rather than misdescribed.
+ */
+export function subagentWording(base) {
+  const description = String(base.description ?? "");
+  const properties = base.parameters?.properties ?? {};
+  if (!description.startsWith(RABI_SPAWN_LEAD)) return { description, properties };
+  const rest = description.slice(RABI_SPAWN_LEAD.length).trim();
+  return {
+    description: rest ? `${SUBAGENT_LEAD} ${rest}` : SUBAGENT_LEAD,
+    properties: properties.prompt
+      ? { ...properties, prompt: { ...properties.prompt, description: SUBAGENT_PROMPT_DESCRIPTION } }
+      : properties,
+  };
+}
+
+/**
+ * The shadowing tool: `base` in UnieAI's wording, with the `agent` parameter
+ * added when there are definitions. With none it only rewords `base`.
+ */
 export function withAgentParameter(base, agents, spawnDefined) {
   const names = [...agents.keys()];
+  const wording = subagentWording(base);
   const listing = [...agents.values()].map((agent) => `${agent.name} (${agent.description})`).join("; ");
   return {
     ...base,
-    description: `${base.description} Specialised agents defined for this project can be chosen with \`agent\`: ${listing}. Use one when the task matches its description.`,
+    description:
+      names.length === 0
+        ? wording.description
+        : `${wording.description} Specialised agents defined for this project can be chosen with \`agent\`: ${listing}. Use one when the task matches its description.`,
     parameters: {
       ...base.parameters,
       properties: {
-        ...base.parameters?.properties,
-        agent: { type: "string", enum: names, description: agentParameterDescription(agents) },
+        ...wording.properties,
+        ...(names.length === 0 ? {} : { agent: { type: "string", enum: names, description: agentParameterDescription(agents) } }),
       },
     },
     async execute(args, exec) {
@@ -330,23 +389,25 @@ export function apply(ctx, rawConfig = {}) {
     pending.set(childId, snapshot(definition, allow));
     try {
       const maxDepth = ctx.subagents.resolveMaxDepth(undefined);
-      const request = {
+      // Since 0.2.2 the start request's fields sit on the activation spec
+      // itself (no `request` member), and a child may be given a name.
+      const activation = await ctx.subagents.startActivation({
+        provider: config.provider,
+        childId,
+        label: `${definition.name}: ${args.description}`,
+        ...(typeof args.name === "string" && args.name ? { name: args.name } : {}),
         ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
         prompt: [{ type: "text", text: args.prompt }],
         parent,
         ...(agentOptions ? { agentOptions } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
-      };
-      const activation = await ctx.subagents.startActivation({
-        provider: config.provider,
-        childId,
-        label: `${definition.name}: ${args.description}`,
-        request,
         signal: exec.signal,
         delivery: "parent",
       });
       for (const note of notes) ctx.logger.info(`${name}: ${note}`);
-      return { kind: "activation", subagentId: activation.childId };
+      // The base tool's output schema since 0.2.2: { kind, name }, rendered
+      // "started subagent <name>" -- the name the model addresses it by.
+      return { kind: "activation", name: activation.name ?? String(activation.childId) };
     } finally {
       pending.delete(childId);
     }
@@ -378,10 +439,42 @@ export function apply(ctx, rawConfig = {}) {
     const cwd = header.cwd ?? process.cwd();
     const { agents, warnings } = loadAgentDefinitions({ ...loadOptions, cwd });
     for (const warning of warnings) ctx.logger.warn(`${name}: ${warning}`);
-    if (agents.size === 0) return;
-    ctx.logger.info(`${name}: session ${agent.id}: ${agents.size} agent definition(s): ${[...agents.keys()].join(", ")}`);
+    if (agents.size > 0) {
+      ctx.logger.info(`${name}: session ${agent.id}: ${agents.size} agent definition(s): ${[...agents.keys()].join(", ")}`);
+    }
     agent.ctx.tools.register(withAgentParameter(base, agents, (args, exec) => spawnDefined(args, exec, cwd)));
+    replaceParallelLine(agent, config);
   });
+}
+
+/**
+ * rabi's TOOL_SUBAGENT line lists only the delegation tools it registered and
+ * can still see, so with `subagent` shadowed it names `subagent_fork` alone
+ * (from that tool's own section). In this agent's scope, `subagent`'s section
+ * is replaced by one naming both and `subagent_fork`'s is emptied, so the line
+ * appears once and names every delegation tool the agent has.
+ */
+export function replaceParallelLine(agent, config = DEFAULTS) {
+  const prompt = agent.ctx.systemPrompt;
+  const tools = agent.ctx.tools;
+  const { toolName, forkToolName } = { ...DEFAULTS, ...config };
+  const order = prompt.getSectionOrder("TOOL_SUBAGENT");
+  try {
+    prompt.section({
+      name: `tool:${toolName}`,
+      order,
+      interpolate: false,
+      text: (context) => {
+        const names = [toolName, forkToolName].filter((tool) => tools.get(tool, context?.scope));
+        return names[0] === toolName ? parallelDelegationLine(names) : "";
+      },
+    });
+    prompt.section({ name: `tool:${forkToolName}`, order, interpolate: false, text: "" });
+  } catch (error) {
+    // Already replaced in this scope (a preset that mounts the tool per agent):
+    // rabi's own line stands.
+    agent.ctx.logger?.warn?.(`${name}: kept rabi's delegation line for ${agent.id}: ${error.message}`);
+  }
 }
 
 /**

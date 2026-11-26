@@ -106,7 +106,7 @@ async fn admit_mcp_dependencies(
     candidates.retain(|name, config| {
         catalog
             .mcp_server_catalog
-            .server(name)
+            .server_by_name(name)
             .is_some_and(|server| server.config().enabled && server.config() == config)
     });
     candidates
@@ -302,7 +302,7 @@ async fn should_install_mcp_dependencies(
             sess.notify_user_input_response(sub_id, empty.clone()).await;
             empty
         }
-        response = response_fut => response.map(|accepted| accepted.response).unwrap_or_else(|| RequestUserInputResponse {
+        response = response_fut => response.unwrap_or_else(|| RequestUserInputResponse {
             answers: HashMap::new(),
         }),
     };

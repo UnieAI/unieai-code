@@ -9,6 +9,8 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::CodexThread;
 use codex_core::ForkSnapshot;
+use codex_core::RestrictRootCapabilities;
+use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::compact::content_items_to_text;
 use codex_core::config::Config;
@@ -21,8 +23,10 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_history::CodexHarnessMetadata;
 use codex_history::GuardianHistoryCheckpoint;
 use codex_history::InitialHistory;
+use codex_history::ResponseItemEnvelope;
 use codex_history::ResumedHistory;
 use codex_history::RetainedContext;
 use codex_history::RetainedContextEntry;
@@ -40,6 +44,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
@@ -59,6 +64,7 @@ use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::responses::user_message_item;
 use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -782,6 +788,67 @@ async fn legacy_checkpoint_recovers_root_excerpt_before_discarding_backup(
     Ok(())
 }
 
+#[test_case(false; "root")]
+#[test_case(true; "host restricted")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inherited_instruction_authorization_after_cold_resume(restricted: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let options = |initial_history| {
+        let mut options = StartThreadOptions::new(test.config.clone());
+        options.initial_history = initial_history;
+        options.session_source = Some(SessionSource::Custom("host".into()));
+        if restricted {
+            options
+                .thread_extension_init
+                .insert(RestrictRootCapabilities);
+        }
+        options
+    };
+    let instruction = "Publish the report.";
+    let inherited = RolloutItem::ResponseItem(ResponseItemEnvelope {
+        item: user_message_item(instruction),
+        metadata: Some(CodexHarnessMetadata {
+            inherited_user_message: true,
+            ..Default::default()
+        }),
+    });
+    let fork = test
+        .thread_manager
+        .start_thread(options(InitialHistory::Forked(vec![inherited])))
+        .await?;
+    fork.thread.shutdown_and_wait().await?;
+    test.thread_manager.remove_thread(&fork.thread_id).await;
+    let saved = load_context(&test, &fork.thread).await?;
+    let resumed = test
+        .thread_manager
+        .start_thread(options(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: fork.thread_id,
+            history: Arc::new(saved),
+            history_revision: None,
+            rollout_path: None,
+        })))
+        .await?;
+
+    let snapshot = resumed.thread.conversation_history_snapshot().await;
+    assert!(snapshot.items().any(|item| matches!(
+        item, ResponseItem::Message { role, content, .. }
+            if role == "user" && content_items_to_text(content).as_deref() == Some(instruction)
+    )));
+    let retained = snapshot
+        .retained_context()
+        .context("resumed authorization")?;
+    assert_eq!(
+        retained.ordered_entries().any(|(_, entry)| matches!(
+            entry, RetainedContextEntry::UserMessage(user) if user.text == instruction
+        )),
+        !restricted
+    );
+    resumed.thread.shutdown_and_wait().await?;
+    Ok(())
+}
+
 // Cover live copied history and a truncated referenced checkpoint. Parent-answer
 // omission is already exercised by retained_answers_cross_real_session_boundaries.
 #[test_case(ThreadHistoryMode::Legacy; "copied worker history")]
@@ -917,6 +984,7 @@ async fn standalone_fork_retains_inherited_user_instructions(
             .fork_prepared_thread(
                 codex_core::StartThreadOptions::new(test.config.clone()),
                 prepared,
+                codex_thread_store::InheritedHistoryVisibility::Full,
             )
             .await?
     } else {
@@ -933,7 +1001,13 @@ async fn standalone_fork_retains_inherited_user_instructions(
             )
             .await?
     };
-    assert!(fork.thread.guardian_root_snapshot().await.is_none());
+    assert!(
+        fork.thread
+            .guardian_root_snapshot()
+            .await
+            .expect("read root snapshot")
+            .is_none()
+    );
     let history = fork.thread.conversation_history_snapshot().await;
     let retained = history.retained_context().context("root context")?;
     let answers = codex_guardian_context::render_verified_answers(retained);
@@ -1133,7 +1207,11 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
         Some((0, true)),
         "inherited conversation must not populate child-local authorization",
     );
-    let root_snapshot = child.guardian_root_snapshot().await.context("live root")?;
+    let root_snapshot = child
+        .guardian_root_snapshot()
+        .await
+        .expect("read root snapshot")
+        .context("live root")?;
     assert!(
         root_snapshot
             .messages
@@ -1152,6 +1230,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
     let snapshot = child
         .guardian_root_snapshot()
         .await
+        .expect("read root snapshot")
         .context("root after goal")?;
     assert!(snapshot.messages.iter().any(|message| {
         matches!(message, codex_core::GuardianRootMessage::User(text) if text.contains(goal))

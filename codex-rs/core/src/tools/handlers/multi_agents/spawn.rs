@@ -6,14 +6,17 @@ use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
+use crate::agent::helper_daybreak::turn::explicit_program_for_spawn;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
+use crate::agent::types::SpawnProgramSource;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
+use codex_user_input::ResolvedUserInput;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -78,11 +81,29 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let input_items = input_items
+        .into_iter()
+        .map(ResolvedUserInput::from_client)
+        .collect();
+    let prepared = prepare_agent_spawn_config(
+        &session,
+        step_context.as_ref(),
+        SpawnConfigOptions {
+            version: SpawnConfigVersion::V1,
+            full_history_fork: args.fork_context,
+            role_name,
+            model: args.model.as_deref(),
+            reasoning_effort: args.reasoning_effort.clone(),
+            service_tier: args.service_tier,
+        },
+    )
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
     session
         .emit_turn_item_started(
             turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id.clone(),
+                id: call_id.to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: session.thread_id,
@@ -95,19 +116,6 @@ async fn handle_spawn_agent(
             }),
         )
         .await;
-    let prepared = prepare_agent_spawn_config(
-        &session,
-        step_context.as_ref(),
-        SpawnConfigOptions {
-            version: SpawnConfigVersion::V1,
-            full_history_fork: args.fork_context,
-            role_name,
-            model: args.model.as_deref(),
-            reasoning_effort: args.reasoning_effort.clone(),
-        },
-    )
-    .await
-    .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
     let fork_mode = args.fork_context.then_some(SpawnAgentForkMode::FullHistory);
     let result = session
@@ -125,16 +133,20 @@ async fn handle_spawn_agent(
                 /*task_name*/ None,
             )?,
             options: SpawnAgentOptions {
-                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
+                service_tier: prepared.service_tier,
+                request_country: step_context.settings.request_country().clone(),
+                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.to_string()),
                 fork_mode: fork_mode.clone(),
                 parent_thread_id: Some(session.thread_id),
                 parent_turn_id: Some(turn.sub_id.clone()),
                 root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                inherited_client_metadata: turn.turn_metadata_state.client_metadata_for_child(),
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.inherited_environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 multi_agent_v2_usage_hints: None,
-                cyber_access_program: turn.cyber_access_program,
+                cyber_access_program: explicit_program_for_spawn(turn),
+                cyber_access_program_source: SpawnProgramSource::ParentTurn,
             },
         })
         .await
@@ -151,7 +163,14 @@ async fn handle_spawn_agent(
             collab_spawn_error(err)
         });
     let (new_thread_id, status) = match &result {
-        Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),
+        Ok((spawned_agent, _)) => {
+            turn.session_telemetry.record_multi_agent_spawned(
+                session.session_id(),
+                &turn.sub_id,
+                spawned_agent.thread_id,
+            );
+            (Some(spawned_agent.thread_id), spawned_agent.status.clone())
+        }
         Err(_) => (None, AgentStatus::NotFound),
     };
     let agent_snapshot = result.as_ref().ok().map(|(_, config)| config);
@@ -182,7 +201,7 @@ async fn handle_spawn_agent(
         .emit_turn_item_completed(
             turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id,
+                id: call_id.into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: collab_tool_call_status(&status, new_thread_id),
                 sender_thread_id: session.thread_id,
@@ -223,6 +242,7 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
     #[serde(default)]
     fork_context: bool,
 }
@@ -246,7 +266,7 @@ impl ToolOutput for SpawnAgentResult {
         tool_output_response_item(call_id, payload, self, Some(true), "spawn_agent")
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
         tool_output_code_mode_result(self, "spawn_agent")
     }
 }

@@ -395,6 +395,7 @@ mod tests {
             commands,
             vec![
                 SlashCommand::Ide,
+                SlashCommand::Rename,
                 SlashCommand::Agents,
                 SlashCommand::Copy,
                 SlashCommand::Export,
@@ -403,6 +404,7 @@ mod tests {
                 SlashCommand::Mention,
                 SlashCommand::Status,
                 SlashCommand::Daemon,
+                SlashCommand::Rc,
                 SlashCommand::Warnings,
                 SlashCommand::Pwd,
                 SlashCommand::Usage,

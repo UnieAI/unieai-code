@@ -13,13 +13,13 @@ async fn bedrock_astra_model_and_reasoning_pickers() {
         (
             "mantle",
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
-            "openai.gpt-6.1-sol",
+            "openai.gpt-6.2-sol",
             "openai.gpt-6-astra",
         ),
         (
             "runtime",
             ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
-            "global.openai.gpt-6.1-sol",
+            "global.openai.gpt-6.2-sol",
             "global.openai.gpt-6-astra",
         ),
     ] {
@@ -44,7 +44,7 @@ async fn bedrock_astra_model_and_reasoning_pickers() {
             .clone();
         let (mut chat, mut events, _ops) = make_chatwidget_manual(Some(default_model)).await;
         chat.thread_id = Some(ThreadId::new());
-        chat.model_catalog = Arc::new(ModelCatalog::new(presets));
+        set_test_model_catalog(&mut chat, presets);
         chat.open_model_popup();
         assert_chatwidget_snapshot!(
             format!("bedrock_{name}_models"),
@@ -109,7 +109,7 @@ async fn bedrock_govcloud_model_pickers() {
             .expect("default Bedrock model");
         let (mut chat, _events, _ops) = make_chatwidget_manual(Some(&default_preset.model)).await;
         chat.thread_id = Some(ThreadId::new());
-        chat.model_catalog = Arc::new(ModelCatalog::new(presets));
+        set_test_model_catalog(&mut chat, presets);
         chat.open_model_popup();
         assert_chatwidget_snapshot!(
             "bedrock_govcloud_models",
@@ -143,19 +143,37 @@ async fn bedrock_ultrafast_slash_command_selects_and_clears_tier() {
             "mantle_sol61",
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
             "openai.gpt-6.1-sol",
-            "openai.gpt-6-sol",
+            "openai.gpt-6.1-terra",
         ),
         (
             "runtime_global_sol61",
             ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
             "global.openai.gpt-6.1-sol",
-            "global.openai.gpt-6-sol",
+            "global.openai.gpt-6.1-terra",
         ),
         (
             "runtime_us_sol61",
             ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
             "us.openai.gpt-6.1-sol",
-            "us.openai.gpt-6-sol",
+            "us.openai.gpt-6.1-terra",
+        ),
+        (
+            "mantle_astra62",
+            ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+            "openai.gpt-6.2-astra",
+            "openai.gpt-6.2-sol",
+        ),
+        (
+            "runtime_global_astra62",
+            ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
+            "global.openai.gpt-6.2-astra",
+            "global.openai.gpt-6.2-sol",
+        ),
+        (
+            "runtime_us_astra62",
+            ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
+            "us.openai.gpt-6.2-astra",
+            "us.openai.gpt-6.2-sol",
         ),
     ] {
         let presets = create_model_provider(provider_info.clone(), /*auth_manager*/ None)
@@ -166,7 +184,7 @@ async fn bedrock_ultrafast_slash_command_selects_and_clears_tier() {
             )
             .await;
         let (mut chat, mut events, _ops) = make_chatwidget_manual(Some(model)).await;
-        chat.model_catalog = Arc::new(ModelCatalog::new(presets));
+        set_test_model_catalog(&mut chat, presets);
         chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
         chat.set_service_tier(/*service_tier*/ None);
         chat.bottom_pane
@@ -213,7 +231,7 @@ async fn bedrock_ultrafast_slash_command_selects_and_clears_tier() {
                 HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             )
             .await;
-        chat.model_catalog = Arc::new(ModelCatalog::new(presets));
+        set_test_model_catalog(&mut chat, presets);
         chat.set_service_tier(/*service_tier*/ None);
         assert_eq!(chat.current_service_tier(), Some("ultrafast"));
         chat.set_service_tier(Some("default".to_string()));

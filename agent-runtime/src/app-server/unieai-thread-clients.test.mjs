@@ -198,24 +198,26 @@ function scriptedEngine() {
   return { state, factory };
 }
 
-test("the hijack: another TUI resuming and prompting a thread does not take its client tools or approvals away", async () => {
-  // TUI A starts the thread and hosts its client tools (the session mesh).
-  // TUI B — another window on the same machine — resumes the same thread and
-  // sends a turn. The last caller used to become the thread's only client, so
-  // A's send_peer_message calls went to B, which answered "the session mesh is
-  // not available in this session".
+test("the hijack: the TUI the user prompts from hosts the client tools; approvals still reach every TUI", async () => {
+  // TUI A starts the thread. TUI B — another window on the same machine —
+  // resumes it and the user types there. B now shows the thread and is its
+  // member of the session mesh; A may have moved on to another session, where
+  // list_peers answered for the wrong session (or never answered, and the
+  // turn could not be stopped). So the client that prompts hosts the tools.
   const { state, factory } = scriptedEngine();
   const handlers = createHandlers({ codexHome: "/h", createEngineFor: factory, interruptGraceMs: 20 });
   const tuiA = fakeClient("a");
   const tuiB = fakeClient("b");
   const { thread } = await handlers["thread/start"]({ cwd: process.cwd(), dynamicTools: [{ name: "send_peer_message" }] }, tuiA);
   await handlers["thread/resume"]({ threadId: thread.id }, tuiB);
+  assert.equal(handlers._threads.get(thread.id).connection.driver, tuiA, "resuming alone takes nothing");
   await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "from B" }] }, tuiB);
+  assert.equal(handlers._threads.get(thread.id).connection.driver, tuiB);
 
   const toolCall = state.options.request("item/tool/call", { threadId: thread.id, tool: "send_peer_message" });
-  assert.equal(tuiA.asked.size, 1, "A, which hosts the tool, is asked");
-  assert.equal(tuiB.asked.size, 0, "B is not");
-  tuiA.answer({ contentItems: [], success: true });
+  assert.equal(tuiB.asked.size, 1, "B, where the user is, is asked");
+  assert.equal(tuiA.asked.size, 0, "A is not");
+  tuiB.answer({ contentItems: [], success: true });
   assert.deepEqual(await toolCall, { contentItems: [], success: true });
 
   // Both watch the turn B started.
@@ -229,13 +231,21 @@ test("the hijack: another TUI resuming and prompting a thread does not take its 
   tuiA.answer({ decision: "accept" });
   assert.deepEqual(await approval, { decision: "accept" });
   assert.equal(tuiB.resolvedNotes().length, 1, "B's prompt is dismissed");
-  assert.equal(handlers._threads.get(thread.id).connection.driver, tuiA);
+  state.release();
+});
 
-  // A goes away. B resuming now takes over: the tools are B's to host.
-  tuiA.closed = true;
-  handlers._detach(tuiA);
-  await handlers["thread/resume"]({ threadId: thread.id }, tuiB);
-  assert.equal(handlers._threads.get(thread.id).connection.driver, tuiB);
+test("an interrupt ends a client tool call the client never answers", async () => {
+  const { state, factory } = scriptedEngine();
+  const handlers = createHandlers({ codexHome: "/h", createEngineFor: factory, interruptGraceMs: 20 });
+  const tui = fakeClient("tui");
+  const { thread } = await handlers["thread/start"]({ cwd: process.cwd(), dynamicTools: [{ name: "list_peers" }] }, tui);
+  await handlers["turn/start"]({ threadId: thread.id, input: [{ type: "text", text: "who is around?" }] }, tui);
+  const abort = new AbortController();
+  const call = state.options.request("item/tool/call", { threadId: thread.id, tool: "list_peers" }, { signal: abort.signal });
+  assert.equal(tui.asked.size, 1);
+  abort.abort(new Error("interrupted: the turn was stopped before the client answered"));
+  await assert.rejects(call);
+  assert.equal(tui.asked.size, 0, "the request is withdrawn from the client");
   state.release();
 });
 

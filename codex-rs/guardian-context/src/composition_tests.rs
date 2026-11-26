@@ -4,9 +4,133 @@ use codex_protocol::models::ImageReference;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn pending_action_replays_the_encrypted_call_with_its_evidence_output() {
+    let call: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "namespace": "collaboration",
+        "name": "send_message",
+        "call_id": "send-1",
+        "arguments": r#"{"target":"/root/worker","message":"opaque"}"#,
+        "encrypted_content": "opaque-replay",
+        "encrypted_function_args": ["message"]
+    }))
+    .unwrap();
+    let action = crate::PlannedAction {
+        kind: crate::PlannedActionKind::ToolCall(Box::new(call.clone())),
+        reason: None,
+        tool_descriptions: None,
+    };
+    let pending = ComposedContext::for_pending_action(
+        action.clone(),
+        /*permissions*/ None,
+        crate::ContextBudgeting::Fixed,
+        /*frame_native_agent_actions*/ false,
+    )
+    .unwrap();
+    let messages = pending.into_messages();
+    let [ResponseItem::Message { .. }, replay, output] = messages.as_slice() else {
+        panic!("expected the review instruction, exact call, and evidence-only output");
+    };
+    assert_eq!(replay, &call);
+    assert_eq!(
+        Some(output.clone()),
+        crate::native_tool_call::evidence_output(&call)
+    );
+
+    // An earlier review may already contain this call. Keep the ID reference
+    // when delivery removes the duplicate instead of framing an empty request.
+    let mut pending = ComposedContext::for_pending_action(
+        action,
+        /*permissions*/ None,
+        crate::ContextBudgeting::Fixed,
+        /*frame_native_agent_actions*/ true,
+    )
+    .unwrap();
+    let mut first_attempt = pending.clone();
+    crate::prepare_sync_delivery(&mut first_attempt, &[ResponseItemEnvelope::new(call)]).unwrap();
+    assert_eq!(first_attempt.into_messages(), messages[..1]);
+
+    // A pre-turn compaction retry uses the same pending action with new history.
+    crate::prepare_sync_delivery(&mut pending, &[]).unwrap();
+    let framed = pending.into_messages();
+    assert!(
+        matches!(&framed[0], ResponseItem::Message { role, content, .. }
+        if role == "user" && matches!(content.last(), Some(ContentItem::InputText { text })
+            if text.starts_with(">>> APPROVAL REQUEST START")))
+    );
+    assert_eq!(framed[1..framed.len() - 1], messages[1..]);
+    assert!(
+        matches!(framed.last(), Some(ResponseItem::Message { role, content, .. })
+        if role == "user" && matches!(content.first(), Some(ContentItem::InputText { text })
+            if text.starts_with(">>> APPROVAL REQUEST END")))
+    );
+}
+
+#[test]
+fn elastic_pending_action_defers_the_exact_call_to_final_admission() {
+    let fixed_limit_bytes = TruncationPolicy::Tokens(MAX_TEXT_PART_ESTIMATED_TOKENS).byte_budget();
+    let arguments = serde_json::json!({ "content": "x".repeat(fixed_limit_bytes) });
+    let call: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "name": "write_record",
+        "call_id": "write-1",
+        "arguments": arguments.to_string(),
+    }))
+    .unwrap();
+    let action = crate::PlannedAction {
+        kind: crate::PlannedActionKind::ToolCall(Box::new(call.clone())),
+        reason: None,
+        tool_descriptions: None,
+    };
+    assert!(matches!(
+        ComposedContext::for_pending_action(
+            action.clone(),
+            /*permissions*/ None,
+            crate::ContextBudgeting::Fixed,
+            /*frame_native_agent_actions*/ false,
+        ),
+        Err(SectionError::EvidenceLimitExceeded {
+            section: "native_tool_call"
+        })
+    ));
+
+    let context = ComposedContext::for_pending_action(
+        action,
+        /*permissions*/ None,
+        crate::ContextBudgeting::Elastic,
+        /*frame_native_agent_actions*/ false,
+    )
+    .unwrap();
+    let config =
+        crate::budget::tests::complete_minimum_budget(crate::ElasticBudgetConfig::default());
+    let prepared = context.prepare_elastic_entries(&config).unwrap();
+    let budget = |max_input_tokens| crate::RequestBudget {
+        max_input_tokens,
+        existing_context_tokens: 0,
+    };
+    assert!(
+        prepared
+            .clone()
+            .enforce_budget(
+                budget(MAX_TEXT_PART_ESTIMATED_TOKENS),
+                "Evidence omitted.".into()
+            )
+            .is_err()
+    );
+    let messages = prepared
+        .enforce_budget(
+            budget(crate::DEFAULT_MAX_INPUT_TOKENS),
+            "Evidence omitted.".into(),
+        )
+        .unwrap()
+        .into_messages();
+    assert!(messages.contains(&call));
+}
+
+#[test]
 fn delivery_preserves_arbitrary_message_boundaries_and_rejects_them_for_sync() {
     let message = crate::PreviousReviews::try_from_fragments(vec![crate::PreviousReview {
-        id: codex_protocol::ResponseItemId::new("review"),
+        id: codex_thread_context_ids_test_support::thread_context_ids().next_item("review"),
         fragment: "host-attested review".into(),
     }])
     .unwrap()
@@ -32,7 +156,7 @@ fn delivery_preserves_arbitrary_message_boundaries_and_rejects_them_for_sync() {
     assert_eq!(
         ComposedContext {
             sections: sections(),
-            truncations: Vec::new()
+            ..Default::default()
         }
         .into_messages(),
         vec![
@@ -53,7 +177,7 @@ fn delivery_preserves_arbitrary_message_boundaries_and_rejects_them_for_sync() {
     assert_eq!(
         ComposedContext {
             sections: sections(),
-            truncations: Vec::new()
+            ..Default::default()
         }
         .into_user_inputs(),
         Err(SectionError::UnsupportedDelivery {
@@ -79,7 +203,7 @@ fn long_text_and_file_image_delivery_is_lossless_bounded_and_fully_budgeted() {
                 }),
             ]),
         }],
-        truncations: Vec::new(),
+        ..Default::default()
     };
     let estimated = context.estimated_tokens();
     let messages = context.clone().into_messages();
@@ -103,9 +227,8 @@ fn long_text_and_file_image_delivery_is_lossless_bounded_and_fully_budgeted() {
         .collect::<Vec<_>>();
     assert_eq!(parts.concat(), text);
     assert!(
-        parts
-            .iter()
-            .all(|part| part.len() <= TruncationPolicy::Tokens(9_000).byte_budget())
+        parts.iter().all(|part| part.len()
+            <= TruncationPolicy::Tokens(MAX_TEXT_PART_ESTIMATED_TOKENS).byte_budget())
     );
     assert!(estimated >= crate::estimate_input_tokens(&messages[0]));
     let mut expected_inputs = parts
@@ -142,7 +265,7 @@ fn sender_restrictions_survive_budget_trimming_for_both_reviewers() {
                 ContextSection::ConversationTranscript { items: Vec::new() },
             ],
         }
-        .compose(
+        .compose_prepared(
             presentation,
             PreparedTranscript {
                 items: vec![Budgeted::optional(

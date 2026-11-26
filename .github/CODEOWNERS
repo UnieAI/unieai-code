@@ -6,6 +6,7 @@
 /codex-rs/exec-server-protocol/ @unieai/code-core-agent-team
 /codex-rs/ext/extension-api/ @unieai/code-core-agent-team
 /codex-rs/prompts/ @unieai/code-core-agent-team
+/codex-rs/user-input/ @unieai/code-core-agent-team
 /codex-rs/utils/path-uri/ @unieai/code-core-agent-team
 
 # Keep macOS AKV signing changes reviewed by Codex maintainers.

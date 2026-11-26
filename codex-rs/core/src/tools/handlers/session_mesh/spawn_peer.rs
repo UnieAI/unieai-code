@@ -147,7 +147,8 @@ impl ToolExecutor<ToolInvocation> for SpawnPeerSessionHandler {
                     codex_protocol::approvals::ExecApprovalKind::Command,
                     crate::guardian::GuardianReviewContext::from(std::sync::Arc::clone(&turn))
                         .model_context(),
-                    call_id,
+                    call_id.to_string(),
+                    Some(call_id.as_str()),
                     /*approval_id*/ None,
                     /*environment_id*/ None,
                     command,
@@ -227,7 +228,7 @@ impl ToolOutput for SpawnPeerSessionResult {
         tool_output_response_item(call_id, payload, self, Some(true), "spawn_peer_session")
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, _payload: &ToolPayload) -> codex_code_mode::CodeModeToolResult {
         tool_output_code_mode_result(self, "spawn_peer_session")
     }
 }

@@ -59,7 +59,7 @@ fn extra_policy_reaches_templated_and_legacy_classifier_instructions() {
             assert_eq!(
                 text,
                 format!(
-                    "{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n{expected}{suffix}\n\n{CLASSIFICATION_OUTPUT_INSTRUCTIONS}"
+                    "{expected}{suffix}\n\n{CLASSIFICATION_OUTPUT_INSTRUCTIONS}\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}"
                 )
             );
         }
@@ -80,7 +80,7 @@ fn template_policy_is_substituted_before_the_single_truncation() {
         assert_eq!(
             rendered_classifier_text(&config, policy),
             format!(
-                "{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n{}",
+                "{}\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}",
                 truncate_entry(
                     &instructions.replace("{{ tenant_policy_config }}", policy),
                     max_tokens,
@@ -115,7 +115,7 @@ fn evaluated_configuration_preserves_gate_and_caps_only_configured_prompt() {
         );
         assert_eq!(
             rendered_classifier_text(&config, &policy),
-            format!("{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n{expected}")
+            format!("{expected}\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}")
         );
     }
 }
@@ -134,7 +134,7 @@ fn model_prompt_and_explicit_threshold_precedence_are_preserved() {
         ResolvedModelMessages::bundled().guardian_classifier_instructions(),
     ] {
         let defaults = GuardianV2ModelConfig {
-            classifier_instructions: Some(prompt.to_owned()),
+            classifier_instructions: Some(prompt.into()),
             ..Default::default()
         };
         let resolved = builtin.with_model_defaults(Some(&defaults)).unwrap();
@@ -162,7 +162,7 @@ fn model_prompt_and_explicit_threshold_precedence_are_preserved() {
     }
 
     let model_threshold = GuardianV2ModelConfig {
-        classifier_instructions: Some("Model-owned instructions.".to_owned()),
+        classifier_instructions: Some("Model-owned instructions.".into()),
         review_threshold_basis_points: Some(6_000),
         ..Default::default()
     };
@@ -197,7 +197,7 @@ fn model_defaults_preserve_transcript_mode_and_matching_instructions() {
         })
         .unwrap()
         .with_model_defaults(Some(&GuardianV2ModelConfig {
-            classifier_instructions: Some("Model-owned prompt.".to_owned()),
+            classifier_instructions: Some("Model-owned prompt.".into()),
             ..Default::default()
         }))
         .unwrap();
@@ -209,7 +209,7 @@ fn model_defaults_preserve_transcript_mode_and_matching_instructions() {
             rendered_classifier_text(&config, "Policy."),
             match format {
                 TranscriptFormat::Line => expected,
-                TranscriptFormat::Json => format!("{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n{expected}"),
+                TranscriptFormat::Json => format!("{expected}\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}"),
             }
         );
     }
@@ -220,7 +220,7 @@ fn classifier_caps_preserve_complete_provenance_and_output_contract() {
     let prompt = "Return a JSON action_risk score. ".repeat(200);
     let policy = "Require approval for unsafe actions.";
     let model_defaults = GuardianV2ModelConfig {
-        classifier_instructions: Some(prompt.clone()),
+        classifier_instructions: Some(prompt.as_str().into()),
         max_classifier_instruction_tokens: Some(100),
         ..Default::default()
     };
@@ -242,13 +242,13 @@ fn classifier_caps_preserve_complete_provenance_and_output_contract() {
     for config in [local_override, model_override] {
         let rendered = rendered_classifier_text(&config, policy);
         let configured_prompt = rendered
-            .strip_prefix(&format!("{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n"))
+            .strip_suffix(&format!("\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}"))
             .expect("complete provenance instructions must survive the 100-token cap");
         assert!(
             configured_prompt.len()
                 <= codex_protocol::protocol::TruncationPolicy::Tokens(100).byte_budget()
         );
-        assert!(rendered.ends_with(CLASSIFICATION_OUTPUT_INSTRUCTIONS));
+        assert!(configured_prompt.ends_with(CLASSIFICATION_OUTPUT_INSTRUCTIONS));
     }
 }
 
@@ -256,7 +256,7 @@ fn classifier_caps_preserve_complete_provenance_and_output_contract() {
 fn model_runtime_settings_preserve_local_overrides() {
     let prompt = "legacy instructions ".repeat(3_000);
     let defaults = GuardianV2ModelConfig {
-        classifier_instructions: Some(prompt.clone()),
+        classifier_instructions: Some(prompt.as_str().into()),
         max_classifier_instruction_tokens: Some(256),
         max_tool_call_lag: Some(1),
         async_classifier_conversation_token_limit: Some(80_000),
@@ -321,7 +321,7 @@ fn model_runtime_settings_preserve_local_overrides() {
     assert_eq!(
         rendered_classifier_text(&uncapped, "Tenant policy."),
         format!(
-            "{TRANSCRIPT_JSON_INSTRUCTIONS}\n\n{prompt}\n\n# Security Policy\nTenant policy.\n\n{CLASSIFICATION_OUTPUT_INSTRUCTIONS}"
+            "{prompt}\n\n# Security Policy\nTenant policy.\n\n{CLASSIFICATION_OUTPUT_INSTRUCTIONS}\n\n{TRANSCRIPT_JSON_INSTRUCTIONS}"
         )
     );
 }

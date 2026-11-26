@@ -8,6 +8,7 @@ import { createAcpConnection } from "./acp-client.mjs";
 import {
   createRabiEngine,
   createRabiHost,
+  approvalDetail,
   diffFromArgs,
   engineToolArgs,
   findModelOption,
@@ -169,6 +170,7 @@ test("permission requests go through requestApproval and fail closed", async () 
     workspace: "/w",
     requestApproval: async (request) => {
       asked.push(request.detail);
+      assert.match(request.callId, /^c[12]$/);
       return decisions.shift();
     },
   });
@@ -506,6 +508,15 @@ test("AGENTS.md, skills and agent definitions come from the UnieAI home", () => 
   assert.match(patch, / {4}- id: unieai-agents\n {6}name: "file:[^"]+"\n {6}config:\n {8}home: "\/h\/\.unieai"/);
 });
 
+test("delegation is one level deep, and the persona says when to delegate", () => {
+  const patch = renderPatch({ defaultModel: "A", home: "/h/.unieai" });
+  // A child read the same "delegate independent pieces" rule; it must not fan out again.
+  assert.match(patch, /\n- id: subagent\n {2}config:\n {4}maxDepth: 1\n {4}maxActiveSubagents: 8\n/);
+  const persona = patch.slice(patch.indexOf("personaPrefix: |"));
+  assert.ok(persona.indexOf("      # Delegation\n") > persona.indexOf("      # Planning\n"));
+  assert.ok(persona.includes("start one subagent per piece, all in one message"));
+});
+
 test("apply_patch calls render as a diff of the first file they change", async () => {
   const { diffFromApplyPatch } = await import("./engine.mjs");
   const update = diffFromApplyPatch("*** Begin Patch\n*** Update File: src/a.py\n@@ def f():\n-    return 1\n+    return 2\n*** Add File: b.txt\n+x\n*** End Patch");
@@ -566,14 +577,17 @@ test("rabi modes: each is a patch on the flat standard composition", async () =>
   assert.match(standard, /- id: worktree\n {6}name: '@unieai\/rabi-experimental-worktree'\n {4}- id: tool-worktree\n/, "create_worktree is on");
 
   const ptc = renderPatch({ defaultModel: "A", plugins, mode: "ptc" });
-  assert.match(ptc, /- id: tools\n {2}config:\n {4}mode: ptc\n/);
+  // rabi 0.2.2: PTC is the deployment executor, not a `tools` mode.
+  assert.match(ptc, /- id: tool-executor-native\n {2}disabled: true\n- id: tool-executor-ptc\n {2}disabled: false\n/);
+  assert.doesNotMatch(ptc, /mode: ptc/);
   assert.match(ptc, /- id: tool-workflow\n {2}disabled: true/);
 
   const cordis = renderPatch({ defaultModel: "A", plugins, mode: "cordis" });
   assert.match(cordis, /- id: cordis-host-runner[\s\S]*- id: tool-cordis/, "tool-cordis waits on the host runner");
 
   const minimal = renderPatch({ defaultModel: "A", plugins, mode: "minimal" });
-  for (const id of ["tool-bash", "tool-fs", "tool-subagent", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
+  for (const id of ["tool-bash", "tool-fs", "tool-subagent", "tool-agent-team", "plan-mode"]) assert.match(minimal, new RegExp(`- id: ${id}\\n {2}disabled: true`));
+  assert.doesNotMatch(minimal, /tool-subagent-list-agents/, "a row rabi 0.2.2 no longer has");
   assert.match(minimal, /- id: persistent-bash/);
   assert.doesNotMatch(minimal, /tool-worktree/, "minimal keeps only its shell");
   assert.doesNotMatch(minimal, /unieai-exec|unieai-apply-patch|unieai-web-search/, "no tool plugins in minimal");
@@ -925,4 +939,56 @@ test("rabi starts through the launcher, so a Node without import.meta.main still
   const { args } = rabiCommand({ UNIEAI_RABI_BIN: "/opt/rabi/lib/bin.js" });
   assert.deepEqual(args.slice(0, 2), [RABI_LAUNCHER, "/opt/rabi/lib/bin.js"]);
   assert.deepEqual(rabiCommand({ UNIEAI_RABI_BIN: "/usr/local/bin/rabi" }).args.slice(0, 1), ["--profile"]);
+});
+
+test("spill-policy is capped with the key rabi reads (maxInlineTokens)", () => {
+  const plugins = selectPlugins({});
+  const row = (patch) => /- id: spill-policy\n {2}config:\n((?: {4}.+\n)+)/.exec(patch)?.[1] ?? "";
+  // rabi's spill-policy reads only maxInlineTokens; any other key leaves it off.
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins })), "    maxInlineTokens: 16384\n");
+  assert.equal(row(renderPatch({ defaultModel: "A", plugins: [] })), "    maxInlineTokens: 6000\n");
+});
+
+test("the goal and ranged history of a stored conversation are read without opening it", async () => {
+  const acpCalls = [];
+  const controlCalls = [];
+  const { client } = fakeAgent(async ({ method, params }) => {
+    acpCalls.push([method, params.sessionId]);
+    return {};
+  });
+  const control = async (method, params) => {
+    controlCalls.push([method, params]);
+    if (method === "goalGet") return { goal: { id: "g", objective: "ship", phase: "paused" }, supported: true, stored: true };
+    if (method === "history") {
+      return {
+        version: "cold:1",
+        turns: [
+          { rabiTurn: 1, opener: "user", endSeq: 4, reason: "completed", startedAt: 1, completedAt: 2, itemCount: 2, summary: { firstUser: { index: 0, item: { type: "user", text: "hi" } }, lastAssistant: { index: 1, item: { type: "assistant", text: "yo" } } } },
+          { rabiTurn: 2, opener: "user", endSeq: null, reason: null, startedAt: 3, itemCount: 1, summary: { firstUser: null, lastAssistant: null }, items: [{ type: "tool", callId: "c", name: "bash", arguments: "{}", status: "completed", output: "ok" }] },
+        ],
+      };
+    }
+    return {};
+  };
+  const engine = createRabiEngine({ host: scriptedHost(client, control), workspace: "/w", resumeState: { sessionId: "old" } });
+  assert.equal(await createRabiEngine({ host: scriptedHost(client, control), workspace: "/w" }).goal(), null, "a new conversation has none");
+  assert.deepEqual(await engine.goal(), { id: "g", objective: "ship", phase: "paused" });
+  const { version, turns } = await engine.historyRange({ from: 1, to: 2 });
+  assert.deepEqual(acpCalls, [], "no session/resume, no MCP servers");
+  assert.deepEqual(controlCalls.at(-1), ["history", { sessionId: "old", everyTurn: true, from: 1, to: 2 }]);
+  assert.equal(version, "cold:1");
+  assert.deepEqual(turns.map((t) => [t.anchor, t.status, t.itemCount, t.items?.length ?? null]), [[1, "completed", 2, null], [2, "inProgress", 1, 1]]);
+  assert.equal(turns[0].summary.firstUser.item.type, "userMessage");
+  assert.equal(turns[0].summary.lastAgent.item.text, "yo");
+  assert.equal(turns[1].items[0].status, "completed");
+});
+
+test("an approval card shows the line to run, not the call's JSON", () => {
+  assert.equal(approvalDetail("exec_command", { cmd: "git push" }, { cmd: "git push" }), "git push");
+  assert.equal(approvalDetail("bash", { command: "ls" }, { command: "ls" }), "ls");
+  assert.equal(approvalDetail("write", { file_path: "a.txt" }, { file_path: "a.txt" }), "a.txt");
+  const mcp = approvalDetail("mcp__space__create_rows", { db: "x", rows: [1] }, { db: "x", rows: [1] });
+  assert.match(mcp, /^mcp__space__create_rows \{/);
+  assert.match(mcp, /"db": "x"/);
+  assert.equal(approvalDetail("ping", {}, {}), "ping");
 });

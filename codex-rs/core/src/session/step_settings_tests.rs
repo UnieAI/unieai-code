@@ -11,6 +11,7 @@ use codex_features::Feature;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_models_manager::model_info::model_info_from_slug;
 use codex_prompts::render_model_instructions;
+use codex_protocol::RequestCountry;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::BaseInstructionsProvenance;
@@ -292,6 +293,7 @@ async fn environment_only_update_revalidates_existing_step_settings() {
 
 fn configured_settings() -> StepSettings {
     StepSettings {
+        request_country: RequestCountry::from_iso_code("DE").unwrap(),
         collaboration_mode: CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -302,6 +304,7 @@ fn configured_settings() -> StepSettings {
         },
         reasoning_summary: Some(ReasoningSummary::Concise),
         service_tier: None,
+        spawn_service_tier_override: None,
         personality: Some(Personality::Friendly),
         approval_policy: Constrained::allow_any(AskForApproval::OnRequest),
         approvals_reviewer: ApprovalsReviewer::User,
@@ -323,6 +326,7 @@ fn sparse_patch_uses_the_settings_version_being_updated() {
     let constraints = step_settings_constraints(&requirements);
     let initial = configured_settings();
     let tier_update = StepSettingsUpdate {
+        request_country: Some(RequestCountry::from_iso_code("US").unwrap()),
         service_tier: Some(Some("fast".to_string())),
         ..Default::default()
     };
@@ -341,6 +345,7 @@ fn sparse_patch_uses_the_settings_version_being_updated() {
         .apply(&tier_update, &constraints)
         .expect("a previously prepared sparse update should apply");
     let expected = StepSettings {
+        request_country: RequestCountry::from_iso_code("US").unwrap(),
         service_tier: Some(ServiceTier::Fast.request_value().to_string()),
         ..latest
     };
@@ -383,6 +388,7 @@ fn collaboration_replacement_wins_and_effort_clear_remains_sparse() {
         .apply(
             &StepSettingsUpdate {
                 effort: Some(None),
+                request_country: Some(RequestCountry::UNKNOWN),
                 ..Default::default()
             },
             &constraints,
@@ -391,6 +397,7 @@ fn collaboration_replacement_wins_and_effort_clear_remains_sparse() {
     assert_eq!(
         cleared,
         StepSettings {
+            request_country: RequestCountry::UNKNOWN,
             collaboration_mode: replacement.with_updates(
                 /*model*/ None,
                 Some(None),
@@ -409,14 +416,14 @@ async fn model_resolution_preserves_startup_overrides_and_instruction_provenance
 ) {
     let configured_instructions = "explicit instructions";
     let auto_review = AutoReviewMessages {
-        policy: Some("catalog review policy".to_string()),
-        policy_template: Some("catalog review template".to_string()),
+        policy: Some("catalog review policy".into()),
+        policy_template: Some("catalog review template".into()),
         node_repl_policy: None,
         rejection_instructions: None,
         timeout_instructions: None,
     };
     let guardian_v2 = GuardianV2ModelConfig {
-        classifier_instructions: Some("catalog classifier".to_string()),
+        classifier_instructions: Some("catalog classifier".into()),
         review_threshold_basis_points: Some(7_500),
         ..Default::default()
     };
@@ -430,13 +437,17 @@ async fn model_resolution_preserves_startup_overrides_and_instruction_provenance
         .as_mut()
         .expect("test model should have instruction metadata");
     messages.instructions_template =
-        Some("Catalog B.\n# Personality\nfixed\n# Rules\nKeep the rules.".to_string());
+        Some("Catalog B.\n# Personality\nfixed\n# Rules\nKeep the rules.".into());
     messages.auto_review = Some(auto_review);
     messages.guardian_v2 = Some(guardian_v2);
     let catalog = ModelsResponse {
         models: vec![model],
     };
-    let models_manager = StaticModelsManager::new(/*auth_manager*/ None, catalog.clone());
+    let models_manager = StaticModelsManager::new(
+        /*auth_manager*/ None,
+        catalog.clone(),
+        codex_models_manager::ModelOrigin::ExplicitConfig,
+    );
 
     let mut config = test_config().await;
     config.model = Some("model-a".to_string());

@@ -25,6 +25,8 @@ impl AgentsOverviewView {
     fn center_list_hint(&self, action: ListAction) -> Option<ShortcutHint> {
         self.keymap.primary_hint(action).filter(|hint| {
             !matches!(hint, ShortcutHint::Single(binding) if [
+                &self.agents_keymap.next_group,
+                &self.agents_keymap.previous_group,
                 &self.agents_keymap.resume,
                 &self.agents_keymap.search,
                 &self.agents_keymap.new_task,
@@ -68,6 +70,41 @@ impl AgentsOverviewView {
             (ListAction::PageDown, "Page down"),
         ] {
             navigate.push(self.center_list_hint(action), label);
+        }
+        for (action, bindings, list_action, label) in [
+            (
+                "next_group",
+                &self.agents_keymap.next_group,
+                ListAction::MoveDown,
+                "Next group",
+            ),
+            (
+                "previous_group",
+                &self.agents_keymap.previous_group,
+                ListAction::MoveUp,
+                "Previous group",
+            ),
+        ] {
+            let primary = self.agents_keymap.primary_hint(action, bindings);
+            let hint = match (self.center_list_hint(list_action), primary) {
+                (Some(ShortcutHint::Single(row)), Some(ShortcutHint::Single(group)))
+                    if matches!(
+                        group.parts(),
+                        (
+                            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k'),
+                            KeyModifiers::SHIFT
+                        )
+                    ) && row.parts().1.is_empty() =>
+                {
+                    let shifted = key_hint::shift(row.parts().0);
+                    bindings
+                        .contains(&shifted)
+                        .then_some(shifted.into())
+                        .or(primary)
+                }
+                _ => primary,
+            };
+            navigate.push(hint, label);
         }
         navigate
             .entries
@@ -129,9 +166,6 @@ impl AgentsOverviewView {
 
     pub(super) fn center_footer_hints(&self) -> Vec<(String, String)> {
         let state = self.state();
-        if let Some(items) = &state.key_chord_hint {
-            return items.clone();
-        }
         let mut hints = Vec::new();
         if !state.help
             && !state.editing_metadata()
@@ -144,10 +178,22 @@ impl AgentsOverviewView {
         {
             hints.push(("?".into(), "help".into()));
         }
+        if state.searching
+            && state.rename_target.is_none()
+            && state.connection_notice.is_none()
+            && self.search_sort_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        {
+            hints.push((
+                "Tab".into(),
+                format!("sort ({})", state.search_sort.label()),
+            ));
+        }
         let cancel = if state.help {
             self.keymap.primary_hint(ListAction::Cancel)
-        } else {
+        } else if state.editing_metadata() || self.can_return_to_chat {
             self.center_list_hint(ListAction::Cancel)
+        } else {
+            None
         };
         if let Some(hint) = cancel {
             hints.push((hint.display_label(), "back".into()));
@@ -167,15 +213,11 @@ impl AgentsOverviewView {
             }
         }
         if let Some(hint) = self.center_list_hint(ListAction::Accept) {
-            hints.push((
-                hint.display_label(),
-                if state.rename_target.is_some() {
-                    "rename"
-                } else {
-                    "open"
-                }
-                .into(),
-            ));
+            let action = match self.selected {
+                _ if state.rename_target.is_some() => "rename",
+                _ => "open",
+            };
+            hints.push((hint.display_label(), action.into()));
         }
         if !state.editing_metadata()
             && let Some(hint) = self

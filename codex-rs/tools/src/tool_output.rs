@@ -1,8 +1,12 @@
+use codex_code_mode::CodeModeToolResult;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ToolResultMetadata;
+use codex_utils_path_uri::PathUri;
 use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
@@ -17,6 +21,11 @@ pub trait ToolOutput: Send {
 
     fn success_for_logging(&self) -> bool;
 
+    /// Whether the call was refused before its underlying operation started.
+    fn was_aborted(&self) -> bool {
+        false
+    }
+
     /// Finalizes output using the same completed handler duration reported in tool-call logs.
     /// Called before recording model-visible history; implementations must not measure time here.
     fn set_handler_duration_ms(&mut self, _handler_duration_ms: u64) {}
@@ -24,6 +33,11 @@ pub trait ToolOutput: Send {
     /// Whether this output contains external context that should disable memory generation when
     /// `memories.disable_on_external_context` is enabled.
     fn contains_external_context(&self) -> bool {
+        false
+    }
+
+    /// Whether the complete model-visible result was already limited by its producer.
+    fn output_budget_applied(&self) -> bool {
         false
     }
 
@@ -38,6 +52,13 @@ pub trait ToolOutput: Send {
     /// Returns the tool call id exposed to `PostToolUse` hooks for this output.
     fn post_tool_use_id(&self, call_id: &str) -> String {
         call_id.to_string()
+    }
+
+    /// Returns the original local execution cwd for hook input, including delayed
+    /// results. Remote commands return `None` to retain the host hook cwd.
+    /// This does not change the local directory used to launch the hook process.
+    fn post_tool_use_cwd(&self) -> Option<PathUri> {
+        None
     }
 
     /// Returns the tool input exposed to `PostToolUse` hooks for this output.
@@ -56,13 +77,21 @@ pub trait ToolOutput: Send {
         None
     }
 
-    fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
-        response_input_to_code_mode_result(self.to_response_item("", payload))
+    /// Returns the script-visible value with its format for Code Mode's output helpers.
+    fn code_mode_result(&self, payload: &ToolPayload) -> CodeModeToolResult {
+        CodeModeToolResult::from(response_input_to_code_mode_result(
+            self.to_response_item("", payload),
+        ))
     }
 
-    /// Borrows original host-only metadata for recording, not for model output or logging.
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
-        None
+    /// Hands the final result to JavaScript, moving an already prepared value when possible.
+    fn into_code_mode_result(self: Box<Self>, payload: &ToolPayload) -> CodeModeToolResult {
+        self.code_mode_result(payload)
+    }
+
+    /// Returns the host-observed result fields for executed-tool passthrough.
+    fn tool_result_metadata(&self) -> ToolResultMetadata {
+        ToolResultMetadata::default()
     }
 }
 
@@ -78,12 +107,20 @@ where
         (**self).success_for_logging()
     }
 
+    fn was_aborted(&self) -> bool {
+        (**self).was_aborted()
+    }
+
     fn set_handler_duration_ms(&mut self, handler_duration_ms: u64) {
         (**self).set_handler_duration_ms(handler_duration_ms);
     }
 
     fn contains_external_context(&self) -> bool {
         (**self).contains_external_context()
+    }
+
+    fn output_budget_applied(&self) -> bool {
+        (**self).output_budget_applied()
     }
 
     fn fallback_token_limit_override(&self) -> Option<usize> {
@@ -98,6 +135,10 @@ where
         (**self).post_tool_use_id(call_id)
     }
 
+    fn post_tool_use_cwd(&self) -> Option<PathUri> {
+        (**self).post_tool_use_cwd()
+    }
+
     fn post_tool_use_input(&self, payload: &ToolPayload) -> Option<JsonValue> {
         (**self).post_tool_use_input(payload)
     }
@@ -106,11 +147,15 @@ where
         (**self).post_tool_use_response(call_id, payload)
     }
 
-    fn code_mode_result(&self, payload: &ToolPayload) -> JsonValue {
+    fn code_mode_result(&self, payload: &ToolPayload) -> CodeModeToolResult {
         (**self).code_mode_result(payload)
     }
 
-    fn tool_result_metadata(&self) -> Option<&JsonValue> {
+    fn into_code_mode_result(self: Box<Self>, payload: &ToolPayload) -> CodeModeToolResult {
+        (*self).into_code_mode_result(payload)
+    }
+
+    fn tool_result_metadata(&self) -> ToolResultMetadata {
         (**self).tool_result_metadata()
     }
 }
@@ -182,8 +227,8 @@ impl ToolOutput for JsonToolOutput {
         Some(self.value.clone())
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        self.value.clone()
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
+        CodeModeToolResult::from(self.value.clone())
     }
 }
 
@@ -205,15 +250,20 @@ impl ToolOutput for codex_protocol::mcp::CallToolResult {
         }
     }
 
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        let mut result = serde_json::to_value(self).unwrap_or_else(|err| {
-            JsonValue::String(format!("failed to serialize mcp result: {err}"))
-        });
+    fn code_mode_result(&self, _payload: &ToolPayload) -> CodeModeToolResult {
+        let mut result = match serde_json::to_value(self) {
+            Ok(value) => value,
+            Err(err) => {
+                return CodeModeToolResult::Json(JsonValue::String(format!(
+                    "failed to serialize mcp result: {err}"
+                )));
+            }
+        };
         // MCP result metadata is private to clients and must not reach Code Mode.
         if let JsonValue::Object(fields) = &mut result {
             fields.remove("_meta");
         }
-        result
+        CodeModeToolResult::McpCallToolResult(result)
     }
 }
 
@@ -256,11 +306,12 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
                     image: ImageReference::File { file_id },
                     ..
                 } if !file_id.trim().is_empty() => Some(file_id.clone()),
-                FunctionCallOutputContentItem::InputAudio { audio_url }
-                    if !audio_url.trim().is_empty() =>
-                {
-                    Some(audio_url.clone())
-                }
+                FunctionCallOutputContentItem::InputAudio {
+                    audio: AudioReference::Inline { audio_url },
+                } if !audio_url.trim().is_empty() => Some(audio_url.clone()),
+                FunctionCallOutputContentItem::InputAudio {
+                    audio: AudioReference::File { file_id },
+                } if !file_id.trim().is_empty() => Some(file_id.clone()),
                 FunctionCallOutputContentItem::InputText { .. }
                 | FunctionCallOutputContentItem::InputImage { .. }
                 | FunctionCallOutputContentItem::InputAudio { .. }

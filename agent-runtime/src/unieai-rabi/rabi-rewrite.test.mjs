@@ -8,6 +8,12 @@ test("package scopes and names", () => {
   assert.equal(rabiPackageName("@deepseek-ai/dsh-session"), "@unieai/rabi-session");
   assert.equal(rabiPackageName("@deepseek-ai/cordis"), "@unieai/cordis");
   assert.equal(rewriteText(`import { x } from "@deepseek-ai/dsh-client-store";`), `import { x } from "@unieai/rabi-client-store";`);
+  assert.equal(rewriteText("const publicRepository = 'deepseek-ai/dsh-libreoffice-kit';"), "const publicRepository = 'UnieAI/rabi-libreoffice-kit';");
+  assert.equal(rewriteText("repository `deepseek-ai/deepseek-harness`"), "repository `UnieAI/rabi-harness`");
+  assert.equal(rewriteText("(Join-Path $env:APPDATA '@deepseek-ai\\dsh-desktop')"), "(Join-Path $env:APPDATA '@unieai\\rabi-desktop')");
+  assert.equal(rewriteText("from deepseek_harness import DeepSeekHarness"), "from rabi_harness import RabiHarness");
+  // Other deepseek-ai/ slugs are model ids and stay as they are.
+  assert.equal(rewriteText("deepseek-ai/DeepSeek-V3.2"), "deepseek-ai/DeepSeek-V3.2");
 });
 
 test("name segments in every case", () => {

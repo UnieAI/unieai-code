@@ -340,11 +340,22 @@
     },
     "CommandExecutionApprovalKind": {
       "description": "Distinguishes a command approval from input sent to an existing terminal.",
-      "enum": [
-        "command",
-        "writeStdin"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "command",
+            "writeStdin"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A managed checkpoint requiring a fresh human decision. Only `accept`, `decline`, and `cancel` are valid. Requires the `requiredHumanApproval` initialize capability. This prompt does not itself start a command execution item.",
+          "enum": [
+            "humanCommand"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "CommandExecutionRequestApprovalParams": {
       "properties": {
@@ -473,6 +484,17 @@
             "null"
           ]
         },
+        "supportedResultFormat": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DynamicToolResultFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional response format supported by the runtime serving this call."
+        },
         "threadId": {
           "type": "string"
         },
@@ -491,6 +513,12 @@
         "turnId"
       ],
       "type": "object"
+    },
+    "DynamicToolResultFormat": {
+      "enum": [
+        "structuredContent"
+      ],
+      "type": "string"
     },
     "ExecCommandApprovalParams": {
       "properties": {
@@ -1482,6 +1510,13 @@
         }
       ],
       "properties": {
+        "environmentId": {
+          "description": "Registration scope, not necessarily the server's execution environment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "serverName": {
           "type": "string"
         },

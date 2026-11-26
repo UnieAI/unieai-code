@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt;
 
 use super::CodexHarnessMetadata;
 use super::CompactedItem;
@@ -8,6 +9,7 @@ use super::McpResourceOriginCheckpoint;
 use super::RealtimeItem;
 use super::ResponseItem;
 use super::ResponseItemEnvelope;
+use super::RolloutEventMetadata;
 use super::RolloutItem;
 use super::SecurityRiskScore;
 use super::SessionMetaLine;
@@ -16,12 +18,28 @@ use super::TurnContextItem;
 use super::WorldStateItem;
 use crate::RetainedContextEvent;
 use crate::RetainedUserMessage;
+use codex_protocol::ContextWindowId;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ResponseItemIdAllocation;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::RawFileSystemSandboxPolicy;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::de::DeserializeSeed;
+use serde::de::Error as _;
+use serde::de::MapAccess;
+use serde::de::Visitor;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::value::StringDeserializer;
+use serde::ser::Error as _;
+use serde_json::Value;
 
 const CODE_MODE_DELIVERY_COMPLETE: &str = "codex:code-mode-delivery:v1:complete";
 const CODE_MODE_DELIVERY_INCOMPLETE: &str = "codex:code-mode-delivery:v1:incomplete:";
@@ -34,21 +52,25 @@ pub(super) enum RolloutItemWire<'a> {
     SessionMeta {
         payload: Cow<'a, SessionMetaLine>,
     },
+    DynamicToolsUpdated {
+        payload: DynamicToolsUpdatedPayload<'a>,
+    },
     ResponseItem {
-        payload: Cow<'a, ResponseItem>,
+        payload: ItemPayload<'a, ResponseItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Cow<'a, CodexHarnessMetadata>>,
     },
     InterAgentCommunication {
-        payload: Cow<'a, InterAgentCommunication>,
+        payload: ItemPayload<'a, InterAgentCommunication>,
     },
     InterAgentCommunicationMetadata {
         payload: InterAgentCommunicationMetadataPayload,
     },
     Compacted {
-        payload: Cow<'a, CompactedItem>,
+        payload: Cow<'a, Box<CompactedItem>>,
     },
     TurnContext {
+        #[serde(serialize_with = "serialize_turn_context")]
         payload: Cow<'a, TurnContextItem>,
     },
     TokenUsageRecord {
@@ -64,11 +86,212 @@ pub(super) enum RolloutItemWire<'a> {
         payload: Cow<'a, SecurityRiskScore>,
     },
     EventMsg {
-        payload: Cow<'a, EventMsg>,
+        #[schemars(with = "EventMsg")]
+        payload: RolloutEventPayload<'a>,
     },
     RealtimeItem {
         payload: Cow<'a, RealtimeItem>,
     },
+}
+
+/// Encodes protocol events and legacy audio rejection metadata in the rollout format.
+pub(super) struct RolloutEventPayload<'a> {
+    event: Cow<'a, EventMsg>,
+    rejected_audio_file_ids: Cow<'a, [String]>,
+}
+
+impl Serialize for RolloutEventPayload<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.rejected_audio_file_ids.is_empty() {
+            return self.event.serialize(serializer);
+        }
+        if !matches!(self.event.as_ref(), EventMsg::TurnComplete(event) if event.error.is_some()) {
+            return Err(S::Error::custom("audio rejection requires a failed turn"));
+        }
+        // Keep the original rollout format readable during downgrade.
+        let mut payload = serde_json::to_value(&self.event).map_err(S::Error::custom)?;
+        let error = payload["error"]
+            .as_object_mut()
+            .ok_or_else(|| S::Error::custom("audio rejection requires a failed turn"))?;
+        error.insert(
+            "rejected_audio_file_ids".to_owned(),
+            serde_json::to_value(&self.rejected_audio_file_ids).map_err(S::Error::custom)?,
+        );
+        payload.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RolloutEventPayload<'_> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(RolloutEventVisitor)
+    }
+}
+
+struct RolloutEventVisitor;
+
+impl<'de> Visitor<'de> for RolloutEventVisitor {
+    type Value = RolloutEventPayload<'static>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a rollout event payload")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let mut map = RolloutEventMap {
+            map,
+            error_field: false,
+            rejected_audio_file_ids: None,
+        };
+        let event = EventMsg::deserialize(MapAccessDeserializer::new(&mut map))?;
+        let rejected_audio_file_ids = if matches!(&event, EventMsg::TurnComplete(_)) {
+            map.rejected_audio_file_ids
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(A::Error::custom)?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Ok(RolloutEventPayload {
+            event: Cow::Owned(event),
+            rejected_audio_file_ids: Cow::Owned(rejected_audio_file_ids),
+        })
+    }
+}
+
+/// Forward the original event fields to Serde and inspect only the legacy error.
+struct RolloutEventMap<A> {
+    map: A,
+    error_field: bool,
+    rejected_audio_file_ids: Option<Value>,
+}
+
+impl<'de, A: MapAccess<'de>> MapAccess<'de> for RolloutEventMap<A> {
+    type Error = A::Error;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Self::Error> {
+        let Some(key) = self.map.next_key::<String>()? else {
+            return Ok(None);
+        };
+        self.error_field = key == "error";
+        seed.deserialize(StringDeserializer::new(key)).map(Some)
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, Self::Error> {
+        if self.error_field {
+            let error: Value = self.map.next_value()?;
+            self.rejected_audio_file_ids = error.get("rejected_audio_file_ids").cloned();
+            seed.deserialize(error).map_err(Self::Error::custom)
+        } else {
+            self.map.next_value_seed(seed)
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.map.size_hint()
+    }
+}
+
+fn serialize_turn_context<S>(context: &TurnContextItem, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    // Keep older rollout readers usable during deployment and rollback. Runtime
+    // contexts stay profile-only; compatibility fields exist only on the wire.
+    #[derive(Serialize)]
+    struct Wire<'a> {
+        #[serde(flatten)]
+        context: &'a TurnContextItem,
+        sandbox_policy: SandboxPolicy,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_system_sandbox_policy: Option<RawFileSystemSandboxPolicy>,
+    }
+
+    let cwd = context.cwd.as_path();
+    let (file_system, network) = context.permission_profile.to_runtime_permissions();
+    let sandbox_policy = context
+        .permission_profile
+        .to_legacy_sandbox_policy(cwd)
+        .unwrap_or_else(|_| {
+            let tmpdir_writable = std::env::var_os("TMPDIR")
+                .filter(|path| !path.is_empty())
+                .and_then(|path| AbsolutePathBuf::from_absolute_path(path).ok())
+                .is_some_and(|path| file_system.can_write_local_path_with_cwd(path.as_path(), cwd));
+            let slash_tmp = std::path::Path::new("/tmp");
+            let slash_tmp_writable = slash_tmp.is_absolute()
+                && slash_tmp.is_dir()
+                && file_system.can_write_local_path_with_cwd(slash_tmp, cwd);
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: file_system
+                    .get_writable_roots_with_cwd(cwd)
+                    .into_iter()
+                    .map(|root| root.root)
+                    .filter(|root| root != &context.cwd)
+                    .collect(),
+                network_access: network.is_enabled(),
+                exclude_tmpdir_env_var: !tmpdir_writable,
+                exclude_slash_tmp: !slash_tmp_writable,
+            }
+        });
+    let legacy_file_system =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&sandbox_policy, cwd);
+    let file_system_sandbox_policy = (file_system != legacy_file_system)
+        .then(|| file_system.try_into().ok())
+        .flatten();
+    Wire {
+        context,
+        sandbox_policy,
+        file_system_sandbox_policy,
+    }
+    .serialize(serializer)
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub(super) struct DynamicToolsUpdatedPayload<'a> {
+    thread_id: codex_protocol::ThreadId,
+    tools: Cow<'a, [codex_protocol::dynamic_tools::DynamicToolSpec]>,
+}
+
+/// The protocol item keeps its wire ID. The optional allocation lets replay resume the sequence.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub(super) struct ItemPayload<'a, T: Clone> {
+    #[serde(flatten)]
+    item: Cow<'a, T>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id_allocation: Option<Cow<'a, ResponseItemIdAllocation>>,
+}
+
+impl<'a, T: Clone> ItemPayload<'a, T> {
+    fn borrowed(item: &'a T, id: Option<&'a ResponseItemId>) -> Self {
+        Self {
+            item: Cow::Borrowed(item),
+            id_allocation: id.and_then(ResponseItemId::allocation).map(Cow::Borrowed),
+        }
+    }
+}
+
+impl<'a> From<&'a ResponseItem> for ItemPayload<'a, ResponseItem> {
+    fn from(item: &'a ResponseItem) -> Self {
+        Self::borrowed(item, item.id())
+    }
+}
+
+impl From<ItemPayload<'_, ResponseItem>> for ResponseItem {
+    fn from(payload: ItemPayload<'_, ResponseItem>) -> Self {
+        let mut item = payload.item.into_owned();
+        if let Some(allocation) = payload.id_allocation
+            && let Some(id) = item.id().cloned()
+        {
+            item.set_id(Some(id.with_allocation(allocation.into_owned())));
+        }
+        item
+    }
 }
 
 impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
@@ -77,12 +300,18 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::SessionMeta(payload) => Self::SessionMeta {
                 payload: Cow::Borrowed(payload),
             },
+            RolloutItem::DynamicToolsUpdated { thread_id, tools } => Self::DynamicToolsUpdated {
+                payload: DynamicToolsUpdatedPayload {
+                    thread_id: *thread_id,
+                    tools: Cow::Borrowed(tools),
+                },
+            },
             RolloutItem::ResponseItem(envelope) => Self::ResponseItem {
-                payload: Cow::Borrowed(&envelope.item),
+                payload: (&envelope.item).into(),
                 metadata: envelope.metadata.as_ref().map(Cow::Borrowed),
             },
             RolloutItem::InterAgentCommunication(payload) => Self::InterAgentCommunication {
-                payload: Cow::Borrowed(payload),
+                payload: ItemPayload::borrowed(payload, payload.id.as_ref()),
             },
             RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {
                 Self::InterAgentCommunicationMetadata {
@@ -106,6 +335,7 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::RetainedContext(RetainedContextEvent::DeliveredAssistantMessage {
                 message,
                 acceptance_order,
+                retained_source,
             }) => {
                 // Earlier clients preserve this as genuine assistant context, including across compaction.
                 let text = if message.complete {
@@ -119,28 +349,32 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
                     format!("{CODE_MODE_DELIVERY_INCOMPLETE}{}", message.text)
                 };
                 Self::ResponseItem {
-                    payload: Cow::Owned(ResponseItem::Message {
-                        status: None,
-                        encrypted_content: None,
-                        id: message.message_id.clone().map(ResponseItemId::from_server),
-                        role: "assistant".to_owned(),
-                        content: vec![ContentItem::OutputText {
-                            annotations: None,
-                            logprobs: None,
-                            text,
-                        }],
-                        // Older Guardian clients exclude commentary from root-to-worker
-                        // review. Keep the phase unspecified so they can review this
-                        // confirmed delivery without claiming it ended the turn.
-                        phase: None,
-                        internal_chat_message_metadata_passthrough: Some(
-                            InternalChatMessageMetadataPassthrough {
-                                turn_id: Some(message.turn_id.clone()),
-                                ..Default::default()
-                            },
-                        ),
-                    }),
+                    payload: ItemPayload {
+                        item: Cow::Owned(ResponseItem::Message {
+                            status: None,
+                            encrypted_content: None,
+                            id: message.message_id.clone().map(ResponseItemId::from_server),
+                            role: "assistant".to_owned(),
+                            content: vec![ContentItem::OutputText {
+                                annotations: None,
+                                logprobs: None,
+                                text,
+                            }],
+                            // Older Guardian clients exclude commentary from root-to-worker
+                            // review. Keep the phase unspecified so they can review this
+                            // confirmed delivery without claiming it ended the turn.
+                            phase: None,
+                            internal_chat_message_metadata_passthrough: Some(
+                                InternalChatMessageMetadataPassthrough {
+                                    turn_id: Some(message.turn_id.clone()),
+                                    ..Default::default()
+                                },
+                            ),
+                        }),
+                        id_allocation: None,
+                    },
                     metadata: Some(Cow::Owned(CodexHarnessMetadata {
+                        retained_source: retained_source.clone(),
                         delivered_assistant_message: Some(marker),
                         user_input_order: Some(*acceptance_order),
                         ..Default::default()
@@ -153,8 +387,15 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::SecurityRiskScore(payload) => Self::SecurityRiskScore {
                 payload: Cow::Borrowed(payload),
             },
-            RolloutItem::EventMsg(payload) => Self::EventMsg {
-                payload: Cow::Borrowed(payload),
+            RolloutItem::EventMsg { event, metadata } => Self::EventMsg {
+                payload: RolloutEventPayload {
+                    event: Cow::Borrowed(event),
+                    rejected_audio_file_ids: Cow::Borrowed(
+                        metadata
+                            .as_ref()
+                            .map_or(&[], |metadata| metadata.rejected_audio_file_ids.as_slice()),
+                    ),
+                },
             },
             RolloutItem::RealtimeItem(payload) => Self::RealtimeItem {
                 payload: Cow::Borrowed(payload),
@@ -169,6 +410,10 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
             RolloutItemWire::SessionMeta { payload } => {
                 Self::SessionMeta(Box::new(payload.into_owned()))
             }
+            RolloutItemWire::DynamicToolsUpdated { payload } => Self::DynamicToolsUpdated {
+                thread_id: payload.thread_id,
+                tools: payload.tools.into_owned(),
+            },
             RolloutItemWire::ResponseItem { payload, metadata } => {
                 if let (
                     ResponseItem::Message {
@@ -179,7 +424,7 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
                         ..
                     },
                     Some(metadata),
-                ) = (payload.as_ref(), metadata.as_deref())
+                ) = (payload.item.as_ref(), metadata.as_deref())
                     && role == "assistant"
                     && let [ContentItem::OutputText { text, .. }] = content.as_slice()
                     && let Some(turn_id) = passthrough.turn_id.as_ref()
@@ -204,25 +449,30 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
                                 phase: None,
                             },
                             acceptance_order,
+                            retained_source: metadata.retained_source.clone(),
                         },
                     );
                 }
                 Self::ResponseItem(ResponseItemEnvelope {
-                    item: payload.into_owned(),
+                    item: payload.into(),
                     metadata: metadata.map(Cow::into_owned),
                 })
             }
             RolloutItemWire::InterAgentCommunication { payload } => {
-                Self::InterAgentCommunication(payload.into_owned())
+                let mut message = payload.item.into_owned();
+                if let Some(allocation) = payload.id_allocation
+                    && let Some(id) = message.id.take()
+                {
+                    message.id = Some(id.with_allocation(allocation.into_owned()));
+                }
+                Self::InterAgentCommunication(message)
             }
             RolloutItemWire::InterAgentCommunicationMetadata { payload } => {
                 Self::InterAgentCommunicationMetadata {
                     trigger_turn: payload.trigger_turn,
                 }
             }
-            RolloutItemWire::Compacted { payload } => {
-                Self::Compacted(Box::new(payload.into_owned()))
-            }
+            RolloutItemWire::Compacted { payload } => Self::Compacted(payload.into_owned()),
             RolloutItemWire::TurnContext { payload } => Self::TurnContext(payload.into_owned()),
             RolloutItemWire::TokenUsageRecord { payload } => {
                 Self::TokenUsageRecord(payload.into_owned())
@@ -234,7 +484,14 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
             RolloutItemWire::SecurityRiskScore { payload } => {
                 Self::SecurityRiskScore(payload.into_owned())
             }
-            RolloutItemWire::EventMsg { payload } => Self::EventMsg(payload.into_owned()),
+            RolloutItemWire::EventMsg { payload } => Self::EventMsg {
+                event: payload.event.into_owned(),
+                metadata: (!payload.rejected_audio_file_ids.is_empty()).then(|| {
+                    RolloutEventMetadata {
+                        rejected_audio_file_ids: payload.rejected_audio_file_ids.into_owned(),
+                    }
+                }),
+            },
             RolloutItemWire::RealtimeItem { payload } => Self::RealtimeItem(payload.into_owned()),
         }
     }
@@ -249,7 +506,7 @@ pub(super) struct InterAgentCommunicationMetadataPayload {
 pub(super) struct CompactedItemWire<'a> {
     message: Cow<'a, str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    replacement_history: Option<Vec<Cow<'a, ResponseItem>>>,
+    replacement_history: Option<Vec<ItemPayload<'a, ResponseItem>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replacement_history_metadata: Option<Vec<Cow<'a, CodexHarnessMetadata>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,11 +518,11 @@ pub(super) struct CompactedItemWire<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window_number: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    first_window_id: Option<Cow<'a, str>>,
+    first_window_id: Option<Cow<'a, ContextWindowId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_window_id: Option<Cow<'a, str>>,
+    previous_window_id: Option<Cow<'a, ContextWindowId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>")]
+    #[schemars(with = "Option<ContextWindowId>")]
     window_id: Option<WindowIdWire<'a>>,
     #[serde(default)]
     compaction_response_id: Option<Cow<'a, str>>,
@@ -296,7 +553,7 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
             replacement_history: item.replacement_history.as_ref().map(|items| {
                 items
                     .iter()
-                    .map(|envelope| Cow::Borrowed(&envelope.item))
+                    .map(|envelope| (&envelope.item).into())
                     .collect()
             }),
             replacement_history_metadata,
@@ -304,11 +561,11 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
             retained_context: item.retained_context.as_ref().map(Cow::Borrowed),
             mcp_resource_origins: item.mcp_resource_origins.as_ref().map(Cow::Borrowed),
             window_number: item.window_number,
-            first_window_id: item.first_window_id.as_deref().map(Cow::Borrowed),
-            previous_window_id: item.previous_window_id.as_deref().map(Cow::Borrowed),
+            first_window_id: item.first_window_id.as_ref().map(Cow::Borrowed),
+            previous_window_id: item.previous_window_id.as_ref().map(Cow::Borrowed),
             window_id: item
                 .window_id
-                .as_deref()
+                .as_ref()
                 .map(|window_id| WindowIdWire::Id(Cow::Borrowed(window_id))),
             compaction_response_id: item.compaction_response_id.as_deref().map(Cow::Borrowed),
             latest_token_usage_record: item.latest_token_usage_record.as_ref().map(Cow::Borrowed),
@@ -338,7 +595,7 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
                         .into_iter()
                         .zip(metadata)
                         .map(|(item, metadata)| ResponseItemEnvelope {
-                            item: item.into_owned(),
+                            item: item.into(),
                             metadata: Some(metadata.into_owned()),
                         })
                         .collect(),
@@ -347,7 +604,7 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             (Some(items), None) => Some(
                 items
                     .into_iter()
-                    .map(|item| ResponseItemEnvelope::new(item.into_owned()))
+                    .map(|item| ResponseItemEnvelope::new(item.into()))
                     .collect(),
             ),
             (None, Some(_)) => {
@@ -387,6 +644,6 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum WindowIdWire<'a> {
-    Id(Cow<'a, str>),
+    Id(Cow<'a, ContextWindowId>),
     LegacyWindowNumber(u64),
 }

@@ -7,8 +7,11 @@ use crate::remote::fetch_measurement_reference_bundle;
 use crate::remote_bundle::download_remote_plugin_bundle;
 use crate::remote_bundle::install_remote_plugin_bundle;
 use crate::script_attribution::PluginMeasurementTarget;
+use codex_features::RuntimeAuthMode;
 use codex_login::CodexAuth;
 use codex_plugin::PluginId;
+use codex_plugin_archive_verification::SigningKeyCache;
+use codex_runtime_agent_instance::RuntimeAuthSlot;
 use codex_utils_path_uri::PathConvention;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -65,6 +68,7 @@ fn is_preparing(cell: &ReferenceCell) -> bool {
 #[derive(Default)]
 pub struct RemotePluginMeasurementCache {
     references: Mutex<Vec<(ReferenceKey, ReferenceCell)>>,
+    signing_key_cache: Arc<SigningKeyCache>,
 }
 
 impl RemotePluginMeasurementCache {
@@ -84,6 +88,7 @@ impl RemotePluginMeasurementCache {
         config: &PluginsConfigInput,
         auth: &CodexAuth,
         target: &PluginMeasurementTarget,
+        runtime_auth: Option<(RuntimeAuthSlot, RuntimeAuthMode)>,
     ) -> anyhow::Result<Option<Arc<PluginMeasurementReference>>> {
         if !config.plugins_enabled || !config.remote_plugin_enabled || !auth.uses_codex_backend() {
             return Ok(None);
@@ -92,7 +97,12 @@ impl RemotePluginMeasurementCache {
         // authoritative for enabled state, including default installations.
         // GLOBAL plugins have already passed server-side admission; local
         // marketplace product policy and skill capability loading are separate.
-        let service = config.remote_plugin_service_config();
+        let service = config
+            .remote_plugin_service_config_with_signing_key_cache(
+                runtime_auth,
+                Arc::clone(&self.signing_key_cache),
+            )
+            .for_current_account();
         let Some((remote_id, bundle)) = fetch_measurement_reference_bundle(&service, auth, target)
             .await
             .map_err(|_| anyhow::anyhow!("plugin measurement catalog lookup failed"))?
@@ -191,6 +201,7 @@ impl RemotePluginMeasurementCache {
             return Ok(None);
         };
         if let Some(sender) = initializer {
+            let auth = auth.clone();
             // The cache keeps the receiver alive when individual callers cancel.
             // Once the cache and all callers disappear, stop waiting/downloading.
             tokio::spawn(async move {
@@ -198,7 +209,7 @@ impl RemotePluginMeasurementCache {
                     biased;
                     _ = sender.closed() => return,
                     reference = async {
-                        let bytes = download_remote_plugin_bundle(&service, &bundle).await?;
+                        let bytes = download_remote_plugin_bundle(&service, Some(&auth), &bundle).await?;
                         // Blocking extraction cannot be aborted once started. Its
                         // owner must keep the store alive even if this task stops.
                         tokio::task::spawn_blocking(move || {

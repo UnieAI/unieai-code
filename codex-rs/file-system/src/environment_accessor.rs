@@ -27,10 +27,20 @@ use std::sync::Weak;
 /// Filesystem operations authorized by the environment that supplied this borrowed accessor.
 ///
 /// Callers cannot extract the underlying filesystem or choose another sandbox. They may retain
-/// returned data, cache keys, and already-opened read streams after the accessor is gone.
+/// returned data, cache keys, opened read streams, and fixed-path watches after the accessor is gone.
 pub trait EnvironmentAccess: Send + Sync {
     /// Identifies the filesystem and captured permissions without granting access to either.
     fn cache_key(&self) -> EnvironmentAccessKey;
+
+    /// Registers an owned watch for these fixed paths, or returns `None` when unsupported.
+    /// Implementations must preserve captured read permissions when checking the observation.
+    fn watch_missing(
+        &self,
+        _missing: Vec<PathUri>,
+        _present: Option<PathUri>,
+    ) -> ExecutorFileSystemFuture<'static, Option<tokio::sync::oneshot::Receiver<()>>> {
+        Box::pin(async { Ok(None) })
+    }
 
     fn canonicalize<'a>(&'a self, path: &'a PathUri) -> ExecutorFileSystemFuture<'a, PathUri>;
 
@@ -71,6 +81,13 @@ pub trait EnvironmentAccess: Send + Sync {
         path: &'a PathUri,
         options: GetMetadataOptions,
     ) -> ExecutorFileSystemFuture<'a, FileMetadata>;
+
+    /// Get one metadata result per path using this accessor's captured permissions.
+    fn get_metadata_batch<'a>(
+        &'a self,
+        paths: &'a [PathUri],
+        options: GetMetadataOptions,
+    ) -> ExecutorFileSystemFuture<'a, Vec<FileSystemResult<FileMetadata>>>;
 
     fn read_directory<'a>(
         &'a self,
@@ -128,6 +145,13 @@ pub struct EnvironmentAccessKey {
     file_system: Weak<dyn ExecutorFileSystem>,
     // Cache keys are cloned per root; share the permission and path lists instead of copying them.
     sandbox: Option<Arc<FileSystemSandboxContext>>,
+}
+
+impl EnvironmentAccessKey {
+    /// Compares filesystem identity without comparing captured permissions.
+    pub fn same_file_system(&self, other: &Self) -> bool {
+        self.file_system.ptr_eq(&other.file_system)
+    }
 }
 
 impl fmt::Debug for EnvironmentAccessKey {
@@ -194,6 +218,26 @@ impl<'environment> FileSystemEnvironmentAccessor<'environment> {
 }
 
 impl EnvironmentAccess for FileSystemEnvironmentAccessor<'_> {
+    fn watch_missing(
+        &self,
+        missing: Vec<PathUri>,
+        present: Option<PathUri>,
+    ) -> ExecutorFileSystemFuture<'static, Option<tokio::sync::oneshot::Receiver<()>>> {
+        // Executor watches make unsandboxed observations, so restricted reads use live discovery.
+        if self
+            .key
+            .sandbox
+            .as_ref()
+            .is_some_and(|sandbox| sandbox.should_read_from_sandbox())
+        {
+            return Box::pin(async { Ok(None) });
+        }
+        let Some(file_system) = self.key.file_system.upgrade() else {
+            return Box::pin(async { Ok(None) });
+        };
+        Box::pin(async move { file_system.watch_missing(missing, present).await })
+    }
+
     fn cache_key(&self) -> EnvironmentAccessKey {
         self.key.clone()
     }
@@ -255,6 +299,15 @@ impl EnvironmentAccess for FileSystemEnvironmentAccessor<'_> {
     ) -> ExecutorFileSystemFuture<'a, FileMetadata> {
         self.file_system
             .get_metadata(path, options, self.key.sandbox.as_deref())
+    }
+
+    fn get_metadata_batch<'a>(
+        &'a self,
+        paths: &'a [PathUri],
+        options: GetMetadataOptions,
+    ) -> ExecutorFileSystemFuture<'a, Vec<FileSystemResult<FileMetadata>>> {
+        self.file_system
+            .get_metadata_batch(paths, options, self.key.sandbox.as_deref())
     }
 
     fn read_directory<'a>(

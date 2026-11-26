@@ -269,7 +269,11 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
             })
             .await?;
         for item in history.items {
-            if let codex_history::RolloutItem::EventMsg(EventMsg::TurnStarted(event)) = item {
+            if let codex_history::RolloutItem::EventMsg {
+                event: EventMsg::TurnStarted(event),
+                ..
+            } = item
+            {
                 starts.push((thread_id, event));
             }
         }
@@ -758,6 +762,9 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
 
 #[path = "agent_eviction_tests.rs"]
 mod eviction_tests;
+
+#[path = "agent_permission_reload_tests.rs"]
+mod permission_reload_tests;
 
 /// Tree shutdown waits for all admitted members, even after registry removal, without crossing
 /// into another root's tree.

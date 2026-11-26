@@ -3150,7 +3150,7 @@ async fn experimental_features_popup_snapshot() {
 }
 
 #[tokio::test]
-async fn experimental_features_toggle_saves_on_exit() {
+async fn experimental_features_cancel_discards_toggle() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     let mut keymap = crate::keymap::RuntimeKeymap::defaults().list;
@@ -3179,25 +3179,8 @@ async fn experimental_features_toggle_saves_on_exit() {
     );
 
     chat.handle_key_event(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
-    assert!(
-        !chat.has_active_view(),
-        "remapped cancel must save and close"
-    );
-
-    let mut updates = None;
-    while let Ok(event) = rx.try_recv() {
-        if let AppEvent::SaveExperimentalFeatures {
-            updates: event_updates,
-            ..
-        } = event
-        {
-            updates = Some(event_updates);
-            break;
-        }
-    }
-
-    let updates = updates.expect("expected SaveExperimentalFeatures event");
-    assert_eq!(updates, vec![(expected_feature.key().to_string(), true)]);
+    assert!(!chat.has_active_view(), "remapped cancel must close");
+    assert!(rx.try_recv().is_err(), "cancel must discard the toggle");
 }
 
 #[tokio::test]
@@ -3312,6 +3295,11 @@ async fn memories_reset_confirmation_snapshot() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("memories_reset_confirmation", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Choose how Codex uses"));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    assert!(chat.no_modal_or_popup_active());
 }
 
 #[tokio::test]
@@ -3423,7 +3411,7 @@ async fn model_picker_refreshes_startup_catalog() {
         auto.description = "Auto model".to_string();
         refreshed.push(auto);
         startup[0].show_in_picker = !hidden_startup;
-        chat.model_catalog = Arc::new(ModelCatalog::new(startup.clone()));
+        set_test_model_catalog(&mut chat, startup.clone());
         chat.open_model_popup();
         assert!(
             std::iter::from_fn(|| rx.try_recv().ok())
@@ -3463,7 +3451,7 @@ async fn model_picker_queued_all_models_uses_refreshed_catalog() {
     let mut auto = preset.clone();
     auto.model = "codex-auto-test".to_string();
     auto.id = auto.model.clone();
-    chat.model_catalog = Arc::new(ModelCatalog::new(vec![auto, preset]));
+    set_test_model_catalog(&mut chat, vec![auto, preset]);
     chat.open_model_popup();
     assert_matches!(rx.try_recv(), Ok(AppEvent::FetchModels { .. }));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
@@ -3495,7 +3483,7 @@ async fn model_picker_refresh_preserves_highlight() {
         for preset in &mut presets {
             preset.display_name = "Shared display name".to_string();
         }
-        chat.model_catalog = Arc::new(ModelCatalog::new(presets.clone()));
+        set_test_model_catalog(&mut chat, presets.clone());
         chat.open_model_popup();
         chat.handle_key_event(KeyEvent::from(KeyCode::Down));
         if reasoning_submenu {
@@ -3565,7 +3553,7 @@ async fn model_picker_refresh_preserves_dismissal_and_reasoning_submenu() {
         chat.thread_id = Some(ThreadId::new());
         let preset = get_available_model(&chat, "gpt-5.5");
         let refreshed = chat.model_catalog.try_list_models().unwrap();
-        chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset.clone()]));
+        set_test_model_catalog(&mut chat, vec![preset.clone()]);
         chat.open_model_popup();
         assert_matches!(rx.try_recv(), Ok(AppEvent::FetchModels { .. }));
         if explicit_all_models {
@@ -3807,17 +3795,13 @@ async fn model_reasoning_selection_popup_applies_custom_effort() {
 
     let selected_effort_events = std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|event| match event {
-            AppEvent::UpdateReasoningEffort(effort) => Some((None, effort)),
-            AppEvent::PersistModelSelection { model, effort } => Some((Some(model), effort)),
+            AppEvent::ApplyModelSelection { model, effort } => Some((model, effort)),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
         selected_effort_events,
-        vec![
-            (None, Some(custom_effort.clone())),
-            (Some("gpt-5.5".to_string()), Some(custom_effort)),
-        ]
+        vec![("gpt-5.5".to_string(), Some(custom_effort))]
     );
 }
 
@@ -3909,11 +3893,7 @@ async fn max_reasoning_selection_persists_model_selection() {
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(events.iter().any(|event| matches!(
         event,
-        AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Max))
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        AppEvent::PersistModelSelection {
+        AppEvent::ApplyModelSelection {
             model,
             effort: Some(ReasoningEffortConfig::Max),
         } if model == "gpt-5.5"
@@ -4052,7 +4032,7 @@ async fn reasoning_up_shortcuts_reach_max_in_default_and_plan_modes() {
                     .expect("expected plan collaboration mode");
                 chat.set_collaboration_mask(plan_mask);
             }
-            chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+            set_test_model_catalog(&mut chat, vec![preset]);
             if plan_mode {
                 chat.set_plan_mode_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
             } else {
@@ -4129,7 +4109,7 @@ async fn reasoning_up_shortcut_does_not_silently_enter_ultra() {
                 description: "Ultra reasoning".to_string(),
             },
         ]);
-        chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+        set_test_model_catalog(&mut chat, vec![preset]);
         chat.set_model(model);
 
         chat.set_reasoning_effort(Some(ReasoningEffortConfig::Max));
@@ -4173,7 +4153,7 @@ async fn reasoning_down_shortcut_can_leave_advanced_effort() {
             description: "Maximum reasoning".to_string(),
         },
     ]);
-    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    set_test_model_catalog(&mut chat, vec![preset]);
 
     for (current, expected) in [
         (ReasoningEffortConfig::Ultra, ReasoningEffortConfig::Max),
@@ -4260,7 +4240,7 @@ async fn single_reasoning_option_skips_selection() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, AppEvent::UpdateReasoningEffort(Some(effort)) if *effort == ReasoningEffortConfig::High)),
+            .any(|ev| matches!(ev, AppEvent::ApplyModelSelection { effort: Some(effort), .. } if *effort == ReasoningEffortConfig::High)),
         "expected reasoning effort to be applied automatically; events: {events:?}"
     );
 }
@@ -4321,28 +4301,57 @@ async fn auto_model_advertising_advanced_effort_opens_reasoning_picker() {
 
 #[tokio::test]
 async fn feedback_selection_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     // Without a webhook, /feedback would upload to OpenAI and is coming soon.
     chat.config.feedback_webhook_url = Some("https://feedback.unieai.test/hook".to_string());
     chat.sync_coming_soon_context();
 
-    // Open the feedback category selection popup via slash command.
-    chat.dispatch_command(SlashCommand::Feedback);
+    chat.bottom_pane
+        .set_composer_text("/feedback".into(), Vec::new(), Vec::new());
+    assert_chatwidget_snapshot!(
+        "feedback_command_suggestion",
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80))
+    );
+    chat.handle_key_event(KeyCode::Enter.into());
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::OpenFeedback))
+    );
+    chat.open_feedback(crate::ThreadParamsMode::Embedded);
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("feedback_selection_popup", popup);
 }
 
 #[tokio::test]
+async fn feedback_stops_before_collecting_a_note_when_no_destination_is_available() {
+    use crate::ThreadParamsMode;
+
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.open_feedback(ThreadParamsMode::Cloud);
+    chat.config.feedback_enabled = false;
+    chat.open_feedback(ThreadParamsMode::Remote);
+
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    let messages = lines_to_single_string(&drain_insert_history(&mut rx).concat());
+    insta::assert_snapshot!(messages.trim(), @"
+    • Feedback is unavailable in Cloud threads.
+
+    • Feedback uploads are disabled, and saving a ZIP requires a local app server.
+    ");
+}
+
+#[tokio::test]
 async fn feedback_upload_consent_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.show_selection_view(crate::bottom_pane::feedback_upload_consent_params(
+    chat.show_selection_view(crate::bottom_pane::feedback_consent_params(
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::Bug,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
         /*include_windows_sandbox_log*/ true,
+        /*can_save*/ true,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),
@@ -4358,12 +4367,13 @@ async fn feedback_upload_consent_popup_snapshot() {
 async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_filename() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.show_selection_view(crate::bottom_pane::feedback_upload_consent_params(
+    chat.show_selection_view(crate::bottom_pane::feedback_consent_params(
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::GoodResult,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
         /*include_windows_sandbox_log*/ false,
+        /*can_save*/ true,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),

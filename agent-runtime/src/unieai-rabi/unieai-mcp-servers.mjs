@@ -13,7 +13,7 @@
  * a configured server named `unieai_studio` replaces it (for instance one
  * scoped to a single knowledge base: `<gateway>/mcp/kb/<id>`).
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
 export const STUDIO_SERVER_NAME = "unieai_studio";
@@ -102,4 +102,93 @@ export function blamedServer(error, servers) {
     return servers.find((server) => server.name === normalized || normalized.startsWith(server.name.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 20))) ?? null;
   }
   return null;
+}
+
+/**
+ * OAuth servers (`unieai mcp login <name>`). codex keeps their tokens in its
+ * own store and refreshes them itself; rabi only takes static headers, so a
+ * server like `space` used to reach rabi with no Authorization at all, fail
+ * its first connection, and leave the model without its tools — which is how
+ * the model ended up probing resources and hand-writing OAuth instead.
+ *
+ * Before a session opens, the Rust side is asked about each such server
+ * (`mcpServerStatus/list`, one server). That connects with codex's OAuth
+ * runtime, which refreshes an expiring token under its cross-process lock and
+ * writes it back, so the token read afterwards is current and no refresh token
+ * is ever spent from JS (Space revokes a whole grant when one is replayed).
+ */
+
+/** The configured entries whose auth is codex's OAuth, by server name. */
+function oauthCandidate(name, configured, server) {
+  if (server?.type !== "http") return false;
+  if (server.headers?.some((header) => header.name.toLowerCase() === "authorization")) return false;
+  const entry = configured?.[name];
+  if (!entry?.url || entry.bearer_token_env_var) return false;
+  return true;
+}
+
+const normalizedAuth = (status) => String(status ?? "").replace(/_/g, "").toLowerCase();
+
+/**
+ * The stored access token for `name` at `url`, when it is still good for at
+ * least `marginMs`. Only codex's file store can be read here (the keyring is
+ * not reachable from Node); null otherwise.
+ */
+export function storedOAuthAccessToken({ home, name, url, now = Date.now(), marginMs = 60_000, read = readFileSync }) {
+  let store;
+  try {
+    store = JSON.parse(read(join(home, ".credentials.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const trim = (value) => String(value ?? "").replace(/\/+$/, "");
+  for (const entry of Object.values(store ?? {})) {
+    if (entry?.server_name !== name || trim(entry?.server_url) !== trim(url)) continue;
+    if (!entry.access_token) return null;
+    if (typeof entry.expires_at === "number" && entry.expires_at - marginMs <= now) return null;
+    return entry.access_token;
+  }
+  return null;
+}
+
+/**
+ * Gives each OAuth server its current bearer token (or, with `route`, sends it
+ * through the auth proxy, which keeps the token current), and leaves out one that
+ * is not signed in (rabi would only fail to connect it) with a log line that
+ * says how to sign in. `probe(name)` resolves to the server's McpServerStatus.
+ * @returns {Promise<{ servers: object[], notes: string[] }>}
+ */
+export async function attachOAuthTokens(servers, { configured, probe, readToken, route = null }) {
+  // Each probe is a connection to a remote server: run them side by side, so
+  // opening a session waits for the slowest server, not for all of them in turn.
+  const results = await Promise.all(servers.map((server) => attachOne(server, { configured, probe, readToken, route })));
+  return {
+    servers: results.flatMap((r) => (r.server ? [r.server] : [])),
+    notes: results.flatMap((r) => (r.note ? [r.note] : [])),
+  };
+}
+
+async function attachOne(server, { configured, probe, readToken, route }) {
+  if (!oauthCandidate(server.name, configured, server)) return { server };
+  let status = null;
+  try {
+    status = await probe(server.name);
+  } catch (error) {
+    return { server, note: `${server.name}: could not read its sign-in state (${error?.message ?? error}); connecting without a token` };
+  }
+  const auth = normalizedAuth(status?.authStatus);
+  if (auth === "notloggedin") {
+    return { server: null, note: `${server.name}: not signed in; run \`/mcp login ${server.name}\` (or \`unieai mcp login ${server.name}\`)` };
+  }
+  if (auth !== "oauth") return { server };
+  // Through the auth proxy, which puts the current token on every request.
+  if (route) return { server: await route(server) };
+  const token = readToken(server.name, server.url);
+  if (!token) {
+    return {
+      server,
+      note: `${server.name}: signed in, but no current token could be read (keyring store, or the refresh failed); run \`/mcp login ${server.name}\` if its tools are missing`,
+    };
+  }
+  return { server: { ...server, headers: [...(server.headers ?? []), { name: "Authorization", value: `Bearer ${token}` }] } };
 }

@@ -12,6 +12,70 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn cloud_admission_keeps_tab_input_queued_until_the_admitted_turn_finishes() {
+    use crate::app_command::CloudSubmissionIntent;
+    use crate::app_server_session::user_message_submission::UserMessageAdmission;
+
+    for receipt in [
+        UserMessageAdmission::Started("next".into()),
+        UserMessageAdmission::Steered("next".into()),
+    ] {
+        let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+        let id = ThreadId::new();
+        let session = test_thread_session(id, app.config.cwd.to_path_buf());
+        let chat = &mut app.chat_widget;
+        chat.handle_thread_session_quiet(session);
+        chat.handle_server_notification(
+            turn_started_notification(id, "previous"),
+            /*replay_kind*/ None,
+        );
+        chat.apply_external_edit("queued draft".into());
+        chat.handle_key_event(KeyEvent::from(KeyCode::Tab));
+        chat.apply_external_edit("enter input".into());
+        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        let mut turns = std::iter::from_fn(|| ops.try_recv().ok())
+            .filter(|op| matches!(op, Op::UserTurn { .. }));
+        let op = turns.next().expect("expected Enter submission");
+        let Op::UserTurn {
+            client_user_message_id,
+            ..
+        } = &op
+        else {
+            unreachable!();
+        };
+        chat.user_message_admitted(receipt, &op, client_user_message_id);
+        chat.handle_server_notification(
+            turn_completed_notification(id, "previous", TurnStatus::Completed),
+            /*replay_kind*/ None,
+        );
+        assert_eq!(chat.queued_user_message_texts(), ["queued draft"]);
+        assert!(turns.next().is_none());
+        chat.apply_external_edit("another draft".into());
+        chat.handle_key_event(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(
+            chat.queued_user_message_texts(),
+            ["queued draft", "another draft"]
+        );
+        chat.handle_server_notification(
+            turn_started_notification(id, "next"),
+            /*replay_kind*/ None,
+        );
+        assert!(turns.next().is_none());
+        chat.handle_server_notification(
+            turn_completed_notification(id, "next", TurnStatus::Completed),
+            /*replay_kind*/ None,
+        );
+        assert!(matches!(
+            turns.next(),
+            Some(Op::UserTurn { cloud_submission: CloudSubmissionIntent::StartIfIdle, items, .. })
+                if matches!(items.as_slice(), [UserInput::Text { text, .. }] if text == "queued draft")
+        ));
+        assert_eq!(chat.queued_user_message_texts(), ["another draft"]);
+        assert!(turns.next().is_none());
+    }
+}
+
+#[tokio::test]
 async fn worktree_creation_rejects_untrusted_source_before_allocation() -> Result<()> {
     use crate::app_event::ManagedWorktreeMode;
 
@@ -111,6 +175,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let thread_id = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000")?;
+    app_server.side_chat_fork_names.insert(thread_id, None);
     app.active_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
@@ -130,6 +195,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
         .handle_event(&mut tui, &mut app_server, AppEvent::CodexOp(op))
         .await?;
 
+    assert!(app_server.side_chat_fork_names.contains_key(&thread_id));
     assert!(matches!(control, AppRunControl::Continue));
     let error_cell = std::iter::from_fn(|| app_event_rx.try_recv().ok())
         .find_map(|event| match event {
@@ -245,6 +311,7 @@ async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result
         AppEvent::StartSide {
             parent_thread_id: thread_id,
             user_message: Some("Do not fork this stopped thread".into()),
+            mode: crate::app_event::SideStartMode::Reuse,
         },
         AppEvent::ForkCurrentSession { name: None },
         AppEvent::StartManagedWorktree {
@@ -461,5 +528,111 @@ async fn unsupported_legacy_permissions_are_shown_without_exiting() -> Result<()
     assert!(!app.chat_widget.has_queued_follow_up_messages());
 
     app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn interrupt_after_steer_commit_follows_the_displayed_preview() -> Result<()> {
+    for owned in [false, true] {
+        for (show_preview, redraw, prepare_image) in [
+            (true, false, false),
+            (true, false, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+            let id = ThreadId::new();
+            let session = test_thread_session(id, app.config.cwd.to_path_buf());
+            app.chat_widget.handle_thread_session_quiet(session);
+            app.chat_widget.handle_server_notification(
+                turn_started_notification(id, "turn"),
+                /*replay_kind*/ None,
+            );
+            let mut server =
+                Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+            let mut tui = crate::tui::test_support::make_test_tui()?;
+            tui.set_owned_screen(owned)?;
+            let size = ratatui::layout::Size::new(/*width*/ 80, /*height*/ 24);
+            tui.terminal.resize(size)?;
+
+            app.chat_widget.apply_external_edit("Focus on setup".into());
+            app.chat_widget.handle_key_event(KeyCode::Enter.into());
+            let (client_id, content) = std::iter::from_fn(|| ops.try_recv().ok())
+                .find_map(|op| match op {
+                    Op::UserTurn {
+                        client_user_message_id,
+                        items,
+                        ..
+                    } => Some((client_user_message_id, items)),
+                    _ => None,
+                })
+                .expect("submitted steer");
+            if prepare_image {
+                app.chat_widget.snapshot_local_images = true;
+                let path = app.config.codex_home.join("image.png");
+                image::RgbImage::new(/*width*/ 2, /*height*/ 2).save(&path)?;
+                app.chat_widget
+                    .attach_image(path.into(), ClipboardPasteContext::Composer);
+                app.chat_widget.handle_key_event(KeyCode::Enter.into());
+            }
+            if show_preview {
+                app.render_chat_widget_frame(&mut tui, size)?;
+            }
+            app.chat_widget.handle_server_notification(
+                ServerNotification::ItemCompleted(
+                    codex_app_server_protocol::ItemCompletedNotification::new(
+                        id.to_string(),
+                        "turn".into(),
+                        ThreadItemPayload::UserMessage {
+                            id: "user".into(),
+                            client_id: Some(client_id),
+                            content,
+                        },
+                        /*started_at_ms*/ None,
+                        /*completed_at_ms*/ 0,
+                    ),
+                ),
+                /*replay_kind*/ None,
+            );
+            if redraw {
+                app.render_chat_widget_frame(&mut tui, size)?;
+            }
+            let esc = KeyEvent::from(KeyCode::Esc);
+            let mut interrupted = || {
+                std::iter::from_fn(|| events.try_recv().ok())
+                    .chain(std::iter::from_fn(|| ops.try_recv().ok()).map(AppEvent::CodexOp))
+                    .any(|event| matches!(event, AppEvent::CodexOp(Op::Interrupt)))
+            };
+            app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(esc))
+                .await?;
+            if show_preview && !redraw {
+                let repeat = KeyEvent {
+                    kind: crossterm::event::KeyEventKind::Repeat,
+                    ..esc
+                };
+                app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(repeat))
+                    .await?;
+                assert!(!interrupted());
+                assert!(app.chat_widget.queued_user_message_texts().is_empty());
+                if !owned {
+                    let pane = crate::chatwidget::tests::helpers::render_bottom_popup(
+                        &app.chat_widget,
+                        /*width*/ 80,
+                    );
+                    insta::allow_duplicates! {
+                        insta::assert_snapshot!(pane.lines().last().unwrap().trim(), @"Message received. Ignored one interrupt.");
+                    }
+                }
+                app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(esc))
+                    .await?;
+            }
+            assert!(interrupted());
+            if prepare_image {
+                assert_eq!(app.chat_widget.queued_user_message_texts(), ["[Image #1]"]);
+            }
+            server.shutdown().await?;
+            tui.set_owned_screen(/*owned*/ false)?;
+        }
+    }
     Ok(())
 }

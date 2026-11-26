@@ -40,23 +40,27 @@ async fn catalog_permission_message_loaded_from_remote_models_is_sent(
     let model_slug = "remote-catalog-permissions-model";
     let mut model = model_info_from_slug(model_slug);
     model.model_messages = Some(ModelMessages {
+        apps: None,
+        plugins: None,
         content_filter_guidance: None,
         persistent_instructions: None,
         tools: None,
         instructions_template: None,
         approvals: catalog_approval.map(|on_request| ApprovalMessages {
-            on_request: Some(on_request.to_string()),
+            on_request: Some(on_request.into()),
             on_request_auto_review: None,
             never: None,
             unless_trusted: None,
+            granular: None,
+            ..Default::default()
         }),
         collaboration_modes: None,
         auto_review: None,
         permissions: Some(PermissionMessages {
             danger_full_access: None,
             workspace_write: None,
-            read_only: Some("remote catalog permissions: {{ network_access }}".to_string()),
-            approved_prefixes: Some(prefix_template.to_string()),
+            read_only: Some("remote catalog permissions: {{ network_access }}".into()),
+            approved_prefixes: Some(prefix_template.into()),
             ..PermissionMessages::default()
         }),
         multi_agent: None,

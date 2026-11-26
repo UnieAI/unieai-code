@@ -51,6 +51,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -73,6 +74,9 @@ const REMOTE_CONTROL_WEBSOCKET_PING_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(10);
 const REMOTE_CONTROL_WEBSOCKET_PONG_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
+// Reconnect a controller after three heartbeat intervals of complete silence.
+const REMOTE_CONTROL_ACTIVE_IDLE_TIMEOUT: std::time::Duration =
+    REMOTE_CONTROL_WEBSOCKET_PING_INTERVAL.saturating_mul(3);
 const REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(1);
 const REMOTE_CONTROL_RECONNECT_BACKOFF_INITIAL: std::time::Duration =
@@ -546,7 +550,7 @@ impl RemoteControlWebsocket {
                 self.status_publisher
                     .publish_status(RemoteControlConnectionStatus::Connecting);
                 // Spread automatic reconnects before token refresh or enrollment, too.
-                let reconnect_delay = next_reconnect_delay(&mut self.reconnect_attempt);
+                let reconnect_delay = self.next_reconnect_delay().await;
                 tokio::select! {
                     biased;
                     _ = self.shutdown_token.cancelled() => break,
@@ -686,6 +690,11 @@ impl RemoteControlWebsocket {
         }
     }
 
+    async fn next_reconnect_delay(&mut self) -> std::time::Duration {
+        let mut clients = self.client_tracker.lock().await;
+        next_reconnect_delay(&mut self.reconnect_attempt, &mut clients)
+    }
+
     async fn wait_until_enabled(&mut self) -> bool {
         tokio::select! {
             _ = self.shutdown_token.cancelled() => false,
@@ -821,7 +830,7 @@ impl RemoteControlWebsocket {
                         self.status_publisher
                             .publish_status(RemoteControlConnectionStatus::Errored);
                         let reconnect_attempt = self.reconnect_attempt.saturating_add(1);
-                        let reconnect_delay = next_reconnect_delay(&mut self.reconnect_attempt);
+                        let reconnect_delay = self.next_reconnect_delay().await;
                         let reconnect_delay = server_retry_delay
                             .map_or(reconnect_delay, |delay| reconnect_delay.max(delay));
                         let enrollment = self.current_enrollment.snapshot();
@@ -1050,7 +1059,18 @@ impl RemoteControlWebsocket {
                     }
                 }
             };
-            let (payloads, write_complete_tx) = {
+            let item_page = queued_server_envelope
+                .event
+                .item_list_response_id()
+                .filter(|_| tracing::enabled!(tracing::Level::DEBUG))
+                .map(|id| {
+                    (
+                        id.clone(),
+                        queued_server_envelope.stream_id.clone(),
+                        Instant::now(),
+                    )
+                });
+            let (payloads, seq_id) = {
                 let mut state = state.lock().await;
                 let seq_key = (
                     queued_server_envelope.client_id.clone(),
@@ -1090,20 +1110,49 @@ impl RemoteControlWebsocket {
                     .next_seq_id_by_stream
                     .insert(seq_key, seq_id.saturating_add(1));
 
-                (payloads, queued_server_envelope.write_complete_tx)
+                (payloads, seq_id)
             };
 
+            let log_item_page_write = item_page.map(|(request_id, stream_id, prepare_started)| {
+                let frame_count = payloads.len();
+                let wire_bytes = payloads.iter().map(String::len).sum::<usize>();
+                let write_started = Instant::now();
+                move |outcome: &str| {
+                    tracing::debug!(
+                        %request_id,
+                        stream_id = %stream_id.0,
+                        seq_id,
+                        frame_count,
+                        wire_bytes,
+                        prepare_ms = (write_started - prepare_started).as_millis() as u64,
+                        write_ms = write_started.elapsed().as_millis() as u64,
+                        outcome,
+                        "remote control item page write finished"
+                    )
+                }
+            });
             for payload in payloads {
                 tokio::select! {
-                    _ = shutdown_token.cancelled() => return Ok(()),
+                    _ = shutdown_token.cancelled() => {
+                        if let Some(log) = log_item_page_write {
+                            log("interrupted");
+                        }
+                        return Ok(());
+                    }
                     send_result = websocket_writer.send(tungstenite::Message::Text(payload.into())) => {
                         if let Err(err) = send_result {
+                            if let Some(log) = log_item_page_write {
+                                log("write_error");
+                            }
                             return Err(io::Error::other(err));
                         }
                     }
                 }
             }
-            if let Some(write_complete_tx) = write_complete_tx {
+            if let Some(log) = log_item_page_write {
+                log("success");
+            }
+            if let Some(write_complete_tx) = queued_server_envelope.write_complete_tx {
                 let _ = write_complete_tx.send(());
             }
         }
@@ -1146,11 +1195,23 @@ impl RemoteControlWebsocket {
         let mut idle_sweep_interval = tokio::time::interval(REMOTE_CONTROL_IDLE_SWEEP_INTERVAL);
         idle_sweep_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let pong_deadline = tokio::time::sleep(pong_timeout);
-        tokio::pin!(pong_deadline);
+        let idle_deadline = tokio::time::sleep(REMOTE_CONTROL_ACTIVE_IDLE_TIMEOUT);
+        tokio::pin!(pong_deadline, idle_deadline);
 
         loop {
             let incoming_message = tokio::select! {
                 _ = shutdown_token.cancelled() => return Ok(()),
+                _ = &mut idle_deadline => {
+                    // A controller may have expired or disconnected during the wait.
+                    if !client_tracker.has_controller() {
+                        idle_deadline.as_mut().reset(tokio::time::Instant::now() + REMOTE_CONTROL_ACTIVE_IDLE_TIMEOUT);
+                        continue;
+                    }
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "remote control websocket idle timeout",
+                    ));
+                }
                 _ = &mut pong_deadline => {
                     return Err(io::Error::new(
                         ErrorKind::TimedOut,
@@ -1198,6 +1259,9 @@ impl RemoteControlWebsocket {
                     }
                 }
             };
+            idle_deadline
+                .as_mut()
+                .reset(tokio::time::Instant::now() + REMOTE_CONTROL_ACTIVE_IDLE_TIMEOUT);
             let (client_envelope, wire_size_bytes) = match incoming_message {
                 Ok(tungstenite::Message::Text(text)) => {
                     let wire_size_bytes = text.len();
@@ -1363,8 +1427,20 @@ async fn wait_for_auth_change(
     auth_change_rx.changed().await
 }
 
-fn next_reconnect_delay(reconnect_attempt: &mut u64) -> std::time::Duration {
-    let exponent = u32::try_from(*reconnect_attempt).unwrap_or(u32::MAX);
+fn next_reconnect_delay(
+    reconnect_attempt: &mut u64,
+    clients: &mut ClientTracker,
+) -> std::time::Duration {
+    let has_controller = clients.has_controller();
+    if has_controller && !clients.retried_with_controller {
+        *reconnect_attempt = 0;
+    }
+    clients.retried_with_controller = has_controller;
+    // Give an attached controller five attempts at the initial jittered
+    // delay before increasing the backoff for a sustained outage.
+    let extra_attempts = if has_controller { 4 } else { 0 };
+    let exponent =
+        u32::try_from(reconnect_attempt.saturating_sub(extra_attempts)).unwrap_or(u32::MAX);
     let backoff = REMOTE_CONTROL_RECONNECT_BACKOFF_INITIAL
         .saturating_mul(2_u32.saturating_pow(exponent))
         .min(REMOTE_CONTROL_RECONNECT_BACKOFF_CAP);
@@ -2122,6 +2198,18 @@ mod tests {
             "failed to connect app-server remote control websocket `{}`: HTTP error: 503 Service Unavailable, request-id: <none>, cf-ray: <none>, body: upstream unavailable",
             remote_control_target.websocket_url
         );
+        let codex_home = TempDir::new().expect("temp dir should create");
+        let state_db = remote_control_state_runtime(&codex_home).await;
+        let auth_manager = remote_control_auth_manager();
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
+        let mut auth_recovery = session_auth.unauthorized_recovery();
+        let mut auth_change_rx = auth_manager.auth_change_receiver();
+        let current_enrollment = test_current_enrollment(Some(remote_control_enrollment(Some(
+            TEST_REMOTE_CONTROL_SERVER_TOKEN,
+        ))));
+        let (status_publisher, status_rx) = remote_control_status_channel();
+
         let server_task = tokio::spawn(async move {
             let (stream, request_line) = accept_http_request(&listener).await;
             assert_eq!(
@@ -2136,16 +2224,6 @@ mod tests {
             )
             .await;
         });
-        let codex_home = TempDir::new().expect("temp dir should create");
-        let state_db = remote_control_state_runtime(&codex_home).await;
-        let auth_manager = remote_control_auth_manager();
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
-        let mut auth_recovery = session_auth.unauthorized_recovery();
-        let mut auth_change_rx = auth_manager.auth_change_receiver();
-        let current_enrollment = test_current_enrollment(Some(remote_control_enrollment(Some(
-            TEST_REMOTE_CONTROL_SERVER_TOKEN,
-        ))));
-        let (status_publisher, status_rx) = remote_control_status_channel();
 
         let err = match connect_remote_control_websocket(
             &remote_control_target,
@@ -2197,7 +2275,8 @@ mod tests {
         let codex_home = TempDir::new().expect("temp dir should create");
         let state_db = remote_control_state_runtime(&codex_home).await;
         let auth_manager = remote_control_auth_manager();
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
         let mut auth_recovery = session_auth.unauthorized_recovery();
         let mut auth_change_rx = auth_manager.auth_change_receiver();
         let next_refresh_at = time::OffsetDateTime::now_utc() + time::Duration::minutes(2);
@@ -2266,14 +2345,6 @@ mod tests {
         let remote_control_target =
             normalize_remote_control_url(&remote_control_url).expect("target should parse");
         let enroll_url = remote_control_target.enroll_url.clone();
-        let server_task = tokio::spawn(async move {
-            let (stream, request_line) = accept_http_request(&listener).await;
-            assert_eq!(
-                request_line,
-                "POST /backend-api/wham/remote/control/server/enroll HTTP/1.1"
-            );
-            respond_with_status_and_headers(stream, "401 Unauthorized", &[], "unauthorized").await;
-        });
         let codex_home = TempDir::new().expect("temp dir should create");
         save_auth(
             codex_home.path(),
@@ -2293,7 +2364,8 @@ mod tests {
             codex_login::test_support::transport_default_auth_route_config(),
         )
         .await;
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
         let mut auth_recovery = session_auth.unauthorized_recovery();
         let mut auth_change_rx = auth_manager.auth_change_receiver();
         let current_enrollment = test_current_enrollment(/*enrollment*/ None);
@@ -2305,6 +2377,15 @@ mod tests {
             AuthKeyringBackendKind::default(),
         )
         .expect("fresh auth should save");
+
+        let server_task = tokio::spawn(async move {
+            let (stream, request_line) = accept_http_request(&listener).await;
+            assert_eq!(
+                request_line,
+                "POST /backend-api/wham/remote/control/server/enroll HTTP/1.1"
+            );
+            respond_with_status_and_headers(stream, "401 Unauthorized", &[], "unauthorized").await;
+        });
 
         let err = connect_remote_control_websocket(
             &remote_control_target,
@@ -2366,14 +2447,6 @@ mod tests {
         let remote_control_target =
             normalize_remote_control_url(&remote_control_url).expect("target should parse");
         let refresh_url = remote_control_target.refresh_url.clone();
-        let server_task = tokio::spawn(async move {
-            let (stream, request_line) = accept_http_request(&listener).await;
-            assert_eq!(
-                request_line,
-                "POST /backend-api/wham/remote/control/server/refresh HTTP/1.1"
-            );
-            respond_with_status_and_headers(stream, "401 Unauthorized", &[], "unauthorized").await;
-        });
         let codex_home = TempDir::new().expect("temp dir should create");
         save_auth(
             codex_home.path(),
@@ -2393,7 +2466,8 @@ mod tests {
             codex_login::test_support::transport_default_auth_route_config(),
         )
         .await;
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
         let mut auth_recovery = session_auth.unauthorized_recovery();
         let mut auth_change_rx = auth_manager.auth_change_receiver();
         let mut expected_enrollment =
@@ -2410,6 +2484,15 @@ mod tests {
             AuthKeyringBackendKind::default(),
         )
         .expect("fresh auth should save");
+
+        let server_task = tokio::spawn(async move {
+            let (stream, request_line) = accept_http_request(&listener).await;
+            assert_eq!(
+                request_line,
+                "POST /backend-api/wham/remote/control/server/refresh HTTP/1.1"
+            );
+            respond_with_status_and_headers(stream, "401 Unauthorized", &[], "unauthorized").await;
+        });
 
         let err = connect_remote_control_websocket(
             &remote_control_target,
@@ -2472,7 +2555,8 @@ mod tests {
         let remote_control_target = normalize_remote_control_url("http://127.0.0.1:9/backend-api/")
             .expect("target should parse");
         let auth_manager = remote_control_auth_manager();
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
         let mut auth_recovery = session_auth.unauthorized_recovery();
         let mut auth_change_rx = auth_manager.auth_change_receiver();
         let current_enrollment = test_current_enrollment(Some(remote_control_enrollment(Some(
@@ -2523,7 +2607,8 @@ mod tests {
             codex_login::test_support::transport_default_auth_route_config(),
         )
         .await;
-        let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+        let session_auth =
+            RemoteControlAuth::capture(auth_manager.clone(), /*runtime_auth*/ None).0;
         let mut auth_recovery = session_auth.unauthorized_recovery();
         let mut auth_change_rx = auth_manager.auth_change_receiver();
         let current_enrollment = test_current_enrollment(Some(remote_control_enrollment(Some(
@@ -2604,7 +2689,11 @@ mod tests {
                         server_name: "test-server".to_string(),
                     },
                     /*state_db*/ None,
-                    RemoteControlAuth::capture(remote_control_auth_manager()).0,
+                    RemoteControlAuth::capture(
+                        remote_control_auth_manager(),
+                        /*runtime_auth*/ None,
+                    )
+                    .0,
                     RemoteControlChannels {
                         transport_event_tx,
                         status_publisher,
@@ -2846,6 +2935,29 @@ mod tests {
 
     #[tokio::test]
     async fn run_websocket_reader_inner_times_out_without_pong_frames() {
+        assert_eq!(
+            reader_timeout_without_pongs(/*attached*/ false).await,
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            reader_timeout_without_pongs(/*attached*/ true).await,
+            Duration::from_secs(30)
+        );
+    }
+
+    pub(super) async fn initialize_client(clients: &mut ClientTracker, id: &str) {
+        let initialize = serde_json::from_value(serde_json::json!({
+            "type": "client_message",
+            "client_id": id,
+            "stream_id": "stream",
+            "seq_id": 1,
+            "message": {"id": 1, "method": "initialize", "params": {}}
+        }))
+        .unwrap();
+        clients.handle_message(initialize).await.unwrap();
+    }
+
+    async fn reader_timeout_without_pongs(attached: bool) -> Duration {
         let (client_stream, _server_stream) = connected_websocket_pair().await;
         let (_websocket_writer, websocket_reader) = client_stream.split();
         let (outbound_buffer, _used_rx) = BoundedOutboundBuffer::new();
@@ -2860,28 +2972,34 @@ mod tests {
         let (transport_event_tx, _transport_event_rx) =
             mpsc::channel(super::super::CHANNEL_CAPACITY);
         let shutdown_token = CancellationToken::new();
-        let client_tracker = Arc::new(Mutex::new(ClientTracker::new(
-            server_event_tx,
-            transport_event_tx,
-            &shutdown_token,
-        )));
+        let mut client_tracker =
+            ClientTracker::new(server_event_tx, transport_event_tx, &shutdown_token);
 
-        let err = timeout(
-            Duration::from_secs(5),
-            RemoteControlWebsocket::run_websocket_reader_inner(
-                client_tracker,
-                state,
-                websocket_reader,
-                Duration::from_millis(100),
-                shutdown_token,
-            ),
+        initialize_client(&mut client_tracker, "backend_host").await;
+        if attached {
+            initialize_client(&mut client_tracker, "controller").await;
+        }
+        tokio::time::pause();
+        let start = tokio::time::Instant::now();
+        let err = RemoteControlWebsocket::run_websocket_reader_inner(
+            Arc::new(Mutex::new(client_tracker)),
+            state,
+            websocket_reader,
+            super::REMOTE_CONTROL_WEBSOCKET_PONG_TIMEOUT,
+            shutdown_token,
         )
         .await
-        .expect("reader should time out waiting for pong")
         .expect_err("missing pong should fail the websocket reader");
-
+        let elapsed = start.elapsed();
+        tokio::time::resume();
         assert_eq!(err.kind(), ErrorKind::TimedOut);
-        assert_eq!(err.to_string(), "remote control websocket pong timeout");
+        let expected_error = if attached {
+            "remote control websocket idle timeout"
+        } else {
+            "remote control websocket pong timeout"
+        };
+        assert_eq!(err.to_string(), expected_error);
+        Duration::from_secs(elapsed.as_secs())
     }
 
     #[test]

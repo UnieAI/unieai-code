@@ -5,11 +5,43 @@
 //! app-owned behavior.
 //! Return the large fixture on the heap so async scenarios do not embed it in their stack frames.
 
+use super::owned_transcript::tests::buffer_text;
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use crate::test_support::boxed_future;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
+
+pub(crate) use super::cloud_switch_wait::ClipboardHandoff;
+pub(crate) use super::cloud_switch_wait::wait_for_cloud_switch;
+
+/// Opt in to testing the original Command Center modal through the chat widget.
+pub(super) fn use_modal_agents_overview(app: &mut App) {
+    app.config
+        .features
+        .disable(Feature::TuiWorkspace)
+        .expect("disable TUI workspace for the modal fixture");
+    app.cli_kv_overrides
+        .push(("features.tui_workspace".to_owned(), false.into()));
+}
+
+pub(super) fn enable_side_retention(app: &mut App) -> Result<()> {
+    app.config.features.enable(Feature::TuiWorkspace)?;
+    app.local_settings.transcript_mode = crate::transcript_mode::TranscriptMode::Owned;
+    app.keymap = crate::keymap::RuntimeKeymap::for_session(
+        &app.local_settings.tui.keymap,
+        app.local_settings.workspace_enabled(&app.config),
+    )
+    .map_err(color_eyre::eyre::Report::msg)?;
+    Ok(())
+}
+
+pub(super) fn side_frame(app: &mut App, tui: &mut tui::Tui, size: Size) -> Result<String> {
+    let size = tui.screen_size_for_event(&TuiEvent::Resize(size))?;
+    app.handle_draw_pre_render(tui, size)?;
+    app.render_chat_widget_frame(tui, size)?;
+    Ok(buffer_text(tui.terminal.previous_buffer()))
+}
 
 pub(crate) async fn make_test_app() -> Box<App> {
     let (mut chat_widget, app_event_tx, _rx, _op_rx) =
@@ -21,20 +53,30 @@ pub(crate) async fn make_test_app() -> Box<App> {
     let session_telemetry = test_session_telemetry(&config, model.as_str());
 
     Box::new(App {
+        statusline_picker: None,
+        statusline_metrics: Default::default(),
+        provider_writes: HashMap::new(),
         feature_write_lock: Arc::default(),
+        voice_settings_pending: false,
         config_notification_test_generation: 0,
         config_notification_test_pending: None,
         model_catalog: chat_widget.model_catalog(),
         session_telemetry,
         terminal_size_tags: Vec::new(),
         app_event_tx,
+        backend_registry: Default::default(),
         chat_widget,
         workspace_command_runner: None,
+        backend_preference_context: backend_selection::BackendPreferenceContext::new(
+            &config,
+            Some(config.cwd.to_path_buf()),
+        ),
         launch_cwd: config.cwd.to_path_buf(),
         runtime_working_directory_override: None,
         local_settings: crate::local_settings::LocalSettings::from(&config),
         config,
         state_db: None,
+        realtime_call_client: Arc::default(),
         cli_kv_overrides: Vec::new(),
         harness_overrides: ConfigOverrides::default(),
         loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
@@ -48,6 +90,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         native_history: Default::default(),
         turn_tips: Default::default(),
         transcript_view: Default::default(),
+        conversation_frame: Default::default(),
         last_rendered_history_tail: None,
         last_thread_usage_status_cell: None,
         pending_thread_usage_history_refresh: false,
@@ -58,6 +101,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         transcript_reflow: TranscriptReflowState::default(),
         initial_history_replay_buffer: None,
         pending_thread_switch_resets: 0,
+        pending_input_drain: None,
         scrollback_has_older_history: false,
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),
@@ -73,18 +117,20 @@ pub(crate) async fn make_test_app() -> Box<App> {
         feedback_audience: FeedbackAudience::External,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
+        app_server_backend_id: None,
         pending_right_click_paste: None,
         right_click_paste_environment: super::right_click_paste::PasteEnvironment {
             primary: false,
             platform_default: true,
             ssh: false,
             wsl: false,
-            vscode: crate::tui::VscodeDetection::Other,
+            owner: crate::terminal_capabilities::PasteOwner::Application,
         },
         reconnect: Default::default(),
         daemon_cli_executable: None,
         pending_update_action: None,
         daemon_restart: None,
+        remote_control_pending: false,
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
@@ -94,14 +140,24 @@ pub(crate) async fn make_test_app() -> Box<App> {
         background_voice: None,
         background_voice_error: None,
         temporary_structured_requests: HashMap::new(),
+        cloud_title_shutdown: Default::default(),
         pending_thread_titles: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
+        saved_openings: Default::default(),
+        sidebars: HashMap::new(),
+        model_preview_load: None,
+        side_companions: HashMap::new(),
+        zoomed_thread: None,
+        exact_sidebar_width: None,
+        divider_drag: None,
+        pane_resize: None,
+        passive_link_drag: None,
+        sidebar_press: None,
         abandoned_side_threads: HashSet::new(),
         active_thread_id: None,
-        active_thread_rx: None,
         primary_thread_id: None,
         peer_bus_poller: None,
         unread_peer_messages: 0,
@@ -133,6 +189,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         rate_limit_refresh_state: Default::default(),
         pending_mcp_login_start: None,
         active_mcp_login_ids: HashMap::new(),
+        last_mcp_authorization: None,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
         recap: recap::RecapState::default(),

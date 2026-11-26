@@ -42,6 +42,7 @@ import { TOOL_ABORTED, defineTool } from "@unieai/rabi-tools";
 import { HarnessError } from "@unieai/rabi-llm";
 import { currentDirectory } from "./unieai-edit-rabi.mjs";
 import { publishBackground, retireBackground } from "./unieai-exec-state.mjs";
+import { userSpokeSince } from "./unieai-wait-agents.mjs";
 
 /** Waits on the command instead of exec-ing it, so it stays the parent. */
 export const DETACH_HOLDER = 'trap "" HUP; "$@"; status=$?; exit $status';
@@ -71,6 +72,8 @@ export const DEFAULTS = Object.freeze({
   protectRecent: 4, // most recently used sessions never pruned
   graceMs: 3_000,
   pollIntervalMs: 100,
+  // How often a wait checks whether the user has sent a message.
+  userCheckMs: 500,
   postExitWaitMs: 50,
   ttyWriteSettleMs: 100,
   allowTty: true,
@@ -530,7 +533,7 @@ function execDescription(escalation) {
 export const SYSTEM_PROMPT_TEXT = [
   "Running commands: exec_command waits up to `yield_time_ms` (default 30 s) and then returns, so it never blocks on a long command.",
   "- A server or other service that must stay up after you finish (a test or the user connects to it later) needs `detach: true`: background jobs started with `&`, `nohup` or `setsid` are stopped when the session ends.",
-  "- A result with `Process running with session ID N` means the command is still going. For builds and test suites, poll it with write_stdin {session_id: N, chars: \"\"} and a long `yield_time_ms` (up to 300000); a poll returns as soon as the command exits. Do not run `sleep` to wait.",
+  "- A result with `Process running with session ID N` means the command is still going. For builds and test suites, poll it with write_stdin {session_id: N, chars: \"\"} and a long `yield_time_ms` (up to 300000); a poll returns as soon as the command exits, or early when the user sends a message. Do not run `sleep` to wait.",
   "- Start servers and watchers with exec_command; the session keeps them running while you run clients or tests in other exec_command calls. Poll the server's session to read its log.",
   "- Commands that prompt for input (REPLs, `npm init`, confirmations) need `tty: true`; then send input with write_stdin, including the trailing \"\\n\". Without tty, stdin is closed: prefer non-interactive flags (`--yes`, `-y`) when they exist.",
   "- Stop sessions you no longer need with write_stdin chars \"\\u0003\".",
@@ -609,17 +612,28 @@ export function apply(ctx, config = {}) {
   /**
    * Waits until the deadline, or until the process exited and its output
    * closed (codex collect_output_until_deadline). New output alone does not
-   * end the wait; the model asked for this much time.
+   * end the wait; the model asked for this much time. A message from the
+   * user does: it is read at the model's next step, which this wait is
+   * holding back, so the wait ends and the command keeps running.
    */
-  const collect = async (session, waitMs, signal) => {
+  const collect = async (session, waitMs, signal, userSpoke = () => false) => {
     const deadline = Date.now() + waitMs;
     let postExitDeadline;
+    let nextUserCheck = Date.now() + cfg.userCheckMs;
+    let interruptedByUser = false;
     while (true) {
       session.pull();
       if (session.exited && session.outputClosed) break;
       if (signal?.aborted) break;
       const now = Date.now();
       if (now >= deadline) break;
+      if (!session.exited && now >= nextUserCheck) {
+        nextUserCheck = now + cfg.userCheckMs;
+        if (userSpoke()) {
+          interruptedByUser = true;
+          break;
+        }
+      }
       if (session.exited) {
         postExitDeadline ??= Math.min(deadline, now + cfg.postExitWaitMs);
         if (now >= postExitDeadline) break;
@@ -630,7 +644,18 @@ export function apply(ctx, config = {}) {
     session.pull({ final: session.exited });
     const out = new HeadTailBuffer(cfg.bufferBytes);
     session.pending.drainInto(out);
+    out.interruptedByUser = interruptedByUser && !session.exited;
     return out;
+  };
+
+  /** Whether the calling agent's user has said something since this call began. */
+  const userSpokeDuring = (exec) => {
+    const id = exec?.agent?.id;
+    if (id === undefined) return () => false;
+    // ctx.agents throws without an inject; ctx.get reads the service if it is there.
+    const agentOf = () => ctx.get?.("agents")?.get?.(id) ?? exec.agent;
+    const boundary = agentOf()?.session?.seq ?? 0;
+    return () => userSpokeSince(agentOf(), boundary);
   };
 
   const aborted = (session) => {
@@ -770,6 +795,9 @@ export function apply(ctx, config = {}) {
     } else {
       value.session_id = session.id;
       background(session, table);
+      if (collected.interruptedByUser) {
+        notices.push("[stopped waiting early: the user sent a message; the command is still running. Read the message before polling again]");
+      }
     }
     // A command whose stdout has no final newline (`printf`, a bare hash)
     // otherwise runs into whatever the model prints next, and it cannot see
@@ -996,7 +1024,7 @@ export function apply(ctx, config = {}) {
       const { session, table } = spawned;
       const waitMs = clampYield(args.yield_time_ms, { fallback: cfg.defaultYieldMs, min: cfg.minYieldMs, max: cfg.maxYieldMs });
       return session.withLock(async () => {
-        const collected = await collect(session, waitMs, exec.signal);
+        const collected = await collect(session, waitMs, exec.signal, userSpokeDuring(exec));
         if (exec.signal?.aborted && !session.exited) throw aborted(session);
         return respond(session, collected, startedAt, args.max_output_tokens, table);
       });
@@ -1069,7 +1097,7 @@ export function apply(ctx, config = {}) {
         const waitMs = chars
           ? Math.min(Math.max(Number.isFinite(args.yield_time_ms) ? args.yield_time_ms : cfg.defaultWriteYieldMs, cfg.minYieldMs), cfg.maxYieldMs)
           : clampYield(args.yield_time_ms, { fallback: cfg.minPollMs, min: cfg.minPollMs, max: cfg.maxPollMs });
-        const collected = await collect(session, waitMs, exec.signal);
+        const collected = await collect(session, waitMs, exec.signal, userSpokeDuring(exec));
         if (exec.signal?.aborted && !session.exited) throw aborted(session);
         return respond(session, collected, startedAt, args.max_output_tokens, table);
       });

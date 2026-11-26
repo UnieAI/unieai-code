@@ -1,6 +1,7 @@
 //! Real bundle preparation tests without mutating the parent test environment.
 
 use super::*;
+use crate::test_support::isolated_loopback_bundle_test;
 use crate::test_support::load_plugins_config;
 use crate::test_support::write_file;
 use anyhow::Context;
@@ -14,7 +15,6 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
@@ -32,26 +32,7 @@ const SCRIPT: &str = "console.log('installed');\n";
 const ANALYTICS: &str = "version: 1\noperations:\n  install:\n    path: scripts/install.mjs\n    measurements:\n      duration_ms:\n        dimensions:\n          outcome: [success, error]\n";
 
 fn isolated_bundle_test(name: &str) -> Result<bool> {
-    const CHILD: &str = "CODEX_MEASUREMENT_REFERENCE_TEST";
-    if std::env::var(CHILD).as_deref() == Ok(name) {
-        return Ok(true);
-    }
-    let output = Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            &format!("plugin_measurement_references::tests::{name}"),
-            "--nocapture",
-        ])
-        .env(CHILD, name)
-        .env("CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS", "1")
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(false)
+    isolated_loopback_bundle_test(&format!("plugin_measurement_references::tests::{name}"))
 }
 
 fn installed(server: &MockServer, version: &str) -> Value {
@@ -174,7 +155,9 @@ impl Fixture {
         &self,
         target: &PluginMeasurementTarget,
     ) -> Result<Option<Arc<PluginMeasurementReference>>> {
-        self.cache.prepare(&self.config, &self.auth, target).await
+        self.cache
+            .prepare(&self.config, &self.auth, target, /*runtime_auth*/ None)
+            .await
     }
 
     async fn assert_request_count(&self, expected: usize) {
@@ -254,7 +237,7 @@ async fn narrow_preparation_reuses_versions_and_keeps_old_leases_alive() -> Resu
     // A newer release cannot supply an older version's declaration on a cold cache.
     assert!(
         RemotePluginMeasurementCache::new()
-            .prepare(&f.config, &f.auth, &first)
+            .prepare(&f.config, &f.auth, &first, /*runtime_auth*/ None)
             .await?
             .is_none()
     );

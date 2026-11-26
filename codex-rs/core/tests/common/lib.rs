@@ -17,6 +17,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 pub use codex_core::test_support::TestCodexResponsesRequestKind;
 pub use codex_core::test_support::responses_metadata;
+use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 pub use codex_utils_absolute_path::test_support::PathBufExt;
 pub use codex_utils_absolute_path::test_support::PathExt;
@@ -29,9 +30,13 @@ pub mod apps_test_server;
 pub mod code_mode_host;
 pub mod context_snapshot;
 pub mod exec_server;
+pub mod guardian;
 pub mod hooks;
+pub mod network_policy_mcp;
+pub mod oauth;
 pub mod process;
 pub mod responses;
+pub mod runtime_auth;
 pub mod startup;
 pub mod streaming_sse;
 pub mod test_codex;
@@ -235,6 +240,12 @@ pub async fn load_default_config_for_test_with_cloud_config_bundle(
     let _ = config
         .features
         .disable(codex_features::Feature::SessionMesh);
+    for feature in [Feature::ToolSuggest, Feature::RecommendedPlugins] {
+        config
+            .features
+            .disable(feature)
+            .expect("test config should allow disabling plugin recommendations");
+    }
     config
 }
 
@@ -275,8 +286,24 @@ fn config_selects_provider(codex_home: &Path) -> bool {
         .any(|line| line.trim_start().starts_with("model_provider"))
 }
 
+// On musl the test binary cannot dispatch helper arguments before libtest
+// starts. Use the CLI and sandbox binaries that Bazel provides as runfiles.
+pub fn exec_server_helper_exe() -> std::io::Result<PathBuf> {
+    if cfg!(target_env = "musl")
+        && let Ok(exe) = codex_utils_cargo_bin::cargo_bin("codex")
+    {
+        return Ok(exe);
+    }
+    std::env::current_exe()
+}
+
 #[cfg(target_os = "linux")]
 pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
+    if cfg!(target_env = "musl")
+        && let Ok(exe) = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+    {
+        return Ok(exe);
+    }
     if let Some(path) = TEST_ARG0_PATH_ENTRY
         .get()
         .and_then(Option::as_ref)
@@ -301,6 +328,16 @@ where
 {
     use tokio::time::Duration;
     wait_for_event_with_timeout(codex, predicate, Duration::from_secs(1)).await
+}
+
+pub async fn wait_for_successful_turn(codex: &CodexThread) {
+    use codex_protocol::protocol::EventMsg;
+
+    let event = wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert!(
+        matches!(&event, EventMsg::TurnComplete(completed) if completed.error.is_none()),
+        "turn failed: {event:?}"
+    );
 }
 
 /// Waits for a configured MCP server to finish startup and requires it to be ready.

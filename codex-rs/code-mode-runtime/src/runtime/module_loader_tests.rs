@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
 
+use codex_code_mode_protocol::CodeModeToolResult;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -22,12 +23,12 @@ fn discarded_tool_response_is_collectible_before_cell_ends() {
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let (runtime_command_tx, _runtime_command_rx) = std_mpsc::channel();
     scope.set_slot(RuntimeState {
-        event_tx,
+        event_tx: event_tx.into(),
         pending_tool_calls: HashMap::new(),
         pending_timeouts: HashMap::new(),
         stored_values: HashMap::new(),
         stored_value_writes: HashMap::new(),
-        enabled_tools: Vec::new(),
+        enabled_tools: Default::default(),
         next_tool_call_id: 1,
         next_timeout_id: 1,
         tool_call_id: "cell".to_string(),
@@ -48,7 +49,8 @@ fn discarded_tool_response_is_collectible_before_cell_ends() {
         v8::Global::new(scope, promise)
     };
     let response = json!({"content": [{"type": "text", "text": "tool result"}]});
-    resolve_tool_response(scope, "tool", Ok(response.clone())).expect("resolve tool promise");
+    let result = CodeModeToolResult::McpCallToolResult(response.clone());
+    resolve_tool_response(scope, "tool", Ok(result)).expect("resolve tool promise");
     scope.perform_microtask_checkpoint();
     scope.low_memory_notification();
 
@@ -57,6 +59,7 @@ fn discarded_tool_response_is_collectible_before_cell_ends() {
         let promise = v8::Local::new(scope, &promise);
         assert_eq!(promise.state(), v8::PromiseState::Fulfilled);
         let result = promise.result(scope);
+        assert!(super::super::mcp_result::can_omit_fallback(scope, result));
         assert_eq!(v8_value_to_json(scope, result), Ok(Some(response)));
         v8::Weak::new(scope, result)
     };

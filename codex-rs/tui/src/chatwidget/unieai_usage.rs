@@ -641,7 +641,7 @@ impl ChatWidget {
                 )
             })
             .unwrap_or_default();
-        self.add_to_history(history_cell::new_usage_warning_event(format!(
+        self.add_to_history(history_cell::new_visible_warning_event(format!(
             "Your Rabi {label} allowance is used up.{resets} /usage shows your plan."
         )));
         self.request_redraw();
@@ -682,7 +682,7 @@ impl ChatWidget {
                 )),
             );
         } else if usage.extra_usage.enabled {
-            self.add_to_history(history_cell::new_usage_warning_event(format!(
+            self.add_to_history(history_cell::new_visible_warning_event(format!(
                 "Plan limit reached and your API credits are empty. Top up in /usage, or wait: your {label} limit{}.",
                 if resets.is_empty() {
                     " resets later".to_string()
@@ -691,7 +691,7 @@ impl ChatWidget {
                 }
             )));
         } else {
-            self.add_to_history(history_cell::new_usage_warning_event(format!(
+            self.add_to_history(history_cell::new_visible_warning_event(format!(
                 "Plan limit reached — your {label} limit{}. Turn on extra usage in /usage to keep going on API credits.",
                 if resets.is_empty() {
                     " resets later".to_string()

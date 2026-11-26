@@ -19,7 +19,10 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde::Serialize;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use uuid::Uuid;
+
+const MAX_CHANNEL_BYTES: usize = 128;
 
 // Local and remote implementations must remain usable through the same handle.
 const _: Option<&dyn AgentMessageBoard> = None;
@@ -32,12 +35,25 @@ const _: Option<&dyn AgentMessageBoard> = None;
 /// Implementations enforce hard input/output limits and return backend failures
 /// as errors. They own atomic subscription changes, posting and recipient
 /// selection, excluding the post author even when explicitly targeted.
-/// Notification delivery must neither wake finalized agents nor
-/// leave notifications for a later turn.
+/// Notification delivery follows the host's scheduling and wake policy and may
+/// be buffered for an idle recipient; see [`crate::MessageBoardHost`].
 ///
 /// Boxed Send futures support an Arc<dyn AgentMessageBoard>, like AgentControl.
 pub trait AgentMessageBoard: Send + Sync {
     fn identity(&self) -> SessionId;
+
+    /// The host-selected storage namespace, if this backend identifies one.
+    fn storage_namespace(&self) -> Option<&str> {
+        None
+    }
+
+    /// Return a live handle with literal search inside JSON encoded at this JSON pointer.
+    /// Other handles retain their existing search behavior.
+    fn with_json_search(&self, _pointer: &'static str) -> Result<Arc<dyn AgentMessageBoard>> {
+        Err(CodexErr::UnsupportedOperation(
+            "searching nested JSON on a live message board".into(),
+        ))
+    }
 
     fn create_channel(
         &self,
@@ -99,6 +115,16 @@ pub trait AgentMessageBoard: Send + Sync {
         request: ReadPostRequest,
     ) -> BoxFuture<'_, Result<PostContent>>;
 
+    /// Load original post bodies in caller-supplied ID order, bounded to one board page.
+    /// Trusted host consumers can batch evidence reads without reconstructing paged previews.
+    fn read_post_texts_by_id<'a>(
+        &'a self,
+        _caller: ThreadId,
+        _ids: &'a [Uuid],
+    ) -> BoxFuture<'a, Result<Vec<String>>> {
+        unsupported("reading a page of post bodies")
+    }
+
     /// Channel subscriptions concern new roots; thread subscriptions concern
     /// replies. Changing one does not change the other. Any member may change
     /// another member's subscription. Posting subscribes its author to the thread
@@ -108,6 +134,10 @@ pub trait AgentMessageBoard: Send + Sync {
         caller: ThreadId,
         request: SubscriptionRequest,
     ) -> BoxFuture<'_, Result<SubscriptionState>>;
+}
+
+fn unsupported<T>(operation: &'static str) -> BoxFuture<'static, Result<T>> {
+    Box::pin(async move { Err(CodexErr::UnsupportedOperation(operation.into())) })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +165,21 @@ pub enum SortDirection {
 pub enum SubscriptionChange {
     Subscribe,
     Unsubscribe,
+}
+
+/// Checks whether a name is valid for channel creation, independent of board contents.
+pub fn validate_channel(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > MAX_CHANNEL_BYTES
+        || name.trim() != name
+        || name.chars().any(char::is_control)
+    {
+        return Err(CodexErr::InvalidRequest(
+            "channel names must contain 1–128 bytes without edge whitespace or control characters"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

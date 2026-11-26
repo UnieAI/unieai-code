@@ -39,6 +39,8 @@ use crate::protocol::FsCopyParams;
 use crate::protocol::FsCopyResponse;
 use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsCreateDirectoryResponse;
+use crate::protocol::FsGetMetadataBatchParams;
+use crate::protocol::FsGetMetadataBatchResponse;
 use crate::protocol::FsGetMetadataParams;
 use crate::protocol::FsGetMetadataResponse;
 use crate::protocol::FsOpenParams;
@@ -79,6 +81,9 @@ use crate::server::session_registry::SessionHandle;
 use crate::server::session_registry::SessionRegistry;
 use crate::telemetry::ExecutorRegistration;
 
+#[path = "missing_watch.rs"]
+mod missing_watch;
+
 pub(crate) struct ExecServerHandler {
     pub(super) executor_registration: Option<Arc<ExecutorRegistration>>,
     session_registry: Arc<SessionRegistry>,
@@ -86,6 +91,8 @@ pub(crate) struct ExecServerHandler {
     notifications: RpcNotificationSender,
     session: StdMutex<Option<SessionHandle>>,
     active_body_stream_ids: Mutex<HashSet<String>>,
+    // Only the newest observation on this physical connection can be reused.
+    missing_watch: Arc<StdMutex<missing_watch::MissingWatch>>,
     background_task_shutdown: CancellationToken,
     background_tasks: TaskTracker,
     file_system: FileSystemHandler,
@@ -110,6 +117,7 @@ impl ExecServerHandler {
             notifications,
             session: StdMutex::new(None),
             active_body_stream_ids: Mutex::new(HashSet::new()),
+            missing_watch: Arc::default(),
             background_task_shutdown: CancellationToken::new(),
             background_tasks: TaskTracker::new(),
             file_system: FileSystemHandler::new(runtime_paths.clone()),
@@ -342,7 +350,7 @@ impl ExecServerHandler {
     ) -> Result<Arc<DiscoverV2CapabilitiesResponse>, JSONRPCErrorError> {
         self.require_initialized_for("capability discovery")?;
         self.capability_manager
-            .get_or_refresh_discovery(params)
+            .discover(params.sandbox, params.force_reload)
             .await
             .map_err(|error| internal_error(error.to_string()))
     }
@@ -393,6 +401,32 @@ impl ExecServerHandler {
     ) -> Result<FsCreateDirectoryResponse, JSONRPCErrorError> {
         self.require_initialized_for("filesystem")?;
         self.file_system.create_directory(params).await
+    }
+
+    pub(crate) async fn fs_watch_missing(
+        &self,
+        params: crate::protocol::FsWatchMissingParams,
+    ) -> Result<crate::protocol::FsWatchMissingResponse, JSONRPCErrorError> {
+        self.require_initialized_for("filesystem")?;
+        let watch = Arc::clone(&self.missing_watch);
+        let notifications = self.notifications.clone();
+        let shutdown = self.background_task_shutdown.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(mut active) = watch.try_lock() else {
+                return Ok(crate::protocol::FsWatchMissingResponse { watching: false });
+            };
+            active.register(params, notifications, shutdown)
+        })
+        .await
+        .map_err(|error| crate::rpc::internal_error(error.to_string()))?
+    }
+
+    pub(crate) async fn fs_get_metadata_batch(
+        &self,
+        params: FsGetMetadataBatchParams,
+    ) -> Result<FsGetMetadataBatchResponse, JSONRPCErrorError> {
+        self.require_initialized_for("filesystem")?;
+        self.file_system.get_metadata_batch(params).await
     }
 
     pub(crate) async fn fs_get_metadata(

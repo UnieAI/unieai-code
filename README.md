@@ -25,12 +25,19 @@ It comes in three forms:
 | **Engine** (`@unieai/code-agent-runtime`) | The coding runtime as an npm library, to embed in your own tools. |
 | **VS Code extension** | An in-editor chat panel powered by the same engine. |
 
-The CLI runs a session on one of two engines, picked with `/engine`: **uac**
-(unieai-agent-core on rabi-harness, the default) or **codex**. The embeddable engine
+The CLI runs a session on one of two engines, picked with `/engine`: **Rabi Harness**
+(`rabi`, the default) or **codex**. The embeddable engine
 runs on [`@unieai/agent-core`](third_party/unieai-agent-core) — our shared agent loop,
 also used by UnieAI Studio.
 
 ## What's new
+
+**0.0.47** (2026-11-26) — OAuth MCP servers such as UnieAI Space work under Rabi
+Harness (sign in once with `/mcp`, tokens stay fresh), resume is several times faster,
+the model's thinking shows as one folded line, approval cards show what they ask
+about, compaction no longer fires at half the window, a message you send while the
+model waits on a command reaches it right away, peer tools run in the window you type
+in, and upstream Codex is merged through 2026-11-25.
 
 **0.0.46** (2026-11-23) — reasoning effort is adjustable at last (`/model` ladder,
 `Alt+.`/`Alt+,`, `model_reasoning_effort`), the Thinking block shows what the model
@@ -133,7 +140,7 @@ unieai login --studio-url https://studio.demo.unieai.com
 Opens a device-code flow in your browser; once confirmed, your model list is saved to
 `~/.unieai/unieai.json`. For on-prem deployments, point `--studio-url` at your Studio
 endpoint — the inference gateway is auto-derived (`studio.` → `api.`). For a UnieAI
-Rabi account, use `unieai login --rabi` (runs on the uac engine). `unieai login sync`
+Rabi account, use `unieai login --rabi` (runs on Rabi Harness). `unieai login sync`
 refreshes the model list from your account.
 
 ### Use in VS Code
@@ -173,11 +180,11 @@ UnieAI's own slash commands in the TUI (alongside the usual `/model`, `/permissi
 
 | Command | Description |
 |---------|-------------|
-| `/engine [codex\|uac]` | Switch the agent engine for new sessions (uac modes: `/engine ptc`, …) |
-| `/context` | Show what is using the context window (uac) |
-| `/loop [interval] <prompt>` | Repeat a prompt; `/loop` lists loops, `/loop stop` ends them (uac) |
+| `/engine [codex\|rabi]` | Switch the agent engine for new sessions (Rabi Harness modes: `/engine standard`, `/engine minimal`) |
+| `/context` | Show what is using the context window (Rabi Harness) |
+| `/loop [interval] <prompt>` | Repeat a prompt; `/loop` lists loops, `/loop stop` ends them (Rabi Harness) |
 | `/peers` / `/peer` | Browse or message other UnieAI Code sessions on this machine |
-| Esc Esc | Rewind to an earlier message; on uac, optionally restore the files too |
+| Esc Esc | Rewind to an earlier message; on Rabi Harness, optionally restore the files too |
 
 ## Configuration
 
@@ -189,8 +196,8 @@ diagnose issues.
 
 ```
 ├── codex-rs/                     # Rust CLI (TUI, exec, sandbox, app-server)
-├── agent-runtime/                # @unieai/code-agent-runtime — engines (npm), incl. the uac server
-│   ├── bin/unieai-uac-server.mjs #   uac: drives rabi-harness for the TUI
+├── agent-runtime/                # @unieai/code-agent-runtime — engines (npm), incl. the Rabi Harness server
+│   ├── bin/unieai-uac-server.mjs #   drives Rabi Harness for the TUI
 │   ├── src/engine.mjs            #   one turn on the agent-core loop + coding layer
 │   └── src/tools.mjs             #   bash / read / write / edit (sandboxed, verifying)
 ├── third_party/
@@ -204,7 +211,7 @@ diagnose issues.
 ## Contributing
 
 See [docs/contributing.md](./docs/contributing.md) for setup and build instructions.
-The CLI is a Rust project; the engines are Node (≥ 22 for uac). Each release adds an
+The CLI is a Rust project; the engines are Node (≥ 22 for Rabi Harness). Each release adds an
 entry to [CHANGELOG.md](CHANGELOG.md) — see the note at its top. Clone with submodules:
 
 ```shell

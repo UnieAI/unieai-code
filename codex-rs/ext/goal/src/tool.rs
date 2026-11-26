@@ -20,12 +20,15 @@ use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
+use crate::runtime::GoalDaybreakSelection;
+use crate::runtime::GoalRuntimeHandle;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_tool;
 use crate::spec::create_update_goal_tool;
+use crate::steering::GOAL_OBJECTIVE_CONTEXT;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
@@ -40,10 +43,10 @@ pub(crate) struct GoalToolExecutor {
     max_goal_token_budget: Option<i64>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum GoalToolKind {
     Get,
-    Create,
+    Create(GoalRuntimeHandle),
     Update,
 }
 
@@ -97,20 +100,19 @@ impl GoalToolExecutor {
     }
 
     pub(crate) fn create(
-        thread_id: ThreadId,
+        runtime: &GoalRuntimeHandle,
         state_db: Arc<codex_state::StateRuntime>,
-        accounting_state: Arc<GoalAccountingState>,
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         max_goal_token_budget: Option<i64>,
     ) -> Self {
         Self {
-            kind: GoalToolKind::Create,
+            kind: GoalToolKind::Create(runtime.clone()),
             execution_allowed: true,
-            thread_id,
+            thread_id: runtime.thread_id(),
             state_db,
-            accounting_state,
+            accounting_state: runtime.accounting_state(),
             analytics,
             event_emitter,
             metrics,
@@ -144,7 +146,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(match self.kind {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
-            GoalToolKind::Create => CREATE_GOAL_TOOL_NAME,
+            GoalToolKind::Create(_) => CREATE_GOAL_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
         })
     }
@@ -156,7 +158,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
     fn spec(&self) -> ToolSpec {
         match self.kind {
             GoalToolKind::Get => create_get_goal_tool(),
-            GoalToolKind::Create => create_create_goal_tool(),
+            GoalToolKind::Create(_) => create_create_goal_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
         }
     }
@@ -174,9 +176,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
                     "Goal tools require a persistent thread.".to_string(),
                 ));
             }
-            match self.kind {
+            match &self.kind {
                 GoalToolKind::Get => self.handle_get(invocation).await,
-                GoalToolKind::Create => self.handle_create(invocation).await,
+                GoalToolKind::Create(runtime) => self.handle_create(invocation, runtime).await,
                 GoalToolKind::Update => self.handle_update(invocation).await,
             }
         })
@@ -204,6 +206,7 @@ impl GoalToolExecutor {
     async fn handle_create(
         &self,
         invocation: ToolCall<'_>,
+        runtime: &GoalRuntimeHandle,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let mut request: CreateGoalRequest = parse_arguments(invocation.function_arguments()?)?;
         request.objective = request.objective.trim().to_string();
@@ -213,6 +216,11 @@ impl GoalToolExecutor {
         validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
 
+        let _goal_state_permit = runtime
+            .goal_state_permit()
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
+        let thread = runtime.live_thread().await;
         let goal = self
             .state_db
             .thread_goals()
@@ -234,7 +242,29 @@ impl GoalToolExecutor {
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
-        self.metrics.record_created();
+        if let Some(thread) = thread {
+            let snapshot = if let Some(program) = thread
+                .active_turn_continuation_program(&invocation.turn_id)
+                .await
+            {
+                Some(GoalDaybreakSelection::Explicit(program))
+            } else {
+                thread
+                    .capture_originating_saved_goal_daybreak(&invocation.turn_id)
+                    .await
+                    .map(GoalDaybreakSelection::Saved)
+            };
+            runtime.set_daybreak_snapshot(&goal.goal_id, snapshot);
+            thread
+                .inject_untrusted_context_for_turn(
+                    &invocation.turn_id,
+                    GOAL_OBJECTIVE_CONTEXT,
+                    goal.objective.clone(),
+                )
+                .await;
+        }
+        self.metrics
+            .record_tool_created(invocation.codex_turn_metadata.as_deref());
         self.analytics.created(
             &goal,
             GoalEventAttribution::Turn(invocation.turn_id.as_str()),

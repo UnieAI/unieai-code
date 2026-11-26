@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ThreadItem;
 use pretty_assertions::assert_eq;
 
 fn paste_hidden_plan_shell_payload(chat: &mut ChatWidget) -> String {
@@ -15,6 +16,9 @@ fn paste_hidden_plan_shell_payload(chat: &mut ChatWidget) -> String {
 
 fn plan_test_session(thread_id: ThreadId) -> crate::session_state::ThreadSessionState {
     crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
@@ -22,13 +26,13 @@ fn plan_test_session(thread_id: ThreadId) -> crate::session_state::ThreadSession
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
-        model_provider_id: "test-provider".to_string(),
+        model_provider_id: "openai".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
-        cwd: test_path_buf("/home/user/project").abs(),
+        cwd: test_path_buf("/home/user/project").abs().into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -137,16 +141,10 @@ async fn plan_implementation_popup_clear_context_emits_clear_submit_event() {
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let event = rx.try_recv().expect("expected AppEvent");
-    let AppEvent::ClearUiAndSubmitUserMessage { text } = event else {
-        panic!("expected ClearUiAndSubmitUserMessage, got {event:?}");
+    let AppEvent::ImplementPlanInFreshSession { plan } = event else {
+        panic!("expected ImplementPlanInFreshSession, got {event:?}");
     };
-    assert_eq!(
-        text,
-        "A previous agent produced the plan below to accomplish the user's task. \
-        Implement the plan in a fresh context. Treat the plan as the source of \
-        user intent, re-read files as needed, and carry the work through \
-        implementation and verification.\n\n- Step 1\n- Step 2\n"
-    );
+    assert_eq!(plan, plan_markdown);
 }
 
 #[tokio::test]
@@ -282,15 +280,10 @@ async fn reasoning_selection_in_plan_mode_without_effort_change_does_not_open_sc
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5.5"
+            AppEvent::ApplyModelSelection { model, effort: Some(_) }
+                if model == "gpt-5.5"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected model and reasoning update event; events: {events:?}"
     );
 }
 
@@ -460,15 +453,10 @@ async fn reasoning_selection_in_plan_mode_model_switch_does_not_open_scope_promp
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5.6-terra"
+            AppEvent::ApplyModelSelection { model, effort: Some(_) }
+                if model == "gpt-5.6-terra"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected model and reasoning update event; events: {events:?}"
     );
 }
 
@@ -599,11 +587,13 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 }
 
 #[tokio::test]
-async fn handle_request_user_input_sets_pending_notification() {
+async fn delayed_user_input_notifies_and_is_discarded_on_disconnect() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
     chat.local_settings.tui.notification_settings.notifications =
         Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
 
+    chat.handle_paste("draft".to_string());
+    chat.open_terminal_title_setup();
     chat.handle_request_user_input_now(ToolRequestUserInputParams {
         thread_id: "thread-1".to_string(),
         item_id: "call-1".to_string(),
@@ -627,6 +617,11 @@ async fn handle_request_user_input_sets_pending_notification() {
         chat.pending_notification,
         Some(Notification::PlanModePrompt { ref title }) if title == "Reasoning scope"
     );
+    assert!(chat.has_pending_protected_request());
+    chat.pause_for_disconnect();
+    assert!(!chat.has_pending_protected_request());
+    assert!(chat.active_view_accepts_input_when_disconnected());
+    assert_eq!(chat.composer_text_with_pending(), "draft");
 }
 
 #[tokio::test]
@@ -812,14 +807,17 @@ async fn plan_implementation_popup_skips_replayed_turn_complete() {
             id: "turn-1".to_string(),
             root_turn_id: None,
             items_view: codex_app_server_protocol::TurnItemsView::Full,
-            items: vec![AppServerThreadItem::AgentMessage {
-                id: "msg-plan".to_string(),
-                text: "Plan details".to_string(),
-                phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            }],
+            items: vec![ThreadItem::untimed(
+                AppServerThreadItemPayload::AgentMessage {
+                    moderation: None,
+                    id: "msg-plan".to_string(),
+                    text: "Plan details".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+            )],
             status: AppServerTurnStatus::Completed,
             error: None,
             started_at: None,
@@ -853,14 +851,17 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
             id: "turn-1".to_string(),
             root_turn_id: None,
             items_view: codex_app_server_protocol::TurnItemsView::Full,
-            items: vec![AppServerThreadItem::AgentMessage {
-                id: "msg-plan-replay".to_string(),
-                text: "Plan details".to_string(),
-                phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            }],
+            items: vec![ThreadItem::untimed(
+                AppServerThreadItemPayload::AgentMessage {
+                    moderation: None,
+                    id: "msg-plan-replay".to_string(),
+                    text: "Plan details".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+            )],
             status: AppServerTurnStatus::Completed,
             error: None,
             started_at: None,
@@ -1238,6 +1239,9 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        read_only_history: false,
+        thread_settings_confirmed: true,
+        primary_environment_cwd: None,
         daybreak_enabled: false,
         windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
@@ -1251,7 +1255,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
-        cwd: test_path_buf("/home/user/project").abs(),
+        cwd: test_path_buf("/home/user/project").abs().into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -1470,7 +1474,7 @@ async fn plan_slash_command_with_hidden_shell_paste_rejected_image_remains_liter
         .expect("current model")
         .input_modalities
         .retain(|modality| *modality != InputModality::Image);
-    Arc::make_mut(&mut chat.model_catalog).models = models;
+    Arc::make_mut(&mut chat.model_catalog).set_models(models);
     let payload = paste_hidden_plan_shell_payload(&mut chat);
     chat.set_remote_image_urls(vec!["https://example.com/image.png".to_string()]);
 
@@ -1524,7 +1528,7 @@ async fn plan_slash_command_with_hidden_shell_paste_queued_before_session_submit
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
     chat.queue_user_message(UserMessage::from("queued follow-up"));
-    chat.finish_mcp_startup(Vec::new(), Vec::new());
+    chat.finish_mcp_startup();
     assert_eq!(
         chat.queued_user_message_texts(),
         vec![format!("/plan {payload}"), "queued follow-up".to_string()]
@@ -1545,12 +1549,12 @@ async fn rejected_initial_image_does_not_submit_later_queued_prompt() {
         .expect("current model")
         .input_modalities
         .retain(|modality| *modality != InputModality::Image);
-    Arc::make_mut(&mut chat.model_catalog).models = models;
+    Arc::make_mut(&mut chat.model_catalog).set_models(models);
     let mut initial_message = UserMessage::from("initial prompt");
     initial_message.remote_image_urls = vec!["https://example.com/image.png".to_string()];
     chat.initial_user_message = Some(initial_message);
     chat.queue_user_message(UserMessage::from("queued follow-up"));
-    chat.finish_mcp_startup(Vec::new(), Vec::new());
+    chat.finish_mcp_startup();
 
     let mut session = plan_test_session(ThreadId::new());
     session.model = current_model;
@@ -1689,30 +1693,6 @@ async fn set_reasoning_effort_does_not_override_active_plan_override() {
         Some(ReasoningEffortConfig::High)
     );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
-}
-
-#[tokio::test]
-async fn collab_mode_is_sent_after_enabling() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-
-    chat.bottom_pane
-        .set_composer_text("hello".to_string(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn {
-            collaboration_mode:
-                Some(CollaborationMode {
-                    mode: ModeKind::Default,
-                    ..
-                }),
-            ..
-        } => {}
-        other => {
-            panic!("expected Op::UserTurn, got {other:?}")
-        }
-    }
 }
 
 #[tokio::test]

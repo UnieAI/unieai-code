@@ -54,30 +54,14 @@ impl ChatWidget {
 
 #[derive(Debug)]
 pub(crate) enum Notification {
-    AgentTurnComplete {
-        response: String,
-    },
-    ExecApprovalRequested {
-        command: String,
-    },
-    EditApprovalRequested {
-        cwd: PathBuf,
-        changes: Vec<PathBuf>,
-    },
-    ElicitationRequested {
-        server_name: String,
-    },
-    PlanModePrompt {
-        title: String,
-    },
-    AsyncQuestion {
-        title: String,
-    },
+    AgentTurnComplete { response: String },
+    ExecApprovalRequested { subject: String },
+    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
+    ElicitationRequested { server_name: String },
+    PlanModePrompt { title: String },
+    AsyncQuestion { title: String },
     /// Another session on this machine sent this one a message.
-    PeerMessage {
-        from: String,
-        preview: String,
-    },
+    PeerMessage { from: String, preview: String },
 }
 
 impl Notification {
@@ -87,11 +71,8 @@ impl Notification {
                 Notification::agent_turn_preview(response)
                     .unwrap_or_else(|| "Agent turn complete".to_string())
             }
-            Notification::ExecApprovalRequested { command } => {
-                format!(
-                    "Approval requested: {}",
-                    truncate_text(command, /*max_graphemes*/ 30)
-                )
+            Notification::ExecApprovalRequested { subject } => {
+                format!("Approval requested: {subject}")
             }
             Notification::EditApprovalRequested { cwd, changes } => {
                 format!(

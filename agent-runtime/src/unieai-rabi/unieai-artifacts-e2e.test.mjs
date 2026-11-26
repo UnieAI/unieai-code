@@ -102,7 +102,7 @@ const toolNames = (body) => (body.tools ?? []).map((t) => t.function?.name);
 const page = (text) =>
   `<!doctype html><html><head><meta charset="utf-8"><title>Release Notes</title><style>:root{--bg:#fff}body{background:var(--bg)}</style></head><body><h1>${text}</h1></body></html>`;
 
-test("a uac turn publishes a page, a later turn updates it in place and lists it", { timeout: 180_000 }, async () => {
+test("a Rabi Harness turn publishes a page, a later turn updates it in place and lists it", { timeout: 180_000 }, async () => {
   const stub = await startStub({ apiKey: KEY });
   const root = mkdtempSync(join(tmpdir(), "unieai-artifacts-e2e-"));
   const unieaiHome = join(root, "unieai-home");
