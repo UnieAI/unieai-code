@@ -652,7 +652,8 @@ export function apply(ctx, config = {}) {
   const userSpokeDuring = (exec) => {
     const id = exec?.agent?.id;
     if (id === undefined) return () => false;
-    const agentOf = () => ctx.agents?.get?.(id) ?? exec.agent;
+    // ctx.agents throws without an inject; ctx.get reads the service if it is there.
+    const agentOf = () => ctx.get?.("agents")?.get?.(id) ?? exec.agent;
     const boundary = agentOf()?.session?.seq ?? 0;
     return () => userSpokeSince(agentOf(), boundary);
   };
