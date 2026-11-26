@@ -33,7 +33,7 @@ it says how far. Upstream's own changes are listed on the
 "uac" is the UnieAI agent engine (unieai-agent-core, on rabi-harness),
 the default since 0.0.28; "codex" is the original engine. Switch with `/engine`.
 
-## 0.0.47 — 2026-11-25
+## 0.0.47 — 2026-11-26
 
 - Merged upstream Codex through
   [`3f65e9f131`](https://github.com/openai/codex/commit/3f65e9f131) (2026-11-25).
