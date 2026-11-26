@@ -330,7 +330,9 @@ async fn completed_reasoning_stays_in_expanded_transcript_for_live_and_replay() 
     assert_eq!(renders[0], renders[1]);
     insta::assert_snapshot!(renders[0], @r"
         Compact history:
-
+        • Inspecting repository structure (ctrl+t)
+        • Mapping the app structure (ctrl+t)
+        • The playback clock preserves elapsed time. (ctrl+t)
         Live status:
         The playback clock preserves elapsed time.
         Expanded transcript:

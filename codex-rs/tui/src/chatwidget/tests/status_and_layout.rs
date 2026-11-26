@@ -6410,3 +6410,24 @@ async fn chatwidget_tall() {
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
     );
 }
+
+/// Rabi Harness closes a step's reasoning item before the message that
+/// followed it, then opens the tool card. The message must reach history once.
+#[tokio::test]
+async fn reasoning_completed_after_message_delta_does_not_repeat_the_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    let message = "抱歉，剛才一直在等。\n\n目前進度：\n\n- 第一步已完成\n- 第二步進行中";
+
+    handle_agent_reasoning_delta(&mut chat, "User asked what is going on.");
+    handle_agent_message_delta(&mut chat, message);
+    handle_agent_reasoning_final(&mut chat);
+    complete_assistant_message(&mut chat, "msg-1", message, /*phase*/ None);
+    let _ = begin_exec_with_source(&mut chat, "call-poll", "poll session 3200", ExecCommandSource::Agent);
+
+    let combined = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_eq!(combined.matches("剛才一直在等").count(), 1, "{combined}");
+}
