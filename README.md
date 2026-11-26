@@ -32,11 +32,12 @@ also used by UnieAI Studio.
 
 ## What's new
 
-**0.0.47** (2026-11-25) — OAuth MCP servers such as UnieAI Space work under Rabi
+**0.0.47** (2026-11-26) — OAuth MCP servers such as UnieAI Space work under Rabi
 Harness (sign in once with `/mcp`, tokens stay fresh), resume is several times faster,
 the model's thinking shows as one folded line, approval cards show what they ask
-about, compaction no longer fires at half the window, and upstream Codex is merged
-through 2026-11-25.
+about, compaction no longer fires at half the window, a message you send while the
+model waits on a command reaches it right away, peer tools run in the window you type
+in, and upstream Codex is merged through 2026-11-25.
 
 **0.0.46** (2026-11-23) — reasoning effort is adjustable at last (`/model` ladder,
 `Alt+.`/`Alt+,`, `model_reasoning_effort`), the Thinking block shows what the model
